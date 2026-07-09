@@ -1,0 +1,10 @@
+# 빌드 산출물
+build/
+*.o
+*.autosave
+*.user
+
+# Qt
+moc_*.cpp
+qrc_*.cpp
+ui_*.h
