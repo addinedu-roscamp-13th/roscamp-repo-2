@@ -77,16 +77,16 @@
 ```
 ABA/                                       # monorepo 루트 (pingdergarten 컨벤션)
 │
-├── libi/                                  # [Equipment] 로봇 온보드 ROS2 워크스페이스
+├── aba_libi/                              # [Equipment] 로봇 온보드 ROS2 워크스페이스
 │   └── src/                               #   colcon ws src
 │       ├── libi_drive_controller/         #     주행 보드 — nav2 주행 스택
 │       ├── libi_handy_controller/         #     팔 보드 — 매니퓰레이션(상/하차)
 │       ├── libi_gui/                      #     터치패널 UI (Qt5/QML·C++) — 이용자 안내·검색
 │       └── image_sender/                  #     카메라 이미지 송신 (UDP → ai_service)
 │
-├── service/                               # [Server] 비-ROS 백엔드 (ROS 바깥)
+├── aba_service/                           # [Server] 비-ROS 백엔드 (ROS 바깥)
 │   ├── aba_service/                       #   웹 백엔드 (클라이언트 정문)
-│   │   └── libi_fleet/                    #     fleet 관제
+│   │   └── aba_fleet/                     #     fleet 관제
 │   └── ai_service/                        #   비전 AI (UDP) + Labi Bot 챗봇
 │
 ├── aba_ui_service/                        # [Client] 웹 프론트엔드
