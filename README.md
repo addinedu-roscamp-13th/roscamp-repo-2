@@ -77,17 +77,21 @@
 ```
 ABA/                                       # monorepo 루트 (pingdergarten 컨벤션)
 │
-├── controller/                            # [Equipment] 로봇 온보드 ROS2 + 터치패널 UI
-│   ├── libi_drive_controller/             #   주행 보드 — nav2 주행 스택 (colcon ws)
-│   ├── libi_handy_controller/             #   팔 보드 — 매니퓰레이션(상/하차) (colcon ws)
-│   └── libi_gui/                          #   로봇 온보드 터치패널 UI (Qt5/QML·C++) — 이용자 안내·검색
-│
-├── libi_fleet/                            # fleet 관제 워크스페이스 (colcon ws)
+├── libi/                                  # [Equipment] 로봇 온보드 ROS2 워크스페이스
+│   └── src/                               #   colcon ws src
+│       ├── libi_drive_controller/         #     주행 보드 — nav2 주행 스택
+│       ├── libi_handy_controller/         #     팔 보드 — 매니퓰레이션(상/하차)
+│       ├── libi_gui/                      #     터치패널 UI (Qt5/QML·C++) — 이용자 안내·검색
+│       └── image_sender/                  #     카메라 이미지 송신 (UDP → ai_service)
 │
 ├── service/                               # [Server] 비-ROS 백엔드 (ROS 바깥)
 │   ├── aba_service/                       #   웹 백엔드 (클라이언트 정문)
-│   ├── ai_service/                        #   비전 AI (UDP) + Labi Bot 챗봇
-│   └── aba_web_service/                   #   웹 프론트엔드
+│   │   └── libi_fleet/                    #     fleet 관제
+│   └── ai_service/                        #   비전 AI (UDP) + Labi Bot 챗봇
+│
+├── aba_ui_service/                        # [Client] 웹 프론트엔드
+│   ├── library_member_browser/            #   회원 웹 — 도서 검색·요청
+│   └── librarian_browser/                 #   사서 웹 — 수거·관리
 │
 ├── scripts/                               # 빌드·운영·테스트 스크립트
 ├── tests/                                 # 테스트
