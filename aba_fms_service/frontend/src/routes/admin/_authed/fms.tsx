@@ -771,7 +771,7 @@ function FmsCoordinatorPanel({ robots }: { robots: Robot[] }) {
   }, [coord, robots]);
 
   const update = useMutation({
-    mutationFn: (body: { enabled?: boolean; min_distance?: number; priorities?: Record<number, number> }) => adminApi.updateFleetCoordinator(body),
+    mutationFn: (body: { enabled?: boolean; min_distance?: number; priorities?: Record<number, number>; evasion_enabled?: boolean }) => adminApi.updateFleetCoordinator(body),
     onSuccess: (data) => queryClient.setQueryData(["fms", "coordinator"], data),
     onError: () => setMsg("오류"),
   });
@@ -792,6 +792,7 @@ function FmsCoordinatorPanel({ robots }: { robots: Robot[] }) {
   });
 
   const enabled = coord?.enabled ?? false;
+  const evasion = coord?.evasion_enabled ?? false;
   const holds = coord?.holds ?? {};
   const heldIds = Object.keys(holds);
   const robotsById = new Map((coord?.robots ?? []).map((r) => [r.id, r]));
@@ -828,10 +829,29 @@ function FmsCoordinatorPanel({ robots }: { robots: Robot[] }) {
           size="sm"
           variant="ghost"
           className="h-6 text-[10px] rounded bg-slate-800 text-slate-300 px-2"
-          onClick={() => update.mutate({ min_distance: Number(minDist) || 0.6 })}
+          onClick={() => update.mutate({ min_distance: Number(minDist) || 0.45 })}
         >
           설정 적용
         </Button>
+      </div>
+
+      {/* 막는 로봇 자동 비켜세우기(evasion) — 자동 주행이라 기본 OFF, 명시적 opt-in */}
+      <div className="flex items-center justify-between gap-2 mb-3 rounded-xl border border-white/5 bg-slate-900/40 p-2">
+        <span className="flex flex-col">
+          <span className="text-[11px] font-semibold text-slate-300">막는 로봇 자동 비켜세우기</span>
+          <span className="text-[10px] text-slate-500">경로 막는 로봇을 빈 구역으로 이동 · 통과 후 복귀 (자동 주행)</span>
+        </span>
+        <button
+          type="button"
+          onClick={() => update.mutate({ evasion_enabled: !evasion })}
+          title={evasion ? "자동 비켜세우기 켜짐" : "꺼짐 — 켜면 로봇을 자동 주행시킵니다"}
+          className={cn(
+            "shrink-0 rounded-full px-2.5 py-0.5 text-[11px] font-bold transition",
+            evasion ? "bg-amber-500/20 text-amber-300 ring-1 ring-amber-500/40" : "bg-slate-800 text-slate-400"
+          )}
+        >
+          {evasion ? "ON" : "OFF"}
+        </button>
       </div>
 
       {/* 로봇 우선순위 설정 — 1이 가장 높음. 높은 로봇이 먼저 출발하고, 근접 시 낮은 쪽이 양보 */}

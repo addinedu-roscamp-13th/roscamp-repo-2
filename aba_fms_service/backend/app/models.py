@@ -165,9 +165,12 @@ class FleetCoordinatorSettings(AdminBase):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    min_distance: Mapped[float] = mapped_column(Float, nullable=False, default=0.8)
-    clear_distance: Mapped[float] = mapped_column(Float, nullable=False, default=1.1)
+    # 맵이 작고 구역 간격이 ~0.85m 라, 인접 구역 정상 순회를 오정지하지 않도록 값을 맞춘다.
+    min_distance: Mapped[float] = mapped_column(Float, nullable=False, default=0.45)
+    clear_distance: Mapped[float] = mapped_column(Float, nullable=False, default=0.7)
     priorities: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON: {robot_id: priority}
+    # 막는 로봇을 경로 밖으로 자동 비켜세우기(evasion). 자동 주행이라 기본 OFF(운영자 명시적 opt-in).
+    evasion_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now, onupdate=_now
     )

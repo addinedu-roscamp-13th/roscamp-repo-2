@@ -76,6 +76,8 @@ class CoordinatorConfigIn(BaseModel):
     clear_distance: float | None = Field(None, gt=0)
     # robot_id -> 우선순위(1이 가장 높음). 근접 시 우선순위 낮은 로봇이 양보(정지)한다.
     priorities: dict[int, int] | None = None
+    # 막는 로봇을 경로 밖으로 자동 비켜세우기(evasion). 자동 주행이라 기본 OFF.
+    evasion_enabled: bool | None = None
 
 
 async def _target_url(robot_id: int, nav_port: int, db: AsyncSession) -> str:
@@ -548,7 +550,7 @@ async def coordinator_ws(
 
 @router.put("/fleet/coordinator")
 async def set_coordinator(body: CoordinatorConfigIn, _admin: Admin = Depends(get_current_admin)):
-    coordinator.update_config(enabled=body.enabled, min_distance=body.min_distance, clear_distance=body.clear_distance, priorities=body.priorities)
+    coordinator.update_config(enabled=body.enabled, min_distance=body.min_distance, clear_distance=body.clear_distance, priorities=body.priorities, evasion_enabled=body.evasion_enabled)
     await coordinator.save()  # 변경 설정을 DB 에 영속화 — 재시작에도 유지
     return coordinator.snapshot()
 

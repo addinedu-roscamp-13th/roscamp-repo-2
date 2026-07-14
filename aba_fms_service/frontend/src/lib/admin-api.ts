@@ -792,7 +792,7 @@ export const adminApi = {
   fleetCoordinatorWsUrl,
   getFleetCoordinator: () =>
     request<FleetCoordinatorState>("/api/control/fleet/coordinator"),
-  updateFleetCoordinator: (body: { enabled?: boolean; min_distance?: number; clear_distance?: number; priorities?: Record<number, number> }) =>
+  updateFleetCoordinator: (body: { enabled?: boolean; min_distance?: number; clear_distance?: number; priorities?: Record<number, number>; evasion_enabled?: boolean }) =>
     request<FleetCoordinatorState>("/api/control/fleet/coordinator", { method: "PUT", body: JSON.stringify(body) }),
   fleetResume: (robotId: number) =>
     request<{ success: boolean; robot_id: number; msg: string }>(`/api/control/fleet/resume?robot_id=${robotId}`, { method: "POST" }),
@@ -863,6 +863,7 @@ export interface FleetCoordinatorState {
   robots: FleetRobotState[];
   holds: Record<string, FleetHold>;
   priorities: Record<string, number>;
+  evasion_enabled: boolean;
 }
 
 export interface RobotSavedMap {
