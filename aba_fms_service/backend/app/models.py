@@ -158,6 +158,21 @@ class PinkyGreetingSettings(AdminBase):
     )
 
 
+class FleetCoordinatorSettings(AdminBase):
+    """근접 안전 코디네이터 설정 (단일 행). in-memory 만 쓰면 백엔드 재시작 시
+    enabled/거리 설정이 리셋되어 보호가 조용히 꺼지므로 DB 에 영속화한다."""
+    __tablename__ = "rc_fleet_coordinator_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    min_distance: Mapped[float] = mapped_column(Float, nullable=False, default=0.8)
+    clear_distance: Mapped[float] = mapped_column(Float, nullable=False, default=1.1)
+    priorities: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON: {robot_id: priority}
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now, onupdate=_now
+    )
+
+
 class Conversation(RobotBase):
     __tablename__ = "rc_conversations"
 

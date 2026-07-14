@@ -35,6 +35,7 @@ from app.models import Robot
 
 STATE_TIMEOUT = 2.0
 MOVE_EPS = 0.02  # m — 틱 사이 이동량이 이보다 크면 "이동 중"으로 간주
+IMMINENT_FACTOR = 0.7  # min_distance × 이 비율 이내면 '임박' — 둘 다 이동 중이면 양쪽 다 정지
 
 
 def _robot_state(ip: str, base: str) -> Any | None:
@@ -69,11 +70,11 @@ def _fetch_json(base: str, path: str, method: str = "GET", payload: dict | None 
 
 class FleetCoordinator:
     def __init__(self) -> None:
-        # 설정 (기본 OFF — 운영자가 fleet 페이지에서 켠다)
-        self.enabled: bool = False
-        self.min_distance: float = 0.6   # m — 이보다 가까우면 정지
-        self.clear_distance: float = 0.9  # m — 이보다 멀어지면 재개 허용(히스테리시스)
-        self.interval: float = 1.0        # s — 폴링 주기
+        # 설정 (기본 ON — 안전 방향. DB(rc_fleet_coordinator_settings)에서 startup 시 덮어쓴다)
+        self.enabled: bool = True
+        self.min_distance: float = 0.8   # m — 이보다 가까우면 정지(반응 지연 고려해 여유)
+        self.clear_distance: float = 1.1  # m — 이보다 멀어지면 재개 허용(히스테리시스)
+        self.interval: float = 0.4        # s — 폴링 주기(1.0→0.4: 근접 감지 지연 축소)
 
         # 운영자 지정 우선순위: robot_id -> 순위값(작을수록 높음). 미지정 로봇은 robot_id 를 순위로 사용.
         self.priorities: dict[int, int] = {}
@@ -101,6 +102,47 @@ class FleetCoordinator:
         # clear_distance 는 항상 min_distance 이상이 되도록 보정
         if self.clear_distance < self.min_distance:
             self.clear_distance = self.min_distance + 0.2
+
+    async def load(self) -> None:
+        """DB 에 저장된 설정을 읽어 현재 설정을 덮어쓴다. 행이 없으면 현재 기본값으로 생성."""
+        from app.models import FleetCoordinatorSettings
+        try:
+            async with AdminSessionLocal() as db:
+                row = (await db.execute(select(FleetCoordinatorSettings).where(FleetCoordinatorSettings.id == 1))).scalar_one_or_none()
+                if row is None:
+                    db.add(FleetCoordinatorSettings(
+                        id=1, enabled=self.enabled, min_distance=self.min_distance,
+                        clear_distance=self.clear_distance,
+                        priorities=json.dumps(self.priorities) if self.priorities else None,
+                    ))
+                    await db.commit()
+                    return
+                self.enabled = bool(row.enabled)
+                self.min_distance = max(0.1, float(row.min_distance))
+                self.clear_distance = float(row.clear_distance)
+                if self.clear_distance < self.min_distance:
+                    self.clear_distance = self.min_distance + 0.2
+                if row.priorities:
+                    try:
+                        self.priorities = {int(k): int(v) for k, v in json.loads(row.priorities).items()}
+                    except (ValueError, TypeError, json.JSONDecodeError):
+                        self.priorities = {}
+        except Exception as exc:  # noqa: BLE001 — DB 미준비 시에도 기본값으로 동작해야 함
+            self.last_error = f"설정 로드 실패(기본값 사용): {exc!r}"
+
+    async def save(self) -> None:
+        """현재 설정을 DB 에 영속화 — 백엔드 재시작에도 유지되도록."""
+        from app.models import FleetCoordinatorSettings
+        async with AdminSessionLocal() as db:
+            row = (await db.execute(select(FleetCoordinatorSettings).where(FleetCoordinatorSettings.id == 1))).scalar_one_or_none()
+            if row is None:
+                row = FleetCoordinatorSettings(id=1)
+                db.add(row)
+            row.enabled = self.enabled
+            row.min_distance = self.min_distance
+            row.clear_distance = self.clear_distance
+            row.priorities = json.dumps(self.priorities) if self.priorities else None
+            await db.commit()
 
     def config(self) -> dict[str, Any]:
         return {
@@ -135,6 +177,7 @@ class FleetCoordinator:
 
     # ── 백그라운드 루프 ─────────────────────────────────────
     async def run(self) -> None:
+        await self.load()  # 재시작 시 저장된 설정(enabled/거리/우선순위) 복원
         while True:
             try:
                 if self.enabled:
@@ -202,20 +245,26 @@ class FleetCoordinator:
                         snap[i]["near_id"] = j
                         snap[i]["near_name"] = snap[j]["name"]
 
-                # 정지 판정: min_distance 이내면 접근 중인(또는 우선순위 낮은) 쪽을 정지
+                # 정지 판정: min_distance 이내면 접근 중인(또는 우선순위 낮은) 쪽을 정지.
+                # 임박(min_distance×IMMINENT_FACTOR 이내)하고 둘 다 이동 중이면 양쪽 다 정지한다 —
+                # victim 만 세우면 고순위 로봇이 정지한 로봇을 그대로 들이받을 수 있어서다.
                 if d <= self.min_distance:
                     mi, mj = snap[ia]["moving"], snap[ib]["moving"]
+                    imminent = d <= self.min_distance * IMMINENT_FACTOR
+                    victims: list[int] = []
                     if mi and mj:
-                        # 둘 다 이동 중 — 운영자 지정 우선순위가 낮은(값 큰) 쪽이 양보.
-                        # 동순위면 robot_id 큰 쪽이 양보.
-                        victim = ia if (self.priority_of(ia), ia) > (self.priority_of(ib), ib) else ib
+                        if imminent:
+                            victims = [ia, ib]
+                        else:
+                            # 외곽 밴드 — 우선순위 낮은(값 큰) 쪽만 양보. 동순위면 robot_id 큰 쪽.
+                            victims = [ia if (self.priority_of(ia), ia) > (self.priority_of(ib), ib) else ib]
                     elif mi:
-                        victim = ia
+                        victims = [ia]
                     elif mj:
-                        victim = ib
-                    else:
-                        victim = None
-                    if victim is not None and victim not in self.holds:
+                        victims = [ib]
+                    for victim in victims:
+                        if victim in self.holds:
+                            continue
                         peer = ib if victim == ia else ia
                         await asyncio.to_thread(_stop_robot, snap[victim]["ip"], snap[victim]["base"])
                         self.holds[victim] = {

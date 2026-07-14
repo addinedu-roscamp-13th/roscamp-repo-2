@@ -123,6 +123,14 @@ def resolve_learned_command(action_type: str, params: dict[str, Any] | None) -> 
                 body[k] = p[k]
         return "/api/robot/buzzer", body, None
 
+    # 멜로디 연주(엘리제/학교종)는 짧은 비프(buzzer)와 다른 엔드포인트다.
+    # buzzer 로 잘못 매칭되면 엉뚱한 비프가 나므로 별도 action_type 로 분리한다.
+    if action_type == "buzzer_melody":
+        name = (p.get("melody") or p.get("name") or "").strip()
+        if not name:
+            return None, {}, "buzzer_melody: 연주할 멜로디(melody)가 없습니다."
+        return "/api/robot/buzzer/melody/play", {"melody": name}, None
+
     if action_type == "relative_move":
         cm = max(1.0, min(40.0, abs(float(p.get("distance_cm", 10.0)))))
         direction = str(p.get("direction") or "forward")

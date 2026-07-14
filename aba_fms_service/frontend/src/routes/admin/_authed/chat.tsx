@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { MessageSquare, Send, Bot, User, Cpu, Square, Ban } from "lucide-react";
+import { MessageSquare, Send, Bot, User, Cpu, Square, Ban, Activity, Wifi, WifiOff, CheckCircle2, Loader2, CircleDashed, ArrowRight, XCircle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -7,7 +7,7 @@ import { AdminShell } from "@/components/admin/AdminShell";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { adminApi } from "@/lib/admin-api";
+import { adminApi, type Robot, type Nav2State, type ControlLinkInfo } from "@/lib/admin-api";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/admin/_authed/chat")({
@@ -33,6 +33,18 @@ type MessageItem = {
 
 // 실행 후 '정지' 버튼을 노출할 주행성 액션 (즉시 끝나는 표정/사운드/LCD 는 제외)
 const DRIVING_ACTION_TYPES = new Set(["goto", "mission_start", "parking_start", "home", "human_follow_start", "relative_move", "relative_turn"]);
+
+// 우측 '통신 상태' 패널 — 마지막 명령이 발행→결과회신 왕복 중 어디까지 갔는지.
+// fleet_cmd 는 토픽이라 '발행 = 로봇 실행 개시'. 그래서 await_confirm 은 발행 직전 사람 확인 단계.
+type CommState =
+  | { phase: "idle" }
+  | { phase: "interpreting"; label: string }   // ① LLM 해석·매칭 중 (/api/chat/message)
+  | { phase: "needs_robot"; label: string }    // 로봇 미지정 → 선택 대기
+  | { phase: "await_confirm"; label: string }  // 발행 직전 사람 확인 대기 (발행 시 로봇이 움직임)
+  | { phase: "sending"; label: string }        // fleet_cmd 토픽 발행 → 결과 회신 대기
+  | { phase: "not_matched"; label: string }    // 등록 액션/시나리오와 불일치 (발행 안 함)
+  | { phase: "ok"; label: string; detail?: string }
+  | { phase: "fail"; label: string; detail?: string };
 
 const GREETING = [
   "안녕하세요! 🤖 주행로봇 제어 챗봇입니다.",
@@ -93,6 +105,7 @@ function actionSummary(interp: Awaited<ReturnType<typeof adminApi.interpretComma
   if (actionType === "emotion") return `${target} → ${extractEmotionLabel(command) ?? "표정 변경"}`;
   if (actionType === "lcd_text") return `${target} → LCD 문구 표시`;
   if (actionType === "buzzer") return `${target} → 소리 재생`;
+  if (actionType === "buzzer_melody") return `${target} → 멜로디 연주`;
   return `${target} → ${interp.kind === "scenario" ? "시나리오 실행" : "명령 실행"}`;
 }
 
@@ -100,11 +113,27 @@ function ChatPage() {
   const [messages, setMessages] = useState<MessageItem[]>([{ id: "greeting", role: "assistant", content: GREETING }]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [comm, setComm] = useState<CommState>({ phase: "idle" });
+  const [robots, setRobots] = useState<Robot[]>([]);
+  const [activeRobotId, setActiveRobotId] = useState<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, loading]);
+
+  // 상태 패널용 활성 주행로봇 목록 (이름 오름차순). 실패해도 채팅 자체엔 영향 없음.
+  useEffect(() => {
+    adminApi.listRobots({ robot_type: "pinky", limit: 50 })
+      .then((res) => {
+        const items = (res.items ?? [])
+          .filter((r) => r.is_active)
+          .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+        setRobots(items);
+        setActiveRobotId((cur) => cur ?? items[0]?.id ?? null);
+      })
+      .catch(() => { /* 로봇 목록 실패 시 상태 패널만 비활성 */ });
+  }, []);
 
   const stopAction = async (m: MessageItem) => {
     const cmd = m.robotNumber ? `주행로봇${m.robotNumber} 정지` : "정지";
@@ -137,11 +166,16 @@ function ChatPage() {
       ? `🤖 실행했어요.\n\n${summary}`
       : `❌ 실행 실패: ${detail}`;
     const stoppable = Boolean(ok) && (interp.kind === "scenario" || DRIVING_ACTION_TYPES.has(interp.result?.action_type ?? ""));
+    setComm(ok ? { phase: "ok", label: summary } : { phase: "fail", label: summary, detail });
+    // 명령이 향한 로봇을 상태 패널 활성 로봇으로 맞춤 (target_robot = 로봇 이름).
+    const matchedId = robots.find((r) => r.name === (interp.target_robot ?? ""))?.id;
+    if (matchedId) setActiveRobotId(matchedId);
     setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, content: doneMsg, pending: false, needsConfirm: false, stoppable, robotNumber: interp.robot_number ?? null, robotLabel: target } : m)));
   };
 
   const confirmExecute = async (m: MessageItem) => {
     const cmd = m.confirmCommand ?? "";
+    setComm({ phase: "sending", label: m.confirmLabel ?? cmd });
     setMessages((prev) => prev.map((x) => (x.id === m.id ? { ...x, needsConfirm: false, pending: true, content: `🤖 ${m.confirmLabel ?? ""} 실행 중...` } : x)));
     try {
       const resMsg = await adminApi.sendChatMessage(cmd, { sessionId: SESSION_ID, execute: true, confirm: true });
@@ -149,11 +183,13 @@ function ChatPage() {
       const target = interp.target_robot ?? (interp.robot_number ? `${interp.robot_number}번(미등록)` : "로컬");
       renderInterpResult(m.id, interp, target, cmd);
     } catch {
+      setComm({ phase: "fail", label: m.confirmLabel ?? cmd, detail: "실행 중 오류" });
       setMessages((prev) => prev.map((x) => (x.id === m.id ? { ...x, pending: false, content: "❌ 실행 중 오류가 발생했습니다." } : x)));
     }
   };
 
   const cancelConfirm = (m: MessageItem) => {
+    setComm({ phase: "idle" });
     setMessages((prev) => prev.map((x) => (x.id === m.id ? { ...x, needsConfirm: false, content: `⏸️ 실행을 취소했습니다.${m.confirmLabel ? ` (${m.confirmLabel})` : ""}` } : x)));
   };
 
@@ -176,6 +212,7 @@ function ChatPage() {
     if (!text.trim() || loading) return;
     setLoading(true);
     setInput("");
+    setComm({ phase: "interpreting", label: text });
 
     // Add user message
     const userMsg: MessageItem = { id: Date.now().toString(), role: "user", content: text };
@@ -193,6 +230,7 @@ function ChatPage() {
       const interp = chatRes.interpretation;
       if (interp.matched && interp.needs_robot) {
         // 로봇 미지정 → 어느 로봇에서 실행할지 되묻고, 버튼으로 재전송
+        setComm({ phase: "needs_robot", label: interp.message ?? text });
         setMessages((prev) => prev.map((m) => (m.id === pendingId ? {
           ...m,
           content: `🤖 ${interp.message ?? "어느 로봇에서 실행할까요?"}`,
@@ -210,6 +248,7 @@ function ChatPage() {
 
         // 주행 액션은 브라우저 팝업 대신 챗 안에서 실행/취소 버튼으로 확인
         if (interp.result?.requires_confirm) {
+          setComm({ phase: "await_confirm", label: picked });
           setMessages((prev) => prev.map((m) => (m.id === pendingId ? {
             ...m,
             content: `⚠️ ${interp.result?.message ?? "이 동작은 로봇을 실제로 움직입니다."}\n(${picked})`,
@@ -227,9 +266,11 @@ function ChatPage() {
         return;
       }
       // 미매칭 → 실행하지 않고 안내만 (전진/이동 같은 저수준 move 폴백은 NAV2 충돌·오작동 방지 위해 제거)
+      setComm({ phase: "not_matched", label: text });
       setMessages((prev) => prev.map((m) => (m.id === pendingId ? { ...m, content: NOT_MATCHED, pending: false } : m)));
     } catch (err) {
       console.error(err);
+      setComm({ phase: "fail", label: text, detail: "명령 처리 오류" });
       setMessages((prev) => prev.map((m) => (m.id === pendingId ? { ...m, content: "❌ 명령 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.", pending: false } : m)));
     } finally {
       setLoading(false);
@@ -373,8 +414,10 @@ function ChatPage() {
           </CardContent>
         </Card>
 
-        {/* Right 1 col: Commands Guide */}
-        <Card className="flex flex-col h-[70vh]">
+        {/* Right 1 col: 통신 상태 + 명령어 가이드 */}
+        <div className="flex flex-col gap-4 h-[70vh] min-h-0">
+        <CommStatusPanel comm={comm} robots={robots} activeRobotId={activeRobotId} onSelectRobot={setActiveRobotId} />
+        <Card className="flex-1 min-h-0 flex flex-col">
           <CardHeader className="border-b border-slate-100 py-3 shrink-0">
             <CardTitle className="text-sm font-semibold flex items-center gap-2">
               <Cpu className="h-4 w-4 text-emerald-600" /> 제어 명령어 가이드
@@ -414,7 +457,206 @@ function ChatPage() {
             </div>
           </CardContent>
         </Card>
+        </div>
       </div>
     </AdminShell>
+  );
+}
+
+// ── 우측 통신 상태 패널 ───────────────────────────────────────────────────────
+// 두 축을 보여준다:
+//  1) 명령 왕복 — 마지막 채팅 명령이 해석→(확인)→발행→결과회신 중 어디까지 갔나 (comm)
+//  2) 로봇 진행 — 선택 로봇의 fleet_status(mission)·브릿지 링크·배터리 (WS + telemetry)
+const COMM_STEPS = [
+  { key: "interpret", label: "① 입력 해석·매칭 (LLM)" },
+  { key: "target", label: "② 로봇 지정·실행 확인" },
+  { key: "publish", label: "③ fleet_cmd 발행 (토픽)" },
+  { key: "result", label: "④ 결과 회신 (ack)" },
+] as const;
+
+// comm 단계 → 각 스텝의 상태(대기/진행/완료/실패)로 변환.
+function commStepStatus(phase: CommState["phase"], stepKey: string): "pending" | "active" | "done" | "fail" {
+  const order = ["interpret", "target", "publish", "result"];
+  const idx = order.indexOf(stepKey);
+  switch (phase) {
+    case "idle": return "pending";
+    case "interpreting": return idx === 0 ? "active" : "pending";
+    case "not_matched": return idx === 0 ? "fail" : "pending";
+    case "needs_robot":
+    case "await_confirm": return idx === 0 ? "done" : idx === 1 ? "active" : "pending";
+    case "sending": return idx <= 1 ? "done" : idx === 2 ? "active" : "pending";
+    case "ok": return "done";
+    case "fail": return idx <= 2 ? "done" : "fail";
+    default: return "pending";
+  }
+}
+
+function commHeadline(comm: CommState): { text: string; tone: "muted" | "active" | "warn" | "ok" | "fail" } {
+  switch (comm.phase) {
+    case "idle": return { text: "대기 중 — 명령을 입력하면 진행 상태가 표시됩니다.", tone: "muted" };
+    case "interpreting": return { text: `해석 중: ${comm.label}`, tone: "active" };
+    case "needs_robot": return { text: "로봇 선택 대기 — 어느 로봇에서 실행할지 고르세요.", tone: "warn" };
+    case "await_confirm": return { text: `실행 확인 대기 — 발행하면 로봇이 실제로 움직입니다. (${comm.label})`, tone: "warn" };
+    case "sending": return { text: `발행됨 · 결과 대기: ${comm.label}`, tone: "active" };
+    case "not_matched": return { text: "미매칭 — 등록된 액션/시나리오와 일치하지 않아 발행하지 않았습니다.", tone: "warn" };
+    case "ok": return { text: `완료: ${comm.label}`, tone: "ok" };
+    case "fail": return { text: `실패: ${comm.label}${comm.detail ? ` (${comm.detail})` : ""}`, tone: "fail" };
+  }
+}
+
+function CommStatusPanel({ comm, robots, activeRobotId, onSelectRobot }: {
+  comm: CommState;
+  robots: Robot[];
+  activeRobotId: number | null;
+  onSelectRobot: (id: number) => void;
+}) {
+  const activeRobot = robots.find((r) => r.id === activeRobotId) ?? null;
+  const head = commHeadline(comm);
+  const headTone = {
+    muted: "text-slate-400", active: "text-sky-600", warn: "text-amber-600", ok: "text-emerald-600", fail: "text-rose-600",
+  }[head.tone];
+
+  return (
+    <Card className="flex flex-col shrink-0">
+      <CardHeader className="border-b border-slate-100 py-3 shrink-0">
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle className="text-sm font-semibold flex items-center gap-2">
+            <Activity className="h-4 w-4 text-sky-600" /> 통신 상태
+          </CardTitle>
+          {robots.length > 0 && (
+            <select
+              value={activeRobotId ?? ""}
+              onChange={(e) => onSelectRobot(Number(e.target.value))}
+              className="rounded-full border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-600 shadow-sm"
+            >
+              {robots.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+            </select>
+          )}
+        </div>
+      </CardHeader>
+      <CardContent className="p-4 space-y-3 text-xs">
+        {/* 축1: 명령 왕복 */}
+        <div className={cn("text-[11px] font-medium", headTone)}>{head.text}</div>
+        <ol className="space-y-1.5">
+          {COMM_STEPS.map((s) => {
+            const st = commStepStatus(comm.phase, s.key);
+            const Icon = st === "done" ? CheckCircle2 : st === "active" ? Loader2 : st === "fail" ? XCircle : CircleDashed;
+            const color = st === "done" ? "text-emerald-500" : st === "active" ? "text-sky-500" : st === "fail" ? "text-rose-500" : "text-slate-300";
+            return (
+              <li key={s.key} className="flex items-center gap-2">
+                <Icon className={cn("h-3.5 w-3.5 shrink-0", color, st === "active" && "animate-spin")} />
+                <span className={cn(st === "pending" ? "text-slate-400" : "text-slate-700")}>{s.label}</span>
+              </li>
+            );
+          })}
+        </ol>
+
+        {/* 축2: 로봇 진행 (fleet_status + 링크) */}
+        <div className="border-t border-slate-100 pt-3">
+          {activeRobot ? (
+            <RobotLiveStatus key={activeRobot.id} robot={activeRobot} />
+          ) : (
+            <div className="text-[11px] text-slate-400">활성 주행로봇이 없습니다. IP 관리에서 pinky 로봇을 등록·활성화하세요.</div>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// 선택 로봇의 실시간 상태: /api/control/ws/state(mission·battery) + /api/control/telemetry(브릿지 링크).
+function RobotLiveStatus({ robot }: { robot: Robot }) {
+  const [state, setState] = useState<Nav2State | null>(null);
+  const [wsError, setWsError] = useState(false);
+  const [link, setLink] = useState<ControlLinkInfo | null>(null);
+
+  // fleet_status(mission)·pose·battery 를 1초 주기로 푸시받는다.
+  useEffect(() => {
+    setState(null);
+    setWsError(false);
+    const ws = new WebSocket(adminApi.controlStateWsUrl(robot.id));
+    ws.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        if (payload?.ok && payload.state) { setState(payload.state as Nav2State); setWsError(false); }
+        else if (payload && payload.ok === false) setWsError(true);
+      } catch { /* malformed state frame */ }
+    };
+    ws.onerror = () => setWsError(true);
+    return () => ws.close();
+  }, [robot.id]);
+
+  // 브릿지 링크 신선도·명령 토픽 구독자 수 (3초 폴링).
+  useEffect(() => {
+    let alive = true;
+    const poll = async () => {
+      try {
+        const t = await adminApi.controlTelemetry();
+        if (!alive) return;
+        setLink(Object.values(t).find((e) => e.ip === robot.ip_address) ?? null);
+      } catch { /* telemetry 실패 무시 */ }
+    };
+    void poll();
+    const id = window.setInterval(poll, 3000);
+    return () => { alive = false; window.clearInterval(id); };
+  }, [robot.ip_address]);
+
+  const mission = state?.mission;
+  const percent = state?.battery?.percent;
+  const bridgeUp = (link?.cmd_subscribers ?? 0) > 0;
+  const statusAge = link?.status_age_sec;
+  const online = statusAge != null && statusAge < 30;
+  const missionActive = Boolean(mission && mission.status && mission.status !== "idle");
+
+  return (
+    <div className="space-y-2">
+      {/* 링크 배지 */}
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={cn(
+          "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold",
+          online ? "bg-emerald-50 text-emerald-600" : "bg-slate-100 text-slate-400"
+        )}>
+          {online ? <Wifi className="h-3 w-3" /> : <WifiOff className="h-3 w-3" />}
+          {online ? "온라인" : "오프라인"}
+        </span>
+        <span className={cn(
+          "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium",
+          bridgeUp ? "bg-sky-50 text-sky-600" : "bg-amber-50 text-amber-600"
+        )}>
+          {bridgeUp ? "브릿지 연결됨 (ROS2)" : "브릿지 끊김 → HTTP 폴백"}
+        </span>
+        {percent != null && (
+          <span className="inline-flex items-center gap-1 rounded-full bg-slate-50 px-2 py-0.5 text-[10px] text-slate-500">
+            🔋 {Math.round(percent)}%
+          </span>
+        )}
+        {wsError && <span className="text-[10px] text-rose-500">상태 수신 오류</span>}
+      </div>
+
+      {/* fleet_status 진행 */}
+      {mission ? (
+        <div className="space-y-1.5">
+          <div className="text-[11px] text-slate-600">
+            로봇 상태: <b className={missionActive ? "text-emerald-600" : "text-slate-500"}>{missionActive ? "진행 중" : "대기(idle)"}</b>
+            {mission.loop && <span className="ml-1 text-slate-400">· 반복</span>}
+          </div>
+          {mission.names.length > 0 && (
+            <ul className="space-y-0.5 pl-1">
+              {mission.names.map((n) => {
+                const isCurrent = n === mission.current;
+                return (
+                  <li key={n} className={cn("flex items-center gap-1.5 text-[11px]", isCurrent ? "font-semibold text-sky-700" : "text-slate-500")}>
+                    {isCurrent ? <ArrowRight className="h-3 w-3 text-sky-500" /> : <CircleDashed className="h-3 w-3 text-slate-300" />}
+                    {n} 구역{isCurrent ? " (현재)" : ""}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      ) : (
+        <div className="text-[11px] text-slate-400">{wsError ? "상태를 불러올 수 없습니다." : "상태 수신 대기 중…"}</div>
+      )}
+    </div>
   );
 }

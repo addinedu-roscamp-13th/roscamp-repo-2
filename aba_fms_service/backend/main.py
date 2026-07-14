@@ -151,10 +151,10 @@ async def startup():
     from app import fleet_telemetry
     fleet_telemetry.start()
 
-    # 주행로봇 근접 안전 코디네이터(기본 OFF; fleet 페이지에서 켠다) 백그라운드 시작
+    # 주행로봇 근접 안전 코디네이터 백그라운드 시작 (설정은 DB에서 로드; 기본 ON)
     from app.fleet_coordinator import coordinator
     _asyncio.create_task(coordinator.run())
-    print("[startup] 근접 안전 코디네이터 루프 시작 (enabled=off)", flush=True)
+    print("[startup] 근접 안전 코디네이터 루프 시작 (설정 DB 로드; 기본 enabled=on)", flush=True)
 
 
 

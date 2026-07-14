@@ -267,7 +267,7 @@ async def _ros_command(
         action,
         args or {},
         timeout,
-        action in {"goal", "goto", "home", "mission_start", "schedule_start"},
+        False,
     )
     if res is None:
         return None
@@ -549,6 +549,7 @@ async def coordinator_ws(
 @router.put("/fleet/coordinator")
 async def set_coordinator(body: CoordinatorConfigIn, _admin: Admin = Depends(get_current_admin)):
     coordinator.update_config(enabled=body.enabled, min_distance=body.min_distance, clear_distance=body.clear_distance, priorities=body.priorities)
+    await coordinator.save()  # 변경 설정을 DB 에 영속화 — 재시작에도 유지
     return coordinator.snapshot()
 
 
