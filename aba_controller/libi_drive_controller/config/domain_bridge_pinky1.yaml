@@ -1,0 +1,38 @@
+# 로봇1(Pinky-1, 192.168.0.28, ROS_DOMAIN_ID=88) ↔ 서버 도메인 86 중계.
+# 텔레메트리/상태(88→86, /pinky1/* 개명)와 명령(86→88, reversed)을 함께 담당한다.
+# 로봇은 무수정 — 서버에서만 실행: ros2 run domain_bridge domain_bridge <이 파일>
+# QoS 는 publisher 자동 매칭(기본값)을 사용한다 (amcl_pose·map·fleet_status 는 TRANSIENT_LOCAL).
+name: bridge_pinky1
+from_domain: 88
+to_domain: 86
+topics:
+  amcl_pose:
+    type: geometry_msgs/msg/PoseWithCovarianceStamped
+    remap: /pinky1/amcl_pose
+  map:
+    type: nav_msgs/msg/OccupancyGrid
+    remap: /pinky1/map
+  plan:
+    type: nav_msgs/msg/Path
+    remap: /pinky1/plan
+  battery/percent:
+    type: std_msgs/msg/Float32
+    remap: /pinky1/battery/percent
+  battery/voltage:
+    type: std_msgs/msg/Float32
+    remap: /pinky1/battery/voltage
+  # ── fleet link (robot_agent app/core/fleet_link.py, 2026-07-08) ──
+  fleet_status:
+    type: std_msgs/msg/String
+    remap: /pinky1/fleet_status
+  fleet_costmaps:
+    type: std_msgs/msg/String
+    remap: /pinky1/fleet_costmaps
+  fleet_cmd_result:
+    type: std_msgs/msg/String
+    remap: /pinky1/fleet_cmd_result
+  # 역방향 명령: 86의 /pinky1/fleet_cmd 구독 → 88에 /fleet_cmd 발행
+  pinky1/fleet_cmd:
+    type: std_msgs/msg/String
+    reversed: True
+    remap: /fleet_cmd

@@ -1,0 +1,38 @@
+# 로봇3(Pinky-3, 192.168.0.2, ROS_DOMAIN_ID=87) ↔ 서버 도메인 86 중계.
+# [2026-07-08] 종전에는 서버도 87이라 브릿지가 없었지만, 서버 도메인을 86으로
+# 옮기면서 로봇 3대를 동일 구조(/pinky{N}/* 접두)로 통일했다.
+# 로봇은 무수정 — 서버에서만 실행: ros2 run domain_bridge domain_bridge <이 파일>
+name: bridge_pinky3
+from_domain: 87
+to_domain: 86
+topics:
+  amcl_pose:
+    type: geometry_msgs/msg/PoseWithCovarianceStamped
+    remap: /pinky3/amcl_pose
+  map:
+    type: nav_msgs/msg/OccupancyGrid
+    remap: /pinky3/map
+  plan:
+    type: nav_msgs/msg/Path
+    remap: /pinky3/plan
+  battery/percent:
+    type: std_msgs/msg/Float32
+    remap: /pinky3/battery/percent
+  battery/voltage:
+    type: std_msgs/msg/Float32
+    remap: /pinky3/battery/voltage
+  # ── fleet link (robot_agent app/core/fleet_link.py, 2026-07-08) ──
+  fleet_status:
+    type: std_msgs/msg/String
+    remap: /pinky3/fleet_status
+  fleet_costmaps:
+    type: std_msgs/msg/String
+    remap: /pinky3/fleet_costmaps
+  fleet_cmd_result:
+    type: std_msgs/msg/String
+    remap: /pinky3/fleet_cmd_result
+  # 역방향 명령: 86의 /pinky3/fleet_cmd 구독 → 87에 /fleet_cmd 발행
+  pinky3/fleet_cmd:
+    type: std_msgs/msg/String
+    reversed: True
+    remap: /fleet_cmd

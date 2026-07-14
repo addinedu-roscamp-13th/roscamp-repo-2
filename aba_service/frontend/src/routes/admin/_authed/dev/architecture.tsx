@@ -104,7 +104,7 @@ function ArchitecturePage() {
             tone="orange"
             items={[
               "/ → dist (SPA, try_files)",
-              "/api/* → :8010",
+              "/api/* → :3001",
               "/ollama/* → :11434",
             ]}
           />
