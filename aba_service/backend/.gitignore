@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# secrets — real DB creds & JWT secret live here, never commit
+.env
+.env.*
+!.env.example

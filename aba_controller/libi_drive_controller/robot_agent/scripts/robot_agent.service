@@ -1,0 +1,20 @@
+[Unit]
+Description=Robot Agent (FastAPI + ROS2 driving)
+After=network-online.target
+Wants=network-online.target
+# 빠른 재시작 루프로 인한 정지를 방지 (재시도 횟수 제한 해제)
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=pinky
+Group=pinky
+WorkingDirectory=/home/robotPrj/robot_agent
+ExecStart=/home/robotPrj/robot_agent/scripts/service_run.sh
+Restart=always
+RestartSec=5
+KillMode=mixed
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

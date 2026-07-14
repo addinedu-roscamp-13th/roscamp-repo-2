@@ -248,3 +248,8 @@ Thumbs.db
 # Claude Code (로컬 전용 — 커밋하지 않음)
 # ──────────────────────────────────────────────────────────────
 CLAUDE.md
+
+# --- migration excludes (ollama runtime / ML datasets) ---
+**/ollama-local/
+**/ollama-models/
+**/pinky.v1i.yolov8/
