@@ -377,7 +377,7 @@ function RobotsPage() {
                   id="f-aiurl"
                   value={form.ai_server_url}
                   onChange={(e) => setForm((f) => ({ ...f, ai_server_url: e.target.value }))}
-                  placeholder="예: http://192.168.0.19:9002/"
+                  placeholder="예: http://192.168.0.26:9001/"
                   className="font-mono"
                 />
               </div>

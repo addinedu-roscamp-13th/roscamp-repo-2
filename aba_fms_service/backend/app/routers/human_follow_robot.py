@@ -23,7 +23,7 @@ router = APIRouter(prefix="/api/robot/human-follow", tags=["human-follow-robot"]
 
 
 class HumanFollowConfig(BaseModel):
-    ai_server_url: str = "http://192.168.0.19:9001"
+    ai_server_url: str = "http://192.168.0.26:9001"
     model: str = "yolov8n"
     confidence: float = Field(0.35, ge=0.1, le=0.95)
     target_area: float = Field(0.18, ge=0.03, le=0.6)

@@ -35,7 +35,7 @@ type ModelStatus = {
 };
 
 const LS_SERVER_KEY = "pinky-detect.ai-server";
-const DEFAULT_AI_SERVER = "192.168.0.19:9001";
+const DEFAULT_AI_SERVER = "192.168.0.26:9001";
 const LS_CONFIG_KEY = "human-follow.config";
 const HUMAN_LABELS = new Set(["person", "human", "pinky_63"]);
 

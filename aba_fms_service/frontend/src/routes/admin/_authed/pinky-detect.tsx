@@ -41,7 +41,7 @@ const LS_MODE_KEY   = "robot-pinky-detect.mode";
 const LS_SERVER_KEY = "pinky-detect.ai-server";   // 로봇팔과 AI 서버 공유
 const AUTO_LCD_DURATION_SECONDS = 10;
 
-const DEFAULT_AI_SERVER = "192.168.0.19:9001";
+const DEFAULT_AI_SERVER = "192.168.0.26:9001";
 
 function buildBase(mode: "local" | "server", aiServer: string, robotBase: string): string {
   if (mode === "local") return robotBase.replace(/\/$/, "");
@@ -323,7 +323,7 @@ function RobotPinkyDetectPage() {
                     value={aiServerInput}
                     onChange={(e) => setAiServerInput(e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && saveAiServer()}
-                    placeholder="예: 192.168.0.19:9001"
+                    placeholder="예: 192.168.0.26:9001"
                     className="font-mono text-[13px]"
                   />
                 </div>
