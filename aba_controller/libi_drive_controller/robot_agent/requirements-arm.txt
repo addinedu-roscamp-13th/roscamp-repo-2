@@ -1,0 +1,3 @@
+# arm 로봇 PC (JetCobot) 전용 — 공통 + pymycobot
+-r requirements.txt
+pymycobot>=3.5.0

@@ -1,0 +1,5 @@
+# driving 로봇 PC (Pinky) 전용 — 공통 + ROS2
+# rclpy 는 보통 ROS2 배포판(apt) 으로 설치되어 PYTHONPATH 로 잡힙니다.
+# pip 로 관리하지 않는 환경이면 아래 줄은 주석 처리하세요.
+-r requirements.txt
+# rclpy   # ROS2 환경에서 시스템 패키지로 제공되는 경우 주석 유지

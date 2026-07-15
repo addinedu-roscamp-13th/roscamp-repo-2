@@ -236,6 +236,10 @@ node_modules/
 mariadb_data/
 ollama_models/
 
+# walking-skeleton 런타임 산출물
+.run/
+tests/connectivity/report.json
+
 # OS
 .DS_Store
 Thumbs.db
@@ -244,3 +248,8 @@ Thumbs.db
 # Claude Code (로컬 전용 — 커밋하지 않음)
 # ──────────────────────────────────────────────────────────────
 CLAUDE.md
+
+# --- migration excludes (ollama runtime / ML datasets) ---
+**/ollama-local/
+**/ollama-models/
+**/pinky.v1i.yolov8/

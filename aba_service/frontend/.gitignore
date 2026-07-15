@@ -1,0 +1,22 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+
+# local Ollama install & model blobs (huge)
+ollama-local/
+ollama-models/
+
+# env / secrets
+.env
+.env.*
+*.local
+
+# secrets — contain DB credentials, keep out of git
+WORKLOG.md
+setup-labi-db.sql
+
+# logs / os
+*.log
+.DS_Store

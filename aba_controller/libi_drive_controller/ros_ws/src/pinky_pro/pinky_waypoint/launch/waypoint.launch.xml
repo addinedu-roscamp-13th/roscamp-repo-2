@@ -1,0 +1,4 @@
+<launch>
+  <!-- RViz 클릭 기반 경유지 주행 노드 -->
+  <node pkg="pinky_waypoint" exec="waypoint_follower" name="waypoint_follower" output="screen"/>
+</launch>

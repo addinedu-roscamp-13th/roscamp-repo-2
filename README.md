@@ -34,8 +34,8 @@
 | **Server / AI** | ![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white) ![Ollama](https://img.shields.io/badge/Ollama_(qwen3)-000000?style=for-the-badge&logo=ollama&logoColor=white) ![Ultralytics](https://img.shields.io/badge/YOLO_/_Ultralytics-111F68?style=for-the-badge&logo=pytorch&logoColor=white) |
 | **Database** | ![MariaDB](https://img.shields.io/badge/MariaDB-003545?style=for-the-badge&logo=mariadb&logoColor=white) |
 | **GUI / Web** | ![Qt5/QML](https://img.shields.io/badge/Qt5_/_QML_(C++)-41CD52?style=for-the-badge&logo=qt&logoColor=white) ![React](https://img.shields.io/badge/React-61DAFB?style=for-the-badge&logo=react&logoColor=black) |
-| **Communication** | ![HTTP](https://img.shields.io/badge/HTTP-005571?style=for-the-badge&logo=internetcomputer&logoColor=white) ![ROS2 DDS](https://img.shields.io/badge/ROS2_DDS_(CycloneDDS)-22314E?style=for-the-badge&logo=ros&logoColor=white) ![UDP](https://img.shields.io/badge/UDP_(Image→AI)-4B8BBE?style=for-the-badge&logo=wireshark&logoColor=white) ![TCP](https://img.shields.io/badge/TCP-0B7285?style=for-the-badge&logoColor=white) ![WebSocket](https://img.shields.io/badge/WebSocket_(WS)-010101?style=for-the-badge&logo=socketdotio&logoColor=white) |
-| **Tools** | ![Git](https://img.shields.io/badge/Git-F05032?style=for-the-badge&logo=git&logoColor=white) ![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white) ![Notion](https://img.shields.io/badge/Notion-000000?style=for-the-badge&logo=notion&logoColor=white) |
+| **Communication** | ![HTTP](https://img.shields.io/badge/HTTP-005571?style=for-the-badge&logo=internetcomputer&logoColor=white) ![ROS2 DDS](https://img.shields.io/badge/ROS2_DDS_(CycloneDDS)-22314E?style=for-the-badge&logo=ros&logoColor=white) ![TCP](https://img.shields.io/badge/TCP-0B7285?style=for-the-badge&logoColor=white) ![WebSocket](https://img.shields.io/badge/WebSocket_(WS)-010101?style=for-the-badge&logo=socketdotio&logoColor=white) |
+| **Tools** | ![Git](https://img.shields.io/badge/Git-F05032?style=for-the-badge&logo=git&logoColor=white) |
 
 ### 📖 프로젝트 시나리오 (Scenario)
 
@@ -77,23 +77,15 @@
 ```
 ABA/                                       # monorepo 루트 (pingdergarten 컨벤션)
 │
-├── aba_libi/                              # [Equipment] 로봇 온보드 ROS2 워크스페이스
-│   └── src/                               #   colcon ws src
-│       ├── libi_drive_controller/         #     주행 보드 — nav2 주행 스택
-│       ├── libi_handy_controller/         #     팔 보드 — 매니퓰레이션(상/하차)
-│       ├── libi_gui/                      #     터치패널 UI (Qt5/QML·C++) — 이용자 안내·검색
-│       └── image_sender/                  #     카메라 이미지 송신 (UDP → ai_service)
+├── aba_controller/                        # [Equipment] 로봇 온보드 컨트롤러
+│   ├── libi_drive_controller/             #   주행 보드 — nav2 주행 스택
+│   ├── libi_handy_controller/             #   팔 보드 — 매니퓰레이션(상/하차)
+│   └── libi_gui/                          #   터치패널 UI (Qt5/QML·C++) — 이용자 안내·검색
 │
-├── aba_service/                           # [Server] 비-ROS 백엔드 (ROS 바깥)
-│   ├── aba_service/                       #   웹 백엔드 (클라이언트 정문)
-│   │   └── aba_fleet/                     #     fleet 관제
-│   └── ai_service/                        #   비전 AI (UDP) + Labi Bot 챗봇
+├── aba_server/                            # [Server] 웹 백엔드 + 웹 프론트 (함께 서빙, 클라이언트 정문)
+├── aba_fms_service/                       # [Server] Fleet 관제 (Fleet Management Service)
+├── aba_ai_service/                        # [Server] 비전 AI + Labi Bot 챗봇
 │
-├── aba_ui_service/                        # [Client] 웹 프론트엔드
-│   ├── library_member_browser/            #   회원 웹 — 도서 검색·요청
-│   └── librarian_browser/                 #   사서 웹 — 수거·관리
-│
-├── scripts/                               # 빌드·운영·테스트 스크립트
 ├── tests/                                 # 테스트
 │
 ├── README.md
@@ -110,12 +102,12 @@ ABA/                                       # monorepo 루트 (pingdergarten 컨�
 
 ```
 [Client]    회원 / 사서 브라우저, 터치패널 UI        ──HTTP──┐
-[Server]    aba_service + ABA DB / libi_service / ai_service
-              │ ROS2(DDS)                            │ UDP(Image→AI)
+[Server]    aba_server(백엔드+프론트) + ABA DB / aba_fms_service / aba_ai_service
+              │ ROS2(DDS)
 [Equipment] Libi Drive Board (주행)  ──DDS──  Libi Handy Board (팔)
 ```
 
-- **통신**: HTTP(클라↔서버), ROS2/DDS(서비스↔컨트롤러·drive↔handy), UDP(Image→AI), TCP(서버간)
+- **통신**: HTTP(클라↔서버), ROS2/DDS(서비스↔컨트롤러·drive↔handy), TCP(서버간)
 - **로봇 지휘**: `libi_service` 가 로봇 컨트롤러의 **"이동 지휘자"** — 서버/코디네이터에서 실행, ROS2 로 `libi_drive`(주행)·`libi_handy`(팔) 에 명령
 
 ---
@@ -181,7 +173,7 @@ ABA/                                       # monorepo 루트 (pingdergarten 컨�
 | `/robot/goal` | Topic | GUI → Robot | 목적지 전달 |
 | `/robot/status` | Topic | Robot → libi_service | 로봇 상태 보고 |
 | `perform_action` | Action | libi_service → libi_handy | 상/하차 팔 작업 트리거 |
-| `/api/books` | REST | Web → aba_service | 도서 검색/요청 |
+| `/api/books` | REST | Web → aba_server | 도서 검색/요청 |
 | ... | ... | ... | ... |
 
 ---
@@ -193,14 +185,14 @@ ABA/                                       # monorepo 루트 (pingdergarten 컨�
 <!-- <img src="docs/img/gui.png" alt="GUI" width="700"/> -->
 
 - 로봇 온보드 터치패널 UI(`libi_gui`, Qt5/QML · C++) — 이용자 안내·도서 검색/추천 (관리자 모드 포함)
-- 회원/사서 웹(`library_member_browser` / `librarian_browser`) — 도서 검색·요청·수거
+- 회원/사서 웹 — 도서 검색·요청·수거 (`aba_server` 가 백엔드와 프론트를 함께 서빙)
 
 ---
 
 ## 🤖 Labi Bot — AI 챗봇 서브시스템
 
 > 도서관 AI 가이드 챗봇. **경량 RAG**(정규식 의도 판별 + MariaDB LIKE 검색 + 로컬 LLM 프롬프트 주입)로,
-> 임베딩/벡터DB/Elasticsearch 없이 구현합니다. ROS 로봇과 분리된 `ai_service` 서브시스템.
+> 임베딩/벡터DB/Elasticsearch 없이 구현합니다. ROS 로봇과 분리된 `aba_ai_service` 서브시스템.
 
 **처리 흐름**
 
