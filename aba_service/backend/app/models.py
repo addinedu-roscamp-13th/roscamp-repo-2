@@ -76,7 +76,7 @@ class Book(Base):
     category: Mapped[str] = mapped_column(
         String(50),
         nullable=False,
-        comment="도서 카테고리 (literature | art | science)",
+        comment="도서 카테고리 (literature | art | science | humanities | kids)",
     )
     cover: Mapped[str] = mapped_column(String(50), nullable=False, comment="도서 표지 이모지")
     color: Mapped[str] = mapped_column(
