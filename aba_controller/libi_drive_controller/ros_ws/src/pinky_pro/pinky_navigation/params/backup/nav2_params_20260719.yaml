@@ -12,13 +12,13 @@ amcl:
     do_beamskip: false
     global_frame_id: "map"
     lambda_short: 0.1
-    laser_likelihood_max_dist: 1.0   # [2026-07-15] 2.0→1.0  1x2m 방: likelihood field 계산거리 축소(연산↓)
-    laser_max_range: 3.0             # [2026-07-15] 100.0→3.0  방 대각선~2.2m, 밖의 잡음/max-range 무시(매칭 정확도↑, 연산↓)
-    laser_min_range: 0.05            # [2026-07-15] -1.0→0.05  로봇 몸체/근접 잡음 무시
+    laser_likelihood_max_dist: 2.0
+    laser_max_range: 100.0
+    laser_min_range: -1.0
     laser_model_type: "likelihood_field"
-    max_beams: 45                    # [2026-07-15] 60→45  좁은 방은 빔 적게 써도 충분(연산↓)
-    max_particles: 800               # [2026-07-15] 2000→800  좁은 공간은 입자 적어도 수렴(연산↓)
-    min_particles: 100               # [2026-07-15] 500→100
+    max_beams: 60
+    max_particles: 2000
+    min_particles: 500
     odom_frame_id: "odom"
     pf_err: 0.05
     pf_z: 0.99
@@ -30,8 +30,8 @@ amcl:
     sigma_hit: 0.2
     tf_broadcast: true
     transform_tolerance: 1.0
-    update_min_a: 0.05   # [2026-07-15] 0.1→0.05  제자리 회전 중 더 자주 위치보정(회전 드리프트↓)
-    update_min_d: 0.10   # [2026-07-15] 0.15→0.10  좁은 방: 더 자주 위치보정→주행중 드리프트 감소
+    update_min_a: 0.1
+    update_min_d: 0.15
     z_hit: 0.5
     z_max: 0.05
     z_rand: 0.5
@@ -108,10 +108,10 @@ controller_server:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
 
       # 기본 속도들 (Pinky 상황 맞게 나중에 조정 가능)
-      desired_linear_vel: 0.07      # [2026-07-15] 0.09→0.07  더 천천히 주행(좁은 방 정밀·드리프트↓)
+      desired_linear_vel: 0.10      # [m/s]
       max_linear_accel: 0.3         # [m/s^2]
       max_linear_decel: 0.5         # [m/s^2]
-      max_angular_vel: 0.15         # [2026-07-15] 0.7→0.15  회전 느리게(좁은 방 정밀·드리프트↓)
+      max_angular_vel: 0.7          # [rad/s]
 
       # 경로 추종 관련
       # [2026-06-30] 1m×2m 작은 맵 + 6cm 로봇에 맞춰 lookahead 축소
@@ -136,7 +136,7 @@ controller_server:
       rotate_to_heading_min_angle: 0.35
 
       # 3) 회전 속도 (in-place 회전일 때 angular vel)
-      rotate_to_heading_angular_vel: 0.15   # [2026-07-15] 0.7→0.15  제자리 회전도 느리게(각속도 통일)
+      rotate_to_heading_angular_vel: 0.7
 
       # 4) 회전할 때는 전진 속도 0에 가깝게 (거의 제자리 회전)
       max_angular_accel: 3.2
@@ -171,13 +171,13 @@ local_costmap:
       width: 3
       height: 3
       resolution: 0.02
-      robot_radius: 0.06        # [2026-07-15] 0.11 → 0.06 되돌림 — 실물 바퀴간격 0.0961m 기준. inflation(0.08)보다 크면 감쇠구간이 사라져 8cm 띠 전체가 253(통행불가)이 된다
+      robot_radius: 0.06
       #footprint: '[[0.06, 0.06], [0.06, -0.06], [-0.06, -0.06], [-0.06, 0.06]]'
       plugins: ["voxel_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 5.0      # [2026-06-30] 10.0 → 5.0
-        inflation_radius: 0.08        # [2026-07-15] 0.20 → 0.08 되돌림 — 맵 여유(0.04~0.18m)보다 커서 자유공간이 전부 덮였음
+        inflation_radius: 0.08        # [2026-06-30] 0.05 → 0.08 (벽 밀착 경로 방지)
       voxel_layer:
         plugin: "nav2_costmap_2d::VoxelLayer"
         enabled: True
@@ -189,7 +189,7 @@ local_costmap:
         mark_threshold: 0
         observation_sources: scan
         scan:
-          topic: /scan_filtered
+          topic: /scan
           max_obstacle_height: 2.0
           clearing: True
           marking: True
@@ -211,7 +211,7 @@ global_costmap:
       publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_footprint
-      robot_radius: 0.06        # [2026-07-15] 0.11 → 0.06 되돌림 — 실물 바퀴간격 0.0961m 기준. inflation(0.08)보다 크면 감쇠구간이 사라져 8cm 띠 전체가 253(통행불가)이 된다
+      robot_radius: 0.06
       #footprint: '[[0.06, 0.06], [0.06, -0.06], [-0.06, -0.06], [-0.06, 0.06]]'
       resolution: 0.02
       track_unknown_space: true
@@ -221,7 +221,7 @@ global_costmap:
         enabled: True
         observation_sources: scan
         scan:
-          topic: /scan_filtered
+          topic: /scan
           max_obstacle_height: 2.0
           clearing: True
           marking: True
@@ -236,7 +236,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 5.0      # [2026-06-30] 10.0 → 5.0
-        inflation_radius: 0.08        # [2026-07-15] 0.20 → 0.08 되돌림 — 맵 여유(0.04~0.18m)보다 커서 자유공간이 전부 덮였음
+        inflation_radius: 0.08        # [2026-06-30] 0.05 → 0.08 (벽 밀착 경로 방지)
       always_send_full_costmap: True
 
 # The yaml_filename does not need to be specified since it going to be set by defaults in launch.
@@ -260,7 +260,7 @@ planner_server:
     costmap_update_timeout: 1.0
     GridBased:
       plugin: "nav2_navfn_planner::NavfnPlanner"
-      tolerance: 0.1      # [2026-07-15] 0.5→0.1  1x2m 좁은 방: 목표 정밀 도달
+      tolerance: 0.5
       use_astar: false
       allow_unknown: true
 
@@ -325,46 +325,4 @@ velocity_smoother:
     odom_duration: 0.1
     deadband_velocity: [0.0, 0.0, 0.0]
     velocity_timeout: 1.0
-
-collision_monitor:
-  ros__parameters:
-    base_frame_id: "base_link"
-    odom_frame_id: "odom"
-    cmd_vel_in_topic: "cmd_vel_smoothed"   # velocity_smoother 출력을 받아서
-    cmd_vel_out_topic: "cmd_vel"           # 걸러 로봇으로 내보냄
-    state_topic: "collision_monitor_state"
-    transform_tolerance: 0.2
-    source_timeout: 1.0
-    base_shift_correction: True
-    stop_pub_timeout: 2.0
-    polygons: ["SlowDown", "Stop"]
-
-    # 감속 zone: 앞 15cm / 좌우 ±12cm → 속도 0.3배 (흐름 유지, 데드락↓)
-    SlowDown:
-      type: "polygon"
-      points: "[[0.15, 0.12], [0.15, -0.12], [-0.10, -0.12], [-0.10, 0.12]]"
-      action_type: "slowdown"
-      min_points: 4
-      slowdown_ratio: 0.7
-      visualize: True
-      polygon_pub_topic: "slowdown_polygon"
-      enabled: True
-
-    # 비상 정지 zone: 앞 8cm / 뒤 6cm / 좌우 ±8cm
-    Stop:
-      type: "polygon"
-      points: "[[0.08, 0.08], [0.08, -0.08], [-0.06, -0.08], [-0.06, 0.08]]"
-      action_type: "stop"
-      min_points: 4
-      visualize: True
-      polygon_pub_topic: "stop_polygon"
-      enabled: True
-
-    observation_sources: ["scan"]
-    scan:
-      type: "scan"
-      topic: "/scan_filtered"    # costmap과 동일 소스 (안전 더 원하면 /scan)
-      min_height: 0.05
-      max_height: 0.5
-      enabled: True
     enable_stamped_cmd_vel: false

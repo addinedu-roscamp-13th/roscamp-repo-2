@@ -326,3 +326,46 @@ velocity_smoother:
     deadband_velocity: [0.0, 0.0, 0.0]
     velocity_timeout: 1.0
     enable_stamped_cmd_vel: false
+
+collision_monitor:
+  ros__parameters:
+    base_frame_id: "base_link"
+    odom_frame_id: "odom"
+    cmd_vel_in_topic: "cmd_vel_smoothed"   # velocity_smoother 출력을 받아서
+    cmd_vel_out_topic: "cmd_vel"           # 걸러 로봇으로 내보냄
+    state_topic: "collision_monitor_state"
+    transform_tolerance: 0.2
+    source_timeout: 1.0
+    base_shift_correction: True
+    stop_pub_timeout: 2.0
+    polygons: ["SlowDown", "Stop"]
+
+    # 감속 zone: 앞 15cm / 좌우 ±12cm → 속도 0.3배 (흐름 유지, 데드락↓)
+    SlowDown:
+      type: "polygon"
+      points: "[[0.15, 0.12], [0.15, -0.12], [-0.10, -0.12], [-0.10, 0.12]]"
+      action_type: "slowdown"
+      min_points: 4
+      slowdown_ratio: 0.7
+      visualize: True
+      polygon_pub_topic: "slowdown_polygon"
+      enabled: True
+
+    # 비상 정지 zone: 앞 8cm / 뒤 6cm / 좌우 ±8cm
+    Stop:
+      type: "polygon"
+      points: "[[0.08, 0.08], [0.08, -0.08], [-0.06, -0.08], [-0.06, 0.08]]"
+      action_type: "stop"
+      min_points: 4
+      visualize: True
+      polygon_pub_topic: "stop_polygon"
+      enabled: True
+
+    observation_sources: ["scan"]
+    scan:
+      type: "scan"
+      topic: "/scan"    # sim 환경은 costmap과 동일하게 /scan 사용 (실기는 /scan_filtered 확정 후 별도 반영)
+      min_height: 0.05
+      max_height: 0.5
+      enabled: True
+    enable_stamped_cmd_vel: false

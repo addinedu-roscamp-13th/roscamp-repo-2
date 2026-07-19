@@ -25,6 +25,7 @@ endif()
 
 install(PROGRAMS
   scripts/nav2_web_server.py
+  scripts/scan_filter_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

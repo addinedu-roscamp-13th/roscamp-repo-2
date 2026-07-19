@@ -1,0 +1,31 @@
+<!--
+  라이다 스캔 필터 노드 (rclpy 직접 구현).
+  /scan (raw) 를 받아 range + speckle 필터 후 scan_filtered 로 발행한다.
+  목적: 라이다 잡음이 costmap 에 유령 장애물로 찍히는 것 방지 → 실제 장애물만 남김.
+  costmap 이 scan_filtered 를 구독하므로 이 노드가 반드시 함께 떠 있어야 한다.
+
+  laser_filters 를 쓰지 않는다 (diagnostic_updater ABI 문제 회피).
+-->
+<launch>
+  <arg name="input_topic"  default="/scan"/>
+  <arg name="output_topic" default="scan_filtered"/>
+  <arg name="min_range"    default="0.05"/>
+  <arg name="max_range"    default="3.0"/>
+  <!-- speckle(외딴 점=잡음) 제거 -->
+  <arg name="speckle_enabled"        default="true"/>
+  <arg name="speckle_window"         default="2"/>
+  <arg name="speckle_max_range_diff" default="0.10"/>
+  <arg name="speckle_min_neighbors"  default="1"/>
+
+  <node pkg="pinky_navigation" exec="scan_filter_node.py"
+        name="scan_filter_node" output="screen">
+    <param name="input_topic"           value="$(var input_topic)"/>
+    <param name="output_topic"          value="$(var output_topic)"/>
+    <param name="min_range"             value="$(var min_range)"/>
+    <param name="max_range"             value="$(var max_range)"/>
+    <param name="speckle_enabled"        value="$(var speckle_enabled)"/>
+    <param name="speckle_window"         value="$(var speckle_window)"/>
+    <param name="speckle_max_range_diff" value="$(var speckle_max_range_diff)"/>
+    <param name="speckle_min_neighbors"  value="$(var speckle_min_neighbors)"/>
+  </node>
+</launch>
