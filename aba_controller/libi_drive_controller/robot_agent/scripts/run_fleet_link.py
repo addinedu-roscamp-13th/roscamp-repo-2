@@ -10,7 +10,13 @@ sim.sh가 이 스크립트를 자동으로 같이 띄운다(별도 tmux 창). RO
 sim.sh가 export한 값을 그대로 물려받는다.
 """
 import signal
+import sys
 import threading
+from pathlib import Path
+
+# 이 스크립트는 scripts/ 안에 있어 sys.path[0] 가 scripts/ 로 잡힌다.
+# robot_agent 루트(=app 패키지의 부모)를 경로에 넣어야 `app` 을 import 할 수 있다.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.core import fleet_link, ros_bridge
 
