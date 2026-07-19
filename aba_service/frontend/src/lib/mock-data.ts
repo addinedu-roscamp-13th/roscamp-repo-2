@@ -2,7 +2,7 @@ export type Book = {
   id: string;
   title: Record<string, string>;
   author: string;
-  category: "literature" | "art" | "science";
+  category: "literature" | "art" | "science" | "humanities" | "kids";
   cover: string; // emoji cover
   color: string; // tailwind gradient class
   zone: string; // e.g. C-3

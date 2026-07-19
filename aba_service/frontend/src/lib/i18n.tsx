@@ -88,6 +88,8 @@ export const t: Dict = {
   catLiterature: { KR: "문학", EN: "Literature", ZH: "文学", VI: "Văn học" },
   catArt: { KR: "예술", EN: "Art", ZH: "艺术", VI: "Nghệ thuật" },
   catScience: { KR: "과학", EN: "Science", ZH: "科学", VI: "Khoa học" },
+  catHumanities: { KR: "인문학", EN: "Humanities", ZH: "人文", VI: "Nhân văn" },
+  catKids: { KR: "유아", EN: "Kids", ZH: "幼儿", VI: "Thiếu nhi" },
   recommendFor: { KR: "이런 분께 추천해요!", EN: "Recommended for", ZH: "推荐给", VI: "Phù hợp với" },
   chatPh: {
     KR: "과학 책 추천해줘",
