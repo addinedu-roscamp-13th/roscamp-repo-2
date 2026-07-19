@@ -36,6 +36,10 @@ FLEET_ROBOTS: dict[str, dict[str, Any]] = {
     "192.168.0.28": {"key": "pinky1", "prefix": "/pinky1"},  # Pinky-1, domain 88
     "192.168.0.42": {"key": "pinky2", "prefix": "/pinky2"},  # Pinky-2, domain 89
     "192.168.0.2": {"key": "pinky3", "prefix": "/pinky3"},   # Pinky-3, domain 87
+    # 시뮬레이션(Gazebo, domain 90, config/domain_bridge_sim.yaml). 127.0.0.1은
+    # sim이 서버와 같은 머신에서 도는 걸 전제 — HTTP 폴백은 robot_agent가 없어
+    # sim에서 의미 없다(ROS fleet_cmd 경로만 씀).
+    "127.0.0.1": {"key": "pinkySim", "prefix": "/pinkySim"},
 }
 
 TELEMETRY_DOMAIN_ID = 86

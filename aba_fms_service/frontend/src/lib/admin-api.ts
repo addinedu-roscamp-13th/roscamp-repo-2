@@ -225,6 +225,16 @@ export interface Nav2State {
 
 export type Nav2Locations = Record<string, Nav2Pose>;
 
+export interface WaypointLane {
+  from: string;
+  to: string;
+  bidirectional: boolean;
+}
+export interface WaypointGraph {
+  vertices: Record<string, Nav2Pose>;
+  lanes: WaypointLane[];
+}
+
 // /api/control/telemetry 항목 — 로봇별 ROS 링크 상태(브릿지 연결·텔레메트리 신선도).
 export interface ControlLinkInfo {
   ip: string;
@@ -687,6 +697,18 @@ export const adminApi = {
       method: "POST",
       body: JSON.stringify({ name }),
     }),
+  waypointsGet: (robotId: number, navPort = 9001) =>
+    request<WaypointGraph>(`/api/control/waypoints?robot_id=${robotId}&nav_port=${navPort}`),
+  waypointsSave: (robotId: number, data: WaypointGraph, navPort = 9001) =>
+    request<WaypointGraph>(`/api/control/waypoints?robot_id=${robotId}&nav_port=${navPort}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+  waypointGoto: (robotId: number, name: string, navPort = 9001) =>
+    request<{ success: boolean; name: string; path: string[]; msg?: string }>(
+      `/api/control/waypoints/${encodeURIComponent(name)}/goto?robot_id=${robotId}&nav_port=${navPort}`,
+      { method: "POST" },
+    ),
   controlMissionStart: (robotId: number, data: { names: string[]; loop: boolean }, navPort = 9001) =>
     request<{ success: boolean; names: string[]; loop: boolean; msg?: string }>(`/api/control/mission/start?robot_id=${robotId}&nav_port=${navPort}`, {
       method: "POST",

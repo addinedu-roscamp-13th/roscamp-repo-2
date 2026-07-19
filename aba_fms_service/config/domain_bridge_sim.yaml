@@ -1,0 +1,36 @@
+# 시뮬레이션 로봇(Gazebo, ROS_DOMAIN_ID=90) ↔ 서버 도메인 86 중계.
+# 실물 로봇(domain_bridge_pinky{1,2,3}.yaml)과 동일한 패턴 — /pinkySim/* 접두.
+# 서버에서만 실행: ros2 run domain_bridge domain_bridge <이 파일>
+name: bridge_sim
+from_domain: 90
+to_domain: 86
+topics:
+  amcl_pose:
+    type: geometry_msgs/msg/PoseWithCovarianceStamped
+    remap: /pinkySim/amcl_pose
+  map:
+    type: nav_msgs/msg/OccupancyGrid
+    remap: /pinkySim/map
+  plan:
+    type: nav_msgs/msg/Path
+    remap: /pinkySim/plan
+  battery/percent:
+    type: std_msgs/msg/Float32
+    remap: /pinkySim/battery/percent
+  battery/voltage:
+    type: std_msgs/msg/Float32
+    remap: /pinkySim/battery/voltage
+  fleet_status:
+    type: std_msgs/msg/String
+    remap: /pinkySim/fleet_status
+  fleet_costmaps:
+    type: std_msgs/msg/String
+    remap: /pinkySim/fleet_costmaps
+  fleet_cmd_result:
+    type: std_msgs/msg/String
+    remap: /pinkySim/fleet_cmd_result
+  # 역방향 명령: 86의 /pinkySim/fleet_cmd 구독 → 90에 /fleet_cmd 발행
+  pinkySim/fleet_cmd:
+    type: std_msgs/msg/String
+    reversed: True
+    remap: /fleet_cmd

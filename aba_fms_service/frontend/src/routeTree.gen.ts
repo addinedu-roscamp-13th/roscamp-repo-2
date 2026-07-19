@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AdminLoginRouteImport } from './routes/admin/login'
 import { Route as AdminAuthedRouteImport } from './routes/admin/_authed'
 import { Route as AdminAuthedIndexRouteImport } from './routes/admin/_authed/index'
+import { Route as AdminAuthedWaypointRouteImport } from './routes/admin/_authed/waypoint'
 import { Route as AdminAuthedUsersRouteImport } from './routes/admin/_authed/users'
 import { Route as AdminAuthedRobotsRouteImport } from './routes/admin/_authed/robots'
 import { Route as AdminAuthedRobotLearningRouteImport } from './routes/admin/_authed/robot-learning'
@@ -59,6 +60,11 @@ const AdminAuthedRoute = AdminAuthedRouteImport.update({
 const AdminAuthedIndexRoute = AdminAuthedIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => AdminAuthedRoute,
+} as any)
+const AdminAuthedWaypointRoute = AdminAuthedWaypointRouteImport.update({
+  id: '/waypoint',
+  path: '/waypoint',
   getParentRoute: () => AdminAuthedRoute,
 } as any)
 const AdminAuthedUsersRoute = AdminAuthedUsersRouteImport.update({
@@ -219,6 +225,7 @@ export interface FileRoutesByFullPath {
   '/admin/robot-learning': typeof AdminAuthedRobotLearningRoute
   '/admin/robots': typeof AdminAuthedRobotsRoute
   '/admin/users': typeof AdminAuthedUsersRoute
+  '/admin/waypoint': typeof AdminAuthedWaypointRoute
   '/admin/': typeof AdminAuthedIndexRoute
   '/admin/arm/color-pick': typeof AdminAuthedArmColorPickRoute
   '/admin/arm/face-track': typeof AdminAuthedArmFaceTrackRoute
@@ -251,6 +258,7 @@ export interface FileRoutesByTo {
   '/admin/robot-learning': typeof AdminAuthedRobotLearningRoute
   '/admin/robots': typeof AdminAuthedRobotsRoute
   '/admin/users': typeof AdminAuthedUsersRoute
+  '/admin/waypoint': typeof AdminAuthedWaypointRoute
   '/admin': typeof AdminAuthedIndexRoute
   '/admin/arm/color-pick': typeof AdminAuthedArmColorPickRoute
   '/admin/arm/face-track': typeof AdminAuthedArmFaceTrackRoute
@@ -285,6 +293,7 @@ export interface FileRoutesById {
   '/admin/_authed/robot-learning': typeof AdminAuthedRobotLearningRoute
   '/admin/_authed/robots': typeof AdminAuthedRobotsRoute
   '/admin/_authed/users': typeof AdminAuthedUsersRoute
+  '/admin/_authed/waypoint': typeof AdminAuthedWaypointRoute
   '/admin/_authed/': typeof AdminAuthedIndexRoute
   '/admin/_authed/arm/color-pick': typeof AdminAuthedArmColorPickRoute
   '/admin/_authed/arm/face-track': typeof AdminAuthedArmFaceTrackRoute
@@ -320,6 +329,7 @@ export interface FileRouteTypes {
     | '/admin/robot-learning'
     | '/admin/robots'
     | '/admin/users'
+    | '/admin/waypoint'
     | '/admin/'
     | '/admin/arm/color-pick'
     | '/admin/arm/face-track'
@@ -352,6 +362,7 @@ export interface FileRouteTypes {
     | '/admin/robot-learning'
     | '/admin/robots'
     | '/admin/users'
+    | '/admin/waypoint'
     | '/admin'
     | '/admin/arm/color-pick'
     | '/admin/arm/face-track'
@@ -385,6 +396,7 @@ export interface FileRouteTypes {
     | '/admin/_authed/robot-learning'
     | '/admin/_authed/robots'
     | '/admin/_authed/users'
+    | '/admin/_authed/waypoint'
     | '/admin/_authed/'
     | '/admin/_authed/arm/color-pick'
     | '/admin/_authed/arm/face-track'
@@ -434,6 +446,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/admin/'
       preLoaderRoute: typeof AdminAuthedIndexRouteImport
+      parentRoute: typeof AdminAuthedRoute
+    }
+    '/admin/_authed/waypoint': {
+      id: '/admin/_authed/waypoint'
+      path: '/waypoint'
+      fullPath: '/admin/waypoint'
+      preLoaderRoute: typeof AdminAuthedWaypointRouteImport
       parentRoute: typeof AdminAuthedRoute
     }
     '/admin/_authed/users': {
@@ -644,6 +663,7 @@ interface AdminAuthedRouteChildren {
   AdminAuthedRobotLearningRoute: typeof AdminAuthedRobotLearningRoute
   AdminAuthedRobotsRoute: typeof AdminAuthedRobotsRoute
   AdminAuthedUsersRoute: typeof AdminAuthedUsersRoute
+  AdminAuthedWaypointRoute: typeof AdminAuthedWaypointRoute
   AdminAuthedIndexRoute: typeof AdminAuthedIndexRoute
   AdminAuthedArmColorPickRoute: typeof AdminAuthedArmColorPickRoute
   AdminAuthedArmFaceTrackRoute: typeof AdminAuthedArmFaceTrackRoute
@@ -675,6 +695,7 @@ const AdminAuthedRouteChildren: AdminAuthedRouteChildren = {
   AdminAuthedRobotLearningRoute: AdminAuthedRobotLearningRoute,
   AdminAuthedRobotsRoute: AdminAuthedRobotsRoute,
   AdminAuthedUsersRoute: AdminAuthedUsersRoute,
+  AdminAuthedWaypointRoute: AdminAuthedWaypointRoute,
   AdminAuthedIndexRoute: AdminAuthedIndexRoute,
   AdminAuthedArmColorPickRoute: AdminAuthedArmColorPickRoute,
   AdminAuthedArmFaceTrackRoute: AdminAuthedArmFaceTrackRoute,

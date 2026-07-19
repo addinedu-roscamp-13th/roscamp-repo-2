@@ -29,6 +29,7 @@ router = APIRouter(prefix="/api/control", tags=["mission-control"])
 NAV2_DEFAULT_PORT = 9001
 TIMEOUT_SEC = 3.0
 SLAM_TIMEOUT_SEC = 10.0  # slam reset/save 는 서비스 대기가 있어 넉넉히
+WAYPOINT_GOTO_TIMEOUT_SEC = 180.0  # 간선 다중 홉 이동은 오래 걸릴 수 있어 넉넉히
 
 # 마커 액션(rc_marker_actions)과 동일한 액션 타입 집합을 재사용한다.
 VALID_ACTIONS = {"none", "dock", "rotate", "move", "lcd_emotion", "lcd_text", "lcd_image"}
@@ -383,6 +384,39 @@ async def goto(body: LocationNameRequest, robot_id: int = Query(...), nav_port: 
         return res
     await _sync_location_to_robot(robot_id, nav_port, db, name)
     return await _proxy(robot_id, nav_port, db, "/api/goto", "POST", {"name": name})
+
+
+@router.get("/waypoints")
+async def get_waypoints(robot_id: int = Query(...), nav_port: int = Query(NAV2_DEFAULT_PORT, ge=1, le=65535), db: AsyncSession = Depends(get_admin_db), _admin: Admin = Depends(get_current_admin)):
+    """내비 그래프(vertices+lanes) 조회 — fleet_link.waypoint_get (ROS2 전용, HTTP 폴백 없음)."""
+    res = await _ros_command(robot_id, nav_port, db, "waypoint_get", {})
+    if res is None:
+        raise HTTPException(status_code=503, detail="로봇과 ROS 링크가 연결되지 않았습니다")
+    return res
+
+
+class WaypointSaveRequest(BaseModel):
+    vertices: dict[str, dict[str, float]]
+    lanes: list[dict[str, Any]]
+
+
+@router.put("/waypoints")
+async def save_waypoints(body: WaypointSaveRequest, robot_id: int = Query(...), nav_port: int = Query(NAV2_DEFAULT_PORT, ge=1, le=65535), db: AsyncSession = Depends(get_admin_db), _admin: Admin = Depends(get_current_admin)):
+    """내비 그래프 저장 — fleet_link.waypoint_save."""
+    res = await _ros_command(robot_id, nav_port, db, "waypoint_save", body.model_dump())
+    if res is None:
+        raise HTTPException(status_code=503, detail="로봇과 ROS 링크가 연결되지 않았습니다")
+    return res
+
+
+@router.post("/waypoints/{name}/goto")
+async def waypoint_goto(name: str, robot_id: int = Query(...), nav_port: int = Query(NAV2_DEFAULT_PORT, ge=1, le=65535), db: AsyncSession = Depends(get_admin_db), _admin: Admin = Depends(get_current_admin)):
+    """간선(lane)을 따라 지정 노드까지 순차 이동 — fleet_link.waypoint_goto."""
+    pinky_greeting_monitor.mark_active(f"id:{robot_id}", ttl=120.0)
+    res = await _ros_command(robot_id, nav_port, db, "waypoint_goto", {"name": name}, timeout=WAYPOINT_GOTO_TIMEOUT_SEC)
+    if res is None:
+        raise HTTPException(status_code=503, detail="로봇과 ROS 링크가 연결되지 않았습니다")
+    return res
 
 
 @router.post("/mission/start")

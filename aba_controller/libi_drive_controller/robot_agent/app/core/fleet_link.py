@@ -69,7 +69,7 @@ def _dispatch(action: str, args: dict) -> tuple[bool, int, Any, str]:
 
     needs_ros = action in (
         "goal", "goto", "home", "mission_start", "schedule_start",
-        "slam_reset", "slam_save_map",
+        "slam_reset", "slam_save_map", "waypoint_goto",
     )
     if needs_ros and not ros_bridge.is_active():
         return False, 503, None, "ROS 브리지가 활성화되지 않았습니다"
@@ -144,6 +144,55 @@ def _dispatch(action: str, args: dict) -> tuple[bool, int, Any, str]:
     if action == "slam_save_map":
         name = str(args.get("name", "")).strip() or time.strftime("pinky_map_%Y%m%d_%H%M%S")
         return True, 200, {"success": ros_bridge.slam_save_map(name), "name": name}, ""
+
+    if action == "waypoint_get":
+        from app.core import waypoints
+        return True, 200, waypoints.get_graph(), ""
+
+    if action == "waypoint_save":
+        from app.core import waypoints
+        vertices = args.get("vertices") or {}
+        lanes = args.get("lanes") or []
+        graph = waypoints.set_graph(vertices, lanes)
+        return True, 200, graph, ""
+
+    if action == "waypoint_goto":
+        import math
+        from app.core import waypoints
+
+        name = str(args.get("name", "")).strip()
+        graph = waypoints.get_graph()
+        vertices = graph["vertices"]
+        if name not in vertices:
+            return False, 404, None, f"'{name}' 노드가 없습니다"
+
+        pose = ros_bridge.get_current_pose()
+        if pose is None:
+            return False, 409, None, "현재 위치(TF)를 아직 알 수 없습니다"
+        cur_x, cur_y, _ = pose
+        start = waypoints.nearest_vertex(cur_x, cur_y, vertices)
+        if start is None:
+            return False, 404, None, "그래프에 노드가 없습니다"
+
+        path = waypoints.route(start, name, graph)
+        if path is None:
+            return False, 409, None, f"'{start}' → '{name}' 간선 경로를 찾을 수 없습니다"
+
+        traveled = []
+        for i, node in enumerate(path):
+            v = vertices[node]
+            if i < len(path) - 1:
+                nxt = vertices[path[i + 1]]
+                yaw = math.atan2(nxt["y"] - v["y"], nxt["x"] - v["x"])
+            else:
+                yaw = float(v.get("yaw", 0.0))
+            ok = ros_bridge.nav_to(float(v["x"]), float(v["y"]), yaw)
+            traveled.append(node)
+            if not ok:
+                return False, 502, {"path": path, "reached": traveled}, \
+                    f"'{node}' 구간에서 주행 실패/중단"
+
+        return True, 200, {"success": True, "name": name, "path": path}, ""
 
     return False, 400, None, f"알 수 없는 action: {action}"
 
