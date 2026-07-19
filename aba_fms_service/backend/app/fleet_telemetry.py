@@ -29,18 +29,52 @@ import time
 import uuid
 from typing import Any
 
-# ── 플릿 구성: DB Robot.ip_address 로 조회한다 ─────────────────────────────
-# prefix 는 서버 도메인 86 에서 보이는 토픽 접두사. 로봇 3대 모두 domain_bridge 가
-# /pinky{N}/* 로 개명 중계한다 (config/domain_bridge_pinky{1,2,3}.yaml).
-FLEET_ROBOTS: dict[str, dict[str, Any]] = {
-    "192.168.0.28": {"key": "pinky1", "prefix": "/pinky1"},  # Pinky-1, domain 88
-    "192.168.0.42": {"key": "pinky2", "prefix": "/pinky2"},  # Pinky-2, domain 89
-    "192.168.0.2": {"key": "pinky3", "prefix": "/pinky3"},   # Pinky-3, domain 87
-    # 시뮬레이션(Gazebo, domain 90, config/domain_bridge_sim.yaml). 127.0.0.1은
-    # sim이 서버와 같은 머신에서 도는 걸 전제 — HTTP 폴백은 robot_agent가 없어
-    # sim에서 의미 없다(ROS fleet_cmd 경로만 씀).
-    "127.0.0.1": {"key": "pinkySim", "prefix": "/pinkySim"},
+# ── 플릿 구성: DB(rc_robots.ip_address)에서 매 기동 시 읽어온다 ────────────
+# IP를 코드에 하드코딩해두면 DB에서 로봇 IP가 바뀔 때(예: Pinky-3 재배치) 서로
+# 어긋나서 조용히 끊긴다(2026-07-20 실제로 겪음: DB 172.30.1.83 vs 코드
+# 192.168.0.2). key/prefix(어느 domain_bridge_pinky{N}.yaml/도메인인지)는
+# 물리적 로봇 슬롯에 고정된 정적 설정이라 이름으로만 매핑하고, IP는 DB가 진실.
+FLEET_ROBOTS: dict[str, dict[str, Any]] = {}
+
+_ROBOT_NAME_TO_KEY = {
+    "Pinky-1": "pinky1",
+    "Pinky-2": "pinky2",
+    "Pinky-3": "pinky3",
+    "PinkySim": "pinkySim",
 }
+
+
+def _load_fleet_robots() -> dict[str, dict[str, Any]]:
+    """rc_robots 테이블에서 활성 pinky 로봇의 IP를 읽어 FLEET_ROBOTS 형태로 구성한다.
+    이름이 _ROBOT_NAME_TO_KEY 에 없는 로봇(오타/미등록)은 건너뛴다."""
+    import pymysql
+    from sqlalchemy.engine import make_url
+
+    from app.config import ROBOT_DATABASE_URL
+
+    url = make_url(ROBOT_DATABASE_URL.replace("+aiomysql", ""))
+    result: dict[str, dict[str, Any]] = {}
+    try:
+        conn = pymysql.connect(
+            host=url.host, port=url.port or 3306, user=url.username,
+            password=url.password or "", database=url.database, connect_timeout=5,
+        )
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT name, ip_address FROM rc_robots WHERE robot_type='pinky' AND is_active=1"
+                )
+                for name, ip in cur.fetchall():
+                    key = _ROBOT_NAME_TO_KEY.get(name)
+                    if key is None:
+                        print(f"[fleet_telemetry] '{name}' 은 _ROBOT_NAME_TO_KEY 매핑이 없어 건너뜀", flush=True)
+                        continue
+                    result[ip] = {"key": key, "prefix": f"/{key}"}
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"[fleet_telemetry] FLEET_ROBOTS DB 로드 실패, 빈 목록으로 진행: {e}", flush=True)
+    return result
 
 TELEMETRY_DOMAIN_ID = 86
 FRESH_SEC = 30.0        # 이 시간 안에 아무 수신도 없으면 캐시를 stale 로 판정(HTTP 폴백)
@@ -73,7 +107,7 @@ def _empty_entry() -> dict[str, Any]:
     }
 
 
-_cache: dict[str, dict[str, Any]] = {ip: _empty_entry() for ip in FLEET_ROBOTS}
+_cache: dict[str, dict[str, Any]] = {}  # _telemetry_thread 시작 시 FLEET_ROBOTS 로드 후 채움
 
 
 def get_state(ip_address: str) -> dict[str, Any] | None:
@@ -178,8 +212,12 @@ def _yaw_from_quat(q) -> float:
 
 
 def _telemetry_thread() -> None:
-    global _StringMsg
+    global _StringMsg, FLEET_ROBOTS
     try:
+        FLEET_ROBOTS = _load_fleet_robots()
+        for ip in FLEET_ROBOTS:
+            _cache.setdefault(ip, _empty_entry())
+
         import rclpy
         from rclpy.executors import SingleThreadedExecutor
         from rclpy.node import Node
