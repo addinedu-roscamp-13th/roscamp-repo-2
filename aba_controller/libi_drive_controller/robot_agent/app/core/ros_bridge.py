@@ -291,26 +291,32 @@ def _bridge_thread() -> None:
                 self.create_timer(0.5, self._sync_cmd_vel_pub)
                 self._nav_goal_pub = self.create_publisher(PoseStamped, "/goal_pose", 10)
                 self._initial_pose_pub = self.create_publisher(PoseWithCovarianceStamped, "/initialpose", 10)
-                self.create_subscription(LaserScan, "/scan", self._on_scan, 10)
-                self.create_subscription(Odometry, "/odom", self._on_odom, 10)
-                self.create_subscription(OccupancyGrid, "/map", self._on_map, QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL, history=QoSHistoryPolicy.KEEP_LAST))
-                self.create_subscription(Path, "/plan", self._on_plan, 10)
-                self.create_subscription(Twist, "/cmd_vel_raw", self._on_cmd_vel_twist, 10)
+                # 대시보드용 구독(scan/odom/map/plan/cmd_vel_raw/costmap/battery)은
+                # "명령 실행"에는 전혀 필요 없다. 명령 경로가 쓰는 pose 는
+                # get_current_pose()(TF 기반)로만 얻으므로 이 구독들과 무관하다.
+                # FLEET_LINK_LITE=1(명령 실행 전용 경량 모드)이면 전부 건너뛴다 —
+                # 이들이 Pi에서 초당 수십 건 역직렬화로 CPU를 크게 잡아먹는다.
+                # 남는 것: goal_pose/initialpose/cmd_vel 발행, TF pose, nav 액션, slam 서비스.
+                if not os.getenv("FLEET_LINK_LITE"):
+                    self.create_subscription(LaserScan, "/scan", self._on_scan, 10)
+                    self.create_subscription(Odometry, "/odom", self._on_odom, 10)
+                    self.create_subscription(OccupancyGrid, "/map", self._on_map, QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL, history=QoSHistoryPolicy.KEEP_LAST))
+                    self.create_subscription(Path, "/plan", self._on_plan, 10)
+                    self.create_subscription(Twist, "/cmd_vel_raw", self._on_cmd_vel_twist, 10)
 
-                # ── Nav2 대시보드(nav2_web_server) 흡수 ──────────────────
-                # local/global costmap: costmap / costmap_raw 둘 다 시도
-                for topic in ("local_costmap/costmap", "local_costmap/costmap_raw"):
-                    self.create_subscription(Costmap, topic, self._on_local_costmap, 10)
-                for topic in ("global_costmap/costmap", "global_costmap/costmap_raw"):
-                    self.create_subscription(Costmap, topic, self._on_global_costmap, 10)
+                    # local/global costmap(nav2_web_server 대시보드용): costmap / costmap_raw 둘 다 시도
+                    for topic in ("local_costmap/costmap", "local_costmap/costmap_raw"):
+                        self.create_subscription(Costmap, topic, self._on_local_costmap, 10)
+                    for topic in ("global_costmap/costmap", "global_costmap/costmap_raw"):
+                        self.create_subscription(Costmap, topic, self._on_global_costmap, 10)
 
-                # 배터리 (대시보드용)
-                self.create_subscription(
-                    Float32, "/battery/percent",
-                    lambda m: self._on_battery("percent", m.data), 10)
-                self.create_subscription(
-                    Float32, "/battery/voltage",
-                    lambda m: self._on_battery("voltage", m.data), 10)
+                    # 배터리 (대시보드용)
+                    self.create_subscription(
+                        Float32, "/battery/percent",
+                        lambda m: self._on_battery("percent", m.data), 10)
+                    self.create_subscription(
+                        Float32, "/battery/voltage",
+                        lambda m: self._on_battery("voltage", m.data), 10)
 
                 # TF: map -> base_link (0.1초마다 pose 갱신)
                 self._tf_buffer = Buffer()

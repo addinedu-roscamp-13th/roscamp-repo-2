@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  CycloneDDS 설정 — 멀티캐스트 차단 환경용 유니캐스트 정적 피어.
+
+  왜 필요한가: 공유기가 멀티캐스트를 막아서 서버(192.168.0.19)와 DDS 디스커버리가
+  안 된다. FastDDS 는 ROS_STATIC_PEERS 로 해결했지만, CycloneDDS 는 그 환경변수를
+  (버전에 따라) 안 볼 수 있어 여기 XML 로 피어를 직접 지정한다.
+
+  ⚠️ 새 머신/로봇이 추가되면 그 IP 를 아래 <Peers> 에 넣어야 서로 보인다.
+  ⚠️ localhost 피어는 같은 Pi 안의 여러 프로세스(nav2·fleet_link·bringup)끼리
+     유니캐스트로 디스커버리하기 위해 필요하다 — 절대 빼지 말 것.
+-->
+<CycloneDDS xmlns="https://cdds.io/config"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:schemaLocation="https://cdds.io/config https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclonedds.xsd">
+  <Domain id="any">
+    <General>
+      <Interfaces>
+        <NetworkInterface autodetermine="true"/>
+      </Interfaces>
+      <!-- 멀티캐스트 차단 환경이므로 끈다. -->
+      <AllowMulticast>false</AllowMulticast>
+    </General>
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <Peers>
+        <!-- 같은 호스트 내부 프로세스 간 디스커버리 (필수) -->
+        <Peer address="localhost"/>
+        <!-- FMS 서버 (기존 ROS_STATIC_PEERS 값) -->
+        <Peer address="192.168.0.19"/>
+        <!-- 조작용 PC / 다른 로봇이 있으면 여기에 IP 추가:
+        <Peer address="192.168.0.XX"/>
+        -->
+      </Peers>
+    </Discovery>
+  </Domain>
+</CycloneDDS>

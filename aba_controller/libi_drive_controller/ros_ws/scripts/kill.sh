@@ -64,8 +64,8 @@ PATTERNS=(
   "rviz2"
   "component_container_isolated"
   "domain_bridge"
-  # fleet_link (robot_agent 없이 단독 실행분)
-  "run_fleet_link.py"
+  # fleet_link (robot_agent 없이 단독 실행분) — run_fleet_link.py 및 -tunning 변형 모두
+  "run_fleet_link"
   # 실물 hw/nav2 고아 노드(고아로 남았을 때의 안전망)
   "install/pinky_bringup/lib"
   "install/pinky_navigation/lib"

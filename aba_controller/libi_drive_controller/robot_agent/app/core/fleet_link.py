@@ -288,9 +288,14 @@ def _link_thread() -> None:
                     pass
                 time.sleep(COSTMAP_PERIOD)
 
-        for name, fn in (("fleet-link-worker", worker),
-                         ("fleet-link-status", status_loop),
-                         ("fleet-link-costmap", costmap_loop)):
+        threads = [("fleet-link-worker", worker),
+                   ("fleet-link-status", status_loop)]
+        # FLEET_LINK_LITE=1(명령 실행 전용 경량 모드)이면 costmap 전송 루프를 띄우지
+        # 않는다. ros_bridge 도 costmap 구독을 건너뛰어 보낼 데이터가 없고,
+        # costmap dict 의 json.dumps 직렬화 자체도 CPU를 많이 쓴다.
+        if not os.getenv("FLEET_LINK_LITE"):
+            threads.append(("fleet-link-costmap", costmap_loop))
+        for name, fn in threads:
             threading.Thread(target=fn, daemon=True, name=name).start()
 
         print(f"[fleet_link] 시작 (domain {dom or 'env 기본'})", flush=True)

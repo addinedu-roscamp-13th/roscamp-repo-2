@@ -22,7 +22,10 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
   exit 1
 fi
 
-ROS_SETUP="source /opt/ros/jazzy/setup.bash && source '$ROS_WS_DIR/install/setup.bash'"
+# CycloneDDS 사용(설치돼 있을 때만 — 없으면 FastDDS로 자동 폴백). Pi에서 FastDDS
+# SHM 전송 스레드(dds.shm)가 CPU를 크게 먹어 CycloneDDS로 교체. 모든 노드가 같은
+# RMW 여야 통신되므로 hw/nav2/fleet_link 세 창 모두 이 ROS_SETUP 을 공유한다.
+ROS_SETUP="source /opt/ros/jazzy/setup.bash && source '$ROS_WS_DIR/install/setup.bash' && if [ -f /opt/ros/jazzy/lib/librmw_cyclonedds_cpp.so ]; then export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp; export CYCLONEDDS_URI=file://$ROS_WS_DIR/cyclonedds.xml; fi"
 
 tmux new-session -d -s "$SESSION" -n hw \
   bash -c "$ROS_SETUP && ros2 launch pinky_bringup bringup_robot.launch.xml; exec bash"
@@ -31,7 +34,7 @@ tmux new-window -t "$SESSION" -n nav2 \
   bash -c "$ROS_SETUP && echo '[nav2] 하드웨어(/scan) 대기 중...' && for i in \$(seq 1 30); do ros2 topic list 2>/dev/null | grep -q '/scan' && break; sleep 1; done && ros2 launch pinky_navigation bringup_launch.xml map:='$MAP_PATH'; exec bash"
 
 tmux new-window -t "$SESSION" -n fleet-link \
-  bash -c "$ROS_SETUP && cd '$ROBOT_AGENT_DIR' && echo '[fleet-link] robot_agent 없이 fleet_link 단독 실행...' && python3 scripts/run_fleet_link.py; exec bash"
+  bash -c "$ROS_SETUP && cd '$ROBOT_AGENT_DIR' && echo '[fleet-link] robot_agent 없이 fleet_link 단독 실행 (costmap 제외 경량 버전)...' && python3 scripts/run_fleet_link-tunning.py; exec bash"
 
 tmux select-window -t "$SESSION:hw"
 tmux attach -t "$SESSION"
