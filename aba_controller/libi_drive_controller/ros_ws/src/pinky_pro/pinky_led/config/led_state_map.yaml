@@ -1,0 +1,25 @@
+# 상태 -> LED 색상·패턴 매핑.
+# 이 파일만 고치면 색·주기·밝기가 바뀐다 (코드 수정 불필요).
+#
+#   pattern    : solid | breathing | blink | flow
+#   period_sec : 한 사이클 길이(초). '느린/빠른'은 전부 이 값으로 표현한다.
+#                solid 에서는 쓰이지 않지만 값은 있어야 한다.
+#   level      : 그 상태의 상대 밝기(0.0-1.0). 전역 brightness 와 곱해진다.
+#
+# 빨강(red-dominant)은 ERROR 전용이다. 다른 상태에 쓰면 테스트가 실패한다.
+# 색각 이상 대비: 어떤 두 상태도 (pattern, period_sec, level) 조합이 겹치면 안 된다.
+led_state:
+  brightness: 1.0          # 전역 밝기. 야간 순찰 시 낮춘다 (예: 0.3)
+  num_pixels: 8            # pinkyled.LED 기본 픽셀 수
+  state_timeout_sec: 3.0   # 이 시간 넘게 상태 토픽이 없으면 NO_SIGNAL 패턴
+
+  states:
+    CHARGING:        { color: [  0, 200,  60], pattern: breathing, period_sec: 4.0,  level: 0.9  }  # 초록 · 느린 호흡
+    IDLE:            { color: [255, 255, 255], pattern: solid,     period_sec: 1.0,  level: 0.25 }  # 흰색 · 약한 상시 점등
+    PATROL:          { color: [  0,  90, 255], pattern: flow,      period_sec: 3.0,  level: 0.8  }  # 파랑 · 느린 흐름
+    SECURITY_PATROL: { color: [150,   0, 220], pattern: blink,     period_sec: 2.0,  level: 0.7  }  # 보라 · 느린 깜빡임
+    INTERACTING:     { color: [  0, 210, 210], pattern: solid,     period_sec: 1.0,  level: 1.0  }  # 청록 · 밝은 상시 점등
+    WORKING:         { color: [255, 130,   0], pattern: flow,      period_sec: 0.8,  level: 0.9  }  # 주황 · 빠른 흐름
+    RETURNING:       { color: [255, 210,   0], pattern: blink,     period_sec: 1.0,  level: 0.85 }  # 노랑 · 깜빡임
+    ERROR:           { color: [255,   0,   0], pattern: blink,     period_sec: 0.25, level: 1.0  }  # 빨강 · 빠른 깜빡임
+    NO_SIGNAL:       { color: [255, 255, 255], pattern: blink,     period_sec: 0.2,  level: 0.6  }  # 상태 미수신 · 흰색 빠른 깜빡임

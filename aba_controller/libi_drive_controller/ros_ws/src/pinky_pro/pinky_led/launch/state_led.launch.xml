@@ -1,0 +1,17 @@
+<launch>
+  <!-- 상태별 LED 표시 노드.
+
+       ⚠️ pinky_led 의 led_server 와 동시에 띄우면 rpi_ws281x 스트립 점유가 충돌한다.
+          둘 중 하나만 실행할 것.
+       ⚠️ state_topic 은 libi_modes 가 발행하는 상태 토픽 이름에 맞춰야 한다 (미확정 — README 참조).
+  -->
+  <arg name="config_path" default="$(find-pkg-share pinky_led)/config/led_state_map.yaml"/>
+  <arg name="state_topic" default="fsm_state"/>
+  <arg name="tick_hz" default="20.0"/>
+
+  <node pkg="pinky_led" exec="state_led" name="state_led" output="screen">
+    <param name="config_path" value="$(var config_path)"/>
+    <param name="state_topic" value="$(var state_topic)"/>
+    <param name="tick_hz" value="$(var tick_hz)"/>
+  </node>
+</launch>

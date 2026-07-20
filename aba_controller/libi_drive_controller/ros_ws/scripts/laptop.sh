@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # 실물 로봇 하드웨어 + nav2(arte2 맵) + fleet_link(robot_agent/FastAPI 없이 단독)
-# + libi_modes 미션 FSM 을 tmux 창 4개로 나눠서 실행. pm2(ecosystem.config.js)를
-# 안 쓰고 로컬에서 직접 붙여서 테스트할 때 쓴다.
+# + libi_modes 미션 FSM + 상태별 LED(pinky_led/state_led) 를 tmux 창 5개로 나눠서 실행.
+# pm2(ecosystem.config.js)를 안 쓰고 로컬에서 직접 붙여서 테스트할 때 쓴다.
 #
 # sim.sh 와 달리 domain_bridge 창이 없다 — 실물에서 브릿지는 로봇이 아니라
 # FMS 서버에서 돈다("로봇은 무수정", domain_bridge_pinky*.yaml 주석 참고).
-# 창 전환: Ctrl+b 0/1/2/3 (hw/nav2/fleet-link/fsm), 또는 Ctrl+b n(다음 창) / Ctrl+b p(이전 창)
+# LED 는 실물 전용 — pinkyled 모듈이 rpi_ws281x 를 직접 잡고(root 필요) sim.sh 엔 없다.
+# led_server(pinky_led 의 다른 노드)와 동시 실행 금지 — 둘 다 LED 스트립을 단독 점유한다.
+# 창 전환: Ctrl+b 0/1/2/3/4 (hw/nav2/fleet-link/fsm/led), 또는 Ctrl+b n(다음 창) / Ctrl+b p(이전 창)
 #   ./laptop.sh
 #   ./laptop.sh --no-fsm   → fsm 창 없이 (FSM 은 ./fsm-bt.sh 로 따로 띄울 때)
+#   ./laptop.sh --no-led   → led 창 없이 (LED 상태 표시 코드 안 쓸 때)
 #
 # 도메인은 하드코딩하지 않는다 — 이 로봇에 이미 설정된 ROS_DOMAIN_ID(보통
 # ros_source.sh나 셸 환경에서 지정됨)를 그대로 쓴다. sim.sh와 달리 실물은
@@ -19,8 +22,10 @@ ROS_WS_DIR="$(dirname "$SCRIPT_DIR")"
 ROBOT_AGENT_DIR="$ROS_WS_DIR/../robot_agent"
 SESSION="pinky_laptop"
 WITH_FSM=true
+WITH_LED=true
 for arg in "$@"; do
   [ "$arg" = "--no-fsm" ] && WITH_FSM=false
+  [ "$arg" = "--no-led" ] && WITH_LED=false
 done
 
 MAP_PATH="$ROS_WS_DIR/src/pinky_pro/pinky_navigation/map/arte2.yaml"
@@ -53,6 +58,11 @@ tmux new-window -t "$SESSION" -n fleet-link \
 if [ "$WITH_FSM" = true ]; then
   tmux new-window -t "$SESSION" -n fsm \
     bash -c "$LIBI_MODES_SETUP && echo '[fsm] libi_modes 미션 FSM (robot_id=$FSM_ROBOT_ID)...' && ros2 run libi_modes fsm_node --ros-args -p robot_id:=$FSM_ROBOT_ID; exec bash"
+fi
+
+if [ "$WITH_LED" = true ]; then
+  tmux new-window -t "$SESSION" -n led \
+    bash -c "$ROS_SETUP && echo '[led] 상태별 LED (fsm_state 토픽 구독, root 필요 — pinkyled 가 자동 sudo 재실행)...' && ros2 launch pinky_led state_led.launch.xml; exec bash"
 fi
 
 tmux select-window -t "$SESSION:hw"
