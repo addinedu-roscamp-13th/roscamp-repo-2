@@ -296,9 +296,19 @@ def test_returning_homes_arm_before_driving(seed, tick):
 
 
 def test_returning_docked_to_charging(seed, read, tick):
-    seed(**{Keys.CURRENT_MODE: "RETURNING"})
+    """dock_driver 의 success 는 명령 접수일 뿐 — is_docked(실제 도킹 확인, 예: 충전소 위치
+    +yaw 근접)가 별도로 True 여야 CHARGING 으로 넘어간다."""
+    seed(**{Keys.CURRENT_MODE: "RETURNING", Keys.IS_DOCKED: True})
     assert tick(returning.create(PARAMS, FakeArmDriver(), FakeDriver(["success"]))) == Status.SUCCESS
     assert read(Keys.CURRENT_MODE) == "CHARGING"
+
+
+def test_returning_dock_command_accepted_but_not_yet_confirmed_stays_returning(seed, read, tick):
+    """도킹 명령이 성공 응답을 받아도, is_docked 가 아직 False(또는 미수신=None)면
+    자동으로 CHARGING 에 진입하지 않는다 — send_nav_goal 은 완료 대기 없이 리턴한다."""
+    seed(**{Keys.CURRENT_MODE: "RETURNING", Keys.IS_DOCKED: False})
+    assert tick(returning.create(PARAMS, FakeArmDriver(), FakeDriver(["success"]))) == Status.RUNNING
+    assert read(Keys.CURRENT_MODE) == "RETURNING"
 
 
 def test_returning_retries_dock_without_faulting(seed, read, tick):

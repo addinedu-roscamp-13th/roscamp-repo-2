@@ -51,8 +51,8 @@ def _run(fault_at=None):
         mode = reader.get(Keys.CURRENT_MODE)
         if mode == "RETURNING":
             drivers["return_dock"]._poll_sequence = ["success"]
+            world["docked"] = True   # sim world: pose reaches the charger as soon as it tries
         if mode == "CHARGING":
-            world["docked"] = True
             world["battery"] = min(100.0, world["battery"] + 2.0)
         if mode in ("PATROL", "SECURITY_PATROL", "WORKING"):
             world["docked"] = False
