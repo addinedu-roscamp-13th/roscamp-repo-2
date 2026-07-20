@@ -76,4 +76,10 @@ if [ "$WITH_FSM" = true ]; then
 fi
 
 tmux select-window -t "$SESSION:gazebo"
-tmux attach -t "$SESSION"
+# 인터랙티브(TTY)일 때만 붙는다. 백그라운드(nohup/cron/ssh)면 세션은 그대로 두고 안내만
+# 한다 — 세션·서비스는 위에서 이미 떠 있어 백그라운드에서도 정상 동작한다.
+if [ -t 1 ]; then
+  tmux attach -t "$SESSION"
+else
+  echo "[bg] '$SESSION' 세션이 백그라운드로 떴습니다. 붙으려면: tmux attach -t $SESSION"
+fi
