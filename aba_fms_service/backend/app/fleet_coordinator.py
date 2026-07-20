@@ -21,10 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-import socket
 import time
-import urllib.error
-import urllib.request
 from typing import Any
 
 from sqlalchemy import select
@@ -33,7 +30,6 @@ from app import fleet_telemetry
 from app.database import AdminSessionLocal
 from app.models import Robot, RobotLocation
 
-STATE_TIMEOUT = 2.0
 MOVE_EPS = 0.02  # m — 틱 사이 이동량이 이보다 크면 "이동 중"으로 간주
 IMMINENT_FACTOR = 0.7  # min_distance × 이 비율 이내면 '임박' — 둘 다 이동 중이면 양쪽 다 정지
 EVASION_LOOKAHEAD = 1.5    # m — 이동 로봇 현재위치 기준 이 반경 안의 경로 구간만 '막힘' 판정
@@ -44,27 +40,19 @@ EVASION_RETURN_TIMEOUT = 30.0  # s — 원위치 복귀 지시 후 이 시간 �
 
 
 def _robot_state(ip: str, base: str) -> Any | None:
-    """[2026-07-08] ROS 텔레메트리 캐시 우선 — 1초 HTTP 폴링 제거. stale 시에만 HTTP 폴백."""
-    state = fleet_telemetry.get_state(ip)
-    if state is not None:
-        return state
-    return _fetch_json(base, "/api/state")
+    """ROS 텔레메트리 캐시에서 반환. stale 이면 None."""
+    return fleet_telemetry.get_state(ip)
 
 
 def _stop_robot(ip: str, base: str) -> None:
-    """근접 자동 정지 — ROS 명령 우선, 링크 불가 시 HTTP 폴백."""
-    res = fleet_telemetry.send_command(ip, "mission_stop", {}, timeout=2.0)
-    if res is None:
-        _fetch_json(base, "/api/mission/stop", "POST", {})
+    """근접 자동 정지 — ROS2 /fleet_cmd 토픽으로 명령."""
+    fleet_telemetry.send_command(ip, "mission_stop", {}, timeout=2.0)
 
 
 def _move_robot(ip: str, base: str, name: str, coords: tuple[float, float, float]) -> None:
-    """회피 이동 — 지정 구역으로 goto (ROS 우선, HTTP 폴백). coords=(x,y,yaw)."""
+    """회피 이동 — ROS2 /fleet_cmd 토픽으로 goto 명령. coords=(x,y,yaw)."""
     x, y, yaw = coords
-    loc = {"x": x, "y": y, "yaw": yaw}
-    res = fleet_telemetry.send_command(ip, "goto", {"name": name, "location": loc}, timeout=2.0)
-    if res is None:
-        _fetch_json(base, "/api/goto", "POST", {"name": name})
+    fleet_telemetry.send_command(ip, "goto", {"name": name, "location": {"x": x, "y": y, "yaw": yaw}}, timeout=2.0)
 
 
 def _path_min_dist_ahead(b_xy: tuple[float, float], path: list[dict], m_xy: tuple[float, float], lookahead: float) -> float | None:
@@ -110,21 +98,6 @@ def _pick_evasion_zone(
         return None
     cands.sort(key=lambda t: t[0])
     return cands[0][1], cands[0][2]
-
-
-def _fetch_json(base: str, path: str, method: str = "GET", payload: dict | None = None) -> Any | None:
-    """로봇 에이전트 HTTP 호출. 실패 시 예외 대신 None 반환(백그라운드용)."""
-    body = None if payload is None else json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        base.rstrip("/") + path, data=body, method=method,
-        headers={"Content-Type": "application/json"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=STATE_TIMEOUT) as res:
-            raw = res.read()
-            return json.loads(raw.decode("utf-8")) if raw else {}
-    except (urllib.error.URLError, socket.timeout, json.JSONDecodeError, OSError):
-        return None
 
 
 class FleetCoordinator:

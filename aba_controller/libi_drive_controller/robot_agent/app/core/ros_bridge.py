@@ -29,6 +29,8 @@ _state: dict[str, Any] = {
     "local_costmap": None,   # local costmap (map 프레임으로 변환됨)
     "global_costmap": None,  # global costmap
     "battery": {"percent": None, "voltage": None},
+    "us_range": None,   # /us_sensor/range → {sensor,distance_m,distance_cm}
+    "ir_range": None,   # /ir_sensor/range → {sensor,left,center,right,obstacle,raw}
 }
 
 # rclpy node (publish용)
@@ -270,8 +272,10 @@ def _bridge_thread() -> None:
         )
         from geometry_msgs.msg import Twist, TwistStamped
         from nav_msgs.msg import OccupancyGrid, Odometry, Path
-        from sensor_msgs.msg import LaserScan
-        from std_msgs.msg import Float32, String
+        from sensor_msgs.msg import LaserScan, Range
+        from std_msgs.msg import Float32, String, UInt16MultiArray
+        from pinky_interfaces.srv import SetLed, SetBrightness
+        from pinky_interfaces.srv import Emotion as EmotionSrv
         from nav2_msgs.action import NavigateToPose
         from nav2_msgs.msg import Costmap
         from action_msgs.msg import GoalStatus
@@ -337,6 +341,18 @@ def _bridge_thread() -> None:
                 self._String = String
                 self._Time = Time
                 self._GoalStatus = GoalStatus
+
+                # 센서 구독 (pinky_sensor_adc)
+                self.create_subscription(Range, "/us_sensor/range", self._on_us_range, 10)
+                self.create_subscription(UInt16MultiArray, "/ir_sensor/range", self._on_ir_range, 10)
+
+                # 하드웨어 서비스 클라이언트 (LED/밝기/표정)
+                self._set_led_client = self.create_client(SetLed, "/set_led")
+                self._set_brightness_client = self.create_client(SetBrightness, "/set_brightness")
+                self._set_emotion_client = self.create_client(EmotionSrv, "/set_emotion")
+                self._SetLedReq = SetLed.Request
+                self._SetBrightnessReq = SetBrightness.Request
+                self._EmotionReq = EmotionSrv.Request
 
                 self.get_logger().info(f"fastapi_ros_bridge 노드 시작됨 (/cmd_vel={self._cmd_vel_type})")
 
@@ -608,6 +624,64 @@ def _bridge_thread() -> None:
                 with _lock:
                     _state["plan"] = pts if pts else None
 
+            # ── pinky_sensor_adc 콜백 ────────────────────────────
+            _IR_THRESHOLD = 2048  # 12비트 ADC 중간값 — 실물 센서 기준으로 조정
+
+            def _on_us_range(self, msg: "Range") -> None:
+                with _lock:
+                    _state["us_range"] = {
+                        "sensor": "ultrasonic",
+                        "distance_m": round(float(msg.range), 4),
+                        "distance_cm": round(float(msg.range) * 100, 1),
+                    }
+
+            def _on_ir_range(self, msg) -> None:
+                if len(msg.data) < 3:
+                    return
+                left = int(msg.data[0] > self._IR_THRESHOLD)
+                center = int(msg.data[1] > self._IR_THRESHOLD)
+                right = int(msg.data[2] > self._IR_THRESHOLD)
+                with _lock:
+                    _state["ir_range"] = {
+                        "sensor": "ir",
+                        "left": left,
+                        "center": center,
+                        "right": right,
+                        "obstacle": bool(left or center or right),
+                        "raw": list(msg.data[:3]),
+                    }
+
+            # ── LED / 밝기 / 표정 서비스 ─────────────────────────
+            def call_set_led(self, command: str, r: int = 0, g: int = 0, b: int = 0, pixels: list | None = None) -> bool:
+                if not self._set_led_client.service_is_ready():
+                    self.get_logger().warn("/set_led 서비스 미준비")
+                    return False
+                req = self._SetLedReq()
+                req.command = command
+                req.r = r
+                req.g = g
+                req.b = b
+                req.pixels = list(pixels or [])
+                self._set_led_client.call_async(req)
+                return True
+
+            def call_set_brightness(self, brightness: int) -> bool:
+                if not self._set_brightness_client.service_is_ready():
+                    return False
+                req = self._SetBrightnessReq()
+                req.brightness = brightness
+                self._set_brightness_client.call_async(req)
+                return True
+
+            def call_set_emotion(self, emotion: str) -> bool:
+                if not self._set_emotion_client.service_is_ready():
+                    self.get_logger().warn("/set_emotion 서비스 미준비")
+                    return False
+                req = self._EmotionReq()
+                req.emotion = emotion
+                self._set_emotion_client.call_async(req)
+                return True
+
         node = BridgeNode()
         _node = node
         with _lock:
@@ -623,6 +697,39 @@ def _bridge_thread() -> None:
         _node = None
         with _lock:
             _state["ros_active"] = False
+
+
+def call_set_led(command: str, r: int = 0, g: int = 0, b: int = 0, pixels: list | None = None) -> bool:
+    """LED 색상/픽셀 설정 — fire-and-forget."""
+    node = _node
+    if node is None:
+        return False
+    try:
+        return node.call_set_led(command, r, g, b, pixels)
+    except Exception:
+        return False
+
+
+def call_set_brightness(brightness: int) -> bool:
+    """LED 밝기 설정 — fire-and-forget."""
+    node = _node
+    if node is None:
+        return False
+    try:
+        return node.call_set_brightness(brightness)
+    except Exception:
+        return False
+
+
+def call_set_emotion(emotion: str) -> bool:
+    """LCD 표정 설정 — fire-and-forget."""
+    node = _node
+    if node is None:
+        return False
+    try:
+        return node.call_set_emotion(emotion)
+    except Exception:
+        return False
 
 
 def start() -> None:

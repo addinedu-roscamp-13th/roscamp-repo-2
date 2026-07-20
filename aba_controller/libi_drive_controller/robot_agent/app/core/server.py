@@ -77,9 +77,6 @@ def create_app() -> FastAPI:
         # 정식 /api/robot + 구버전 호환 /api/admin/robot
         api.include_router(driving.router, prefix="/robot", tags=["driving"])
         api.include_router(driving.router, prefix="/admin/robot", tags=["driving-legacy"], include_in_schema=False)
-        # Nav2 대시보드: Flask(nav2_web_server.py)와 동일한 /api/* 경로로 노출
-        #   → /api/state, /api/goal, /api/locations, /api/mission/start ...
-        api.include_router(driving.nav_router, tags=["nav"])
         from app.routers import aruco_dock
         api.include_router(aruco_dock.router, prefix="/robot", tags=["aruco-dock"])
         api.include_router(aruco_dock.router, prefix="/admin/robot", tags=["aruco-dock-legacy"], include_in_schema=False)

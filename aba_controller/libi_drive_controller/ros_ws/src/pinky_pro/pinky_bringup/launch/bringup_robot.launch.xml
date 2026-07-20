@@ -25,5 +25,8 @@
     
     <node pkg="pinky_bringup" exec="battery_publisher">
     </node>
-    
+
+    <node pkg="pinky_sensor_adc" exec="main_node">
+    </node>
+
 </launch>
