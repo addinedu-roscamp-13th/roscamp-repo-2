@@ -2,6 +2,12 @@
 
 #include <QVariantMap>
 #include <QTime>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QUrl>
 
 // 목 데이터 헬퍼: 책 한 권을 QVariantMap 으로
 static QVariantMap makeBook(const QString &title, const QString &author,
@@ -27,7 +33,21 @@ static QVariantMap makeFacility(const QString &name, const QString &icon, double
 }
 
 RobotController::RobotController(QObject *parent) : QObject(parent) {
+    // 이 패널이 어느 로봇의 것인지는 셸 환경변수로 주입받는다 (libi_modes 의 FSM_ROBOT_ID 와
+    // 같은 방식). gui.sh 가 채워주며, robot_id 는 FMS 승인 요청의 키라 비어 있으면 요청 자체를
+    // 보내지 않는다 — 빈 값으로 보내면 FMS 가 "알 수 없는 로봇"으로만 답해 원인이 안 드러난다.
+    m_robotId = qEnvironmentVariable("ROBOT_ID");
+    m_fmsUrl = qEnvironmentVariable("FMS_URL", QStringLiteral("http://127.0.0.1:9001"));
+    while (m_fmsUrl.endsWith(QLatin1Char('/'))) m_fmsUrl.chop(1);
+
+    m_net = new QNetworkAccessManager(this);
+
     log(QStringLiteral("시스템 시작 — Libi GUI"));
+    // 도메인은 GUI 가 쓰진 않지만(아직 ROS2 연동 전), 어느 로봇 패널인지 확인할 수 있게 남긴다.
+    log(QStringLiteral("robot_id=%1  domain=%2  fms=%3")
+            .arg(m_robotId.isEmpty() ? QStringLiteral("(미설정)") : m_robotId,
+                 qEnvironmentVariable("ROS_DOMAIN_ID", QStringLiteral("(미설정)")),
+                 m_fmsUrl));
     log(QStringLiteral("순찰 모드 진입 (대기 중)"));
 
     // 배터리 서서히 변동 (목): 충전중이면 +, 아니면 - / 15% 미만이면 자동충전 (SR-18)
@@ -187,6 +207,104 @@ void RobotController::startPatrol() {
     setEmotion(QStringLiteral("happy"));
     log(QStringLiteral("순찰 시작 — 순찰 모드 진입"));
     emit toast(QStringLiteral("순찰을 시작합니다."));
+}
+
+// ---- 관리자 추종 ----
+// 로봇이 로컬에서 임의로 시작하지 않고 FMS /api/robot/admin-follow/request 승인을 거친다.
+// FMS 가 이 로봇이 작업 중임을 계속 알고 있어야 중단 시 task_cancelled 보고가 성립하고,
+// 추종 제어 자체는 FSM 을 안 거치므로(ai_service↔로봇 직결) 이 승인 기록이 아니면 관제가
+// 추종 중인 걸 알 방법이 없다.
+//
+// 승인 실패·통신 실패는 전부 "시작 안 함"으로 떨어진다(fail-closed). FMS 가 모르는 추종이
+// 도는 것이 이 승인 절차가 막으려는 바로 그 상황이다.
+void RobotController::startAdminFollow() {
+    if (!m_isAdmin) { emit toast(QStringLiteral("관리자만 조작할 수 있습니다.")); return; }
+    if (m_estop) { emit toast(QStringLiteral("비상정지 상태입니다. 먼저 에러를 해제하세요.")); return; }
+    if (m_robotState == QLatin1String("에러")) { emit toast(QStringLiteral("에러 상태에서는 추종을 시작할 수 없습니다.")); return; }
+    if (m_following) { emit toast(QStringLiteral("이미 추종 중입니다.")); return; }
+    if (m_followPending) { emit toast(QStringLiteral("승인 요청 중입니다.")); return; }
+    if (m_robotId.isEmpty()) {
+        log(QStringLiteral("추종 요청 불가 — ROBOT_ID 가 설정되지 않았습니다 (gui.sh 참조)"));
+        emit toast(QStringLiteral("이 패널의 로봇 ID가 설정되지 않았습니다."));
+        return;
+    }
+    requestFollowGrant();
+}
+
+void RobotController::requestFollowGrant() {
+    m_followPending = true;
+    log(QStringLiteral("관리자 추종 — FMS 승인 요청 (robot_id=%1)").arg(m_robotId));
+
+    QNetworkRequest req{QUrl(m_fmsUrl + QStringLiteral("/api/robot/admin-follow/request"))};
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+
+    QJsonObject body;
+    body[QStringLiteral("robot_id")] = m_robotId;
+
+    QNetworkReply *reply = m_net->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() { onFollowGrantReply(reply); });
+}
+
+void RobotController::onFollowGrantReply(QNetworkReply *reply) {
+    reply->deleteLater();
+    m_followPending = false;
+
+    if (reply->error() != QNetworkReply::NoError) {
+        log(QStringLiteral("추종 승인 실패 — FMS 통신 오류: %1").arg(reply->errorString()));
+        emit toast(QStringLiteral("관제 서버에 연결할 수 없어 추종을 시작하지 않았습니다."));
+        return;
+    }
+
+    const QJsonObject body = QJsonDocument::fromJson(reply->readAll()).object();
+    if (!body.value(QStringLiteral("accepted")).toBool()) {
+        // reason 은 FMS 가 판단 근거를 담아 보내준다(상태·중복 등). 그대로 보여준다.
+        const QString reason = body.value(QStringLiteral("reason")).toString();
+        log(QStringLiteral("추종 승인 거부 — %1").arg(reason.isEmpty() ? QStringLiteral("사유 없음") : reason));
+        emit toast(reason.isEmpty() ? QStringLiteral("관제 서버가 추종을 승인하지 않았습니다.") : reason);
+        return;
+    }
+
+    beginFollowing();
+}
+
+void RobotController::beginFollowing() {
+    m_following = true; emit followingChanged();
+    setRobotState(QStringLiteral("작업중"));
+    setTaskStatus(QStringLiteral("관리자 추종 중"));
+    log(QStringLiteral("관리자 추종 시작 — FMS 승인됨"));
+    emit toast(QStringLiteral("관리자 추종을 시작합니다."));
+}
+
+// 종료는 fail-open 이다: FMS 응답을 기다리지 않고 로컬 추종을 먼저 멈춘다. 관제 서버가
+// 죽었다고 해서 추종을 멈출 수 없게 되는 편이 훨씬 위험하다. 해제 보고가 실패하면 FMS 에
+// grant 가 남는데, 그건 관제 화면에서 정리할 수 있는 문제라 로그로만 남긴다.
+void RobotController::stopAdminFollow() {
+    if (!m_isAdmin) { emit toast(QStringLiteral("관리자만 조작할 수 있습니다.")); return; }
+    if (!m_following) return;
+    m_following = false; emit followingChanged();
+    setRobotState(QStringLiteral("대기"));
+    setTaskStatus(QStringLiteral("명령 대기"));
+    log(QStringLiteral("관리자 추종 종료"));
+    emit toast(QStringLiteral("관리자 추종을 종료했습니다."));
+    reportFollowRelease();
+}
+
+void RobotController::reportFollowRelease() {
+    if (m_robotId.isEmpty()) return;   // 승인 자체를 받은 적이 없다
+
+    QNetworkRequest req{QUrl(m_fmsUrl + QStringLiteral("/api/robot/admin-follow/release"))};
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+
+    QJsonObject body;
+    body[QStringLiteral("robot_id")] = m_robotId;
+
+    QNetworkReply *reply = m_net->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError)
+            log(QStringLiteral("추종 종료 보고 실패 — 관제에 추종 중으로 남을 수 있습니다: %1")
+                    .arg(reply->errorString()));
+    });
 }
 
 void RobotController::startGuide(const QString &destination) {

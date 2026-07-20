@@ -115,6 +115,19 @@ Item {
                         enabledLook: !controller.emergencyStopped
                         onClicked: controller.startPatrol()
                     }
+                    BigButton {
+                        visible: !controller.following
+                        implicitWidth: parent.cellW; implicitHeight: 76
+                        text: "🧑‍🤝‍🧑  관리자 추종"; color: S.sky; textColor: S.text
+                        enabledLook: !controller.emergencyStopped
+                        onClicked: controller.startAdminFollow()
+                    }
+                    BigButton {
+                        visible: controller.following
+                        implicitWidth: parent.cellW; implicitHeight: 76
+                        text: "🛑  추종 종료"; color: S.warning; textColor: "white"
+                        onClicked: controller.stopAdminFollow()
+                    }
                 }
 
                 Rectangle { width: parent.width; height: 1; color: S.border }

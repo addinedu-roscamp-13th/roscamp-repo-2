@@ -231,6 +231,9 @@ node_modules/
 # AI 모델 가중치 (용량 큼 — Git LFS 또는 별도 관리)
 *.pt
 *.onnx
+# 예외: 관리자 추종용 사람 검출 가중치(5.3MB). 이게 없으면 추종 파이프라인이 아예 안 돌아
+# 클론만으로는 재현이 안 된다. 크기가 작아 LFS 없이 그대로 넣는다.
+!aba_ai_service/follower_perception/weights/best.pt
 
 # Docker 로컬 볼륨 / DB 데이터
 mariadb_data/
