@@ -276,6 +276,8 @@ def _bridge_thread() -> None:
         from std_msgs.msg import Float32, String, UInt16MultiArray
         from pinky_interfaces.srv import SetLed, SetBrightness
         from pinky_interfaces.srv import Emotion as EmotionSrv
+        from pinky_interfaces.srv import PlayBuzzer, PlayMelody, StopBuzzer, LcdText
+        from std_srvs.srv import Trigger as LcdStop
         from nav2_msgs.action import NavigateToPose
         from nav2_msgs.msg import Costmap
         from action_msgs.msg import GoalStatus
@@ -353,6 +355,20 @@ def _bridge_thread() -> None:
                 self._SetLedReq = SetLed.Request
                 self._SetBrightnessReq = SetBrightness.Request
                 self._EmotionReq = EmotionSrv.Request
+
+                # 부저 서비스 클라이언트
+                self._play_buzzer_client = self.create_client(PlayBuzzer, "/play_buzzer")
+                self._play_melody_client = self.create_client(PlayMelody, "/play_melody")
+                self._stop_buzzer_client = self.create_client(StopBuzzer, "/stop_buzzer")
+                self._PlayBuzzerReq = PlayBuzzer.Request
+                self._PlayMelodyReq = PlayMelody.Request
+                self._StopBuzzerReq = StopBuzzer.Request
+
+                # LCD 텍스트 서비스 클라이언트
+                self._lcd_text_client = self.create_client(LcdText, "/lcd_text")
+                self._lcd_stop_client = self.create_client(LcdStop, "/lcd_stop")
+                self._LcdTextReq = LcdText.Request
+                self._LcdStopReq = LcdStop.Request
 
                 self.get_logger().info(f"fastapi_ros_bridge 노드 시작됨 (/cmd_vel={self._cmd_vel_type})")
 
@@ -682,6 +698,59 @@ def _bridge_thread() -> None:
                 self._set_emotion_client.call_async(req)
                 return True
 
+            # ── 부저 서비스 ──────────────────────────────────
+            def call_play_buzzer(self, preset: str, count: int = 0, freq: int = 0, duration: float = 0.0) -> bool:
+                if not self._play_buzzer_client.service_is_ready():
+                    self.get_logger().warn("/play_buzzer 서비스 미준비")
+                    return False
+                req = self._PlayBuzzerReq()
+                req.preset = preset
+                req.count = count
+                req.freq = freq
+                req.duration = float(duration)
+                self._play_buzzer_client.call_async(req)
+                return True
+
+            def call_play_melody(self, melody: str) -> bool:
+                if not self._play_melody_client.service_is_ready():
+                    self.get_logger().warn("/play_melody 서비스 미준비")
+                    return False
+                req = self._PlayMelodyReq()
+                req.melody = melody
+                self._play_melody_client.call_async(req)
+                return True
+
+            def call_stop_buzzer(self) -> bool:
+                if not self._stop_buzzer_client.service_is_ready():
+                    return False
+                self._stop_buzzer_client.call_async(self._StopBuzzerReq())
+                return True
+
+            # ── LCD 텍스트 서비스 ─────────────────────────────
+            def call_lcd_text(self, text: str, font_path: str = "", font_size: int = 24,
+                              color: str = "#ffffff", bg_color: str = "#000000",
+                              align: str = "center", scroll: bool = False, scroll_speed: int = 3) -> bool:
+                if not self._lcd_text_client.service_is_ready():
+                    self.get_logger().warn("/lcd_text 서비스 미준비")
+                    return False
+                req = self._LcdTextReq()
+                req.text = text
+                req.font_path = font_path
+                req.font_size = font_size
+                req.color = color
+                req.bg_color = bg_color
+                req.align = align
+                req.scroll = scroll
+                req.scroll_speed = scroll_speed
+                self._lcd_text_client.call_async(req)
+                return True
+
+            def call_lcd_stop(self) -> bool:
+                if not self._lcd_stop_client.service_is_ready():
+                    return False
+                self._lcd_stop_client.call_async(self._LcdStopReq())
+                return True
+
         node = BridgeNode()
         _node = node
         with _lock:
@@ -728,6 +797,63 @@ def call_set_emotion(emotion: str) -> bool:
         return False
     try:
         return node.call_set_emotion(emotion)
+    except Exception:
+        return False
+
+
+def call_play_buzzer(preset: str, count: int = 0, freq: int = 0, duration: float = 0.0) -> bool:
+    """단음 beep — fire-and-forget."""
+    node = _node
+    if node is None:
+        return False
+    try:
+        return node.call_play_buzzer(preset, count, freq, duration)
+    except Exception:
+        return False
+
+
+def call_play_melody(melody: str) -> bool:
+    """멜로디 재생 시작 — fire-and-forget."""
+    node = _node
+    if node is None:
+        return False
+    try:
+        return node.call_play_melody(melody)
+    except Exception:
+        return False
+
+
+def call_stop_buzzer() -> bool:
+    """부저/멜로디 중지 — fire-and-forget."""
+    node = _node
+    if node is None:
+        return False
+    try:
+        return node.call_stop_buzzer()
+    except Exception:
+        return False
+
+
+def call_lcd_text(text: str, font_path: str = "", font_size: int = 24,
+                  color: str = "#ffffff", bg_color: str = "#000000",
+                  align: str = "center", scroll: bool = False, scroll_speed: int = 3) -> bool:
+    """LCD 텍스트 표시 — fire-and-forget."""
+    node = _node
+    if node is None:
+        return False
+    try:
+        return node.call_lcd_text(text, font_path, font_size, color, bg_color, align, scroll, scroll_speed)
+    except Exception:
+        return False
+
+
+def call_lcd_stop() -> bool:
+    """LCD 중지 — fire-and-forget."""
+    node = _node
+    if node is None:
+        return False
+    try:
+        return node.call_lcd_stop()
     except Exception:
         return False
 

@@ -5,7 +5,6 @@ import os
 import re
 import signal
 import subprocess
-import tempfile
 import time
 from pathlib import Path
 from typing import List, Literal, cast
@@ -26,9 +25,8 @@ def _driver() -> DrivingDriver:
 
 # LCD 텍스트/부저는 subprocess 유지, IMU는 pinky_imu_bno055 추가 전까지 subprocess 유지
 _HW = Path(__file__).parent.parent / "hardware"
-_LCD_SCRIPT = _HW / "lcd_ctrl.py"
-_BUZZER_SCRIPT = _HW / "buzzer_ctrl.py"
-_SENSOR_SCRIPT = _HW / "sensor_ctrl.py"
+_LCD_SCRIPT = _HW / "lcd_ctrl.py"      # 이미지 표시용만 유지
+_SENSOR_SCRIPT = _HW / "sensor_ctrl.py"  # IMU 전용
 
 _IMAGES_DIR = _HW / "uploads" / "images"
 _FONTS_DIR = _HW / "uploads" / "fonts"
@@ -293,7 +291,9 @@ async def set_emotion(req: EmotionReq):
 
 @router.post("/lcd/stop")
 async def lcd_stop():
-    return await _run(f"sudo -n python3 {_LCD_SCRIPT} stop", timeout=8)
+    from app.core import ros_bridge
+    ok = ros_bridge.call_lcd_stop()
+    return {"success": ok, "output": "", "error": "" if ok else "ROS 브리지 미연결"}
 
 
 # ── LCD: 텍스트/이미지/폰트 (FastAPI 유지) ───────────────────────────
@@ -376,30 +376,18 @@ async def lcd_text(req: LcdTextReq):
         fp = _FONTS_DIR / _safe_name(req.font_name)
         if fp.exists():
             font_path = str(fp)
-
-    cfg = {
-        "text": req.text,
-        "font_path": font_path,
-        "font_size": req.font_size,
-        "color": req.color,
-        "bg_color": req.bg_color,
-        "align": req.align,
-        "scroll": req.scroll,
-        "scroll_speed": req.scroll_speed,
-    }
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".json", prefix="lcd_text_",
-        delete=False, encoding="utf-8"
-    ) as f:
-        json.dump(cfg, f, ensure_ascii=False)
-        tmp_path = f.name
-    try:
-        return await _run(f"sudo -n python3 {_LCD_SCRIPT} text {tmp_path}", timeout=15)
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+    from app.core import ros_bridge
+    ok = ros_bridge.call_lcd_text(
+        text=req.text,
+        font_path=font_path,
+        font_size=req.font_size,
+        color=req.color,
+        bg_color=req.bg_color,
+        align=req.align,
+        scroll=req.scroll,
+        scroll_speed=req.scroll_speed,
+    )
+    return {"success": ok, "output": "", "error": "" if ok else "ROS 브리지 미연결"}
 
 
 @router.post("/lcd/font")
@@ -474,15 +462,10 @@ async def led_brightness(req: BrightnessReq):
     return {"success": ok, "output": "", "error": "" if ok else "ROS 브리지 미연결"}
 
 
-# ── 부저 제어 (FastAPI 유지) ───────────────────────────────────────────
+# ── 부저 제어 (ROS2 /play_buzzer, /play_melody, /stop_buzzer) ────────
 
-SOUND_PRESETS = {
-    "bell":    (1, 1500, 0.2),
-    "beep":    (1, 1000, 0.15),
-    "alarm":   (3, 2000, 0.2),
-    "success": (2, 1800, 0.15),
-    "error":   (3,  800, 0.3),
-}
+VALID_PRESETS = {"bell", "beep", "alarm", "success", "error"}
+VALID_MELODIES = {"fur_elise", "school_bell"}
 
 
 class BuzzerReq(BaseModel):
@@ -494,83 +477,41 @@ class BuzzerReq(BaseModel):
 
 @router.post("/buzzer")
 async def play_buzzer(req: BuzzerReq):
-    if req.preset not in SOUND_PRESETS:
+    if req.preset not in VALID_PRESETS:
         raise HTTPException(400, f"유효하지 않은 프리셋: {req.preset}")
-    cnt0, freq0, dur0 = SOUND_PRESETS[req.preset]
-    cnt = req.count if req.count is not None else cnt0
-    freq = req.freq if req.freq is not None else freq0
-    dur = req.duration if req.duration is not None else dur0
-    cmd = f"sudo -n python3 {_BUZZER_SCRIPT} beep {cnt} {freq} {dur}"
-    return await _run(cmd, timeout=int(cnt * dur * 2 + 5))
-
-
-_buzzer_proc: asyncio.subprocess.Process | None = None
-_buzzer_melody: str | None = None
-
-
-async def _cleanup_buzzer_proc() -> None:
-    global _buzzer_proc, _buzzer_melody
-    if _buzzer_proc and _buzzer_proc.returncode is not None:
-        _buzzer_proc = None
-        _buzzer_melody = None
+    from app.core import ros_bridge
+    ok = ros_bridge.call_play_buzzer(
+        req.preset,
+        req.count    if req.count    is not None else 0,
+        req.freq     if req.freq     is not None else 0,
+        req.duration if req.duration is not None else 0.0,
+    )
+    return {"success": ok, "output": "", "error": "" if ok else "ROS 브리지 미연결"}
 
 
 @router.get("/buzzer/status")
 async def buzzer_status():
-    await _cleanup_buzzer_proc()
-    return {"running": _buzzer_proc is not None, "melody": _buzzer_melody}
+    return {"running": None, "melody": None, "note": "ROS2 노드에서 관리 (pinky_buzzer)"}
 
 
 class BuzzerMelodyReq(BaseModel):
     melody: str
 
 
-VALID_MELODIES = {"fur_elise", "school_bell"}
-
-
 @router.post("/buzzer/melody/play")
 async def play_buzzer_melody(req: BuzzerMelodyReq):
-    global _buzzer_proc, _buzzer_melody
     if req.melody not in VALID_MELODIES:
         raise HTTPException(400, f"유효하지 않은 멜로디: {req.melody}")
-
-    await stop_buzzer_melody()
-    _buzzer_proc = await asyncio.create_subprocess_exec(
-        "sudo", "-n", "python3", str(_BUZZER_SCRIPT), "melody", req.melody,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        start_new_session=True,
-    )
-    _buzzer_melody = req.melody
-    return {"success": True, "output": f"melody started: {req.melody}", "error": ""}
+    from app.core import ros_bridge
+    ok = ros_bridge.call_play_melody(req.melody)
+    return {"success": ok, "output": f"melody started: {req.melody}" if ok else "", "error": "" if ok else "ROS 브리지 미연결"}
 
 
 @router.post("/buzzer/melody/stop")
 async def stop_buzzer_melody():
-    global _buzzer_proc, _buzzer_melody
-    if _buzzer_proc is None:
-        _buzzer_melody = None
-        return {"success": True, "output": "no melody running", "error": ""}
-
-    proc = _buzzer_proc
-    try:
-        if proc.returncode is None:
-            try:
-                os.killpg(proc.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            try:
-                await asyncio.wait_for(proc.communicate(), timeout=2)
-            except asyncio.TimeoutError:
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                await proc.communicate()
-        return {"success": True, "output": "melody stopped", "error": ""}
-    finally:
-        _buzzer_proc = None
-        _buzzer_melody = None
+    from app.core import ros_bridge
+    ok = ros_bridge.call_stop_buzzer()
+    return {"success": ok, "output": "melody stopped" if ok else "", "error": "" if ok else "ROS 브리지 미연결"}
 
 
 # ── 센서 (ROS2 토픽 — pinky_sensor_adc) ──────────────────────────────

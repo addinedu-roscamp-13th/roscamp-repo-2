@@ -22,6 +22,10 @@ set(
   "srv/Emotion.srv"
   "srv/SetBrightness.srv"
   "srv/SetLamp.srv"
+  "srv/PlayBuzzer.srv"
+  "srv/PlayMelody.srv"
+  "srv/StopBuzzer.srv"
+  "srv/LcdText.srv"
 )
 
 set(

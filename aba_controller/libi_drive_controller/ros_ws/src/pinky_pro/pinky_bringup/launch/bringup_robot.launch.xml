@@ -29,4 +29,10 @@
     <node pkg="pinky_sensor_adc" exec="main_node">
     </node>
 
+    <node pkg="pinky_buzzer" exec="buzzer_node">
+    </node>
+
+    <node pkg="pinky_lcd_server" exec="lcd_node">
+    </node>
+
 </launch>
