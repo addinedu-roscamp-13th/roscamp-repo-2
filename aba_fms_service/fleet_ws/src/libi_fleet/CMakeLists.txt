@@ -1,0 +1,62 @@
+cmake_minimum_required(VERSION 3.8)
+project(libi_fleet)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+find_package(ament_cmake REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(pluginlib REQUIRED)
+find_package(libi_fleet_msgs REQUIRED)
+find_package(rmf_fleet_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
+find_package(yaml-cpp REQUIRED)
+
+# --- core 라이브러리 (navgraph) ---
+add_library(libi_fleet_core src/navgraph.cpp src/patrol_cycle.cpp)
+set_property(TARGET libi_fleet_core PROPERTY POSITION_INDEPENDENT_CODE ON)  # shared 플러그인에 링크되므로 PIC
+target_include_directories(libi_fleet_core PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+target_link_libraries(libi_fleet_core yaml-cpp)
+ament_target_dependencies(libi_fleet_core rclcpp)
+
+# --- pluginlib 플러그인 (dispatcher/traffic) ---
+add_library(libi_fleet_plugins SHARED
+  plugins/auction.cpp
+  plugins/reservation_deadlock.cpp)
+target_include_directories(libi_fleet_plugins PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+target_link_libraries(libi_fleet_plugins libi_fleet_core)
+ament_target_dependencies(libi_fleet_plugins pluginlib rclcpp)
+pluginlib_export_plugin_description_file(libi_fleet plugins.xml)
+
+# --- fleet 노드 ---
+add_executable(fleet_node src/fleet_node.cpp)
+target_include_directories(fleet_node PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+target_link_libraries(fleet_node libi_fleet_core)
+ament_target_dependencies(fleet_node
+  rclcpp pluginlib libi_fleet_msgs rmf_fleet_msgs geometry_msgs std_srvs)
+
+install(TARGETS libi_fleet_core libi_fleet_plugins
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin)
+install(TARGETS fleet_node DESTINATION lib/${PROJECT_NAME})
+install(DIRECTORY include/ DESTINATION include)
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_patrol_cycle test/test_patrol_cycle.cpp)
+  target_include_directories(test_patrol_cycle PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(test_patrol_cycle libi_fleet_core)
+  target_compile_definitions(test_patrol_cycle PRIVATE
+    TEST_NAVGRAPH_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../../maps/library/new_map.navgraph.yaml")
+endif()
+
+ament_package()

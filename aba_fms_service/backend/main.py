@@ -6,7 +6,7 @@ from app.database import AdminSessionLocal, init_db
 from app.models import Admin
 from app.hardware.camera_stream import camera as camera_hw
 from app.hardware.pinky_greeting_monitor import pinky_greeting_monitor
-from app.routers import admin_follow, arm, aruco_dock, auth, camera, chat, dashboard, dev, drive, fleet, fsm, human_follow_robot, maps, marker_actions, mission_control, nav, pinky_yolo, robot, robot_learning, robots, ros, users, webrtc_robot
+from app.routers import admin_follow, arm, aruco_dock, auth, camera, chat, dashboard, dev, drive, fleet, fleet_order, fsm, human_follow_robot, maps, marker_actions, mission_control, nav, pinky_yolo, robot, robot_learning, robots, ros, users, webrtc_robot
 from app.security import hash_password
 
 app = FastAPI(title="Labi Bot Admin API", version="1.0.0")
@@ -30,6 +30,7 @@ app.include_router(robots.router)
 app.include_router(drive.router)
 app.include_router(fsm.router)
 app.include_router(fleet.router)
+app.include_router(fleet_order.router)
 app.include_router(admin_follow.router)
 app.include_router(ros.router)
 app.include_router(maps.router)
@@ -162,10 +163,18 @@ async def startup():
     from app import fleet_link
     fleet_link.start()
 
-    # 주행로봇 근접 안전 코디네이터 백그라운드 시작 (설정은 DB에서 로드; 기본 ON)
-    from app.fleet_coordinator import coordinator
-    _asyncio.create_task(coordinator.run())
-    print("[startup] 근접 안전 코디네이터 루프 시작 (설정 DB 로드; 기본 enabled=on)", flush=True)
+    # 주행로봇 근접 안전 코디네이터(Phase1). fleet_node 의 ReservationDeadlock 교통 플러그인이
+    # 같은 문제를 더 정교하게 풀어 이걸 대체할 예정이다(결정 완료). 다만 플러그인이 실제로
+    # 뜨고 검증되기 전엔 서버쪽 분리 공백을 막으려 coordinator 를 그대로 둔다 — 기본 ON.
+    # 플러그인 검증(#18) 후 은퇴: env FMS_DISABLE_COORDINATOR=1 로 끄거나 이 블록 제거.
+    import os as _os
+    if _os.environ.get("FMS_DISABLE_COORDINATOR") == "1":
+        print("[startup] 근접 안전 코디네이터 비활성(FMS_DISABLE_COORDINATOR=1) "
+              "— 교통은 fleet_node ReservationDeadlock 이 담당한다고 가정", flush=True)
+    else:
+        from app.fleet_coordinator import coordinator
+        _asyncio.create_task(coordinator.run())
+        print("[startup] 근접 안전 코디네이터 루프 시작 (설정 DB 로드; 기본 enabled=on)", flush=True)
 
 
 

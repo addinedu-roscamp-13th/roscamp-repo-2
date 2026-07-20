@@ -21,6 +21,7 @@ py_trees 의 blackboard 는 프로세스 전역이라 한 프로세스가 두 �
 3번이 빠지면 Topics2BB 가 다음 tick 에 소비된 명령을 되살려 같은 전이가 반복된다.
 """
 import json
+import os
 
 import py_trees
 import rclpy
@@ -33,6 +34,7 @@ from std_msgs.msg import String
 
 from libi_modes import tree as tree_mod
 from libi_modes.blackboard import Keys
+from libi_modes.registry import BRANCH_ORDER
 from libi_modes.ros.fleet_cmd_driver import ArmHomeDriver, FleetCmdDriver
 from libi_modes.ros.providers import RosProviders
 from libi_modes.ros.state_io import StateIO
@@ -66,6 +68,10 @@ class FsmNode(Node):
         result_topic = self.declare_parameter("result_topic", "fleet_cmd_result").value
         home_location = self.declare_parameter("home_location", "charger").value
 
+        # [디버그] 잠글 상태 브랜치 — 콤마구분. ROS param `disabled_branches` 또는
+        # env `LIBI_DISABLED_BRANCHES` (fsm-bt.sh --disable 가 env 로 넘긴다). 기본 빈 값.
+        disabled_branches = self._resolve_disabled_branches()
+
         params = self._load_params(params_file)
 
         cmd_pub = _CmdPublisher(self, cmd_topic)
@@ -91,9 +97,11 @@ class FsmNode(Node):
         self._root = root
 
         self._bb = py_trees.blackboard.Client(name="fsm_node")
-        for key in (Keys.CURRENT_MODE, Keys.LAST_COMMAND, Keys.ACTIVE_COMMAND):
+        for key in (Keys.CURRENT_MODE, Keys.LAST_COMMAND, Keys.ACTIVE_COMMAND,
+                    Keys.DISABLED_BRANCHES):
             self._bb.register_key(key=key, access=Access.WRITE)
         self._bb.set(Keys.CURRENT_MODE, BOOT_STATE)
+        self._bb.set(Keys.DISABLED_BRANCHES, disabled_branches)
 
         self._io = StateIO(self, robot_id)
         self.create_timer(1.0 / tick_hz, self._tick)
@@ -105,6 +113,27 @@ class FsmNode(Node):
             path = f"{get_package_share_directory('libi_modes')}/config/params.yaml"
         with open(path) as f:
             return yaml.safe_load(f)["libi_modes"]
+
+    def _resolve_disabled_branches(self) -> frozenset:
+        """param(disabled_branches) + env(LIBI_DISABLED_BRANCHES) 합집합. 콤마구분.
+
+        모르는 상태 이름은 경고 후 무시. 안전 브랜치(ERROR/RETURNING) 잠금은 경고만 하고
+        허용한다 — 디버그 전용 기능이며, 막으면 오히려 그 브랜치를 디버깅할 수 없다.
+        """
+        raw = str(self.declare_parameter("disabled_branches", "").value or "")
+        raw += "," + os.environ.get("LIBI_DISABLED_BRANCHES", "")
+        disabled = {s.strip() for s in raw.split(",") if s.strip()}
+
+        unknown = disabled - set(BRANCH_ORDER)
+        if unknown:
+            self.get_logger().warning(f"disabled_branches 에 모르는 상태(무시): {sorted(unknown)}")
+            disabled -= unknown
+        if disabled:
+            safety = disabled & {"ERROR", "RETURNING"}
+            self.get_logger().warning(
+                f"[디버그] 잠긴 브랜치: {sorted(disabled)}"
+                + (f"  ⚠️ 안전 브랜치 포함: {sorted(safety)}" if safety else ""))
+        return frozenset(disabled)
 
     def _on_result(self, msg):
         try:

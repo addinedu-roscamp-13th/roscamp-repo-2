@@ -15,6 +15,9 @@ class Keys:
     COMMAND_RECEIVED_AT = "command_received_at"
     DOCK_RETRY_COUNT = "dock_retry_count"
     ERROR_CODE = "error_code"
+    # [디버그] 잠긴 상태 브랜치 집합. IsMode 가 여기 든 상태면 FAILURE → Selector 가 건너뜀.
+    # main.py 가 param/env 로 1회 seed. 비어있으면(기본) 동작 변화 없음.
+    DISABLED_BRANCHES = "disabled_branches"
 
 
 def get(blackboard, key, default=None):

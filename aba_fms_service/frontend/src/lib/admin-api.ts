@@ -890,6 +890,29 @@ export const adminApi = {
     }),
   fleetReloadNavgraph: () =>
     request<FleetOpResult>("/api/fleet/navgraph/reload", { method: "POST" }),
+
+  // 배달 주문 오케스트레이터 (composite task 시퀀서, fleet_node 위) — /api/fleet/order*
+  fleetOrders: () => request<{ orders: OrderSnapshot[] }>("/api/fleet/orders"),
+  fleetCreateOrder: (input: CreateOrderInput) =>
+    request<{ ok: boolean; task_id: string }>("/api/fleet/order", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  fleetAssignOrder: (taskId: string, robot: string) =>
+    request<{ ok: boolean; task: OrderSnapshot }>(
+      `/api/fleet/order/${taskId}/assign`,
+      { method: "POST", body: JSON.stringify({ robot }) },
+    ),
+  fleetAdvanceOrder: (taskId: string) =>
+    request<{ ok: boolean; task: OrderSnapshot }>(
+      `/api/fleet/order/${taskId}/advance`,
+      { method: "POST" },
+    ),
+  fleetCancelOrder: (taskId: string) =>
+    request<{ ok: boolean; task: OrderSnapshot }>(
+      `/api/fleet/order/${taskId}/cancel`,
+      { method: "POST" },
+    ),
 };
 
 // ── FSM + BT (2단계) ─────────────────────────────────────────────────────────
@@ -1125,4 +1148,36 @@ export interface FleetOpResult {
 export interface FleetPluginsResult extends FleetOpResult {
   active_dispatcher: string;
   active_traffic: string;
+}
+
+// ── 배달 주문 오케스트레이터 (composite task) ─────────────────────────────────
+// 형식은 backend app/fleet_orchestrator.py Task.snapshot() 과 1:1. fleet_node(SubmitTask)
+// 보다 한 층 위 — 주문 1건을 다리(navigate/perform_action)로 분해해 하나씩 굴린다.
+export type OrderStatus =
+  | "PENDING" // 큐 대기, 미배정
+  | "ASSIGNED" // 로봇 배정됨, 첫 다리 직전
+  | "EXECUTING" // 다리 하나 진행 중
+  | "COMPLETED"
+  | "FAILED"
+  | "CANCELLED";
+
+export interface OrderSnapshot {
+  id: string;
+  task_type: string;
+  requester: string;
+  priority: number;
+  robot: string | null;
+  status: OrderStatus;
+  leg_idx: number;
+  leg_count: number;
+  current_leg: "navigate" | "perform_action" | null;
+  reason: string;
+}
+
+export interface CreateOrderInput {
+  book: string;
+  pickup: string;
+  dropoff: string;
+  requester?: string;
+  priority?: number;
 }

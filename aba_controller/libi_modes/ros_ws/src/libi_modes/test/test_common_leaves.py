@@ -27,6 +27,22 @@ def test_is_mode_survives_unset_current_mode(tick):
     assert tick(IsMode("IDLE")) == Status.FAILURE
 
 
+def test_is_mode_disabled_branch_fails_even_when_mode_matches(seed, tick):
+    """[디버그] 잠긴 상태는 current_mode 가 맞아도 FAILURE → Selector 가 건너뜀."""
+    seed(**{Keys.CURRENT_MODE: "IDLE", Keys.DISABLED_BRANCHES: {"IDLE"}})
+    assert tick(IsMode("IDLE")) == Status.FAILURE
+
+
+def test_is_mode_other_disabled_does_not_affect_this_branch(seed, tick):
+    seed(**{Keys.CURRENT_MODE: "IDLE", Keys.DISABLED_BRANCHES: {"RETURNING"}})
+    assert tick(IsMode("IDLE")) == Status.SUCCESS
+
+
+def test_is_mode_empty_disabled_is_normal(seed, tick):
+    seed(**{Keys.CURRENT_MODE: "PATROL", Keys.DISABLED_BRANCHES: set()})
+    assert tick(IsMode("PATROL")) == Status.SUCCESS
+
+
 # ── RequestTransition ─────────────────────────────────────────────────────────
 
 def test_request_transition_applies_and_clears(seed, read, tick):

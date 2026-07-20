@@ -283,3 +283,22 @@ def test_patrol_robot_is_pulled_away_by_low_battery(seed, read):
     seed(**{Keys.CURRENT_MODE: "PATROL"})
     bt.tick()
     assert read(Keys.CURRENT_MODE) == "RETURNING"
+
+
+def test_disabled_branch_freezes_its_behavior(seed, read):
+    """[디버그] 잠긴 현재-상태 브랜치는 exit 조건도 안 돌아 그 상태에 멈춘다(안전 프리즈).
+
+    위 test 와 동일 상황(PATROL + 저배터리 → 보통 RETURNING)인데, PATROL 을 잠그면
+    IsMode 가 FAILURE → Selector 가 건너뛰어 NoBranchMatched(Running) → 전이 안 하고
+    트리는 살아있다."""
+    root = tree.build_root(
+        PARAMS, all_drivers(),
+        all_providers(battery_percent=lambda: 5.0, is_docked=lambda: False),
+    )
+    bt = py_trees.trees.BehaviourTree(root=root)
+    bt.setup(timeout=15)
+    seed(**{Keys.CURRENT_MODE: "PATROL", Keys.DISABLED_BRANCHES: {"PATROL"}})
+    for _ in range(3):
+        bt.tick()
+    assert root.status == Status.RUNNING            # 트리 살아있음
+    assert read(Keys.CURRENT_MODE) == "PATROL"      # 전이 안 함(프리즈)

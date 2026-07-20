@@ -11,7 +11,8 @@
 - **로봇 지정은 인자로.** `FSM_ROBOT_ID=pinky3 ...` 대신 `./pi.sh pinky3`.
 - **IP 는 `.env` 한곳.** `LAPTOP_IP`, `PINKY{1,2,3}_IP` (루트 `.env`, `.env.example` 참고).
 
-폴더는 **실행 위치**로 나뉜다: `pi/`(로봇) · `laptop/`(관제 서버) · `ui/`(웹 UI).
+폴더는 **실행 위치**로 나뉜다: `drive-pi/`(로봇 주행 보드) · `handy-pi/`(로봇 팔 보드) ·
+`laptop/`(관제 서버) · `ui/`(웹 UI). (로봇은 한 대지만 보드가 둘 — 같은 `ROS_DOMAIN_ID`)
 
 ## `.env` 준비
 
@@ -101,7 +102,7 @@ sudo apt install -y ros-jazzy-domain-bridge        # ros-domain-bridge.sh / sim.
 - **추종 서버**(`ai-server.sh`)의 `torch`/`ultralytics` 는 용량이 커서 자동 설치하지 않고,
   없으면 `pip install -r follower_perception/requirements.txt` 를 안내한다.
 
-## pi/ — 로봇(Pi)에서 실행
+## drive-pi/ — 로봇 주행 보드에서 실행
 
 | 스크립트 | 하는 일 |
 |---|---|
@@ -111,13 +112,26 @@ sudo apt install -y ros-jazzy-domain-bridge        # ros-domain-bridge.sh / sim.
 | `kill.sh` | 주행 스택(tmux `pinky_pi`) + 고아 노드 정리 (기존 ros_ws/scripts/kill.sh 위임) |
 
 ```bash
-./pi.sh pinky3                 # 주행 스택
-./image-sender.sh              # 카메라 전송 (별 터미널)
-./follow-drive.sh              # 추종 주행 브릿지 (별 터미널)
+./drive-pi/pi.sh pinky3            # 주행 스택
+./drive-pi/image-sender.sh         # 카메라 전송 (별 터미널)
+./drive-pi/follow-drive.sh         # 추종 주행 브릿지 (별 터미널)
 ```
 
 ⚠️ `image-sender.sh` / `follow-drive.sh` 는 `aba_ai_service` 서브트리가 로봇 체크아웃에
 있어야 한다(주행만 할 거면 `pi.sh` 만으로 충분). 없으면 스크립트가 이유를 알려준다.
+
+## handy-pi/ — 로봇 팔 보드에서 실행
+
+| 스크립트 | 하는 일 |
+|---|---|
+| `handy.sh` | `libi_handy_controller` 노드 기동(handy_cmd 구독 / handy_result 발행). 안 빌드면 colcon build. |
+
+```bash
+./handy-pi/handy.sh                # 팔 보드. Drive 보드와 같은 ROS_DOMAIN_ID
+```
+
+⚠️ 팔 모션은 현재 스텁 — 팔 담당자가 채운다(옵시디언 인터페이스 요청서). Drive 보드와
+**같은 `ROS_DOMAIN_ID`** 여야 통신된다(한 로봇, 두 보드).
 
 ## laptop/ — 노트북/서버에서 실행
 
@@ -162,8 +176,8 @@ sudo apt install -y ros-jazzy-domain-bridge        # ros-domain-bridge.sh / sim.
 ```
 [노트북]  ./laptop/fms_service.sh
 [노트북]  ./laptop/ai_follower_service.sh pinky3
-[로봇]    ./pi/image-sender.sh          # 영상
-[로봇]    ./pi/follow-drive.sh          # 주행 브릿지
+[로봇]    ./drive-pi/image-sender.sh    # 영상
+[로봇]    ./drive-pi/follow-drive.sh    # 주행 브릿지
 [패널]    ./laptop/libi_gui.sh pinky3   → 관리자 로그인 → 「관리자 추종」 → 「등록」
 ```
 

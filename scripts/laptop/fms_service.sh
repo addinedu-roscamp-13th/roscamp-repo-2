@@ -10,6 +10,8 @@ set -eo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../_common.sh"
 
 FMS="$REPO_ROOT/aba_fms_service"
+FLEET_WS="$FMS/fleet_ws"
+NAVGRAPH="$FLEET_WS/maps/library/new_map.navgraph.yaml"   # ⚠️ arte2 정합 필요(#27)
 SESSION="libi_fms"
 
 need_cmd tmux "sudo apt install -y tmux"
@@ -29,6 +31,13 @@ tmux new-session -d -s "$SESSION" -n api \
   bash -c "echo '[api] 백엔드는 데몬입니다 (중지: aba_fms_service/backend/stop.sh). 로그:'; tail -n +1 -f /tmp/pinky_api.log; exec bash"
 tmux new-window -t "$SESSION" -n bridge \
   bash -c "cd '$FMS' && echo '[bridge] 로봇 도메인 <-> 86 (DB rc_robots 기준)...' && ./scripts/ros-domain-bridge.sh; exec bash"
+
+# fleet_node(배차·교통) — 백엔드와 같은 도메인 86 에서 돈다(fleet_link 가 같은 도메인 전제).
+# fleet_ws 안 빌드면 colcon build. RMW/CycloneDDS 는 ~/.bashrc 설정을 따른다(bridge 와 동일).
+if [ -f "$FLEET_WS/install/setup.bash" ] || ensure_built "$FLEET_WS"; then
+  tmux new-window -t "$SESSION" -n fleet-node \
+    bash -c "source /opt/ros/jazzy/setup.bash && source '$FLEET_WS/install/setup.bash' && export ROS_DOMAIN_ID=86 && echo '[fleet-node] 배차·교통 (domain 86)...' && ros2 run libi_fleet fleet_node --ros-args -p navgraph_file:='$NAVGRAPH'; exec bash"
+fi
 
 tmux select-window -t "$SESSION:bridge"
 tmux_attach "$SESSION"
