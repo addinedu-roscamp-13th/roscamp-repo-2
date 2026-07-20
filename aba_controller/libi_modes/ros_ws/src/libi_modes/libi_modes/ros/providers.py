@@ -1,0 +1,121 @@
+"""구독한 ROS 토픽 → Topics2BB 가 매 tick 읽어가는 콜러블.
+
+구독 콜백은 값을 캐시에 넣기만 하고 즉시 리턴한다. 트리는 캐시를 읽을 뿐이라
+`update()` 안에서 블로킹이 일어나지 않는다 — tick 이 멈추면 트리 전체가 멈춘다.
+
+## 지금 실제로 연결된 입력과 아직 발행자가 없는 입력
+
+| provider | 소스 | 상태 |
+|---|---|---|
+| `battery_percent` | `/battery/percent` (Float32) | 연결됨 — pinky_bringup 의 battery_publisher |
+| `last_command` / `active_command` | `/fleet_cmd` (String JSON) | 연결됨 — FMS 가 브릿지로 내려보냄 |
+| `is_docked` | `docked_topic` (Bool) | **발행자 없음** — 토픽이 안 오면 None(모름) 유지 |
+| `fault` | `fault_topic` (Bool) | **발행자 없음** — 기본 False |
+| `ui_last_touch_at` | `ui_touch_topic` (Float64) | **발행자 없음** — libi_gui 가 붙으면 채워진다 |
+
+발행자가 없는 값을 지어내지 않는다. `is_docked` 가 None 이면 `BatteryCheck` 의
+`require_docked` 가드가 통과하지 않으므로, 도킹 정보가 없는 로봇은 배터리만으로
+자동 전이하지 않는다 — 모르는 상태에서 움직이는 것보다 안전한 쪽이다.
+
+## 소비 규약 — Topics2BB 가 매 tick 덮어쓴다는 점이 중요하다
+
+leaf 들은 blackboard 의 `last_command` / `active_command` 를 다 쓰고 나면 None 으로
+비운다(안 비우면 같은 전이가 다음 tick 에 재발화). 그런데 Topics2BB 는 매 tick
+provider 값을 다시 써넣으므로, provider 가 계속 같은 값을 돌려주면 비운 게 되살아난다.
+
+그래서 provider 는 값을 유지하고, **노드가 매 tick 후 blackboard 를 되읽어 대조한다**
+(`sync_consumed()`): leaf 가 비웠으면 provider 도 비운다.
+
+읽자마자 지우는 one-shot 은 안 된다 — `CommandListener` 는 자기 매핑에 없는 명령을
+**일부러 남겨둔다**(전이 후 다른 브랜치가 받을 수 있으므로). one-shot 이면 그 명령이
+현재 상태에서 조용히 사라진다.
+"""
+import json
+
+from std_msgs.msg import Bool, Float32, Float64, String
+
+
+class RosProviders:
+    def __init__(self, node, *, battery_topic="battery/percent", docked_topic="is_docked",
+                 fault_topic="fault", cmd_topic="fleet_cmd", ui_touch_topic="ui_last_touch_at",
+                 mission_actions=("goal", "goto", "home", "mission_start")):
+        self._node = node
+        self._log = node.get_logger()
+        self._mission_actions = set(mission_actions)
+
+        self._battery = None
+        self._docked = None
+        self._fault = False
+        self._last_command = None
+        self._active_command = None
+        self._command_received_at = 0.0
+        self._ui_last_touch_at = 0.0
+
+        node.create_subscription(Float32, battery_topic, self._on_battery, 10)
+        node.create_subscription(Bool, docked_topic, self._on_docked, 10)
+        node.create_subscription(Bool, fault_topic, self._on_fault, 10)
+        node.create_subscription(String, cmd_topic, self._on_cmd, 10)
+        node.create_subscription(Float64, ui_touch_topic, self._on_ui_touch, 10)
+
+    # ── 콜백 (캐시에 담기만 한다) ──────────────────────────────────────────────
+
+    def _on_battery(self, msg):
+        self._battery = float(msg.data)
+
+    def _on_docked(self, msg):
+        self._docked = bool(msg.data)
+
+    def _on_fault(self, msg):
+        self._fault = bool(msg.data)
+
+    def _on_ui_touch(self, msg):
+        self._ui_last_touch_at = float(msg.data)
+
+    def _on_cmd(self, msg):
+        """FMS 명령을 전이 트리거와 실행 커맨드 둘로 가른다.
+
+        `goto`/`goal` 같은 주행 액션은 WORKING 브랜치가 실행할 `active_command` 이고,
+        `stop_request`/`task_done` 같은 것은 상태를 바꾸는 `last_command` 다.
+        한 토픽으로 오므로 여기서 나눈다.
+        """
+        try:
+            cmd = json.loads(msg.data)
+        except (ValueError, TypeError):
+            self._log.warning(f"fleet_cmd 파싱 실패: {msg.data[:120]!r}")
+            return
+        action = str(cmd.get("action", "")).strip()
+        if not action:
+            return
+        self._command_received_at = self._now()
+        if action in self._mission_actions:
+            self._active_command = "navigate"      # WorkingBranch 의 NavigationExec 이 받는다
+        else:
+            self._last_command = action
+
+    def _now(self):
+        return self._node.get_clock().now().nanoseconds / 1e9
+
+    # ── Topics2BB 인터페이스 ─────────────────────────────────────────────────
+
+    def sync_consumed(self, bb_last_command, bb_active_command):
+        """tick 직후 blackboard 값을 받아 provider 를 맞춘다.
+
+        leaf 가 비웠으면(None) provider 도 비운다. 아직 남아 있으면(매핑 안 된 명령,
+        실행 중인 커맨드) 그대로 둔다. 이걸 안 하면 Topics2BB 가 다음 tick 에 값을
+        되살려서 같은 전이가 무한 반복된다.
+        """
+        if bb_last_command is None:
+            self._last_command = None
+        if bb_active_command is None:
+            self._active_command = None
+
+    def as_dict(self):
+        return {
+            "battery_percent": lambda: self._battery,
+            "is_docked": lambda: self._docked,
+            "fault": lambda: self._fault,
+            "last_command": lambda: self._last_command,
+            "ui_last_touch_at": lambda: self._ui_last_touch_at,
+            "active_command": lambda: self._active_command,
+            "command_received_at": lambda: self._command_received_at,
+        }

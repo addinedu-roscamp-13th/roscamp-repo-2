@@ -1,0 +1,61 @@
+import time
+
+import py_trees
+from py_trees.common import ParallelPolicy
+
+from libi_modes.common.command_listener import CommandListener
+from libi_modes.common.command_timeout import CommandTimeout
+from libi_modes.common.fault_detected import FaultDetected
+from libi_modes.common.is_mode import IsMode
+from libi_modes.common.request_transition import RequestTransition
+from libi_modes.common.watchdog import exit_watchdog
+from libi_modes.common.working_actions import ArmExec, FollowExec, NavigationExec
+
+_COMMAND_MAP = {
+    "task_done": "PATROL",
+    "task_failed": "PATROL",
+    "stop_request": "IDLE",
+}
+
+
+def create(params: dict, nav_driver, arm_driver, follow_driver=None,
+           clock=time.monotonic) -> py_trees.behaviour.Behaviour:
+    """WorkingBranch — execute whatever command the task adapter has dispatched.
+
+    Deliberately NO BatteryCheck: the fleet manager accounts for battery when it assigns
+    the task, so abandoning a book mid-delivery on a low reading would strand the payload.
+    CommandTimeout is what keeps that from becoming a trap.
+
+    Running("AwaitingCommand") must stay LAST in the dispatch Selector — it always succeeds
+    at claiming the tick, so any handler after it would be unreachable.
+    """
+    timeout = params["working"]["command_timeout_sec"]
+    return py_trees.composites.Sequence(
+        name="WorkingBranch",
+        memory=False,
+        children=[
+            IsMode("WORKING"),
+            py_trees.composites.Parallel(
+                name="ExecuteAndWatch",
+                policy=ParallelPolicy.SuccessOnOne(),
+                children=[
+                    py_trees.composites.Selector(
+                        name="CommandDispatch",
+                        memory=False,
+                        children=[
+                            NavigationExec(nav_driver),
+                            ArmExec(arm_driver),
+                            FollowExec(follow_driver),
+                            py_trees.behaviours.Running(name="AwaitingCommand"),
+                        ],
+                    ),
+                    exit_watchdog("WorkingExitConditions", [
+                        FaultDetected(),
+                        CommandTimeout(timeout, clock=clock),
+                        CommandListener(_COMMAND_MAP),
+                    ]),
+                ],
+            ),
+            RequestTransition(),
+        ],
+    )

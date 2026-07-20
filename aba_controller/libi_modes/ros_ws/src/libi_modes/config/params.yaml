@@ -1,0 +1,15 @@
+libi_modes:
+  battery:
+    ready: 40         # CHARGING -> IDLE
+    charged: 80       # IDLE -> PATROL (auto, docked only)
+    low: 15           # -> RETURNING
+  interacting:
+    ui_idle_timeout_sec: 20
+  working:
+    command_timeout_sec: 120
+  returning:
+    dock_retry_max: 3
+  security_patrol:
+    # 15분 야간 루프 — Topics2BB/외부 스케줄러가 security_patrol_request 를 넣어주는 주기.
+    # 이 패키지가 타이머 자체를 소유하지 않는다 (IdleBranch 에 타이머 leaf 없음).
+    idle_interval_sec: 900
