@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 
+import { AdminFollowBanner } from "@/components/admin/AdminFollowBanner";
 import { AdminShell } from "@/components/admin/AdminShell";
 import { FsmBtPanel } from "@/components/admin/FsmBtPanel";
 
@@ -16,6 +17,8 @@ export const Route = createFileRoute("/admin/_authed/fsm")({
 function FsmPage() {
   return (
     <AdminShell title="FSM + BT">
+      {/* 추종은 FSM 을 안 거치므로 카드에는 안 나온다. 카드 위에 따로 띄운다. */}
+      <AdminFollowBanner />
       <FsmBtPanel />
     </AdminShell>
   );

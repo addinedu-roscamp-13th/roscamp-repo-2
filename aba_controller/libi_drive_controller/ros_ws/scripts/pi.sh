@@ -8,9 +8,13 @@
 # LED 는 실물 전용 — pinkyled 모듈이 rpi_ws281x 를 직접 잡고(root 필요) sim.sh 엔 없다.
 # led_server(pinky_led 의 다른 노드)와 동시 실행 금지 — 둘 다 LED 스트립을 단독 점유한다.
 # 창 전환: Ctrl+b 0/1/2/3/4 (hw/nav2/fleet-link/fsm/led), 또는 Ctrl+b n(다음 창) / Ctrl+b p(이전 창)
-#   ./laptop.sh
-#   ./laptop.sh --no-fsm   → fsm 창 없이 (FSM 은 ./fsm-bt.sh 로 따로 띄울 때)
-#   ./laptop.sh --no-led   → led 창 없이 (LED 상태 표시 코드 안 쓸 때)
+#   ./pi.sh
+#   ./pi.sh --no-fsm   → fsm 창 없이 (FSM 은 ./fsm-bt.sh 로 따로 띄울 때)
+#   ./pi.sh --no-led   → led 창 없이 (LED 상태 표시 코드 안 쓸 때)
+#
+# ⚠️ aba_ai_service/follower_perception/pi.sh 와 이름이 같지만 다른 스크립트다. 그쪽은
+#    추종용(bringup + 카메라 + cmd_bridge)이고 이건 주행용(bringup + nav2 + FSM + LED)이다.
+#    둘 다 같은 bringup 을 띄우므로 동시에 실행할 수 없다.
 #
 # 도메인은 하드코딩하지 않는다 — 이 로봇에 이미 설정된 ROS_DOMAIN_ID(보통
 # ros_source.sh나 셸 환경에서 지정됨)를 그대로 쓴다. sim.sh와 달리 실물은
@@ -20,7 +24,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROS_WS_DIR="$(dirname "$SCRIPT_DIR")"
 ROBOT_AGENT_DIR="$ROS_WS_DIR/../robot_agent"
-SESSION="pinky_laptop"
+SESSION="pinky_pi"
 WITH_FSM=true
 WITH_LED=true
 for arg in "$@"; do
@@ -31,7 +35,7 @@ done
 MAP_PATH="$ROS_WS_DIR/src/pinky_pro/pinky_navigation/map/arte2.yaml"
 
 if tmux has-session -t "$SESSION" 2>/dev/null; then
-  echo "[laptop] '$SESSION' 세션이 이미 떠 있습니다. 먼저 ./laptop-kill.sh 로 정리하세요."
+  echo "[pi] '$SESSION' 세션이 이미 떠 있습니다. 먼저 ./kill.sh 로 정리하세요."
   exit 1
 fi
 

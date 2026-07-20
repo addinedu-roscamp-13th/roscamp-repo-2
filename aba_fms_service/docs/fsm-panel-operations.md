@@ -111,7 +111,7 @@ FSM 패널은 **이름**을 보내고, 백엔드 `resolve_robot_id()` 가 브릿
 `fleet_telemetry._ROBOT_NAME_TO_KEY` 를 그대로 재사용한다(복사본을 만들지 않는다).
 
 **확정됨** — `libi_modes` 는 브릿지 키를 그대로 발행한다. `sim.sh` 는 `robot_id:=pinkySim`,
-`laptop.sh` 는 `robot_id:=pinky1` 을 넘긴다(`FSM_ROBOT_ID` 로 덮어쓸 수 있다).
+`pi.sh` 는 `robot_id:=pinky1` 을 넘긴다(`FSM_ROBOT_ID` 로 덮어쓸 수 있다).
 다르게 발행하면 패널이 스냅샷을 찾지 못하므로 브릿지 접두사와 반드시 같아야 한다.
 
 ## 6. 프로덕션 서버 전제

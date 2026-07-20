@@ -18,6 +18,8 @@ add_executable(libi_gui
     src/main.cpp
     src/RobotController.cpp
     src/RobotController.h
+    src/PerceptionClient.cpp
+    src/PerceptionClient.h
     resources.qrc
 )
 
@@ -40,4 +42,12 @@ if(LIBI_GUI_TESTS)
         src/RobotController.h
     )
     target_link_libraries(test_admin_follow_client PRIVATE Qt5::Core Qt5::Network)
+
+    # Gui — QImage 디코딩에 필요 (QCoreApplication 으로 돌지만 이미지 타입은 QtGui 소속)
+    add_executable(test_perception_client
+        tests/test_perception_client.cpp
+        src/PerceptionClient.cpp
+        src/PerceptionClient.h
+    )
+    target_link_libraries(test_perception_client PRIVATE Qt5::Core Qt5::Gui Qt5::Network Qt5::Quick)
 endif()

@@ -8,6 +8,7 @@
 #include <QDir>
 #include <QDebug>
 
+#include "PerceptionClient.h"
 #include "RobotController.h"
 
 // 검증용: 각 화면을 순회하며 PNG 로 캡처 (live 디스플레이에서 grabWindow)
@@ -38,6 +39,11 @@ static int runShots(QGuiApplication &app, QQmlApplicationEngine &engine,
         controller.login("1234");
         settle(1700);                          // 로그인 토스트가 사라질 때까지 대기
         controller.setMode("adminControl");    grab("09_adminControl");
+        // 추종 화면은 PERCEPTION_URL 이 가리키는 AI 서버에 붙어 영상을 띄운다. 서버가 없으면
+        // "연결 중" 상태로 잡히는데, 그것도 확인 대상이라 그대로 캡처한다.
+        controller.setMode("follow");
+        settle(1200);                          // 첫 프레임이 도착할 시간
+        grab("09b_follow");
         controller.emergencyStop();            grab("10_estop_banner");
         controller.setMode("home");            grab("11_estop_overlay");
 
@@ -52,9 +58,19 @@ int main(int argc, char *argv[]) {
     app.setApplicationName("Libi GUI");
 
     RobotController controller;
+    PerceptionClient perception;
+
+    // 추종 중에 GUI 가 꺼지면 FMS 에 승인 기록이 남아, 다음 기동 때 "이미 추종 중" 으로
+    // 거부당한다. 종료 직전에 해제를 보내 그 상태를 만들지 않는다.
+    QObject::connect(&app, &QGuiApplication::aboutToQuit,
+                     &controller, &RobotController::releaseFollowOnExit);
 
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty("controller", &controller);
+    engine.rootContext()->setContextProperty("perception", &perception);
+    // 엔진이 소유권을 가져간다 (문서화된 addImageProvider 계약) — delete 하지 않는다.
+    engine.addImageProvider(QStringLiteral("perception"),
+                            new PerceptionImageProvider(&perception));
     engine.load(QUrl(QStringLiteral("qrc:/qml/Main.qml")));
     if (engine.rootObjects().isEmpty()) {
         qWarning() << "Failed to load Main.qml";

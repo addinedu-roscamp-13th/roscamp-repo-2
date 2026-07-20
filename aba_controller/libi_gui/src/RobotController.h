@@ -93,6 +93,7 @@ public:
     Q_INVOKABLE void startPatrol();                  // 대기(idle) → 순찰 시작
     Q_INVOKABLE void startAdminFollow();             // 관리자 추종 시작 (FMS 승인 후)
     Q_INVOKABLE void stopAdminFollow();              // 관리자 추종 종료 (FMS 에 해제 보고)
+    void releaseFollowOnExit();                      // 종료 직전 해제 (main.cpp 의 aboutToQuit)
 
     // 길잡이
     Q_INVOKABLE void startGuide(const QString &destination);

@@ -40,7 +40,7 @@ sudo apt update && sudo apt install -y ros-jazzy-rmw-cyclonedds-cpp
 | 파일 | 커버 대상 |
 |---|---|
 | `ros_source.sh` | **프로덕션(pm2): robot-hw / nav2 / robot_agent** — 가장 중요 |
-| `scripts/laptop.sh` | 실물 로컬 테스트 (hw/nav2/fleet_link tmux 3창) |
+| `scripts/pi.sh` | 실물 로컬 테스트 (hw/nav2/fleet_link tmux 3창) |
 | `scripts/sim.sh` | 시뮬레이션 |
 | `~/.bashrc` | 대화형 터미널·수동 `ros2` CLI·`kill.sh`의 daemon 정리 |
 

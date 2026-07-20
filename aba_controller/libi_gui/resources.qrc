@@ -25,5 +25,6 @@
     <file>qml/screens/RecommendScreen.qml</file>
     <file>qml/screens/AdminLoginScreen.qml</file>
     <file>qml/screens/AdminControlScreen.qml</file>
+    <file>qml/screens/FollowScreen.qml</file>
   </qresource>
 </RCC>

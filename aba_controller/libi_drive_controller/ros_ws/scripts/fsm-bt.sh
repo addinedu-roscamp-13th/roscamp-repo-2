@@ -6,7 +6,7 @@
 #   ROS_DOMAIN_ID=88 ./fsm-bt.sh pinky1
 #   TICK_HZ=2 ./fsm-bt.sh       → 느리게 돌려 로그 읽기 좋게
 #
-# sim.sh / laptop.sh 가 이미 fsm 창을 띄우므로 평소엔 이 스크립트가 필요 없다.
+# sim.sh / pi.sh 가 이미 fsm 창을 띄우므로 평소엔 이 스크립트가 필요 없다.
 # 따로 두는 이유는 BT 를 고치면서 반복할 때다 — gazebo·nav2 를 살려둔 채
 # FSM 만 죽였다 살릴 수 있고(재기동 30초+ 절약), 이미 떠 있는 실기 로봇에
 # FSM 만 붙이거나 다른 머신에서 돌릴 때도 쓴다.
@@ -33,7 +33,7 @@ source /opt/ros/jazzy/setup.bash
 source "$ROS_WS_DIR/install/setup.bash" 2>/dev/null || true
 source "$LIBI_MODES_WS/install/setup.bash"
 
-# sim.sh / laptop.sh 와 같은 DDS 설정을 쓴다 — 안 맞추면 같은 도메인이어도 서로 못 본다.
+# sim.sh / pi.sh 와 같은 DDS 설정을 쓴다 — 안 맞추면 같은 도메인이어도 서로 못 본다.
 if [ -f /opt/ros/jazzy/lib/librmw_cyclonedds_cpp.so ]; then
   export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
   export CYCLONEDDS_URI="file://$ROS_WS_DIR/cyclonedds.xml"

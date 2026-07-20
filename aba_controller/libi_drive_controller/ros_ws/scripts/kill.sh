@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# sim.sh / laptop.sh 로 띄운 tmux 세션과 관련 프로세스를 전부 종료한다.
+# sim.sh / pi.sh 로 띄운 tmux 세션과 관련 프로세스를 전부 종료한다.
 #   - sim  : 가제보/nav2/rviz/domain_bridge/fleet_link  (세션 pinky_sim)
-#   - 실물 : hw(bringup)/nav2/fleet_link                (세션 pinky_laptop)
+#   - 실물 : hw(bringup)/nav2/fleet_link/fsm/led        (세션 pinky_pi)
 set -u
 
 # ── tmux 세션 정리 ────────────────────────────────────────────────
 # 세션을 지우면 창(pane)은 사라지지만, launch 가 띄운 자식 노드는 고아로 남을 수
 # 있으므로 아래 프로세스 종료 단계가 반드시 뒤따라야 한다.
-for session in pinky_sim pinky_laptop; do
+# pinky_laptop 은 pi.sh 의 옛 이름(laptop.sh)이 쓰던 세션이다. 이름을 바꾸기 전에 띄워둔
+# 세션이 정리되지 않고 남는 걸 막으려고 당분간 같이 지운다.
+for session in pinky_sim pinky_pi pinky_laptop; do
   if tmux has-session -t "$session" 2>/dev/null; then
     tmux kill-session -t "$session"
     echo "killed tmux session: $session"

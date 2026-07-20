@@ -1,27 +1,57 @@
 #!/usr/bin/env bash
-# aba_ai_service 단독 실행 — pm2(ecosystem.config.js 의 aba-ai-stub) 없이
-# 로컬에서 직접 붙여서 테스트할 때 쓴다. ROS2 소싱 불필요(순수 stdlib 소켓 릴레이).
+# AI 서버 기동 — 관리자 추종의 인지(perception) 서버를 띄운다.
 #
-#   ./ai-server.sh
+#   ./ai-server.sh                    로봇(Pi)이 보내는 영상을 UDP 로 받는다
+#   ./ai-server.sh --test-pattern     로봇 없이 테스트 패턴으로
+#   ./ai-server.sh --camera 0         이 머신의 웹캠으로
+#   ./ai-server.sh --drive-host <PI_IP>   추종 명령까지 로봇에 보낼 때
 #
-# 환경변수(기본값은 main.py 참고):
-#   AI_SERVICE_UDP_PORT   image_sender 로부터 받는 포트 (기본 9000)
-#   FMS_TCP_HOST/PORT     관제용 push 대상, aba_fms_service (기본 127.0.0.1:9010)
-#   ROBOT_DETECTION_HOST/PORT   추종 제어용 직결 채널, 로봇의 libi_perception
-#                               (기본 127.0.0.1:6000 — ai_service 를 로봇과 다른 머신에서
-#                               돌리면 반드시 로봇 IP로 오버라이드할 것, 안 그러면 로컬만 보고 못 나간다)
+# 실행되는 것은 follower_perception/scripts/perception_server.py 다:
+#   Pi 카메라 ──UDP:6001──▶ perception_server ──TCP:5007──▶ libi_gui 추종 화면
+#                                             └─UDP:6002──▶ 로봇 cmd_bridge (--drive-host 줬을 때)
+#
+# ⚠️ aba_ai_service/main.py 는 이게 아니다. 그건 UDP:9000→TCP:9010(FMS)/6000(로봇) 릴레이
+#    stub 으로, 추종 화면과 무관한 별개 경로다 (아직 더미 추론). 필요하면 relay-stub.sh 로 띄운다.
+#
+# 필요: torch + ultralytics (follower_perception/requirements.txt). 없으면 여기서 멈춘다.
 set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AI_SERVICE_DIR="$(dirname "$SCRIPT_DIR")"
+FOLLOWER_DIR="$AI_SERVICE_DIR/follower_perception"
 REPO_ROOT="$(cd "$AI_SERVICE_DIR/.." && pwd)"
-VENV_PY="$REPO_ROOT/.venv/bin/python"
 
-if [ -x "$VENV_PY" ]; then
-  PY="$VENV_PY"
-else
-  PY="python3"
+VENV_PY="$REPO_ROOT/.venv/bin/python"
+PY="${PYTHON:-$([ -x "$VENV_PY" ] && echo "$VENV_PY" || echo python3)}"
+
+VIDEO_PORT="${VIDEO_PORT:-6001}"     # Pi 의 image-sender.sh 가 보내는 포트와 같아야 한다
+VIEWER_PORT="${VIEWER_PORT:-5007}"   # libi_gui 의 PERCEPTION_URL 이 붙는 포트
+
+# --drive-host 가 없으면 perception_server 는 cmd_sink 를 아예 만들지 않는다 — 영상은
+# 나오는데 로봇만 안 움직이고, 화면엔 아무 단서가 없어서 원인을 찾기 어렵다. 미리 짚어준다.
+case " $* " in
+  *" --drive-host "*)
+    ;;
+  *)
+    echo "[ai-server] ⚠ 주행 꺼짐 — 영상만 나가고 로봇은 움직이지 않습니다."
+    echo "            움직이게 하려면:  ./ai-server.sh --drive-host <로봇IP>"
+    echo "            (로봇에서 cmd_bridge.py 도 떠 있어야 하고, 화면에서 「등록」을 눌러야 합니다)"
+    ;;
+esac
+
+if ! "$PY" -c "import ultralytics" 2>/dev/null; then
+  echo "[ai-server] ultralytics/torch 가 없습니다. 설치 후 다시 실행하세요:"
+  echo "  $PY -m pip install -r $FOLLOWER_DIR/requirements.txt"
+  exit 1
 fi
 
-cd "$AI_SERVICE_DIR"
-exec "$PY" main.py
+# 영상 소스를 안 주면 로봇에서 UDP 로 받는다(실제 운용 형태).
+ARGS=("$@")
+case " ${ARGS[*]} " in
+  *" --udp "*|*" --camera "*|*" --test-pattern "*) ;;
+  *) ARGS=(--udp "${ARGS[@]}") ;;
+esac
+
+cd "$FOLLOWER_DIR"
+echo "[ai-server] video-in UDP:$VIDEO_PORT   viewer TCP:$VIEWER_PORT   (libi_gui 는 PERCEPTION_URL=<이 머신 IP>:$VIEWER_PORT)"
+exec "$PY" scripts/perception_server.py --udp-port "$VIDEO_PORT" --port "$VIEWER_PORT" "${ARGS[@]}"

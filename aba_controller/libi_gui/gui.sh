@@ -5,23 +5,26 @@
 #   FMS_URL=http://192.168.0.9:9001 ./gui.sh pinky3
 #
 # robot_id 는 FMS 승인 요청의 키다 — libi_modes 가 상태를 발행할 때 쓰는 값과 반드시 같아야
-# 한다(laptop.sh 의 FSM_ROBOT_ID). 다르면 FMS 가 "알 수 없는 로봇"으로 거부한다.
+# 한다(pi.sh 의 FSM_ROBOT_ID). 다르면 FMS 가 "알 수 없는 로봇"으로 거부한다.
 #
 # ROS_DOMAIN_ID 는 여기서 정하지 않는다 — 실물은 로봇마다 도메인이 고정(87/88/89)이라
-# 셸에 이미 설정된 값을 그대로 쓴다(laptop.sh 와 같은 원칙). GUI 가 도메인을 직접 쓰진
+# 셸에 이미 설정된 값을 그대로 쓴다(pi.sh 와 같은 원칙). GUI 가 도메인을 직접 쓰진
 # 않지만, 어느 로봇 패널인지 확인할 수 있게 기동 로그에 함께 찍는다.
 set -eo pipefail
 # -u 는 안 쓴다 — ROS2 setup.bash 계열과 함께 source 될 때 미정의 변수로 죽는다
-# (sim.sh/laptop.sh/ros-domain-bridge.sh 도 같은 이유로 -e 만 쓴다).
+# (sim.sh/pi.sh/ros-domain-bridge.sh 도 같은 이유로 -e 만 쓴다).
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 export ROBOT_ID="${1:-${ROBOT_ID:-}}"
 export FMS_URL="${FMS_URL:-http://127.0.0.1:9001}"
+# 추종 화면이 붙을 AI 서버(perception_server). 로봇이 아니라 별도 머신이므로 기본값이
+# 맞는 경우는 거의 없다 — 실제 AI 서버 주소로 넘겨야 영상이 뜬다.
+export PERCEPTION_URL="${PERCEPTION_URL:-127.0.0.1:5007}"
 
 if [ -z "$ROBOT_ID" ]; then
   echo "[gui] 사용법: ./gui.sh <robot_id>   (예: ./gui.sh pinky3)"
-  echo "[gui] robot_id 는 laptop.sh 의 FSM_ROBOT_ID 와 같은 값이어야 합니다."
+  echo "[gui] robot_id 는 pi.sh 의 FSM_ROBOT_ID 와 같은 값이어야 합니다."
   exit 1
 fi
 
@@ -32,5 +35,5 @@ if [ ! -x "$BIN" ]; then
   exit 1
 fi
 
-echo "[gui] robot_id=$ROBOT_ID  domain=${ROS_DOMAIN_ID:-(미설정)}  fms=$FMS_URL"
+echo "[gui] robot_id=$ROBOT_ID  domain=${ROS_DOMAIN_ID:-(미설정)}  fms=$FMS_URL  perception=$PERCEPTION_URL"
 exec "$BIN" "${@:2}"

@@ -36,6 +36,35 @@ def clean_cache():
     _clear()
 
 
+class FakeLink:
+    """Stands in for the mission-PC FSM link, which needs ROS2 and a live bridge.
+
+    Records what was asked for so tests can assert the robot is actually driven to
+    WORKING — approving without moving the robot is the bug this whole path exists to
+    avoid. Set `result` to None to simulate the bridge being down."""
+
+    def __init__(self, result=None):
+        self.result = result if result is not None else {"accepted": True, "current_state": "", "reason": ""}
+        self.calls = []
+
+    def __call__(self, robot_id, target_state, force=False, timeout=None):
+        self.calls.append((robot_id, target_state))
+        return self.result
+
+    @property
+    def targets(self):
+        return [target for _, target in self.calls]
+
+
+@pytest.fixture(autouse=True)
+def link(monkeypatch):
+    """autouse — 실제 링크를 그대로 두면 브릿지가 없어 모든 승인이 거부되고, 정책 테스트가
+    통째로 무의미해진다. 링크 장애를 보고 싶은 테스트는 fake.result = None 으로 바꾼다."""
+    fake = FakeLink()
+    monkeypatch.setattr(fsm_link, "request_transition", fake)
+    return fake
+
+
 def _seed(robot_id, state, fresh=True):
     entry = fsm_link._empty_entry()
     entry["current_state"] = state
@@ -133,7 +162,9 @@ def test_second_request_while_following_is_rejected(client):
     assert _post(client)["accepted"] is True
     body = _post(client)
     assert body["accepted"] is False
-    assert "이미 추종 중" in body["reason"]
+    # GUI 도 로컬 상태로 같은 상황을 막고, 이 문구를 그대로 화면에 띄운다. 둘이 같으면
+    # 어느 쪽이 막은 건지 화면만 보고 알 수 없다 — 실제로 그것 때문에 원인을 못 찾았다.
+    assert "관제" in body["reason"]
 
 
 def test_grants_are_tracked_per_robot(client):
@@ -191,3 +222,88 @@ def test_status_flags_a_grant_whose_robot_vanished(client):
     with fsm_link._lock:
         fsm_link._cache.clear()
     assert _status(client)["following"][0]["state_stale"] is True
+
+
+# ── WORKING 전이 ─────────────────────────────────────────────────────────────
+
+def test_approval_moves_the_robot_to_working(client, link):
+    """승인만 하고 로봇을 안 옮기면 관제가 유휴로 보고 다른 태스크를 배차한다."""
+    _seed("pinky1", "IDLE")
+    assert _post(client)["accepted"] is True
+    assert link.calls == [("pinky1", "WORKING")]
+
+
+def test_rejected_request_does_not_touch_the_robot_state(client, link):
+    _seed("pinky1", "ERROR")
+    _post(client)
+    assert link.calls == []
+
+
+def test_request_fails_when_the_fsm_link_is_down(client, link):
+    """브릿지가 없으면 로봇은 IDLE 로 남는다 — 승인만 내주면 기록과 실제가 어긋난다."""
+    link.result = None
+    _seed("pinky1", "IDLE")
+    body = _post(client)
+    assert body["accepted"] is False
+    assert "링크" in body["reason"]
+
+
+def test_failed_transition_rolls_back_the_grant(client, link):
+    """승인을 물렀으면 기록도 남으면 안 된다 — 남으면 재시도가 '이미 추종 중'으로 막힌다."""
+    link.result = None
+    _seed("pinky1", "IDLE")
+    _post(client)
+    assert _status(client)["following"] == []
+
+
+def test_can_retry_after_a_link_failure(client, link):
+    link.result = None
+    _seed("pinky1", "IDLE")
+    assert _post(client)["accepted"] is False
+    link.result = {"accepted": True, "current_state": "", "reason": ""}
+    assert _post(client)["accepted"] is True
+
+
+def test_rejected_transition_surfaces_the_robot_reason(client, link):
+    link.result = {"accepted": False, "current_state": "IDLE", "reason": "로봇이 거부함"}
+    _seed("pinky1", "IDLE")
+    assert _post(client)["reason"] == "로봇이 거부함"
+
+
+def test_release_returns_a_working_robot_to_idle(client, link):
+    _seed("pinky1", "IDLE")
+    _post(client)
+    _seed("pinky1", "WORKING")          # 승인 후 로봇이 실제로 WORKING 이 된 상태
+    assert _release(client)["released"] is True
+    assert link.targets == ["WORKING", "IDLE"]
+
+
+@pytest.mark.parametrize("state", ["ERROR", "RETURNING", "CHARGING"])
+def test_release_leaves_a_robot_that_left_working_on_its_own(client, link, state):
+    """에러로 빠졌거나 배터리 때문에 알아서 복귀·충전 중인 로봇을 끌어내면 안 된다."""
+    _seed("pinky1", "IDLE")
+    _post(client)
+    _seed("pinky1", state)
+    assert _release(client)["released"] is True
+    assert link.targets == ["WORKING"], f"{state} 상태에는 복귀 전이를 걸지 않는다"
+
+
+def test_release_returns_the_robot_even_if_the_cache_still_says_idle(client, link):
+    """캐시는 로봇->브릿지 지연만큼 뒤처진다. 승인 직후 바로 해제하면 아직 IDLE 로 보이는데,
+    'WORKING 일 때만 되돌린다'로 판단하면 복귀를 건너뛰어 로봇이 WORKING 에 갇힌다."""
+    _seed("pinky1", "IDLE")
+    _post(client)                        # WORKING 으로 옮겼지만 캐시는 아직 IDLE
+    _release(client)
+    assert link.targets == ["WORKING", "IDLE"]
+
+
+def test_release_still_succeeds_when_the_return_transition_fails(client, link):
+    """기록을 남겨두면 다시 추종을 시작할 수 없게 된다 — 상태가 안 돌아간 것보다 나쁘다."""
+    _seed("pinky1", "IDLE")
+    _post(client)
+    _seed("pinky1", "WORKING")
+    link.result = None
+    body = _release(client)
+    assert body["released"] is True
+    assert "복귀 실패" in body["reason"]
+    assert _status(client)["following"] == []

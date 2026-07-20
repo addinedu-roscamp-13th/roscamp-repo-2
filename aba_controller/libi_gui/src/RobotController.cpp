@@ -2,12 +2,16 @@
 
 #include <QVariantMap>
 #include <QTime>
+#include <QEventLoop>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QUrl>
+
+// 종료 시 해제 보고를 기다리는 상한. 관제 기록 정리보다 창이 안 닫히는 게 더 나쁘다.
+static constexpr int RELEASE_ON_EXIT_TIMEOUT_MS = 1200;
 
 // 목 데이터 헬퍼: 책 한 권을 QVariantMap 으로
 static QVariantMap makeBook(const QString &title, const QString &author,
@@ -287,6 +291,30 @@ void RobotController::stopAdminFollow() {
     log(QStringLiteral("관리자 추종 종료"));
     emit toast(QStringLiteral("관리자 추종을 종료했습니다."));
     reportFollowRelease();
+}
+
+// 종료 직전에 부른다. 여기서 해제를 안 보내면 FMS 에 승인 기록이 남아, 다음에 GUI 를 다시
+// 켰을 때 "이미 추종 중입니다" 로 거부당한다 — 로컬 following 은 초기화되는데 FMS 기록만
+// 살아남기 때문이다. 실제로 이 상황에 걸려서 추종을 다시 시작할 수 없었다.
+//
+// stopAdminFollow() 를 못 쓰는 이유: 그건 비동기라 요청이 나가기 전에 이벤트 루프가 끝난다.
+// 여기서는 응답까지 짧게 기다린다(종료가 몇 초씩 늘어지면 안 되므로 상한을 둔다).
+void RobotController::releaseFollowOnExit() {
+    if (!m_following || m_robotId.isEmpty()) return;
+    m_following = false;
+
+    QNetworkRequest req{QUrl(m_fmsUrl + QStringLiteral("/api/robot/admin-follow/release"))};
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+
+    QJsonObject body;
+    body[QStringLiteral("robot_id")] = m_robotId;
+
+    QNetworkReply *reply = m_net->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    QEventLoop loop;
+    QTimer::singleShot(RELEASE_ON_EXIT_TIMEOUT_MS, &loop, &QEventLoop::quit);
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    reply->deleteLater();
 }
 
 void RobotController::reportFollowRelease() {

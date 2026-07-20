@@ -262,6 +262,10 @@ def main():
     src.add_argument("--test-pattern", dest="test_pattern", action="store_true")
     src.add_argument("--udp", action="store_true", help="receive video over UDP from robot")
     ap.add_argument("--port", type=int, default=5007)          # Qt viewer port
+    ap.add_argument("--bind", default="0.0.0.0",
+                    help="뷰어 포트를 열 주소. 기본은 모든 인터페이스 — 로봇 터치패널이 "
+                         "다른 머신이라 127.0.0.1 이면 못 붙는다. 같은 머신에서만 쓸 땐 "
+                         "127.0.0.1 로 좁힌다.")
     ap.add_argument("--udp-port", dest="udp_port", type=int, default=6001)  # robot video in
     ap.add_argument("--device", default=None)
     ap.add_argument("--hsv-threshold", dest="hsv_threshold", type=float, default=None)
@@ -322,11 +326,13 @@ def main():
 
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    srv.bind(("127.0.0.1", args.port))
+    # 127.0.0.1 로 묶으면 같은 머신의 뷰어만 붙을 수 있다. 로봇 터치패널(libi_gui)은 다른
+    # 머신이라 그러면 아예 연결이 안 된다. 필요하면 --bind 로 좁힐 수 있게 열어둔다.
+    srv.bind((args.bind, args.port))
     srv.listen(1)
-    print(f"[ok] perception server on 127.0.0.1:{args.port} "
+    print(f"[ok] perception server on {args.bind}:{args.port} "
           f"({'test-pattern' if args.test_pattern else f'camera {args.camera}'}); "
-          f"waiting for Qt viewer…")
+          f"waiting for viewer…")
     while True:
         conn, addr = srv.accept()
         print(f"[ok] viewer connected: {addr}")

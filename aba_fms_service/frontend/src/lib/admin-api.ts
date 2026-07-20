@@ -5,6 +5,9 @@ const API_BASE = getCentralBase();
 // 로봇 제어 호출은 선택된 로봇 IP 로, 그 외(인증/관리자/로봇 레지스트리)는 중앙 서버로 보낸다.
 function baseFor(path: string): string {
   if (path.startsWith("/api/arm/pinky-detect/greeting")) return API_BASE;
+  // 경로는 /api/robot/ 으로 시작하지만 이 라우터는 로봇이 아니라 중앙 FMS 에 있다
+  // (backend/app/routers/admin_follow.py). 안 걸러내면 로봇 IP 로 가서 404 가 난다.
+  if (path.startsWith("/api/robot/admin-follow")) return API_BASE;
   const isRobotControl = path.startsWith("/api/robot/") || path.startsWith("/api/arm/");
   return isRobotControl ? getRobotBase() : API_BASE;
 }
@@ -848,6 +851,18 @@ export const adminApi = {
       `/api/fsm/history?robot_id=${encodeURIComponent(robotId)}&limit=${limit}`,
     ),
 
+  // 관리자 추종 승인 기록. 추종 제어는 ai_service↔로봇 직결이라 FSM 에 안 잡히므로,
+  // 이 기록이 "이 로봇이 지금 추종 중"인지 아는 유일한 단서다.
+  adminFollowStatus: () =>
+    request<{ following: AdminFollowGrant[] }>(
+      "/api/robot/admin-follow/status",
+    ),
+  adminFollowRelease: (robotId: string) =>
+    request<{ released: boolean; reason: string | null }>(
+      "/api/robot/admin-follow/release",
+      { method: "POST", body: JSON.stringify({ robot_id: robotId }) },
+    ),
+
   // libi_fleet 배차·교통 코어
   fleetFeedWsUrl,
   fleetMeta: () => request<FleetMeta>("/api/fleet/meta"),
@@ -950,6 +965,12 @@ export interface FsmHistoryItem {
   reason: string;
   admin_username: string;
   created_at: string;
+}
+
+export interface AdminFollowGrant {
+  robot_id: string;
+  granted_at: number; // epoch seconds
+  state_stale: boolean; // 승인은 살아있는데 로봇 상태 수신이 끊긴 경우
 }
 
 export type MarkerActionType =

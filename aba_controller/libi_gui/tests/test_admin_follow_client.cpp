@@ -66,6 +66,9 @@ int main(int argc, char *argv[]) {
     QNetworkAccessManager net;
     clearGrant(net, fmsUrl, QStringLiteral("pinky3"));
     clearGrant(net, fmsUrl, QStringLiteral("pinky9"));
+    // 해제는 로봇을 WORKING 에서 되돌리는데, 그게 FMS 캐시에 반영되기까지 시간이 걸린다.
+    // 안 기다리면 바로 뒤 첫 요청이 "WORKING 상태" 로 거부돼, 연속 실행 때만 실패한다.
+    settle(2000);
 
     // ── 1. 승인되면 추종이 시작된다 ─────────────────────────────────────────
     qputenv("FMS_URL", fmsUrl.toLocal8Bit());
@@ -117,6 +120,33 @@ int main(int argc, char *argv[]) {
         settle(1000);
         check(!c->following(), "ROBOT_ID 없이는 추종을 시작하지 않는다");
         delete c;
+    }
+
+    // ── 5. 추종 중에 GUI 가 꺼져도 승인 기록이 남지 않는다 ──────────────────
+    // 남으면 다음 기동 때 "이미 추종 중" 으로 거부당한다. 로컬 following 은 초기화되는데
+    // FMS 기록만 살아남기 때문이며, 실기에서 실제로 여기 걸려 추종을 다시 못 켰다.
+    qputenv("FMS_URL", fmsUrl.toLocal8Bit());
+    qputenv("ROBOT_ID", "pinky3");
+    {
+        auto *c = makeAdminController();
+        c->startAdminFollow();
+        settle(1500);
+        check(c->following(), "추종이 시작됐다 (사전 조건)");
+        c->releaseFollowOnExit();            // aboutToQuit 에서 불리는 것
+        delete c;
+
+        // 해제는 로봇을 IDLE 로 되돌리는데, 그게 FMS 캐시에 반영되기까지 시간이 걸린다.
+        // 바로 재요청하면 아직 WORKING 으로 보여 거부된다 — 승인 기록이 남아서가 아니다.
+        // 실제 GUI 재기동에도 이보다 오래 걸리므로 여기서 그만큼 기다린다.
+        settle(2000);
+
+        auto *again = makeAdminController();   // GUI 재기동
+        again->startAdminFollow();
+        settle(1500);
+        check(again->following(), "종료 후 다시 켜도 추종을 시작할 수 있다");
+        again->stopAdminFollow();
+        settle(800);
+        delete again;
     }
 
     std::printf("\n%s (%d 실패)\n", failures == 0 ? "PASS" : "FAIL", failures);
