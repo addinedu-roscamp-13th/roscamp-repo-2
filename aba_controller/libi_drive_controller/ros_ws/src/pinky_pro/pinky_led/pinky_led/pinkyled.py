@@ -3,7 +3,15 @@ import sys
 
 if os.geteuid() != 0:
     ros_setup = "/opt/ros/jazzy/setup.bash"
+    # 현재 활성화된 오버레이 워크스페이스를 그대로 다시 소싱한다.
+    # 경로를 고정하면 다른 워크스페이스에서 실행할 때 sudo 쪽에서 그 워크스페이스의
+    # entry point (예: state_led) 를 찾지 못하고 StopIteration 으로 죽는다.
     ws_setup = "/home/pinky/pinky_pro/install/setup.bash"
+    for prefix in os.environ.get('COLCON_PREFIX_PATH', '').split(':'):
+        candidate = os.path.join(prefix, 'setup.bash')
+        if prefix and os.path.isfile(candidate):
+            ws_setup = candidate
+            break
     fastdds_xml = "/home/pinky/.fastdds.xml"
     domain_id = os.environ.get('ROS_DOMAIN_ID', '0')
     
