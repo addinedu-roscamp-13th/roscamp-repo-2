@@ -64,3 +64,4 @@ backend/.env
 backend/labi.db
 backend/robot.db
 backend/management.db
+config/generated/

@@ -36,17 +36,25 @@ from typing import Any
 # 물리적 로봇 슬롯에 고정된 정적 설정이라 이름으로만 매핑하고, IP는 DB가 진실.
 FLEET_ROBOTS: dict[str, dict[str, Any]] = {}
 
-_ROBOT_NAME_TO_KEY = {
-    "Pinky-1": "pinky1",
-    "Pinky-2": "pinky2",
-    "Pinky-3": "pinky3",
-    "PinkySim": "pinkySim",
-}
+def bridge_key(name: str) -> str:
+    """로봇 이름 -> 브릿지 키 (토픽 접두사로 쓰는 이름).
+
+        Pinky-1 -> pinky1        PinkySim -> pinkySim
+
+    하이픈·공백을 없애고 첫 글자만 소문자로 내린다. 예전에는 이 매핑을 딕셔너리로
+    박아뒀는데, 로봇을 새로 등록할 때마다 코드를 고쳐야 했고 그걸 잊으면 그 로봇만
+    조용히 누락됐다. 규칙으로 바꿔서 DB 등록만으로 끝나게 했다.
+
+    scripts/gen_domain_bridges.py 가 브릿지 설정을 만들 때 쓰는 규칙과 같아야 한다 —
+    다르면 토픽 접두사와 조회 키가 어긋나 상태가 안 보인다.
+    """
+    s = name.replace("-", "").replace("_", "").replace(" ", "")
+    return s[:1].lower() + s[1:] if s else s
 
 
 def _load_fleet_robots() -> dict[str, dict[str, Any]]:
     """rc_robots 테이블에서 활성 pinky 로봇의 IP를 읽어 FLEET_ROBOTS 형태로 구성한다.
-    이름이 _ROBOT_NAME_TO_KEY 에 없는 로봇(오타/미등록)은 건너뛴다."""
+    브릿지 키는 이름에서 유도한다(bridge_key) — 등록만 하면 코드 수정 없이 잡힌다."""
     import pymysql
     from sqlalchemy.engine import make_url
 
@@ -65,9 +73,9 @@ def _load_fleet_robots() -> dict[str, dict[str, Any]]:
                     "SELECT name, ip_address FROM rc_robots WHERE robot_type='pinky' AND is_active=1"
                 )
                 for name, ip in cur.fetchall():
-                    key = _ROBOT_NAME_TO_KEY.get(name)
-                    if key is None:
-                        print(f"[fleet_telemetry] '{name}' 은 _ROBOT_NAME_TO_KEY 매핑이 없어 건너뜀", flush=True)
+                    key = bridge_key(name)
+                    if not key:
+                        print(f"[fleet_telemetry] 이름이 비어 있는 로봇을 건너뜀 (ip={ip})", flush=True)
                         continue
                     result[ip] = {"key": key, "prefix": f"/{key}"}
         finally:

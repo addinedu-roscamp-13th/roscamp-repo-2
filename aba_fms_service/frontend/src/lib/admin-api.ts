@@ -199,6 +199,18 @@ export function fleetCoordinatorWsUrl(): string {
   return url.toString();
 }
 
+export function fsmStateWsUrl(): string {
+  const url = centralWsUrl("/api/fsm/ws/state");
+  url.searchParams.set("token", getToken() ?? "");
+  return url.toString();
+}
+
+export function fleetFeedWsUrl(): string {
+  const url = centralWsUrl("/api/fleet/ws/feed");
+  url.searchParams.set("token", getToken() ?? "");
+  return url.toString();
+}
+
 export interface Nav2Pose {
   x: number;
   y: number;
@@ -818,7 +830,127 @@ export const adminApi = {
     request<FleetCoordinatorState>("/api/control/fleet/coordinator", { method: "PUT", body: JSON.stringify(body) }),
   fleetResume: (robotId: number) =>
     request<{ success: boolean; robot_id: number; msg: string }>(`/api/control/fleet/resume?robot_id=${robotId}`, { method: "POST" }),
+
+  // FSM + BT (2단계)
+  fsmStateWsUrl,
+  fsmModel: () => request<{ ok: boolean; model: FsmModel }>("/api/fsm/model"),
+  fsmState: (robotId: string) =>
+    request<FsmStateResponse>(
+      `/api/fsm/state?robot_id=${encodeURIComponent(robotId)}`,
+    ),
+  fsmTransition: (input: FsmTransitionInput) =>
+    request<FsmTransitionResult>("/api/fsm/transition", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  fsmHistory: (robotId: string, limit = 20) =>
+    request<{ ok: boolean; items: FsmHistoryItem[] }>(
+      `/api/fsm/history?robot_id=${encodeURIComponent(robotId)}&limit=${limit}`,
+    ),
+
+  // libi_fleet 배차·교통 코어
+  fleetFeedWsUrl,
+  fleetMeta: () => request<FleetMeta>("/api/fleet/meta"),
+  fleetSnapshot: () =>
+    request<{ ok: boolean; snapshot: FleetSnapshot }>("/api/fleet/snapshot"),
+  fleetSubmitTask: (input: FleetTaskInput) =>
+    request<FleetTaskResult>("/api/fleet/task", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  fleetSetMode: (robot: string, mode: string) =>
+    request<FleetOpResult>("/api/fleet/mode", {
+      method: "POST",
+      body: JSON.stringify({ robot, mode }),
+    }),
+  fleetSetBattery: (robot: string, value: number) =>
+    request<FleetOpResult>("/api/fleet/battery", {
+      method: "POST",
+      body: JSON.stringify({ robot, value }),
+    }),
+  fleetSetPlugins: (dispatcher: string, traffic: string) =>
+    request<FleetPluginsResult>("/api/fleet/plugins", {
+      method: "POST",
+      body: JSON.stringify({ dispatcher, traffic }),
+    }),
+  fleetReloadNavgraph: () =>
+    request<FleetOpResult>("/api/fleet/navgraph/reload", { method: "POST" }),
 };
+
+// ── FSM + BT (2단계) ─────────────────────────────────────────────────────────
+// 상태 이름과 간선은 절대 여기에 적지 않는다. 전부 GET /api/fsm/model 응답에서 온다
+// (INSTRUCTION.md: "전이 박스와 화면이 어긋나지 않도록 한 곳에서 정의를 읽어 렌더링한다").
+// backend/tests/test_no_frontend_state_literals.py 가 이를 감시한다.
+
+export interface FsmEdge {
+  source: string;
+  target: string;
+  trigger: string;
+  guard: string;
+}
+
+export interface FsmModel {
+  states: string[];
+  descriptions: Record<string, string>;
+  edges: FsmEdge[];
+  allowed_targets: Record<string, string[]>;
+  mermaid: string;
+  start: string;
+  any: string;
+}
+
+/** py_trees 노드 상태 — FSM 상태 이름과는 무관하다. */
+export type BtNodeStatus = "SUCCESS" | "FAILURE" | "RUNNING" | "INVALID";
+
+export interface FsmTreeNode {
+  name: string;
+  status: BtNodeStatus;
+  children: FsmTreeNode[];
+}
+
+export interface FsmSnapshot {
+  current_state: string | null;
+  previous_state: string | null;
+  active_branch: string | null;
+  error_code: string;
+  battery_percent: number | null;
+  is_docked: boolean | null;
+  tree: FsmTreeNode | null;
+  transitioned_at: number;
+  stale: boolean;
+}
+
+export interface FsmStateResponse {
+  ok: boolean;
+  robot_id: string;
+  snapshot: FsmSnapshot | null;
+  allowed_targets: string[];
+  reason?: string;
+}
+
+export interface FsmTransitionInput {
+  robot_id: string;
+  target_state: string;
+  force: boolean;
+}
+
+export interface FsmTransitionResult {
+  accepted: boolean;
+  current_state: string;
+  reason: string;
+}
+
+export interface FsmHistoryItem {
+  id: number;
+  robot_id: string;
+  from_state: string;
+  to_state: string;
+  forced: boolean;
+  accepted: boolean;
+  reason: string;
+  admin_username: string;
+  created_at: string;
+}
 
 export type MarkerActionType =
   | "none" | "dock" | "rotate" | "move" | "lcd_emotion" | "lcd_text" | "lcd_image";
@@ -894,4 +1026,82 @@ export interface RobotSavedMap {
   pgm: string | null;
   mtime: number;
   size_kb: number;
+}
+
+// ── libi_fleet 배차·교통 코어 ─────────────────────────────────────────────────
+// 상태 8종은 여기에 적지 않는다 — GET /api/fleet/meta 가 libi_modes 정의를 내려준다.
+
+export interface FleetMeta {
+  ok: boolean;
+  states: string[];
+  dispatchers: string[];
+  traffics: string[];
+  domain_id: number;
+}
+
+/**
+ * fleet_node 는 로봇의 상태·배터리를 어떤 토픽으로도 발행하지 않는다.
+ * 그래서 `state`/`battery` 는 "이 패널로 마지막에 설정한 값"이고, 출처가 `*_source` 에 실려 온다.
+ * `"unknown"` 이면 아직 아무도 설정하지 않아 fleet 내부값을 모른다는 뜻이다.
+ */
+export interface FleetRobotRow {
+  name: string;
+  x: number | null;
+  y: number | null;
+  task_id: string;
+  task_state: string;
+  progress: number;
+  busy: boolean;
+  goal_vertex: number | null;
+  held_nodes: number[];
+  state: string | null;
+  state_source: "panel" | "unknown";
+  battery: number | null;
+  battery_source: "panel" | "unknown";
+  stale: boolean;
+}
+
+export interface FleetTaskEvent {
+  task_id: string;
+  state: string;
+  robot_id: string;
+  progress: number;
+  at: number;
+}
+
+export interface FleetSnapshot {
+  robots: FleetRobotRow[];
+  tasks: FleetTaskEvent[];
+  occupancy: Record<string, string>;
+  routes: Record<string, number[][]>;
+  goals: Record<string, number>;
+  plugins: { dispatcher: string; traffic: string };
+  linked: boolean;
+  domain_id: number;
+  stale: boolean;
+}
+
+export interface FleetTaskInput {
+  dropoff: string;
+  robot?: string;
+  arm_actions?: number;
+  task_type?: string;
+}
+
+export interface FleetTaskResult {
+  ok: boolean;
+  accepted: boolean;
+  task_id: string;
+  /** fleet_node 가 준 사유를 그대로 — bad_goal_vertex / robot_stopped / insufficient_battery … */
+  reason: string;
+}
+
+export interface FleetOpResult {
+  ok: boolean;
+  reason: string;
+}
+
+export interface FleetPluginsResult extends FleetOpResult {
+  active_dispatcher: string;
+  active_traffic: string;
 }

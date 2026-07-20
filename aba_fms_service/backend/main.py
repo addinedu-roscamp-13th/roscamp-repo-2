@@ -6,7 +6,7 @@ from app.database import AdminSessionLocal, init_db
 from app.models import Admin
 from app.hardware.camera_stream import camera as camera_hw
 from app.hardware.pinky_greeting_monitor import pinky_greeting_monitor
-from app.routers import arm, aruco_dock, auth, camera, chat, dashboard, dev, drive, human_follow_robot, maps, marker_actions, mission_control, nav, pinky_yolo, robot, robot_learning, robots, ros, users, webrtc_robot
+from app.routers import admin_follow, arm, aruco_dock, auth, camera, chat, dashboard, dev, drive, fleet, fsm, human_follow_robot, maps, marker_actions, mission_control, nav, pinky_yolo, robot, robot_learning, robots, ros, users, webrtc_robot
 from app.security import hash_password
 
 app = FastAPI(title="Labi Bot Admin API", version="1.0.0")
@@ -28,6 +28,9 @@ app.include_router(robot.router)
 app.include_router(robot_learning.router)
 app.include_router(robots.router)
 app.include_router(drive.router)
+app.include_router(fsm.router)
+app.include_router(fleet.router)
+app.include_router(admin_follow.router)
 app.include_router(ros.router)
 app.include_router(maps.router)
 app.include_router(mission_control.router)
@@ -150,6 +153,14 @@ async def startup():
     # 플릿 텔레메트리(도메인 87 구독 캐시) — /api/control/state 를 HTTP 프록시 없이 응답
     from app import fleet_telemetry
     fleet_telemetry.start()
+
+    # libi_modes FSM 링크(상태/BT 스냅샷 구독 + 전이 요청 채널) — /api/fsm/* 가 읽는 캐시
+    from app import fsm_link
+    fsm_link.start()
+
+    # libi_fleet 배차·교통 링크(fleet_ws/fleet_node 서비스 호출 + 피드 구독) — /api/fleet/* 가 읽는 캐시
+    from app import fleet_link
+    fleet_link.start()
 
     # 주행로봇 근접 안전 코디네이터 백그라운드 시작 (설정은 DB에서 로드; 기본 ON)
     from app.fleet_coordinator import coordinator
