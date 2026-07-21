@@ -96,6 +96,15 @@ public:
     //    (NavFn 의 전위장 고유 실패 모드였다 — send_path 주석 참고).
     full_path_ = declare_parameter<bool>("full_path", false);
 
+    // 이동 중 같은 경로를 몇 틱마다 다시 발행할지(150ms 틱). 0 이면 재발행 안 함.
+    //
+    // ⚠️ **왜 필요한가**: send_path 는 노드가 바뀔 때 딱 한 번만 발행한다. 로봇 쪽
+    // 드라이버가 그 한 번을 놓치면(브릿지 순단·기동 타이밍) 아무도 다시 알려주지 않고,
+    // fleet_node 는 t.moving=true 로 도착만 기다려 **주문이 영구 정지**한다.
+    // 실측: GRANT 는 나갔는데 드라이버 로그가 0건이었고 로봇은 그 자리에 계속 서 있었다.
+    // 드라이버는 같은 목적지면 무시하므로(주행 중 끊김 없음) 재발행은 안전하다.
+    resend_ticks_ = declare_parameter<int>("resend_ticks", 7);   // ≈1초
+
     // 순회(patrol) 모드: 켜지면 idle 로봇이 patrol_route(외곽 루프)를 무한 순회.
     patrol_ = declare_parameter<bool>("patrol", true);
     // "auto"(기본) → 우/하 우선 규칙으로 순회 루프 생성(그래프 로드 후). 그 외는 수동 정점 목록.
@@ -350,6 +359,18 @@ private:
             continue;
           }
         }
+      }
+
+      // 이동 중이면 같은 경로를 주기적으로 다시 알려준다(놓친 명령 자가 복구).
+      if (t.moving && resend_ticks_ > 0 && ++t.resend_tick >= resend_ticks_) {
+        t.resend_tick = 0;
+        std::vector<int> again;
+        if (full_path_) {
+          for (size_t k = t.idx; k < t.path.size(); ++k) { again.push_back(t.path[k]); }
+        } else {
+          again.push_back(t.path[t.idx]);
+        }
+        send_path(t.robot, r.x, r.y, again);
       }
 
       if (!t.moving) {
@@ -749,6 +770,7 @@ private:
   int stuck_ticks_{0};   // 0 = 무진행 감지 비활성
   double arrive_radius_{kArriveDefault};   // 도착 판정 반경(m) — 맵 축척마다 다름
   bool full_path_{false};                  // true 면 남은 정점 전부 전송(단일 로봇 디버깅용)
+  int resend_ticks_{7};                    // 이동 중 경로 재발행 주기(틱). 0=끔
   bool patrol_{false};
   std::vector<int> patrol_route_;
   std::map<std::string, std::string> robot_mode_;   // 로봇 → PATROL|IDLE|STOP|CHARGE

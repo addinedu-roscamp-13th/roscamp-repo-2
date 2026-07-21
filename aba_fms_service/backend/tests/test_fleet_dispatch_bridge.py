@@ -41,3 +41,58 @@ def test_foreign_task_is_never_touched():
 def test_idle_robot_is_not_orphan():
     robots = [{"name": "Pinkysim", "busy": False, "task_id": ""}]
     assert find_orphans(robots, live_ids=set()) == []
+
+
+# ── 팔 다리는 로봇 BT 로 간다 ────────────────────────────────────────────────
+#
+# 예전엔 파이썬 타이머로 "성공했다 치기" 를 해서 로봇 BT(WorkingBranch/ArmExec)가 아예
+# 안 돌았다. 그러면 FSM 이 WORKING 으로 전이되지 않아 관제 상태·배차 판정이 실제와
+# 어긋나고, BT 의 CommandTimeout·FaultDetected 방어도 걸리지 않는다.
+
+import app.fleet_dispatch_bridge as bridge
+from app.fleet_orchestrator import Leg, LegType
+
+
+def _arm_leg():
+    return Leg(LegType.PERFORM_ACTION, {"action": "pick", "book": "B1", "at": "문학-1"})
+
+
+def test_arm_leg_goes_to_robot_bt(monkeypatch):
+    sent = {}
+
+    def fake_send(robot, action, args=None):
+        sent.update(robot=robot, action=action, args=args)
+        return "cmd-123"
+
+    monkeypatch.setattr(bridge.fleet_telemetry, "send_command_async", fake_send)
+    monkeypatch.setattr(bridge, "ARM_VIA_BT", True)
+
+    cmd_id = bridge.real_dispatch("t1", "Pinky-3", _arm_leg())
+    assert cmd_id == "cmd-123", "fleet_cmd 가 준 id 를 그대로 cmd_id 로 쓴다"
+    assert sent["robot"] == "Pinky-3"
+    assert sent["action"] == "perform_action"
+    assert sent["args"]["action"] == "pick"
+
+
+def test_arm_leg_falls_back_to_stub_without_link(monkeypatch):
+    """브릿지 미기동·로봇 오프라인이면 조용히 멈추지 말고 스텁으로 내려간다."""
+    monkeypatch.setattr(bridge.fleet_telemetry, "send_command_async",
+                        lambda robot, action, args=None: None)
+    monkeypatch.setattr(bridge, "ARM_VIA_BT", True)
+    monkeypatch.setattr(bridge, "ARM_AUTO", False)
+
+    cmd_id = bridge.real_dispatch("t1", "Pinky-3", _arm_leg())
+    assert cmd_id.startswith("arm-"), "스텁 id 로 떨어져야 한다"
+
+
+def test_cmd_result_completes_the_leg(monkeypatch):
+    """/fleet_cmd_result 가 오면 그 id 로 다리를 완료 처리한다."""
+    calls = []
+    monkeypatch.setattr(bridge, "_orc",
+                        lambda: type("O", (), {"on_result": lambda s, i, ok, m="": calls.append((i, ok))})())
+    bridge.on_cmd_result({"id": "cmd-123", "ok": True, "status": 200})
+    assert calls == [("cmd-123", True)]
+
+
+def test_cmd_result_without_id_is_ignored():
+    bridge.on_cmd_result({"ok": True})       # 예외가 나면 구독 스레드가 죽는다

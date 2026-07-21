@@ -12,13 +12,17 @@ dispatcher 플러그인이 정하게 두고, 우리는 그 결과를 받아 다�
 - `NAVIGATE` → `fleet_link.submit_task(dropoff=waypoint, robot=robot)`.
   fleet 이 발급한 `task_id` 를 **orchestrator 의 cmd_id 로 그대로 쓴다** — 완료 신호가
   같은 id 로 돌아오므로 매핑 표가 따로 필요 없다.
-- `PERFORM_ACTION` → 팔(`libi_handy_controller`)이 아직 **스텁**이다. 실제 팔 배선 전까지는
-  즉시 성공 처리하고 로그에 `[arm-stub] skipped` 를 남긴다. 그래야 주행→팔→주행 시퀀스
-  전체를 sim 에서 끝까지 돌려볼 수 있다. `LIBI_ARM_STUB=0` 으로 끄면 미배선 실패로 떨어진다.
+- `PERFORM_ACTION` → **로봇 BT 로 보낸다.** `fleet_telemetry.send_command_async` 가
+  `/fleet_cmd` 로 내려보내면 libi_modes 의 WorkingBranch 안 `ArmExec` 가 실행하고
+  `/fleet_cmd_result` 로 회신한다. 팔이 아직 스텁이라도 경로는 진짜여서, 실제 팔이
+  붙으면 이 코드는 그대로 둔 채 드라이버만 바뀌면 된다.
+  링크가 없으면(브릿지 미기동·로봇 오프라인) 스텁으로 폴백한다 — 그때는 기본이
+  **관제에서 사람이 넘기기**(`LIBI_ARM_AUTO=1` 이면 자동).
 
-## 완료 신호
-`fleet_link` 의 task_state 훅으로 들어온다. `COMPLETED`/`FAILED` 일 때만 orchestrator 에
-알린다(`ASSIGNED`/`EXECUTING` 은 진행 중이라 무시).
+## 완료 신호 (두 갈래)
+- 주행: `fleet_link` 의 task_state 훅. `COMPLETED`/`FAILED` 만 전달(진행 중은 무시).
+- 팔:   `fleet_telemetry` 의 cmd_result 훅. 보낼 때 받은 id 를 그대로 cmd_id 로 써서
+        매핑 표가 없다.
 """
 
 from __future__ import annotations
@@ -28,7 +32,7 @@ import logging
 import os
 import threading
 
-from app import fleet_link
+from app import fleet_link, fleet_telemetry
 from app.fleet_orchestrator import LegType
 
 log = logging.getLogger("fleet_dispatch_bridge")
@@ -37,6 +41,27 @@ log = logging.getLogger("fleet_dispatch_bridge")
 ARM_STUB = os.environ.get("LIBI_ARM_STUB", "1") != "0"
 #: 팔 스텁이 "동작한 척" 하는 시간(초). 0 이면 dispatch 안에서 재진입할 수 있어 반드시 > 0.
 ARM_STUB_DELAY_SEC = float(os.environ.get("LIBI_ARM_STUB_DELAY", "1.0"))
+
+#: 팔 다리를 로봇 BT 로 보낼지. **기본 켜짐.**
+#
+# 로봇 BT(libi_modes)의 WorkingBranch 안에 `ArmExec` 가 이미 있고, `/fleet_cmd` 로 내려온
+# 명령을 blackboard 에서 집어 실행한 뒤 `/fleet_cmd_result` 로 회신한다 — 이 경로가 원래
+# 설계다(fleet_orchestrator_service 의 docstring 에도 그렇게 적혀 있다).
+# 예전엔 그걸 우회해 파이썬 타이머로 "성공했다 치기" 를 했다. 그러면 로봇 FSM 이 WORKING
+# 으로 전이되지 않아 관제의 상태·배차 판정이 실제와 어긋났고, BT 의 CommandTimeout·
+# FaultDetected 같은 방어도 전혀 걸리지 않았다.
+# 링크가 없으면(브릿지 미기동·로봇 오프라인) 아래 스텁 경로로 자동 폴백한다.
+ARM_VIA_BT = os.environ.get("LIBI_ARM_VIA_BT", "1") == "1"
+
+#: 팔 다리를 자동으로 완료 처리할지 (BT 경로가 없을 때의 스텁 동작).
+#
+# 예전엔 팔 다리가 1초 뒤 저절로 완료돼서, 화면에서 집기/놓기 단계가 순식간에 지나갔다.
+# 팔이 실제로 붙기 전까지는 사람이 "지금 집었다"를 눈으로 확인하고 넘기는 편이 맞다.
+# 켜려면 LIBI_ARM_AUTO=1 (로봇 없이 시퀀스만 빠르게 훑고 싶을 때).
+#
+# 끈 상태에서는 팔 다리가 대기로 남고, 관제 배차 화면의 **「현재 다리 완료 처리」**
+# 버튼(POST /api/fleet/order/{id}/advance)이 다음으로 넘긴다.
+ARM_AUTO = os.environ.get("LIBI_ARM_AUTO", "0") == "1"
 
 _arm_seq = itertools.count(1)
 #: 진행 중인 팔 스텁 타이머 — 프로세스 종료 시 남지 않게 참조를 들고 있는다.
@@ -163,12 +188,36 @@ def real_dispatch(task_id: str, robot: str, leg) -> str:
         where = leg.params.get("at", "?")
         if not ARM_STUB:
             raise RuntimeError("팔 배선 없음 (LIBI_ARM_STUB=0)")
+        # ── 1순위: 로봇 BT 로 보낸다 ──────────────────────────────────────
+        if ARM_VIA_BT:
+            cmd_id = fleet_telemetry.send_command_async(
+                robot, action="perform_action",
+                args={"action": action, "book": leg.params.get("book", ""), "at": where},
+            )
+            if cmd_id:
+                log.info(
+                    "[arm] %s NAVIGATE→BT %s(%s) at %s robot=%s cmd=%s",
+                    task_id, action, leg.params.get("book", ""), where, robot, cmd_id,
+                )
+                return cmd_id
+            log.warning(
+                "[arm] %s 로봇 명령 링크 없음(브릿지 미기동/오프라인) → 스텁으로 폴백", task_id,
+            )
+
+        # ── 폴백: 스텁 ────────────────────────────────────────────────────
         cmd_id = f"arm-{next(_arm_seq)}"
-        log.info(
-            "[arm-stub] skipped %s(%s) at %s — 팔 미배선이라 즉시 완료 처리 cmd=%s",
-            action, leg.params.get("book", ""), where, cmd_id,
-        )
-        _complete_arm_later(cmd_id)
+        if ARM_AUTO:
+            log.info(
+                "[arm-stub] %s(%s) at %s — 자동 완료 처리 cmd=%s (LIBI_ARM_AUTO=1)",
+                action, leg.params.get("book", ""), where, cmd_id,
+            )
+            _complete_arm_later(cmd_id)
+        else:
+            log.info(
+                "[arm-stub] %s(%s) at %s — **관제에서 넘길 때까지 대기** cmd=%s "
+                "(배차 화면의 「현재 다리 완료 처리」)",
+                action, leg.params.get("book", ""), where, cmd_id,
+            )
         return cmd_id
 
     raise RuntimeError(f"알 수 없는 다리 종류: {leg.type}")
@@ -188,6 +237,23 @@ def on_task_state(payload: dict) -> None:
         _orc().on_result(cmd_id, ok, state)
     except Exception:  # noqa: BLE001
         log.exception("[dispatch] on_result 실패 cmd=%s", cmd_id)
+
+
+def on_cmd_result(res: dict) -> None:
+    """`/fleet_cmd_result` 훅 — 로봇 BT 가 끝낸 팔 다리를 orchestrator 에 알린다.
+
+    `send_command_async` 가 돌려준 id 를 그대로 다리의 cmd_id 로 쓰므로 매핑 표가 없다.
+    우리 것이 아닌 id 는 orchestrator 가 알아서 무시한다(on_result 가 조용히 넘어간다).
+    """
+    cmd_id = str(res.get("id") or "")
+    if not cmd_id:
+        return
+    ok = bool(res.get("ok"))
+    log.info("[arm] BT 결과 cmd=%s ok=%s status=%s", cmd_id, ok, res.get("status"))
+    try:
+        _orc().on_result(cmd_id, ok, str(res.get("msg") or ""))
+    except Exception:  # noqa: BLE001
+        log.exception("[arm] on_result 실패 cmd=%s", cmd_id)
 
 
 #: 주문을 놓아줄 때 fleet_node 에 넣는 모드.
@@ -289,6 +355,7 @@ def install() -> None:
     svc.set_dispatch(real_dispatch)
     svc.set_release(real_release)
     fleet_link.add_task_state_hook(on_task_state)
+    fleet_telemetry.add_cmd_result_hook(on_cmd_result)
 
     # 고아 task 화해 — 백엔드만 재기동한 경우를 자동으로 되돌린다.
     if RECONCILE_SEC > 0:

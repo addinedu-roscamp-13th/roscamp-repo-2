@@ -131,7 +131,14 @@ class PathRequestDriver(Node):
             f"경로 수신 task={msg.task_id} 경유점 {len(pts)}개 → "
             f"{dest[0]:.2f},{dest[1]:.2f}"
         )
-        self._cancel()
+        # ⚠️ **취소하지 않고 그대로 새 목표를 보낸다.**
+        # cancel_goal_async() 를 부르면 컨트롤러가 "Cancellation was successful.
+        # Stopping the robot." 로 로봇을 **완전히 세운 뒤** 다시 출발한다. 정점 간격이
+        # 20cm 뿐이라 노드마다 정지-재출발이 반복돼 움직임이 뚝뚝 끊겼다(실측 로그).
+        # nav2 액션 서버는 새 goal 이 오면 스스로 선점(preempt)하므로, 취소 없이 보내면
+        # 정지 명령 없이 새 경로로 갈아탄다 — 이어지듯 움직인다.
+        # 옛 콜백은 _goal_seq 를 올려 무효화하면 충분하다.
+        self._invalidate()
         self._points, self._idx, self._task_id, self._dest = pts, 0, msg.task_id, dest
         self._send_next()
 
@@ -229,13 +236,21 @@ class PathRequestDriver(Node):
         self._busy = False
         self._retry_after = self._now() + RETRY_COOLDOWN_SEC
 
-    def _cancel(self) -> None:
-        # seq 를 올려서 **취소한 목표의 뒤늦은 콜백을 전부 무효화**한다.
+    def _invalidate(self) -> None:
+        """진행 중이던 목표의 뒤늦은 콜백만 무효화한다 (로봇은 세우지 않는다).
+
+        목적지를 갈아탈 때 쓴다 — nav2 가 선점 처리하므로 취소가 필요 없다.
+        """
         self._goal_seq += 1
-        if self._goal_handle is not None:
-            self._goal_handle.cancel_goal_async()
-            self._goal_handle = None
+        self._goal_handle = None
         self._busy = False
+
+    def _cancel(self) -> None:
+        """진짜로 멈춰야 할 때만(빈 경로 = 정지 명령). 컨트롤러가 로봇을 세운다."""
+        handle, self._goal_handle = self._goal_handle, None
+        self._invalidate()
+        if handle is not None:
+            handle.cancel_goal_async()
 
 
 def main() -> None:

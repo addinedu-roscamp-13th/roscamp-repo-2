@@ -49,6 +49,8 @@ struct ActiveTask
   double last_x{0}, last_y{0};   // 직전 틱 위치 — 무진행(stuck) 감지용
   int no_move{0};          // 이동 지시 상태에서 무진행 틱 수
   int wait_ticks{0};       // 일반 WAIT 지속 틱 수(타임드 우회용). 진전 시 0 리셋.
+  int resend_tick{0};      // 이동 중 경로 재발행 카운터 — 아래 주석 참고
+
 };
 
 }  // namespace libi_fleet
