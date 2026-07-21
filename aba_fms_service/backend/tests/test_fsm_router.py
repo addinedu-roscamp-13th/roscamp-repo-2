@@ -83,34 +83,44 @@ def test_unknown_current_state_is_rejected():
 
 
 # ── 식별자 정규화 ─────────────────────────────────────────────────────────────
+#
+# FSM 경로의 정본은 **로봇이 스스로 발행한 robot_id** 다. fsm_link 가 그 문자열을
+# 그대로 캐시 키로 쓰고, 로봇 쪽(state_io.py)도 전이 요청을 그 문자열과 정확히 비교해
+# 거른다. 그래서 resolve_robot_id 는 캐시에 실제로 있는 키를 돌려줘야 한다.
+#
+# 예전엔 여기서 브릿지 키(Pinky-3 → pinky3)로 바꿨는데, 그건 토픽 접두사를 쓰는
+# 텔레메트리 경로의 규칙이라 FSM 캐시(Pinky-3)와 어긋났다. 화면은 늘 "수신 대기" 였고
+# 전이 요청은 로봇이 이름 불일치로 버렸다. 아래 테스트가 그 회귀를 막는다.
 
-def test_robot_name_resolves_to_bridge_key():
-    """UI 는 'Pinky-1' 을 갖고 있고 ROS 전송 계층은 'pinky1' 을 쓴다."""
-    assert resolve_robot_id("Pinky-1") == "pinky1"
-    assert resolve_robot_id("Pinky-3") == "pinky3"
-
-
-def test_already_resolved_key_passes_through():
-    assert resolve_robot_id("pinky1") == "pinky1"
-
-
-def test_unknown_identifier_still_resolves():
-    """미등록 로봇을 조용히 버리면 '왜 아무것도 안 보이지'가 된다 — 규칙을 그대로 적용해
-    흘려보내고, 상태가 안 오면 '수신 대기'로 드러나게 한다."""
-    assert resolve_robot_id("42") == "42"
-    assert resolve_robot_id("Unregistered") == "unregistered"
+def test_exact_id_from_cache_wins():
+    """로봇이 발행한 이름 그대로 들어오면 그대로 나간다."""
+    assert resolve_robot_id("Pinky-3", known=["Pinky-3", "Pinkysim"]) == "Pinky-3"
+    assert resolve_robot_id("Pinkysim", known=["Pinky-3", "Pinkysim"]) == "Pinkysim"
 
 
-def test_resolver_reuses_fleet_telemetry_rule():
-    """규칙을 복사하지 않고 fleet_telemetry.bridge_key 를 그대로 쓴다."""
+def test_notation_difference_resolves_to_cached_id():
+    """하이픈·대소문자 차이는 흡수하되, 돌려주는 값은 **캐시의 원본 키**다.
+    브릿지 키를 돌려주면 로봇이 전이 요청을 버린다."""
+    assert resolve_robot_id("pinky3", known=["Pinky-3"]) == "Pinky-3"
+    assert resolve_robot_id("PINKY_3", known=["Pinky-3"]) == "Pinky-3"
+    assert resolve_robot_id("PinkySim", known=["Pinkysim"]) == "Pinkysim"
+
+
+def test_never_returns_bridge_key():
+    """회귀 방지 — 브릿지 키로 내려보내면 fsm_link.snapshot 이 영원히 None 이다."""
     from app.fleet_telemetry import bridge_key
 
-    for name in ("Pinky-1", "Pinky-2", "Pinky-3", "PinkySim", "pinky1", "New-Robot-9"):
-        assert resolve_robot_id(name) == bridge_key(name)
+    assert bridge_key("Pinky-3") == "pinky3"  # 텔레메트리 규칙 자체는 그대로다
+    assert resolve_robot_id("Pinky-3", known=["Pinky-3"]) != bridge_key("Pinky-3")
 
 
-def test_new_robot_needs_no_code_change():
-    """예전 딕셔너리 방식에서는 로봇을 등록해도 매핑을 추가하지 않으면 그 로봇만
-    조용히 누락됐다. 규칙 기반이라 등록만으로 잡힌다."""
-    assert resolve_robot_id("Pinky-4") == "pinky4"
-    assert resolve_robot_id("PinkyLab") == "pinkyLab"
+def test_unknown_identifier_passes_through_unchanged():
+    """캐시에 없는 이름을 조용히 버리거나 변형하면 '왜 안 보이지'가 된다.
+    그대로 흘려보내고 화면에 '수신 대기'로 드러나게 한다."""
+    assert resolve_robot_id("42", known=["Pinky-3"]) == "42"
+    assert resolve_robot_id("Unregistered", known=["Pinky-3"]) == "Unregistered"
+    assert resolve_robot_id("Pinky-4", known=[]) == "Pinky-4"
+
+
+def test_empty_identifier_is_not_matched():
+    assert resolve_robot_id("", known=["Pinky-3"]) == ""

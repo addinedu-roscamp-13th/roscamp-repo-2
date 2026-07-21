@@ -30,6 +30,7 @@ import time
 from typing import Any
 
 # 상태 어휘는 libi_modes 가 소유한다. 여기서 8종을 다시 적지 않는다.
+from app import fsm_link
 from app.fsm_model import STATES
 
 # fleet_node 가 도는 도메인. 아직 확정되지 않았다 — 확정되면 배포 설정에서 넣는다.
@@ -87,6 +88,25 @@ def _empty_robot() -> dict[str, Any]:
         "goal_vertex": None,
         "_last_ros_at": 0.0,
     }
+
+
+# TaskState 를 받았을 때 추가로 알려줄 곳들. orchestrator 배선(fleet_dispatch_bridge)이
+# 여기에 자기 핸들러를 건다 — fleet_link 가 orchestrator 를 직접 알면 순환 의존이 된다.
+# 훅에서 난 예외는 삼킨다: 구독 스레드가 죽으면 텔레메트리 전체가 멈추기 때문이다.
+_task_state_hooks: list[Any] = []
+
+
+def add_task_state_hook(fn) -> None:
+    if fn not in _task_state_hooks:
+        _task_state_hooks.append(fn)
+
+
+def _fire_task_state_hooks(payload: dict) -> None:
+    for fn in list(_task_state_hooks):
+        try:
+            fn(payload)
+        except Exception as exc:  # noqa: BLE001 — 훅 하나가 구독 스레드를 죽이면 안 된다
+            print(f"[fleet_link] task_state 훅 실패: {exc}", flush=True)
 
 
 def apply_task_state(
@@ -157,17 +177,37 @@ def build_rows(
     echo: dict[str, dict[str, Any]],
     goals: dict[str, int],
     occupancy: dict[str, str],
+    fsm: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """패널이 그리는 로봇 표를 만든다.
 
-    state/battery 는 fleet 이 발행하지 않으므로 `echo`(이 패널로 설정한 값)에서 온다.
-    출처를 `*_source` 로 함께 실어 보내, UI 가 '읽어온 값'처럼 보여주지 않게 한다.
+    state/battery 는 fleet_node 의 RobotState 에 없다. 출처가 둘이라 우선순위를 둔다:
+
+      1. `fsm`  — 로봇의 libi_modes 가 `/libi/fsm_state` 로 실제 발행한 값 (정본)
+      2. `echo` — 이 패널에서 손으로 설정한 값 (sim·디버그, FSM 없는 장비용)
+
+    FSM 을 우선하는 이유: fleet_node 도 `on_fsm_state` 에서 `robot_mode_` 를 무조건
+    덮어쓴다. 패널 값을 우선하면 **화면과 fleet_node 의 배차 판단이 어긋난다**
+    (화면엔 PATROL 인데 fleet_node 는 RETURNING 으로 알고 배차를 안 하는 식).
+    수신이 끊긴(stale) FSM 은 쓰지 않고 패널 값으로 내려간다.
+
+    예전엔 `echo` 뿐이라, 로봇이 멀쩡히 상태를 발행해도 패널에서 손으로 설정하지 않는 한
+    표의 state 가 늘 비어 배차 가능 대수가 0 으로 보였다.
+
+    출처를 `*_source` 로 함께 실어 보내, UI 가 어디서 온 값인지 구분하게 한다.
     """
+    fsm = fsm or {}
     names = set(robots) | set(echo)
     rows = []
     for name in sorted(names):
         base = robots.get(name, _empty_robot())
         ec = echo.get(name, {})
+        # 끊긴 FSM 캐시는 없는 셈 친다 — 마지막으로 본 상태를 현재처럼 보여주면 안 된다.
+        fs = fsm.get(name) or {}
+        if fs.get("stale"):
+            fs = {}
+        fsm_state = fs.get("current_state")
+        fsm_batt = fs.get("battery_percent")
         held = sorted(int(n) for n, who in occupancy.items() if who == name)
         rows.append({
             "name": name,
@@ -179,10 +219,16 @@ def build_rows(
             "busy": base.get("busy", False),
             "goal_vertex": goals.get(name),
             "held_nodes": held,
-            "state": ec.get("state"),
-            "state_source": "panel" if ec.get("state") else "unknown",
-            "battery": ec.get("battery"),
-            "battery_source": "panel" if ec.get("battery") is not None else "unknown",
+            "state": fsm_state or ec.get("state"),
+            "state_source": (
+                "fsm" if fsm_state else ("panel" if ec.get("state") else "unknown")
+            ),
+            "battery": fsm_batt if fsm_batt is not None else ec.get("battery"),
+            "battery_source": (
+                "fsm"
+                if fsm_batt is not None
+                else ("panel" if ec.get("battery") is not None else "unknown")
+            ),
             "stale": (time.time() - base.get("_last_ros_at", 0.0)) > FRESH_SEC,
         })
     return rows
@@ -197,8 +243,10 @@ def is_valid_state(state: str) -> bool:
 # ── 캐시 접근 ────────────────────────────────────────────────────────────────
 
 def snapshot() -> dict[str, Any]:
+    # fsm 캐시는 **_lock 을 잡기 전에** 읽는다. 락 두 개를 겹쳐 잡을 이유가 없다.
+    fsm_states = fsm_link.all_snapshots()
     with _lock:
-        rows = build_rows(_robots, _echo, _goals, _occupancy)
+        rows = build_rows(_robots, _echo, _goals, _occupancy, fsm_states)
         return {
             "robots": rows,
             "tasks": list(_tasks),
@@ -410,6 +458,7 @@ def _fleet_thread() -> None:
                 apply_task_state(_robots, _tasks, payload)
                 touch()
             _notify()
+            _fire_task_state_hooks(payload)
 
         def on_robot_state(msg) -> None:
             payload = {

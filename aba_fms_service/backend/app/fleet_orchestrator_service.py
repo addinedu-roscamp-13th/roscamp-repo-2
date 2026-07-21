@@ -54,6 +54,14 @@ def set_dispatch(dispatch_leg) -> None:
     _orc._dispatch_leg = dispatch_leg  # noqa: SLF001 — 서비스 층이 코어를 소유
 
 
+def set_release(release_robot) -> None:
+    """취소·실패 시 로봇을 놓아주는 훅을 꽂는다(코어 재생성 없이).
+
+    안 꽂으면 코어는 상태만 바꾸고 로봇은 계속 움직인다 — 스텁 모드에선 그게 맞다.
+    """
+    _orc._release_robot = release_robot  # noqa: SLF001
+
+
 def reset(dispatch_leg=None) -> None:
     """싱글턴을 새 orchestrator 로 교체(테스트 격리용)."""
     global _orc

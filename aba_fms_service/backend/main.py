@@ -9,7 +9,7 @@ from app.hardware.pinky_greeting_monitor import pinky_greeting_monitor
 from app.routers import admin_follow, arm, aruco_dock, auth, camera, chat, dashboard, dev, drive, fleet, fleet_order, fsm, human_follow_robot, maps, marker_actions, mission_control, nav, pinky_yolo, robot, robot_learning, robots, ros, users, voice, webrtc_robot
 from app.security import hash_password
 
-app = FastAPI(title="Labi Bot Admin API", version="1.0.0")
+app = FastAPI(title="LiBi Admin API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -163,6 +163,17 @@ async def startup():
     # libi_fleet 배차·교통 링크(fleet_ws/fleet_node 서비스 호출 + 피드 구독) — /api/fleet/* 가 읽는 캐시
     from app import fleet_link
     fleet_link.start()
+
+    # orchestrator ↔ fleet_node 실배선(핸드오프 6절 ①). 켜면 주문의 주행 다리가 실제로
+    # fleet_node 로 나가고, 완료는 task_states 훅으로 돌아온다. 로봇/sim 이 없을 땐 꺼두면
+    # 기존 _stub_dispatch 로 남아 패널에서 force-advance 로만 시퀀스를 본다.
+    import os as _os_disp
+    if _os_disp.environ.get("LIBI_REAL_DISPATCH") == "1":
+        from app import fleet_dispatch_bridge
+        fleet_dispatch_bridge.install()
+        print("[startup] orchestrator 실배선 활성화 (LIBI_REAL_DISPATCH=1)", flush=True)
+    else:
+        print("[startup] orchestrator 는 stub dispatch (LIBI_REAL_DISPATCH=1 로 실배선)", flush=True)
 
     # 주행로봇 근접 안전 코디네이터(Phase1). fleet_node 의 ReservationDeadlock 교통 플러그인이
     # 같은 문제를 더 정교하게 풀어 이걸 대체할 예정이다(결정 완료). 다만 플러그인이 실제로

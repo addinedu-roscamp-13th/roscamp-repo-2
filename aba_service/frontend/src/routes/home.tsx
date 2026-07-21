@@ -2,27 +2,39 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { AppShell } from "@/components/AppShell";
 import { LANGS, useI18n } from "@/lib/i18n";
 import { useSpeechRecognition, useSpeechSupported } from "@/lib/use-speech";
-import { useEffect } from "react";
-import { Mic, BookMarked, Map, Coffee, Sparkles, TrendingUp } from "lucide-react";
+import { useEffect, useState } from "react";
+import {
+  Mic,
+  BookMarked,
+  Map,
+  Search,
+  Sparkles,
+  TrendingUp,
+} from "lucide-react";
 import { BOOKS } from "@/lib/mock-data";
 import { Link } from "@tanstack/react-router";
 
 export const Route = createFileRoute("/home")({
-  head: () => ({ meta: [{ title: "Labi Bot — 홈" }] }),
+  head: () => ({ meta: [{ title: "LiBi — 홈" }] }),
   component: Home,
 });
 
 function Home() {
   const { lang, tr } = useI18n();
+  const [query, setQuery] = useState("");
   const supported = useSpeechSupported();
   const speechLang = LANGS.find((l) => l.code === lang)?.speech ?? "ko-KR";
-  const { listening, transcript, error, start, stop } = useSpeechRecognition(speechLang);
+  const { listening, transcript, error, start, stop } =
+    useSpeechRecognition(speechLang);
   const navigate = useNavigate();
 
   useEffect(() => {
     if (!listening && transcript.trim()) {
       const q = transcript.trim();
-      const id = setTimeout(() => navigate({ to: "/search", search: { q } }), 400);
+      const id = setTimeout(
+        () => navigate({ to: "/search", search: { q } }),
+        400,
+      );
       return () => clearTimeout(id);
     }
   }, [listening, transcript, navigate]);
@@ -48,7 +60,11 @@ function Home() {
             {listening ? (
               <span className="flex h-8 items-end">
                 {[0, 1, 2, 3, 4].map((i) => (
-                  <span key={i} className="listening-bar" style={{ animationDelay: `${i * 0.12}s` }} />
+                  <span
+                    key={i}
+                    className="listening-bar"
+                    style={{ animationDelay: `${i * 0.12}s` }}
+                  />
                 ))}
               </span>
             ) : (
@@ -61,18 +77,48 @@ function Home() {
             </p>
           )}
           {error === "unsupported" && (
-            <p className="mt-4 text-xs text-destructive">{tr("noSpeechSupport")}</p>
+            <p className="mt-4 text-xs text-destructive">
+              {tr("noSpeechSupport")}
+            </p>
           )}
           {error === "error" && (
             <p className="mt-4 text-xs text-destructive">{tr("micDenied")}</p>
           )}
         </section>
 
+        {/* 도서 검색 — 음성이 어려운 상황을 위한 텍스트 입구 */}
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            const q = query.trim();
+            if (q) navigate({ to: "/search", search: { q } });
+          }}
+          className="relative mt-2"
+        >
+          <Search className="pointer-events-none absolute left-4 top-1/2 size-5 -translate-y-1/2 text-muted-foreground" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={tr("searchPh")}
+            aria-label={tr("navSearch")}
+            className="h-14 w-full rounded-2xl border border-border bg-card pl-12 pr-4 text-sm text-foreground shadow-card outline-none placeholder:text-muted-foreground focus:ring-2 focus:ring-primary"
+          />
+        </form>
+
         {/* Quick menu */}
-        <section className="mt-2 grid grid-cols-3 gap-3">
-          <QuickCard to="/recommend" icon={TrendingUp} label={tr("bestseller")} tone="primary" />
-          <QuickCard to="/map" icon={Map} label={tr("storeMap")} tone="accent" />
-          <QuickCard to="/map" icon={Coffee} label={tr("cafe")} tone="muted" />
+        <section className="mt-3 grid grid-cols-2 gap-3">
+          <QuickCard
+            to="/recommend"
+            icon={TrendingUp}
+            label={tr("bestseller")}
+            tone="primary"
+          />
+          <QuickCard
+            to="/map"
+            icon={Map}
+            label={tr("storeMap")}
+            tone="accent"
+          />
         </section>
 
         {/* New arrivals */}
@@ -94,7 +140,9 @@ function Home() {
                 search={{ q: b.title[lang] }}
                 className="w-32 shrink-0 snap-start"
               >
-                <div className={`flex h-44 items-center justify-center rounded-xl bg-gradient-to-br ${b.color} text-5xl shadow-card`}>
+                <div
+                  className={`flex h-44 items-center justify-center rounded-xl bg-gradient-to-br ${b.color} text-5xl shadow-card`}
+                >
                   {b.cover}
                 </div>
                 <div className="mt-2 line-clamp-2 text-sm font-semibold text-foreground">
@@ -112,8 +160,12 @@ function Home() {
               <BookMarked className="size-5" />
             </div>
             <div className="flex-1">
-              <div className="text-sm font-bold text-foreground">{tr("navChat")}</div>
-              <div className="text-xs text-muted-foreground">{tr("chatPh")}</div>
+              <div className="text-sm font-bold text-foreground">
+                {tr("navChat")}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                {tr("chatPh")}
+              </div>
             </div>
             <Link
               to="/chat"
@@ -149,10 +201,14 @@ function QuickCard({
       to={to}
       className="flex aspect-square flex-col items-center justify-center gap-2 rounded-2xl border border-border bg-card p-3 text-center shadow-card transition-transform active:scale-95"
     >
-      <div className={`flex size-12 items-center justify-center rounded-xl ${tones[tone]}`}>
+      <div
+        className={`flex size-12 items-center justify-center rounded-xl ${tones[tone]}`}
+      >
         <Icon className="size-6" />
       </div>
-      <div className="text-xs font-semibold leading-tight text-foreground">{label}</div>
+      <div className="text-xs font-semibold leading-tight text-foreground">
+        {label}
+      </div>
     </Link>
   );
 }

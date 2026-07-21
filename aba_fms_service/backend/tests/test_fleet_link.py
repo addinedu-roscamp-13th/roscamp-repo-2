@@ -91,6 +91,51 @@ def test_rows_label_panel_set_values_as_panel_sourced():
     assert rows[0]["battery_source"] == "panel"
 
 
+def test_rows_prefer_live_fsm_state_over_panel():
+    """로봇이 실제로 발행한 상태가 정본이다.
+
+    fleet_node 도 on_fsm_state 에서 robot_mode_ 를 무조건 덮어쓴다. 패널 값을 우선하면
+    화면엔 PATROL 인데 fleet_node 는 RETURNING 으로 알고 배차를 안 하는, 추적 불가능한
+    불일치가 생긴다.
+    """
+    robots = {"Pinkysim": dict(fleet_link._empty_robot(), name="Pinkysim")}
+    echo = {"Pinkysim": {"state": "PATROL", "battery": 55.0}}
+    fsm = {"Pinkysim": {"current_state": "RETURNING", "battery_percent": 88.0}}
+    rows = fleet_link.build_rows(robots, echo, {}, {}, fsm)
+    assert rows[0]["state"] == "RETURNING"
+    assert rows[0]["state_source"] == "fsm"
+    assert rows[0]["battery"] == 88.0
+    assert rows[0]["battery_source"] == "fsm"
+
+
+def test_rows_fill_state_from_fsm_without_any_panel_setting():
+    """회귀 방지 — 예전엔 패널에서 손으로 설정해야만 state 가 찼다. 그래서 로봇이 멀쩡히
+    상태를 발행해도 표는 늘 비었고 '배차 가능 0 대'로 보였다."""
+    robots = {"Pinkysim": dict(fleet_link._empty_robot(), name="Pinkysim")}
+    fsm = {"Pinkysim": {"current_state": "PATROL", "battery_percent": None}}
+    rows = fleet_link.build_rows(robots, {}, {}, {}, fsm)
+    assert rows[0]["state"] == "PATROL"
+    assert rows[0]["state_source"] == "fsm"
+    assert rows[0]["battery_source"] == "unknown", "배터리는 안 왔으면 여전히 모른다"
+
+
+def test_rows_ignore_stale_fsm_and_fall_back_to_panel():
+    """수신이 끊긴 FSM 캐시를 현재 상태처럼 보여주면 안 된다."""
+    robots = {"Pinkysim": dict(fleet_link._empty_robot(), name="Pinkysim")}
+    echo = {"Pinkysim": {"state": "IDLE"}}
+    fsm = {"Pinkysim": {"current_state": "WORKING", "stale": True}}
+    rows = fleet_link.build_rows(robots, echo, {}, {}, fsm)
+    assert rows[0]["state"] == "IDLE"
+    assert rows[0]["state_source"] == "panel"
+
+
+def test_rows_without_fsm_argument_behave_as_before():
+    """fsm 인자는 선택이다 — 안 주면 예전 동작 그대로."""
+    robots = {"pinky1": dict(fleet_link._empty_robot(), name="pinky1")}
+    rows = fleet_link.build_rows(robots, {"pinky1": {"state": "IDLE"}}, {}, {})
+    assert rows[0]["state_source"] == "panel"
+
+
 def test_rows_include_robots_known_only_from_echo():
     """관측 전에 모드를 밀어 넣은 로봇도 표에 나와야 한다 — 안 그러면 '설정했는데 사라짐'."""
     rows = fleet_link.build_rows({}, {"pinky3": {"state": "IDLE"}}, {}, {})

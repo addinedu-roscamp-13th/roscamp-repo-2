@@ -6,6 +6,7 @@ INSTRUCTION.md 2단계. **폴링 API 를 만들지 않는다** — 실시간 갱
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
@@ -15,7 +16,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import fsm_audit, fsm_link, fsm_model
 from app.database import get_admin_db
 from app.deps import get_current_admin
-from app.fleet_telemetry import bridge_key
 from app.models import Admin
 from app.security import decode_token
 
@@ -28,19 +28,43 @@ HISTORY_DEFAULT_LIMIT = 20
 TASK_CANCELLED_SENTINEL = "__task_cancelled__"
 
 
-def resolve_robot_id(raw: str) -> str:
-    """UI 가 보낸 로봇 식별자를 ROS 전송 계층이 쓰는 브릿지 키로 정규화한다.
+def _match_key(s: str) -> str:
+    """비교 전용 정규화 — 하이픈·밑줄·공백을 지우고 대소문자를 무시한다.
 
-    이 레포에는 로봇 식별자가 세 가지 공간으로 존재한다:
-      - `rc_robots.id`        숫자 DB PK          (프론트 useActiveRobotId)
-      - `rc_robots.name`      "Pinky-1"           (프론트 useActiveRobotName)
-      - 브릿지 키            "pinky1"            (domain_bridge 토픽 접두사, fleet_status 응답)
-
-    FSM 링크는 도메인 브릿지를 타므로 **브릿지 키**를 정본으로 삼는다. 변환 규칙은
-    fleet_telemetry.bridge_key 하나뿐이다(복사하지 않는다). 이미 키 형태면 그대로
-    통과한다 — `pinky1` 을 넣어도 `pinky1` 이 나온다.
+    표기 차이를 흡수하려는 것뿐이라 **이 값을 밖으로 내보내지 않는다**
+    (resolve_robot_id 는 캐시에 있는 원본 키를 돌려준다).
     """
-    return bridge_key(raw)
+    return s.replace("-", "").replace("_", "").replace(" ", "").casefold()
+
+
+def resolve_robot_id(raw: str, known: Iterable[str] | None = None) -> str:
+    """UI 가 보낸 로봇 식별자를 **FSM 캐시에 실제로 들어있는 키**로 맞춘다.
+
+    FSM 경로의 정본은 로봇이 스스로 발행하는 `robot_id` 다. `/libi/fsm_state` 는
+    로봇별 네임스페이스가 없는 공용 토픽이고(domain_bridge 설정 주석 참고),
+    fsm_link 는 payload 의 `robot_id` 를 그대로 캐시 키로 쓴다. 로봇 쪽
+    (libi_modes `ros/state_io.py`)도 전이 요청을 그 문자열과 **정확히** 비교해 거른다.
+
+    그래서 여기서 브릿지 키(`Pinky-3` → `pinky3`)로 바꾸면 안 된다. 예전엔 그렇게
+    했는데 캐시엔 `Pinky-3` 로 들어있어 조회가 늘 빗나갔고(화면은 항상 "수신 대기"),
+    전이 요청도 로봇이 이름 불일치로 버렸다. 브릿지 키는 토픽 **접두사**를 쓰는
+    텔레메트리 경로(fleet_telemetry)의 규칙이지 FSM 경로의 규칙이 아니다.
+    같은 캐시를 읽는 admin_follow 도 원본 이름을 그대로 쓴다.
+
+    표기 차이(하이픈·대소문자)는 흡수하되 돌려주는 값은 **캐시의 원본 키**다.
+    캐시에 없으면 입력을 그대로 통과시킨다 — 조용히 버리면 "왜 안 보이지"가 되고,
+    상태가 안 오면 화면에 "수신 대기"로 드러나는 편이 낫다.
+    """
+    if not raw:
+        return raw
+    ids = list(fsm_link.known_ids() if known is None else known)
+    if raw in ids:
+        return raw
+    want = _match_key(raw)
+    for rid in ids:
+        if _match_key(rid) == want:
+            return rid
+    return raw
 
 
 class TransitionRequest(BaseModel):

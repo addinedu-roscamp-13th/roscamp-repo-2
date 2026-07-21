@@ -8,7 +8,19 @@
 namespace libi_fleet
 {
 
-constexpr double kArrive = 0.35;   // 도착 판정 거리(m)
+// 도착 판정 거리(m) — **맵 축척에 따라 달라져야 해서 파라미터(`arrive_radius`)로 뺐다.**
+// 이 값은 실제 건물 크기(수십 m) 기준 기본값이다.
+//
+// ⚠️ 맵마다 반드시 다음 범위 안에 있어야 한다:
+//     하한  nav2 의 xy_goal_tolerance
+//           (이보다 작으면 nav2 는 도착했는데 fleet_node 가 인정 안 해 그 노드에서 멈춘다)
+//     상한  navgraph 의 **최소 레인 길이**
+//           (이보다 크면 다음 노드가 이미 반경 안이라 안 움직이고 통과해 버린다)
+//
+// 실제로 arte2(1.26m × 2.16m 축소 맵, 최소 레인 0.062m)에서 이 기본값 0.35 를 그대로 쓰다
+// 로봇이 가만히 선 채로 fleet_node 만 0.15초마다 경로를 훑고 나갔고, path_request_driver 가
+// 매번 nav2 목표를 갈아치워 status=6(ABORTED)로 **출발하자마자 멈추는** 증상이 났다.
+constexpr double kArriveDefault = 0.35;
 
 // 교통 우선순위 인코딩(단일 int): tier(가장 큼) > task 나이(오래된=큼) > 배터리(낮은=큼).
 //   tier: 순회=0 · 작업=1 · 충전복귀(CHARGE)=2 · 완전막힘(STUCK, 동적)=3

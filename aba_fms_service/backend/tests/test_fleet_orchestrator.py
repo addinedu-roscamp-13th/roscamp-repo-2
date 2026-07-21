@@ -253,3 +253,57 @@ def test_multiple_tasks_tracked_independently():
     assert orc.get(b).status == TaskStatus.EXECUTING
     # b 는 c1 보고에 영향 안 받음
     assert orc.get(b).leg_idx == 0
+
+
+# ── 로봇 해제(취소·실패 시 배선 계층 통보) ────────────────────────────────────
+#
+# 코어는 fleet_node 를 모른다. 주문을 취소해도 **로봇은 계속 그 목적지로 간다** —
+# 화면의 주문은 사라졌는데 로봇만 혼자 움직이는, 설명 불가능한 상태가 됐다.
+# release_robot 훅이 그 구멍을 막는다.
+
+def test_cancel_releases_assigned_robot():
+    released = []
+    orc = Orchestrator(FakeDispatcher(), release_robot=released.append)
+    tid = orc.submit_delivery(book="B1", pickup=7, dropoff=3)
+    orc.assign(tid, "Pinkysim")
+    orc.cancel(tid)
+    assert released == ["Pinkysim"], "취소하면 로봇을 놓아줘야 순회로 돌아간다"
+
+
+def test_failure_releases_assigned_robot():
+    orc = Orchestrator(FakeDispatcher(raise_on=[1]), release_robot=(rel := []).append,
+                       retry_max=0)
+    tid = orc.submit_delivery(book="B1", pickup=7, dropoff=3)
+    orc.assign(tid, "Pinkysim")
+    assert orc.get(tid).status == TaskStatus.FAILED
+    assert rel == ["Pinkysim"], "실패도 로봇을 붙잡고 있으면 안 된다"
+
+
+def test_cancel_before_assign_releases_nothing():
+    """PENDING 은 로봇이 없다 — 엉뚱한 로봇을 멈추면 안 된다."""
+    released = []
+    orc = Orchestrator(FakeDispatcher(), release_robot=released.append)
+    tid = orc.submit_delivery(book="B1", pickup=7, dropoff=3)
+    orc.cancel(tid)
+    assert released == []
+
+
+def test_release_hook_failure_does_not_block_cancel():
+    """놓아주기가 실패해도(fleet_node 다운 등) 주문은 취소돼야 한다."""
+    def boom(_robot):
+        raise RuntimeError("fleet_node down")
+
+    orc = Orchestrator(FakeDispatcher(), release_robot=boom)
+    tid = orc.submit_delivery(book="B1", pickup=7, dropoff=3)
+    orc.assign(tid, "Pinkysim")
+    orc.cancel(tid)
+    assert orc.get(tid).status == TaskStatus.CANCELLED
+
+
+def test_without_hook_cancel_still_works():
+    """스텁 모드(훅 없음)에서도 예전 동작 그대로."""
+    orc = Orchestrator(FakeDispatcher())
+    tid = orc.submit_delivery(book="B1", pickup=7, dropoff=3)
+    orc.assign(tid, "Pinkysim")
+    orc.cancel(tid)
+    assert orc.get(tid).status == TaskStatus.CANCELLED

@@ -9,7 +9,8 @@ set -u
 # 있으므로 아래 프로세스 종료 단계가 반드시 뒤따라야 한다.
 # pinky_laptop 은 pi.sh 의 옛 이름(laptop.sh)이 쓰던 세션이다. 이름을 바꾸기 전에 띄워둔
 # 세션이 정리되지 않고 남는 걸 막으려고 당분간 같이 지운다.
-for session in pinky_sim pinky_pi pinky_laptop; do
+# pinky_sim* : sim 을 여러 개 띄우면 세션이 pinky_sim_<로봇> 으로 갈라진다(SIM_SESSION).
+for session in $(tmux ls -F "#{session_name}" 2>/dev/null | grep -E "^pinky_sim" ) pinky_sim pinky_pi pinky_laptop; do
   if tmux has-session -t "$session" 2>/dev/null; then
     tmux kill-session -t "$session"
     echo "killed tmux session: $session"
@@ -75,6 +76,12 @@ PATTERNS=(
   "joint_state_publisher"
   "robot_state_publisher"
   "sllidar"
+  # fleet_node <-> 로봇을 잇는 어댑터 두 개. tmux 창으로 뜨지만 세션이 죽어도 살아남는
+  # 경우가 있어(오늘 실제로 남았다) 이름으로도 확실히 쓸어담는다.
+  #   path_request_driver : fleet_node 경로 -> nav2   (로봇 쪽)
+  #   robot_state_adapter : 로봇 위치 -> fleet_node   (서버 쪽)
+  "path_request_driver.py"
+  "robot_state_adapter.py"
 )
 for pattern in "${PATTERNS[@]}"; do
   kill_pattern "$pattern"

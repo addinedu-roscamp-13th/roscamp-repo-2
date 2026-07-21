@@ -14,7 +14,9 @@ import { Route as SearchRouteImport } from './routes/search'
 import { Route as ScanRouteImport } from './routes/scan'
 import { Route as RecommendRouteImport } from './routes/recommend'
 import { Route as OcrRouteImport } from './routes/ocr'
+import { Route as MeRouteImport } from './routes/me'
 import { Route as MapRouteImport } from './routes/map'
+import { Route as LoginRouteImport } from './routes/login'
 import { Route as HomeRouteImport } from './routes/home'
 import { Route as ChatRouteImport } from './routes/chat'
 import { Route as IndexRouteImport } from './routes/index'
@@ -22,6 +24,15 @@ import { Route as AdminLoginRouteImport } from './routes/admin/login'
 import { Route as AdminAuthedRouteImport } from './routes/admin/_authed'
 import { Route as AdminAuthedIndexRouteImport } from './routes/admin/_authed/index'
 import { Route as AdminAuthedUsersRouteImport } from './routes/admin/_authed/users'
+import { Route as AdminAuthedTasksRouteImport } from './routes/admin/_authed/tasks'
+import { Route as AdminAuthedSecurityRouteImport } from './routes/admin/_authed/security'
+import { Route as AdminAuthedRobotsRouteImport } from './routes/admin/_authed/robots'
+import { Route as AdminAuthedReportsRouteImport } from './routes/admin/_authed/reports'
+import { Route as AdminAuthedOpsRouteImport } from './routes/admin/_authed/ops'
+import { Route as AdminAuthedMembersRouteImport } from './routes/admin/_authed/members'
+import { Route as AdminAuthedInsightRouteImport } from './routes/admin/_authed/insight'
+import { Route as AdminAuthedBooksRouteImport } from './routes/admin/_authed/books'
+import { Route as AdminAuthedAlertsRouteImport } from './routes/admin/_authed/alerts'
 import { Route as AdminAuthedDevTablesRouteImport } from './routes/admin/_authed/dev/tables'
 import { Route as AdminAuthedDevServerOpsRouteImport } from './routes/admin/_authed/dev/server-ops'
 import { Route as AdminAuthedDevErdRouteImport } from './routes/admin/_authed/dev/erd'
@@ -53,9 +64,19 @@ const OcrRoute = OcrRouteImport.update({
   path: '/ocr',
   getParentRoute: () => rootRouteImport,
 } as any)
+const MeRoute = MeRouteImport.update({
+  id: '/me',
+  path: '/me',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const MapRoute = MapRouteImport.update({
   id: '/map',
   path: '/map',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
 const HomeRoute = HomeRouteImport.update({
@@ -93,6 +114,51 @@ const AdminAuthedUsersRoute = AdminAuthedUsersRouteImport.update({
   path: '/users',
   getParentRoute: () => AdminAuthedRoute,
 } as any)
+const AdminAuthedTasksRoute = AdminAuthedTasksRouteImport.update({
+  id: '/tasks',
+  path: '/tasks',
+  getParentRoute: () => AdminAuthedRoute,
+} as any)
+const AdminAuthedSecurityRoute = AdminAuthedSecurityRouteImport.update({
+  id: '/security',
+  path: '/security',
+  getParentRoute: () => AdminAuthedRoute,
+} as any)
+const AdminAuthedRobotsRoute = AdminAuthedRobotsRouteImport.update({
+  id: '/robots',
+  path: '/robots',
+  getParentRoute: () => AdminAuthedRoute,
+} as any)
+const AdminAuthedReportsRoute = AdminAuthedReportsRouteImport.update({
+  id: '/reports',
+  path: '/reports',
+  getParentRoute: () => AdminAuthedRoute,
+} as any)
+const AdminAuthedOpsRoute = AdminAuthedOpsRouteImport.update({
+  id: '/ops',
+  path: '/ops',
+  getParentRoute: () => AdminAuthedRoute,
+} as any)
+const AdminAuthedMembersRoute = AdminAuthedMembersRouteImport.update({
+  id: '/members',
+  path: '/members',
+  getParentRoute: () => AdminAuthedRoute,
+} as any)
+const AdminAuthedInsightRoute = AdminAuthedInsightRouteImport.update({
+  id: '/insight',
+  path: '/insight',
+  getParentRoute: () => AdminAuthedRoute,
+} as any)
+const AdminAuthedBooksRoute = AdminAuthedBooksRouteImport.update({
+  id: '/books',
+  path: '/books',
+  getParentRoute: () => AdminAuthedRoute,
+} as any)
+const AdminAuthedAlertsRoute = AdminAuthedAlertsRouteImport.update({
+  id: '/alerts',
+  path: '/alerts',
+  getParentRoute: () => AdminAuthedRoute,
+} as any)
 const AdminAuthedDevTablesRoute = AdminAuthedDevTablesRouteImport.update({
   id: '/dev/tables',
   path: '/dev/tables',
@@ -124,7 +190,9 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/chat': typeof ChatRoute
   '/home': typeof HomeRoute
+  '/login': typeof LoginRoute
   '/map': typeof MapRoute
+  '/me': typeof MeRoute
   '/ocr': typeof OcrRoute
   '/recommend': typeof RecommendRoute
   '/scan': typeof ScanRoute
@@ -132,6 +200,15 @@ export interface FileRoutesByFullPath {
   '/settings': typeof SettingsRoute
   '/admin': typeof AdminAuthedRouteWithChildren
   '/admin/login': typeof AdminLoginRoute
+  '/admin/alerts': typeof AdminAuthedAlertsRoute
+  '/admin/books': typeof AdminAuthedBooksRoute
+  '/admin/insight': typeof AdminAuthedInsightRoute
+  '/admin/members': typeof AdminAuthedMembersRoute
+  '/admin/ops': typeof AdminAuthedOpsRoute
+  '/admin/reports': typeof AdminAuthedReportsRoute
+  '/admin/robots': typeof AdminAuthedRobotsRoute
+  '/admin/security': typeof AdminAuthedSecurityRoute
+  '/admin/tasks': typeof AdminAuthedTasksRoute
   '/admin/users': typeof AdminAuthedUsersRoute
   '/admin/': typeof AdminAuthedIndexRoute
   '/admin/dev/api-docs': typeof AdminAuthedDevApiDocsRoute
@@ -144,13 +221,24 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/chat': typeof ChatRoute
   '/home': typeof HomeRoute
+  '/login': typeof LoginRoute
   '/map': typeof MapRoute
+  '/me': typeof MeRoute
   '/ocr': typeof OcrRoute
   '/recommend': typeof RecommendRoute
   '/scan': typeof ScanRoute
   '/search': typeof SearchRoute
   '/settings': typeof SettingsRoute
   '/admin/login': typeof AdminLoginRoute
+  '/admin/alerts': typeof AdminAuthedAlertsRoute
+  '/admin/books': typeof AdminAuthedBooksRoute
+  '/admin/insight': typeof AdminAuthedInsightRoute
+  '/admin/members': typeof AdminAuthedMembersRoute
+  '/admin/ops': typeof AdminAuthedOpsRoute
+  '/admin/reports': typeof AdminAuthedReportsRoute
+  '/admin/robots': typeof AdminAuthedRobotsRoute
+  '/admin/security': typeof AdminAuthedSecurityRoute
+  '/admin/tasks': typeof AdminAuthedTasksRoute
   '/admin/users': typeof AdminAuthedUsersRoute
   '/admin': typeof AdminAuthedIndexRoute
   '/admin/dev/api-docs': typeof AdminAuthedDevApiDocsRoute
@@ -164,7 +252,9 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/chat': typeof ChatRoute
   '/home': typeof HomeRoute
+  '/login': typeof LoginRoute
   '/map': typeof MapRoute
+  '/me': typeof MeRoute
   '/ocr': typeof OcrRoute
   '/recommend': typeof RecommendRoute
   '/scan': typeof ScanRoute
@@ -172,6 +262,15 @@ export interface FileRoutesById {
   '/settings': typeof SettingsRoute
   '/admin/_authed': typeof AdminAuthedRouteWithChildren
   '/admin/login': typeof AdminLoginRoute
+  '/admin/_authed/alerts': typeof AdminAuthedAlertsRoute
+  '/admin/_authed/books': typeof AdminAuthedBooksRoute
+  '/admin/_authed/insight': typeof AdminAuthedInsightRoute
+  '/admin/_authed/members': typeof AdminAuthedMembersRoute
+  '/admin/_authed/ops': typeof AdminAuthedOpsRoute
+  '/admin/_authed/reports': typeof AdminAuthedReportsRoute
+  '/admin/_authed/robots': typeof AdminAuthedRobotsRoute
+  '/admin/_authed/security': typeof AdminAuthedSecurityRoute
+  '/admin/_authed/tasks': typeof AdminAuthedTasksRoute
   '/admin/_authed/users': typeof AdminAuthedUsersRoute
   '/admin/_authed/': typeof AdminAuthedIndexRoute
   '/admin/_authed/dev/api-docs': typeof AdminAuthedDevApiDocsRoute
@@ -186,7 +285,9 @@ export interface FileRouteTypes {
     | '/'
     | '/chat'
     | '/home'
+    | '/login'
     | '/map'
+    | '/me'
     | '/ocr'
     | '/recommend'
     | '/scan'
@@ -194,6 +295,15 @@ export interface FileRouteTypes {
     | '/settings'
     | '/admin'
     | '/admin/login'
+    | '/admin/alerts'
+    | '/admin/books'
+    | '/admin/insight'
+    | '/admin/members'
+    | '/admin/ops'
+    | '/admin/reports'
+    | '/admin/robots'
+    | '/admin/security'
+    | '/admin/tasks'
     | '/admin/users'
     | '/admin/'
     | '/admin/dev/api-docs'
@@ -206,13 +316,24 @@ export interface FileRouteTypes {
     | '/'
     | '/chat'
     | '/home'
+    | '/login'
     | '/map'
+    | '/me'
     | '/ocr'
     | '/recommend'
     | '/scan'
     | '/search'
     | '/settings'
     | '/admin/login'
+    | '/admin/alerts'
+    | '/admin/books'
+    | '/admin/insight'
+    | '/admin/members'
+    | '/admin/ops'
+    | '/admin/reports'
+    | '/admin/robots'
+    | '/admin/security'
+    | '/admin/tasks'
     | '/admin/users'
     | '/admin'
     | '/admin/dev/api-docs'
@@ -225,7 +346,9 @@ export interface FileRouteTypes {
     | '/'
     | '/chat'
     | '/home'
+    | '/login'
     | '/map'
+    | '/me'
     | '/ocr'
     | '/recommend'
     | '/scan'
@@ -233,6 +356,15 @@ export interface FileRouteTypes {
     | '/settings'
     | '/admin/_authed'
     | '/admin/login'
+    | '/admin/_authed/alerts'
+    | '/admin/_authed/books'
+    | '/admin/_authed/insight'
+    | '/admin/_authed/members'
+    | '/admin/_authed/ops'
+    | '/admin/_authed/reports'
+    | '/admin/_authed/robots'
+    | '/admin/_authed/security'
+    | '/admin/_authed/tasks'
     | '/admin/_authed/users'
     | '/admin/_authed/'
     | '/admin/_authed/dev/api-docs'
@@ -246,7 +378,9 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ChatRoute: typeof ChatRoute
   HomeRoute: typeof HomeRoute
+  LoginRoute: typeof LoginRoute
   MapRoute: typeof MapRoute
+  MeRoute: typeof MeRoute
   OcrRoute: typeof OcrRoute
   RecommendRoute: typeof RecommendRoute
   ScanRoute: typeof ScanRoute
@@ -293,11 +427,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof OcrRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/me': {
+      id: '/me'
+      path: '/me'
+      fullPath: '/me'
+      preLoaderRoute: typeof MeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/map': {
       id: '/map'
       path: '/map'
       fullPath: '/map'
       preLoaderRoute: typeof MapRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/home': {
@@ -349,6 +497,69 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminAuthedUsersRouteImport
       parentRoute: typeof AdminAuthedRoute
     }
+    '/admin/_authed/tasks': {
+      id: '/admin/_authed/tasks'
+      path: '/tasks'
+      fullPath: '/admin/tasks'
+      preLoaderRoute: typeof AdminAuthedTasksRouteImport
+      parentRoute: typeof AdminAuthedRoute
+    }
+    '/admin/_authed/security': {
+      id: '/admin/_authed/security'
+      path: '/security'
+      fullPath: '/admin/security'
+      preLoaderRoute: typeof AdminAuthedSecurityRouteImport
+      parentRoute: typeof AdminAuthedRoute
+    }
+    '/admin/_authed/robots': {
+      id: '/admin/_authed/robots'
+      path: '/robots'
+      fullPath: '/admin/robots'
+      preLoaderRoute: typeof AdminAuthedRobotsRouteImport
+      parentRoute: typeof AdminAuthedRoute
+    }
+    '/admin/_authed/reports': {
+      id: '/admin/_authed/reports'
+      path: '/reports'
+      fullPath: '/admin/reports'
+      preLoaderRoute: typeof AdminAuthedReportsRouteImport
+      parentRoute: typeof AdminAuthedRoute
+    }
+    '/admin/_authed/ops': {
+      id: '/admin/_authed/ops'
+      path: '/ops'
+      fullPath: '/admin/ops'
+      preLoaderRoute: typeof AdminAuthedOpsRouteImport
+      parentRoute: typeof AdminAuthedRoute
+    }
+    '/admin/_authed/members': {
+      id: '/admin/_authed/members'
+      path: '/members'
+      fullPath: '/admin/members'
+      preLoaderRoute: typeof AdminAuthedMembersRouteImport
+      parentRoute: typeof AdminAuthedRoute
+    }
+    '/admin/_authed/insight': {
+      id: '/admin/_authed/insight'
+      path: '/insight'
+      fullPath: '/admin/insight'
+      preLoaderRoute: typeof AdminAuthedInsightRouteImport
+      parentRoute: typeof AdminAuthedRoute
+    }
+    '/admin/_authed/books': {
+      id: '/admin/_authed/books'
+      path: '/books'
+      fullPath: '/admin/books'
+      preLoaderRoute: typeof AdminAuthedBooksRouteImport
+      parentRoute: typeof AdminAuthedRoute
+    }
+    '/admin/_authed/alerts': {
+      id: '/admin/_authed/alerts'
+      path: '/alerts'
+      fullPath: '/admin/alerts'
+      preLoaderRoute: typeof AdminAuthedAlertsRouteImport
+      parentRoute: typeof AdminAuthedRoute
+    }
     '/admin/_authed/dev/tables': {
       id: '/admin/_authed/dev/tables'
       path: '/dev/tables'
@@ -388,6 +599,15 @@ declare module '@tanstack/react-router' {
 }
 
 interface AdminAuthedRouteChildren {
+  AdminAuthedAlertsRoute: typeof AdminAuthedAlertsRoute
+  AdminAuthedBooksRoute: typeof AdminAuthedBooksRoute
+  AdminAuthedInsightRoute: typeof AdminAuthedInsightRoute
+  AdminAuthedMembersRoute: typeof AdminAuthedMembersRoute
+  AdminAuthedOpsRoute: typeof AdminAuthedOpsRoute
+  AdminAuthedReportsRoute: typeof AdminAuthedReportsRoute
+  AdminAuthedRobotsRoute: typeof AdminAuthedRobotsRoute
+  AdminAuthedSecurityRoute: typeof AdminAuthedSecurityRoute
+  AdminAuthedTasksRoute: typeof AdminAuthedTasksRoute
   AdminAuthedUsersRoute: typeof AdminAuthedUsersRoute
   AdminAuthedIndexRoute: typeof AdminAuthedIndexRoute
   AdminAuthedDevApiDocsRoute: typeof AdminAuthedDevApiDocsRoute
@@ -398,6 +618,15 @@ interface AdminAuthedRouteChildren {
 }
 
 const AdminAuthedRouteChildren: AdminAuthedRouteChildren = {
+  AdminAuthedAlertsRoute: AdminAuthedAlertsRoute,
+  AdminAuthedBooksRoute: AdminAuthedBooksRoute,
+  AdminAuthedInsightRoute: AdminAuthedInsightRoute,
+  AdminAuthedMembersRoute: AdminAuthedMembersRoute,
+  AdminAuthedOpsRoute: AdminAuthedOpsRoute,
+  AdminAuthedReportsRoute: AdminAuthedReportsRoute,
+  AdminAuthedRobotsRoute: AdminAuthedRobotsRoute,
+  AdminAuthedSecurityRoute: AdminAuthedSecurityRoute,
+  AdminAuthedTasksRoute: AdminAuthedTasksRoute,
   AdminAuthedUsersRoute: AdminAuthedUsersRoute,
   AdminAuthedIndexRoute: AdminAuthedIndexRoute,
   AdminAuthedDevApiDocsRoute: AdminAuthedDevApiDocsRoute,
@@ -415,7 +644,9 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ChatRoute: ChatRoute,
   HomeRoute: HomeRoute,
+  LoginRoute: LoginRoute,
   MapRoute: MapRoute,
+  MeRoute: MeRoute,
   OcrRoute: OcrRoute,
   RecommendRoute: RecommendRoute,
   ScanRoute: ScanRoute,

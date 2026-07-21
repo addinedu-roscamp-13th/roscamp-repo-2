@@ -19,5 +19,11 @@ ensure_built "$REPO_ROOT/aba_controller/libi_modes/ros_ws"
 # 기존 pi.sh 는 FSM_ROBOT_ID(env)를 읽고, --no-fsm/--no-led 를 자기 인자에서 파싱한다.
 # 그래서 로봇 이름은 env 로 넘기고 나머지 플래그(2번째 인자부터)만 그대로 전달한다.
 cd "$REPO_ROOT"
-exec env FSM_ROBOT_ID="$ROBOT_ID" \
+# ⚠️ fleet 이름과 스크립트 인자는 다르다.
+# 인자 `pinky3` 는 PINKY3_IP 를 찾기 위한 키이고, fleet_node·FSM 이 쓰는 **정본 이름**은
+# DB(rc_robots.name)의 `Pinky-3` 다. 예전엔 여기서 FSM_ROBOT_ID 를 인자로 덮어써서
+#   fsm_node 는 robot_id=pinky3 로 발행 → fleet_node 는 Pinky-3 로 조회 → 영영 안 붙음
+# 이 됐다(관제에 "상태 미상", 배차 가능 0대). 미리 준 값이 있으면 그게 이긴다:
+#   FSM_ROBOT_ID=Pinky-3 ./pi.sh pinky3
+exec env FSM_ROBOT_ID="${FSM_ROBOT_ID:-$ROBOT_ID}" \
   "$REPO_ROOT/aba_controller/libi_drive_controller/ros_ws/scripts/pi.sh" "${@:2}"

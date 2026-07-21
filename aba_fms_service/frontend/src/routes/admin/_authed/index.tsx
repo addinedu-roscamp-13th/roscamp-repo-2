@@ -30,7 +30,7 @@ import {
 import { adminApi, type RobotResult } from "@/lib/admin-api";
 
 export const Route = createFileRoute("/admin/_authed/")({
-  head: () => ({ meta: [{ title: "Labi Admin — 대시보드" }] }),
+  head: () => ({ meta: [{ title: "LiBi Admin — 대시보드" }] }),
   component: DashboardPage,
 });
 

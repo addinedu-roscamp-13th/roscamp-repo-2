@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 import { AdminShell } from "@/components/admin/AdminShell";
 
 export const Route = createFileRoute("/admin/_authed/dev/server-ops")({
-  head: () => ({ meta: [{ title: "Labi Admin — 서버 운영 가이드" }] }),
+  head: () => ({ meta: [{ title: "LiBi Admin — 서버 운영 가이드" }] }),
   component: ServerOpsPage,
 });
 

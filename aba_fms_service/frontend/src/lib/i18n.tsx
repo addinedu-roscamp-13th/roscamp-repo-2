@@ -12,7 +12,7 @@ export const LANGS: { code: Lang; label: string; native: string; speech: string 
 type Dict = Record<string, Record<Lang, string>>;
 
 export const t: Dict = {
-  appName: { KR: "Labi Bot", EN: "Labi Bot", ZH: "Labi Bot", VI: "Labi Bot" },
+  appName: { KR: "LiBi", EN: "LiBi", ZH: "LiBi", VI: "LiBi" },
   tagline: {
     KR: "책으로 다시 태어나다",
     EN: "Reborn through books",
@@ -67,7 +67,7 @@ export const t: Dict = {
   navHome: { KR: "홈", EN: "Home", ZH: "首页", VI: "Trang chủ" },
   navSearch: { KR: "도서 검색", EN: "Search", ZH: "图书", VI: "Tìm sách" },
   navMap: { KR: "공간 안내", EN: "Map", ZH: "地图", VI: "Bản đồ" },
-  navChat: { KR: "Labi Bot", EN: "Labi Bot AI", ZH: "Labi Bot", VI: "Labi Bot AI" },
+  navChat: { KR: "LiBi AI", EN: "LiBi AI", ZH: "LiBi AI", VI: "LiBi AI" },
   navMe: { KR: "설정", EN: "Settings", ZH: "设置", VI: "Cài đặt" },
   searchPh: {
     KR: "책 제목, 저자, 또는 '경제 신간'처럼",

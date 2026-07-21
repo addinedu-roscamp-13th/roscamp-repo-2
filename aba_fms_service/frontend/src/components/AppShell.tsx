@@ -20,7 +20,7 @@ export function AppShell({
       <header className="sticky top-0 z-30 flex items-center justify-between gap-2 border-b border-border bg-paper px-4 py-3">
         <div className="flex min-w-0 flex-col">
           <span className="font-serif text-lg font-bold leading-none text-primary">
-            Labi <span className="text-accent">Bot</span>
+            Li<span className="text-accent">Bi</span>
           </span>
           {showStore && (
             <span className="mt-1 inline-flex items-center gap-1 text-xs text-muted-foreground">

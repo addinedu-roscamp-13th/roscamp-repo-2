@@ -8,7 +8,8 @@ function baseFor(path: string): string {
   // 경로는 /api/robot/ 으로 시작하지만 이 라우터는 로봇이 아니라 중앙 FMS 에 있다
   // (backend/app/routers/admin_follow.py). 안 걸러내면 로봇 IP 로 가서 404 가 난다.
   if (path.startsWith("/api/robot/admin-follow")) return API_BASE;
-  const isRobotControl = path.startsWith("/api/robot/") || path.startsWith("/api/arm/");
+  const isRobotControl =
+    path.startsWith("/api/robot/") || path.startsWith("/api/arm/");
   return isRobotControl ? getRobotBase() : API_BASE;
 }
 
@@ -166,22 +167,34 @@ export interface Nav2Grid {
 }
 
 // 옛 Flask(origin_x/origin_y) · 새 FastAPI(origin:{x,y,yaw}) 양쪽 응답을 중첩 origin 으로 통일.
-export function normalizeOrigin(grid: { origin?: { x: number; y: number; yaw?: number }; origin_x?: number; origin_y?: number; origin_yaw?: number }) {
+export function normalizeOrigin(grid: {
+  origin?: { x: number; y: number; yaw?: number };
+  origin_x?: number;
+  origin_y?: number;
+  origin_yaw?: number;
+}) {
   if (grid.origin && typeof grid.origin.x === "number") {
     return { x: grid.origin.x, y: grid.origin.y, yaw: grid.origin.yaw ?? 0 };
   }
-  return { x: grid.origin_x ?? 0, y: grid.origin_y ?? 0, yaw: grid.origin_yaw ?? 0 };
+  return {
+    x: grid.origin_x ?? 0,
+    y: grid.origin_y ?? 0,
+    yaw: grid.origin_yaw ?? 0,
+  };
 }
 
 export function normalizeNav2State(s: Nav2State): Nav2State {
   if (s.map) s.map.origin = normalizeOrigin(s.map);
-  if (s.local_costmap) s.local_costmap.origin = normalizeOrigin(s.local_costmap);
-  if (s.global_costmap) s.global_costmap.origin = normalizeOrigin(s.global_costmap);
+  if (s.local_costmap)
+    s.local_costmap.origin = normalizeOrigin(s.local_costmap);
+  if (s.global_costmap)
+    s.global_costmap.origin = normalizeOrigin(s.global_costmap);
   return s;
 }
 
 function centralWsUrl(path: string): URL {
-  const origin = typeof window !== "undefined" ? window.location.origin : "http://127.0.0.1";
+  const origin =
+    typeof window !== "undefined" ? window.location.origin : "http://127.0.0.1";
   const url = new URL(API_BASE.replace(/\/$/, "") || origin, origin);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.pathname = path;
@@ -304,8 +317,14 @@ export interface LearnedRobotScenario {
   updated_at: string | null;
 }
 
-export type LearnedRobotActionInput = Omit<LearnedRobotAction, "id" | "created_at" | "updated_at">;
-export type LearnedRobotScenarioInput = Omit<LearnedRobotScenario, "id" | "created_at" | "updated_at">;
+export type LearnedRobotActionInput = Omit<
+  LearnedRobotAction,
+  "id" | "created_at" | "updated_at"
+>;
+export type LearnedRobotScenarioInput = Omit<
+  LearnedRobotScenario,
+  "id" | "created_at" | "updated_at"
+>;
 
 export interface LearnedRunResult {
   success: boolean;
@@ -315,7 +334,13 @@ export interface LearnedRunResult {
   action_type?: string;
   path?: string;
   note?: string | null;
-  results?: Array<{ label?: string; action_type?: string; kind?: string; success: boolean; response?: string }>;
+  results?: Array<{
+    label?: string;
+    action_type?: string;
+    kind?: string;
+    success: boolean;
+    response?: string;
+  }>;
   stopped_at?: string;
 }
 
@@ -357,11 +382,14 @@ export interface PinkyGreetingSettings extends LcdTextConfig {
   duration_seconds: number;
   monitor?: {
     running: boolean;
-    robots: Record<string, {
-      remaining: number;
-      last_error: string | null;
-      last_detection_at: number | null;
-    }>;
+    robots: Record<
+      string,
+      {
+        remaining: number;
+        last_error: string | null;
+        last_detection_at: number | null;
+      }
+    >;
   };
 }
 
@@ -438,7 +466,11 @@ async function uploadFile<T>(path: string, form: FormData): Promise<T> {
   // 로봇 robot_agent 도 이제 /api/robot/* 정식 경로를 지원 — admin 재작성 제거 (2026-07-07)
   const targetPath = path;
 
-  const res = await fetch(base + targetPath, { method: "POST", headers, body: form });
+  const res = await fetch(base + targetPath, {
+    method: "POST",
+    headers,
+    body: form,
+  });
 
   if (res.status === 401) {
     clearToken();
@@ -449,8 +481,14 @@ async function uploadFile<T>(path: string, form: FormData): Promise<T> {
     let detail = `업로드 실패 (${res.status})`;
     try {
       const body = await res.json();
-      if (body?.detail) detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
-    } catch { /* noop */ }
+      if (body?.detail)
+        detail =
+          typeof body.detail === "string"
+            ? body.detail
+            : JSON.stringify(body.detail);
+    } catch {
+      /* noop */
+    }
     throw new ApiError(res.status, detail);
   }
   return res.json() as T;
@@ -506,7 +544,11 @@ export const adminApi = {
     request<void>(`/api/users/${id}`, { method: "DELETE" }),
 
   // ── 로봇 레지스트리 (IP 관리) ─────────────────────────────────────────────────
-  listRobots: (params?: { q?: string; robot_type?: string; limit?: number }) => {
+  listRobots: (params?: {
+    q?: string;
+    robot_type?: string;
+    limit?: number;
+  }) => {
     const qs = new URLSearchParams();
     if (params?.q) qs.set("q", params.q);
     if (params?.robot_type) qs.set("robot_type", params.robot_type);
@@ -553,18 +595,25 @@ export const adminApi = {
   lcdUploadImage: (file: File) => {
     const form = new FormData();
     form.append("file", file);
-    return uploadFile<RobotResult & { image?: LcdImageItem }>("/api/robot/lcd/image", form);
+    return uploadFile<RobotResult & { image?: LcdImageItem }>(
+      "/api/robot/lcd/image",
+      form,
+    );
   },
   lcdSelectImage: (filename: string) =>
     request<RobotResult>("/api/robot/lcd/image/select", {
       method: "POST",
       body: JSON.stringify({ filename }),
     }),
-  listImages: () => request<{ images: LcdImageItem[] }>("/api/robot/lcd/images"),
+  listImages: () =>
+    request<{ images: LcdImageItem[] }>("/api/robot/lcd/images"),
   deleteImage: (name: string) =>
-    request<{ success: boolean }>(`/api/robot/lcd/images/${encodeURIComponent(name)}`, {
-      method: "DELETE",
-    }),
+    request<{ success: boolean }>(
+      `/api/robot/lcd/images/${encodeURIComponent(name)}`,
+      {
+        method: "DELETE",
+      },
+    ),
 
   // 텍스트
   lcdText: (cfg: LcdTextConfig) =>
@@ -577,13 +626,19 @@ export const adminApi = {
   lcdUploadFont: (file: File) => {
     const form = new FormData();
     form.append("file", file);
-    return uploadFile<{ success: boolean; filename: string }>("/api/robot/lcd/font", form);
+    return uploadFile<{ success: boolean; filename: string }>(
+      "/api/robot/lcd/font",
+      form,
+    );
   },
   listFonts: () => request<{ fonts: string[] }>("/api/robot/lcd/fonts"),
   deleteFont: (name: string) =>
-    request<{ success: boolean }>(`/api/robot/lcd/fonts/${encodeURIComponent(name)}`, {
-      method: "DELETE",
-    }),
+    request<{ success: boolean }>(
+      `/api/robot/lcd/fonts/${encodeURIComponent(name)}`,
+      {
+        method: "DELETE",
+      },
+    ),
 
   // ── LED ──────────────────────────────────────────────────────────────────────
   ledFill: (r: number, g: number, b: number) =>
@@ -618,17 +673,16 @@ export const adminApi = {
   stopBuzzerMelody: () =>
     request<RobotResult>("/api/robot/buzzer/melody/stop", { method: "POST" }),
   buzzerStatus: () =>
-    request<{ running: boolean; melody: string | null }>("/api/robot/buzzer/status"),
+    request<{ running: boolean; melody: string | null }>(
+      "/api/robot/buzzer/status",
+    ),
 
   // ── 센서 ─────────────────────────────────────────────────────────────────────
   getSensorUltrasonic: () =>
     request<RobotResult>("/api/robot/sensor/ultrasonic"),
-  getSensorBattery: () =>
-    request<RobotResult>("/api/robot/sensor/battery"),
-  getSensorIr: () =>
-    request<RobotResult>("/api/robot/sensor/ir"),
-  getSensorImu: () =>
-    request<RobotResult>("/api/robot/sensor/imu"),
+  getSensorBattery: () => request<RobotResult>("/api/robot/sensor/battery"),
+  getSensorIr: () => request<RobotResult>("/api/robot/sensor/ir"),
+  getSensorImu: () => request<RobotResult>("/api/robot/sensor/imu"),
 
   // ── 모터 ─────────────────────────────────────────────────────────────────────
   motorMove: (data: MotorMoveInput) =>
@@ -641,145 +695,269 @@ export const adminApi = {
 
   // ── 자율탐색 ─────────────────────────────────────────────────────────────────
   exploreStart: () =>
-    request<{ ok: boolean; running: boolean; status: string; log: string[]; message: string }>(
-      "/api/robot/explore/start", { method: "POST" }
-    ),
+    request<{
+      ok: boolean;
+      running: boolean;
+      status: string;
+      log: string[];
+      message: string;
+    }>("/api/robot/explore/start", { method: "POST" }),
   exploreStop: () =>
-    request<{ ok: boolean; running: boolean; status: string; log: string[]; message: string }>(
-      "/api/robot/explore/stop", { method: "POST" }
-    ),
+    request<{
+      ok: boolean;
+      running: boolean;
+      status: string;
+      log: string[];
+      message: string;
+    }>("/api/robot/explore/stop", { method: "POST" }),
   exploreStatus: () =>
-    request<{ running: boolean; status: string; log: string[]; message: string }>(
-      "/api/robot/explore/status"
-    ),
+    request<{
+      running: boolean;
+      status: string;
+      log: string[];
+      message: string;
+    }>("/api/robot/explore/status"),
 
   // ── SLAM 맵 생성 (slam_toolbox 프로세스 · 맵 파일 저장/목록) ──────────────────
   robotStatus: () =>
-    request<{ ros_active: boolean; processes: Record<string, { running: boolean; pid: number | null }> }>(
-      "/api/robot/status"
-    ),
+    request<{
+      ros_active: boolean;
+      processes: Record<string, { running: boolean; pid: number | null }>;
+    }>("/api/robot/status"),
   slamStart: () =>
     request<{ running?: boolean; pid?: number | null; error?: string }>(
-      "/api/robot/process/slam/start", { method: "POST" }
+      "/api/robot/process/slam/start",
+      { method: "POST" },
     ),
   slamStop: () =>
     request<{ running?: boolean; pid?: number | null }>(
-      "/api/robot/process/slam/stop", { method: "POST" }
+      "/api/robot/process/slam/stop",
+      { method: "POST" },
     ),
   robotMapSave: (name: string) =>
     request<{ ok?: boolean; name?: string; path?: string; error?: string }>(
-      "/api/robot/map/save", { method: "POST", body: JSON.stringify({ name }) }
+      "/api/robot/map/save",
+      { method: "POST", body: JSON.stringify({ name }) },
     ),
   robotMapReset: () =>
     request<{ ok: boolean }>("/api/robot/map/reset", { method: "POST" }),
-  robotMapList: () =>
-    request<{ maps: RobotSavedMap[] }>("/api/robot/map/list"),
+  robotMapList: () => request<{ maps: RobotSavedMap[] }>("/api/robot/map/list"),
   robotMapDelete: (name: string) =>
-    request<{ ok: boolean; deleted: string[] }>(`/api/robot/map/${encodeURIComponent(name)}`, { method: "DELETE" }),
+    request<{ ok: boolean; deleted: string[] }>(
+      `/api/robot/map/${encodeURIComponent(name)}`,
+      { method: "DELETE" },
+    ),
 
   // ── 관제시스템 (robot_agent nav 프록시, 기본 9001) ──────────────────────────
   controlState: (robotId: number, navPort = 9001) =>
-    request<Nav2State>(`/api/control/state?robot_id=${robotId}&nav_port=${navPort}`).then(normalizeNav2State),
+    request<Nav2State>(
+      `/api/control/state?robot_id=${robotId}&nav_port=${navPort}`,
+    ).then(normalizeNav2State),
   // 로봇별 ROS 링크 신선도 + 명령 토픽 구독자 수(브릿지 연결 여부). key=pinky1.., 각 항목에 ip 포함.
   controlTelemetry: () =>
     request<Record<string, ControlLinkInfo>>("/api/control/telemetry"),
   controlStateWsUrl,
   controlLocations: (robotId: number, navPort = 9001) =>
-    request<Nav2Locations>(`/api/control/locations?robot_id=${robotId}&nav_port=${navPort}`),
-  controlGoal: (robotId: number, data: { x: number; y: number; yaw?: number }, navPort = 9001) =>
-    request<{ success: boolean; msg?: string }>(`/api/control/goal?robot_id=${robotId}&nav_port=${navPort}`, {
-      method: "POST",
-      body: JSON.stringify(data),
-    }),
+    request<Nav2Locations>(
+      `/api/control/locations?robot_id=${robotId}&nav_port=${navPort}`,
+    ),
+  controlGoal: (
+    robotId: number,
+    data: { x: number; y: number; yaw?: number },
+    navPort = 9001,
+  ) =>
+    request<{ success: boolean; msg?: string }>(
+      `/api/control/goal?robot_id=${robotId}&nav_port=${navPort}`,
+      {
+        method: "POST",
+        body: JSON.stringify(data),
+      },
+    ),
   controlHome: (robotId: number, navPort = 9001) =>
-    request<{ success: boolean; msg?: string }>(`/api/control/home?robot_id=${robotId}&nav_port=${navPort}`, { method: "POST" }),
+    request<{ success: boolean; msg?: string }>(
+      `/api/control/home?robot_id=${robotId}&nav_port=${navPort}`,
+      { method: "POST" },
+    ),
   controlSlamReset: (robotId: number, navPort = 9001) =>
-    request<{ success: boolean; msg?: string }>(`/api/control/slam/reset?robot_id=${robotId}&nav_port=${navPort}`, { method: "POST" }),
+    request<{ success: boolean; msg?: string }>(
+      `/api/control/slam/reset?robot_id=${robotId}&nav_port=${navPort}`,
+      { method: "POST" },
+    ),
   controlSaveMap: (robotId: number, name: string, navPort = 9001) =>
-    request<{ success: boolean; name: string }>(`/api/control/slam/save-map?robot_id=${robotId}&nav_port=${navPort}`, {
-      method: "POST",
-      body: JSON.stringify({ name }),
-    }),
-  controlSetLocation: (robotId: number, data: { name: string; x?: number; y?: number; yaw?: number }, navPort = 9001) =>
-    request<{ success: boolean; name: string; msg?: string }>(`/api/control/locations?robot_id=${robotId}&nav_port=${navPort}`, {
-      method: "POST",
-      body: JSON.stringify(data),
-    }),
+    request<{ success: boolean; name: string }>(
+      `/api/control/slam/save-map?robot_id=${robotId}&nav_port=${navPort}`,
+      {
+        method: "POST",
+        body: JSON.stringify({ name }),
+      },
+    ),
+  controlSetLocation: (
+    robotId: number,
+    data: { name: string; x?: number; y?: number; yaw?: number },
+    navPort = 9001,
+  ) =>
+    request<{ success: boolean; name: string; msg?: string }>(
+      `/api/control/locations?robot_id=${robotId}&nav_port=${navPort}`,
+      {
+        method: "POST",
+        body: JSON.stringify(data),
+      },
+    ),
   controlDeleteLocation: (robotId: number, name: string, navPort = 9001) =>
-    request<{ success: boolean; msg?: string }>(`/api/control/locations?robot_id=${robotId}&nav_port=${navPort}`, {
-      method: "DELETE",
-      body: JSON.stringify({ name }),
-    }),
+    request<{ success: boolean; msg?: string }>(
+      `/api/control/locations?robot_id=${robotId}&nav_port=${navPort}`,
+      {
+        method: "DELETE",
+        body: JSON.stringify({ name }),
+      },
+    ),
   controlGoto: (robotId: number, name: string, navPort = 9001) =>
-    request<{ success: boolean; msg?: string }>(`/api/control/goto?robot_id=${robotId}&nav_port=${navPort}`, {
-      method: "POST",
-      body: JSON.stringify({ name }),
-    }),
+    request<{ success: boolean; msg?: string }>(
+      `/api/control/goto?robot_id=${robotId}&nav_port=${navPort}`,
+      {
+        method: "POST",
+        body: JSON.stringify({ name }),
+      },
+    ),
   waypointsGet: (robotId: number, navPort = 9001) =>
-    request<WaypointGraph>(`/api/control/waypoints?robot_id=${robotId}&nav_port=${navPort}`),
+    request<WaypointGraph>(
+      `/api/control/waypoints?robot_id=${robotId}&nav_port=${navPort}`,
+    ),
   waypointsSave: (robotId: number, data: WaypointGraph, navPort = 9001) =>
-    request<WaypointGraph>(`/api/control/waypoints?robot_id=${robotId}&nav_port=${navPort}`, {
-      method: "PUT",
-      body: JSON.stringify(data),
-    }),
+    request<WaypointGraph>(
+      `/api/control/waypoints?robot_id=${robotId}&nav_port=${navPort}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(data),
+      },
+    ),
   waypointGoto: (robotId: number, name: string, navPort = 9001) =>
     request<{ success: boolean; name: string; path: string[]; msg?: string }>(
       `/api/control/waypoints/${encodeURIComponent(name)}/goto?robot_id=${robotId}&nav_port=${navPort}`,
       { method: "POST" },
     ),
-  controlMissionStart: (robotId: number, data: { names: string[]; loop: boolean }, navPort = 9001) =>
-    request<{ success: boolean; names: string[]; loop: boolean; msg?: string }>(`/api/control/mission/start?robot_id=${robotId}&nav_port=${navPort}`, {
-      method: "POST",
-      body: JSON.stringify(data),
-    }),
+  controlMissionStart: (
+    robotId: number,
+    data: { names: string[]; loop: boolean },
+    navPort = 9001,
+  ) =>
+    request<{ success: boolean; names: string[]; loop: boolean; msg?: string }>(
+      `/api/control/mission/start?robot_id=${robotId}&nav_port=${navPort}`,
+      {
+        method: "POST",
+        body: JSON.stringify(data),
+      },
+    ),
   controlMissionStop: (robotId: number, navPort = 9001) =>
-    request<{ success: boolean; msg?: string }>(`/api/control/mission/stop?robot_id=${robotId}&nav_port=${navPort}`, { method: "POST" }),
-  controlScheduleStart: (robotId: number, data: { minutes: number; names: string[]; loop: boolean }, navPort = 9001) =>
-    request<{ success: boolean; minutes: number; names: string[]; msg?: string }>(`/api/control/schedule/start?robot_id=${robotId}&nav_port=${navPort}`, {
+    request<{ success: boolean; msg?: string }>(
+      `/api/control/mission/stop?robot_id=${robotId}&nav_port=${navPort}`,
+      { method: "POST" },
+    ),
+  controlScheduleStart: (
+    robotId: number,
+    data: { minutes: number; names: string[]; loop: boolean },
+    navPort = 9001,
+  ) =>
+    request<{
+      success: boolean;
+      minutes: number;
+      names: string[];
+      msg?: string;
+    }>(`/api/control/schedule/start?robot_id=${robotId}&nav_port=${navPort}`, {
       method: "POST",
       body: JSON.stringify(data),
     }),
   controlScheduleStop: (robotId: number, navPort = 9001) =>
-    request<{ success: boolean; msg?: string }>(`/api/control/schedule/stop?robot_id=${robotId}&nav_port=${navPort}`, { method: "POST" }),
+    request<{ success: boolean; msg?: string }>(
+      `/api/control/schedule/stop?robot_id=${robotId}&nav_port=${navPort}`,
+      { method: "POST" },
+    ),
 
   // ── 카메라 ───────────────────────────────────────────────────────────────────
   cameraStart: () =>
-    request<{ success: boolean; message: string }>("/api/robot/camera/start", { method: "POST" }),
+    request<{ success: boolean; message: string }>("/api/robot/camera/start", {
+      method: "POST",
+    }),
   cameraStop: () =>
-    request<{ success: boolean; message: string }>("/api/robot/camera/stop", { method: "POST" }),
+    request<{ success: boolean; message: string }>("/api/robot/camera/stop", {
+      method: "POST",
+    }),
   cameraStatus: () =>
-    request<{ running: boolean; error: string | null }>("/api/robot/camera/status"),
-  cameraAnalysis: () =>
-    request<CameraAnalysis>("/api/robot/camera/analysis"),
+    request<{ running: boolean; error: string | null }>(
+      "/api/robot/camera/status",
+    ),
+  cameraAnalysis: () => request<CameraAnalysis>("/api/robot/camera/analysis"),
 
   // ── 주행로봇 액션/시나리오 학습 ─────────────────────────────────────────────
   listLearnedActions: () =>
     request<{ items: LearnedRobotAction[] }>("/api/robot-learning/actions"),
   createLearnedAction: (data: LearnedRobotActionInput) =>
-    request<LearnedRobotAction>("/api/robot-learning/actions", { method: "POST", body: JSON.stringify(data) }),
+    request<LearnedRobotAction>("/api/robot-learning/actions", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
   updateLearnedAction: (id: number, data: LearnedRobotActionInput) =>
-    request<LearnedRobotAction>(`/api/robot-learning/actions/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+    request<LearnedRobotAction>(`/api/robot-learning/actions/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
   deleteLearnedAction: (id: number) =>
-    request<{ success: boolean }>(`/api/robot-learning/actions/${id}`, { method: "DELETE" }),
+    request<{ success: boolean }>(`/api/robot-learning/actions/${id}`, {
+      method: "DELETE",
+    }),
   listLearnedScenarios: () =>
     request<{ items: LearnedRobotScenario[] }>("/api/robot-learning/scenarios"),
   createLearnedScenario: (data: LearnedRobotScenarioInput) =>
-    request<LearnedRobotScenario>("/api/robot-learning/scenarios", { method: "POST", body: JSON.stringify(data) }),
+    request<LearnedRobotScenario>("/api/robot-learning/scenarios", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
   updateLearnedScenario: (id: number, data: LearnedRobotScenarioInput) =>
-    request<LearnedRobotScenario>(`/api/robot-learning/scenarios/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+    request<LearnedRobotScenario>(`/api/robot-learning/scenarios/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
   deleteLearnedScenario: (id: number) =>
-    request<{ success: boolean }>(`/api/robot-learning/scenarios/${id}`, { method: "DELETE" }),
+    request<{ success: boolean }>(`/api/robot-learning/scenarios/${id}`, {
+      method: "DELETE",
+    }),
   runLearnedAction: (id: number, confirm = false) =>
-    request<LearnedRunResult>(`/api/robot-learning/actions/${id}/run`, { method: "POST", body: JSON.stringify({ confirm }) }),
+    request<LearnedRunResult>(`/api/robot-learning/actions/${id}/run`, {
+      method: "POST",
+      body: JSON.stringify({ confirm }),
+    }),
   runLearnedScenario: (id: number, confirm = false, robotId?: number) =>
-    request<LearnedRunResult>("/api/robot-learning/scenarios/" + id + "/run" + (robotId ? "?robot_id=" + robotId : ""), { method: "POST", body: JSON.stringify({ confirm }) }),
-  interpretCommand: (text: string, opts?: { execute?: boolean; confirm?: boolean }) =>
-    request<LearnedInterpretResult>("/api/robot-learning/interpret", { method: "POST", body: JSON.stringify({ text, execute: opts?.execute ?? false, confirm: opts?.confirm ?? false }) }),
+    request<LearnedRunResult>(
+      "/api/robot-learning/scenarios/" +
+        id +
+        "/run" +
+        (robotId ? "?robot_id=" + robotId : ""),
+      { method: "POST", body: JSON.stringify({ confirm }) },
+    ),
+  interpretCommand: (
+    text: string,
+    opts?: { execute?: boolean; confirm?: boolean },
+  ) =>
+    request<LearnedInterpretResult>("/api/robot-learning/interpret", {
+      method: "POST",
+      body: JSON.stringify({
+        text,
+        execute: opts?.execute ?? false,
+        confirm: opts?.confirm ?? false,
+      }),
+    }),
   stopAllRobots: () =>
-    request<{ success: boolean; count: number; results: Array<{ name: string; success: boolean }> }>("/api/robot-learning/stop-all", { method: "POST", body: "{}" }),
+    request<{
+      success: boolean;
+      count: number;
+      results: Array<{ name: string; success: boolean }>;
+    }>("/api/robot-learning/stop-all", { method: "POST", body: "{}" }),
 
   // ── 챗봇 ─────────────────────────────────────────────────────────────────────
-  sendChatMessage: (text: string, opts?: { sessionId?: string; execute?: boolean; confirm?: boolean }) =>
+  sendChatMessage: (
+    text: string,
+    opts?: { sessionId?: string; execute?: boolean; confirm?: boolean },
+  ) =>
     request<ChatMessageResult>("/api/chat/message", {
       method: "POST",
       body: JSON.stringify({
@@ -789,17 +967,27 @@ export const adminApi = {
         confirm: opts?.confirm ?? false,
       }),
     }),
-  executeChatCommand: (data: { session_id: string; user_message: string; robot_type: string; action: string; parameters: any }) =>
-    request<{ success: boolean; response: string; bot_message: string }>("/api/chat/execute", {
-      method: "POST",
-      body: JSON.stringify(data),
-    }),
+  executeChatCommand: (data: {
+    session_id: string;
+    user_message: string;
+    robot_type: string;
+    action: string;
+    parameters: any;
+  }) =>
+    request<{ success: boolean; response: string; bot_message: string }>(
+      "/api/chat/execute",
+      {
+        method: "POST",
+        body: JSON.stringify(data),
+      },
+    ),
   getChatHistory: (sessionId: string) =>
-    request<Array<{ id: number; role: string; content: string; created_at: string }>>(`/api/chat/history?session_id=${sessionId}`),
+    request<
+      Array<{ id: number; role: string; content: string; created_at: string }>
+    >(`/api/chat/history?session_id=${sessionId}`),
 
   // ── 드라이브 타겟 ─────────────────────────────────────────────────────────────
-  getDriveTarget: () =>
-    request<{ target: "real" }>("/api/robot/drive/target"),
+  getDriveTarget: () => request<{ target: "real" }>("/api/robot/drive/target"),
   setDriveTarget: (target: "real") =>
     request<{ ok: boolean; target: "real" }>("/api/robot/drive/target", {
       method: "POST",
@@ -807,35 +995,60 @@ export const adminApi = {
     }),
 
   // ── 마커 액션 설정 (아르코) ────────────────────────────────────────────────
-  listMarkerActions: () =>
-    request<MarkerActionItem[]>("/api/marker-actions"),
+  listMarkerActions: () => request<MarkerActionItem[]>("/api/marker-actions"),
   upsertMarkerAction: (markerId: number, body: MarkerActionInput) =>
     request<MarkerActionItem>(`/api/marker-actions/${markerId}`, {
       method: "PUT",
       body: JSON.stringify(body),
     }),
   deleteMarkerAction: (markerId: number) =>
-    request<{ success: boolean }>(`/api/marker-actions/${markerId}`, { method: "DELETE" }),
+    request<{ success: boolean }>(`/api/marker-actions/${markerId}`, {
+      method: "DELETE",
+    }),
 
   // 관제 구역 도착 액션 설정 (robot_id + 구역명 단위, 중앙서버 DB 저장)
   listLocationActions: (robotId: number) =>
-    request<LocationActionItem[]>(`/api/control/location-actions?robot_id=${robotId}`),
-  upsertLocationAction: (robotId: number, name: string, body: LocationActionInput) =>
-    request<LocationActionItem>(`/api/control/location-actions/${encodeURIComponent(name)}?robot_id=${robotId}`, {
-      method: "PUT",
-      body: JSON.stringify(body),
-    }),
+    request<LocationActionItem[]>(
+      `/api/control/location-actions?robot_id=${robotId}`,
+    ),
+  upsertLocationAction: (
+    robotId: number,
+    name: string,
+    body: LocationActionInput,
+  ) =>
+    request<LocationActionItem>(
+      `/api/control/location-actions/${encodeURIComponent(name)}?robot_id=${robotId}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(body),
+      },
+    ),
   deleteLocationAction: (robotId: number, name: string) =>
-    request<{ success: boolean; name: string }>(`/api/control/location-actions/${encodeURIComponent(name)}?robot_id=${robotId}`, { method: "DELETE" }),
+    request<{ success: boolean; name: string }>(
+      `/api/control/location-actions/${encodeURIComponent(name)}?robot_id=${robotId}`,
+      { method: "DELETE" },
+    ),
 
   // 근접 안전 코디네이터 (멀티 관제)
   fleetCoordinatorWsUrl,
   getFleetCoordinator: () =>
     request<FleetCoordinatorState>("/api/control/fleet/coordinator"),
-  updateFleetCoordinator: (body: { enabled?: boolean; min_distance?: number; clear_distance?: number; priorities?: Record<number, number>; evasion_enabled?: boolean }) =>
-    request<FleetCoordinatorState>("/api/control/fleet/coordinator", { method: "PUT", body: JSON.stringify(body) }),
+  updateFleetCoordinator: (body: {
+    enabled?: boolean;
+    min_distance?: number;
+    clear_distance?: number;
+    priorities?: Record<number, number>;
+    evasion_enabled?: boolean;
+  }) =>
+    request<FleetCoordinatorState>("/api/control/fleet/coordinator", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
   fleetResume: (robotId: number) =>
-    request<{ success: boolean; robot_id: number; msg: string }>(`/api/control/fleet/resume?robot_id=${robotId}`, { method: "POST" }),
+    request<{ success: boolean; robot_id: number; msg: string }>(
+      `/api/control/fleet/resume?robot_id=${robotId}`,
+      { method: "POST" },
+    ),
 
   // FSM + BT (2단계)
   fsmStateWsUrl,
@@ -911,6 +1124,10 @@ export const adminApi = {
       `/api/fleet/order/${taskId}/advance`,
       { method: "POST" },
     ),
+  fleetDismissOrder: (taskId: string) =>
+    request<{ ok: boolean; dismissed: string }>(`/api/fleet/order/${taskId}`, {
+      method: "DELETE",
+    }),
   fleetCancelOrder: (taskId: string) =>
     request<{ ok: boolean; task: OrderSnapshot }>(
       `/api/fleet/order/${taskId}/cancel`,
@@ -1039,7 +1256,13 @@ export interface VoiceExecuteResult {
 }
 
 export type MarkerActionType =
-  | "none" | "dock" | "rotate" | "move" | "lcd_emotion" | "lcd_text" | "lcd_image";
+  | "none"
+  | "dock"
+  | "rotate"
+  | "move"
+  | "lcd_emotion"
+  | "lcd_text"
+  | "lcd_image";
 
 export interface MarkerActionItem {
   marker_id: number;
@@ -1141,9 +1364,10 @@ export interface FleetRobotRow {
   goal_vertex: number | null;
   held_nodes: number[];
   state: string | null;
-  state_source: "panel" | "unknown";
+  /** "fsm" = 로봇이 실제 발행한 값(정본) · "panel" = 이 화면에서 손으로 설정한 값 */
+  state_source: "fsm" | "panel" | "unknown";
   battery: number | null;
-  battery_source: "panel" | "unknown";
+  battery_source: "fsm" | "panel" | "unknown";
   stale: boolean;
 }
 

@@ -14,13 +14,10 @@
 # scripts/_common.sh 는 루트 바로 아래 → 한 단계 위가 REPO_ROOT.
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# .env 는 gitignore 라 없을 수 있다. 있으면 통째로 export.
-if [ -f "$REPO_ROOT/.env" ]; then
-  set -a
-  # shellcheck disable=SC1091
-  . "$REPO_ROOT/.env"
-  set +a
-fi
+# .env 로드. 규칙(셸에서 이미 준 값이 이긴다)은 _load_env.sh 한 곳에만 둔다 —
+# 서비스 기동 스크립트들도 같은 파일을 쓴다.
+# shellcheck disable=SC1091
+. "$REPO_ROOT/scripts/_load_env.sh"
 
 die() { echo "[$(basename "${0:-scripts}")] $*" >&2; exit 1; }
 

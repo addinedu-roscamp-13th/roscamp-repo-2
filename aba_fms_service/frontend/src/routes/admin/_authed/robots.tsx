@@ -55,7 +55,7 @@ import {
 } from "@/lib/admin-api";
 
 export const Route = createFileRoute("/admin/_authed/robots")({
-  head: () => ({ meta: [{ title: "Labi Admin — 로봇 IP 관리" }] }),
+  head: () => ({ meta: [{ title: "LiBi Admin — 로봇 IP 관리" }] }),
   component: RobotsPage,
 });
 

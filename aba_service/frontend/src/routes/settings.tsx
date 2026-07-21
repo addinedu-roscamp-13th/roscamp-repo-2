@@ -28,7 +28,7 @@ const OLLAMA_MODEL_KEY = "labi.ollamaModel";
 const DEFAULT_OLLAMA_MODEL = import.meta.env.VITE_OLLAMA_MODEL ?? "qwen3:1.7b";
 
 export const Route = createFileRoute("/settings")({
-  head: () => ({ meta: [{ title: "Labi Bot — 설정" }] }),
+  head: () => ({ meta: [{ title: "LiBi — 설정" }] }),
   component: Settings,
 });
 
@@ -201,7 +201,7 @@ function Settings() {
         </Section>
 
         <p className="mt-8 text-center text-[11px] text-muted-foreground">
-          Labi Bot v0.1 · made with 📚 by Lovable
+          LiBi v0.1 · made with 📚 by Lovable
         </p>
       </div>
 

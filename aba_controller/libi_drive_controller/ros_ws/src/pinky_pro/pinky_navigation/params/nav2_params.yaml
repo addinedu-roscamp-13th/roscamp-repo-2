@@ -336,7 +336,18 @@ collision_monitor:
     stop_pub_timeout: 2.0
     polygons: ["SlowDown", "Stop"]
 
-    # 감속 zone: 앞 15cm / 좌우 ±12cm → 속도 0.3배 (흐름 유지, 데드락↓)
+    # ⚠️⚠️ 2026-07-21: 배차·교통 알고리즘 시험을 위해 **실물에서도** 두 zone 을 비활성했다.
+    # 좁은 통로 + 라이다 노이즈로 Stop zone 이 계속 걸려 로봇이 제자리에 서는 것을 막기 위함.
+    #
+    # 🚨 이건 **원시 스캔 기반 비상정지(마지막 방어선)를 끈 것**이다. 실물 로봇이 사람이
+    #    있는 공간에서 도는 운영 상황으로 돌아갈 때는 **반드시 enabled: True 로 되돌린다.**
+    #
+    # ⚠️ 노드 자체는 끄면 안 된다 — collision_monitor 는 cmd_vel_smoothed → cmd_vel 경로
+    # 한가운데 있어서, 노드를 빼면 cmd_vel 이 아예 발행되지 않아 로봇이 전혀 못 움직인다.
+    # 그래서 폴리곤만 enabled: False 로 둔다(통과만 시킴).
+    #
+    # 남아 있는 보호: nav2 local costmap + controller 장애물 회피,
+    # FMS fleet_coordinator 근접 안전, fleet_node 교통 예약, libi_gui 비상정지.
     SlowDown:
       type: "polygon"
       points: "[[0.15, 0.12], [0.15, -0.12], [-0.10, -0.12], [-0.10, 0.12]]"
@@ -345,9 +356,8 @@ collision_monitor:
       slowdown_ratio: 0.7
       visualize: True
       polygon_pub_topic: "slowdown_polygon"
-      enabled: True
+      enabled: False
 
-    # 비상 정지 zone: 앞 8cm / 뒤 6cm / 좌우 ±8cm
     Stop:
       type: "polygon"
       points: "[[0.08, 0.08], [0.08, -0.08], [-0.06, -0.08], [-0.06, 0.08]]"
@@ -355,7 +365,7 @@ collision_monitor:
       min_points: 4
       visualize: True
       polygon_pub_topic: "stop_polygon"
-      enabled: True
+      enabled: False
 
     observation_sources: ["scan"]
     scan:

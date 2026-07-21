@@ -24,9 +24,12 @@ id 와 함께 돌려준다(`/fleet_cmd_result {"id","ok",...}`) — 그 id 를 �
 from __future__ import annotations
 
 import itertools
+import logging
 import threading
 from dataclasses import dataclass, field
 from enum import Enum
+
+log = logging.getLogger("fleet_orchestrator")
 
 
 class LegType(str, Enum):
@@ -111,8 +114,12 @@ class Orchestrator:
         (실제 구현: NAVIGATE→fleet_node/fleet_cmd, PERFORM_ACTION→fleet_cmd. 배선 계층 담당)
     """
 
-    def __init__(self, dispatch_leg, *, retry_max: int = 1):
+    def __init__(self, dispatch_leg, *, release_robot=None, retry_max: int = 1):
         self._dispatch_leg = dispatch_leg
+        #: release_robot(robot) -> None — 로봇을 배선 계층에서 놓아준다(선택).
+        #  주문을 취소·실패 처리해도 **로봇 쪽은 여전히 그 일을 하고 있다.** 코어는
+        #  fleet_node 를 모르므로, 실제로 멈추는 일은 이 훅이 한다. 안 꽂으면 no-op.
+        self._release_robot = release_robot
         self._retry_max = retry_max
         self._tasks: dict[str, Task] = {}
         self._queue: list[str] = []            # PENDING task id (미배정)
@@ -203,6 +210,21 @@ class Orchestrator:
             return
         task.status = TaskStatus.FAILED
         task.reason = reason
+        self._release(task)
+
+    def _release(self, task: Task) -> None:
+        """배선 계층에 "이 로봇 이제 안 쓴다"를 알린다.
+
+        이게 없으면 주문을 취소·실패시켜도 **로봇은 계속 그 목적지로 간다** — 화면의
+        주문은 사라졌는데 로봇만 혼자 움직이는, 설명 불가능한 상태가 된다.
+        훅이 없거나(스텁 모드) 배정 전(PENDING)이면 할 일이 없다.
+        """
+        if self._release_robot is None or not task.robot:
+            return
+        try:
+            self._release_robot(task.robot)
+        except Exception:  # noqa: BLE001 — 놓아주기 실패가 상태 전이를 막으면 안 된다
+            log.exception("[orchestrator] 로봇 해제 실패: %s (task=%s)", task.robot, task.id)
 
     # ── 취소 / 디버그 ────────────────────────────────────────────────────────
     def cancel(self, task_id: str) -> None:
@@ -218,6 +240,7 @@ class Orchestrator:
                 self._queue.remove(task_id)
             task.status = TaskStatus.CANCELLED
             task.reason = "취소됨"
+            self._release(task)
 
     def force_advance(self, task_id: str) -> None:
         """[디버그 전용] 현재 다리를 "완료됨"으로 치고 다음으로. 로봇 없이 시퀀스 검증용.
@@ -234,6 +257,28 @@ class Orchestrator:
                 self._by_cmd.pop(leg.cmd_id, None)
             task.leg_idx += 1
             self._start_leg(task)
+
+    def dismiss(self, task_id: str) -> bool:
+        """끝난 주문을 큐에서 치운다(관제 화면 정리용).
+
+        `cancel` 은 **종료 상태를 무시**하도록 되어 있어서, 한 번 FAILED/COMPLETED 가 된
+        주문은 화면에서 없앨 방법이 없었다. 실패한 주문이 계속 쌓이면 큐를 읽을 수 없으므로
+        이 메서드로 제거한다.
+
+        진행 중인 주문은 지우지 않는다 — 그건 `cancel` 이 할 일이고, 여기서 지워버리면
+        로봇은 계속 도는데 관제만 잊어버리는 상태가 된다. 반환값은 실제로 지웠는지 여부.
+        """
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None or task.status not in _TERMINAL:
+                return False
+            leg = task.current_leg()
+            if leg is not None and leg.cmd_id is not None:
+                self._by_cmd.pop(leg.cmd_id, None)
+            if task_id in self._queue:
+                self._queue.remove(task_id)
+            del self._tasks[task_id]
+            return True
 
     # ── 조회 ─────────────────────────────────────────────────────────────────
     def get(self, task_id: str) -> Task | None:

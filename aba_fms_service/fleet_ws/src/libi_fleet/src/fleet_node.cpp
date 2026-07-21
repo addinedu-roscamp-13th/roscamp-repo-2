@@ -72,6 +72,30 @@ public:
     energy_.drain_per_act = declare_parameter<double>("battery_drain_per_act", 0.5); // 팔 1동작당 %
     energy_.reserve       = declare_parameter<double>("battery_reserve_pct", 15.0);  // 최소 잔여 %
 
+    // 무진행(stuck) 감지 임계 틱. **0 이면 비활성**(기본).
+    //
+    // 원래는 상수 kStuckTicks(=100, ≈15s@150ms)로 항상 켜져 있었는데, sim 에서는 nav2 가
+    // 첫 경로를 계획하는 동안 로봇이 제자리에 있어 그 시간을 넘겨 **정상 작업이 취소**됐다.
+    // (취소 → 재시도 → 서비스 타임아웃 → 주문 FAILED)
+    // 예외처리(재계획/에스컬레이션)를 제대로 넣기 전까지는 꺼 둔다. 켜려면 틱 수를 준다:
+    //   ros2 run libi_fleet fleet_node --ros-args -p stuck_ticks:=100
+    stuck_ticks_ = declare_parameter<int>("stuck_ticks", 0);
+
+    // 도착 판정 반경(m). 맵 축척에 따라 달라진다 — 범위 규칙은 fleet_task.hpp 주석 참고.
+    //   실물(수십 m 건물) : 기본 0.35
+    //   arte2(1.26×2.16m) : 0.05  (nav2 xy_goal_tolerance 0.05 ≤ r < 최소 레인 0.062)
+    //   ros2 run libi_fleet fleet_node --ros-args -p arrive_radius:=0.05
+    arrive_radius_ = declare_parameter<double>("arrive_radius", kArriveDefault);
+
+    // 남은 정점을 전부 보낼지. **기본 false — 다음 한 노드만 보낸다.**
+    //
+    // ⚠️ 한 번에 다 보내면 로봇이 예약하지 않은 노드로 들어가 **교통 협상이 무력화된다**
+    //    (traffic 플러그인은 다음 한 노드만 예약한다). 로봇이 여러 대인 순간 충돌한다.
+    //    그래서 노드 단위가 정본이고, 전체 경로 전송은 단일 로봇 디버깅용으로만 남긴다.
+    //    짧은 구간을 계획하지 못하던 문제는 플래너를 Theta* 로 바꿔서 해결했다
+    //    (NavFn 의 전위장 고유 실패 모드였다 — send_path 주석 참고).
+    full_path_ = declare_parameter<bool>("full_path", false);
+
     // 순회(patrol) 모드: 켜지면 idle 로봇이 patrol_route(외곽 루프)를 무한 순회.
     patrol_ = declare_parameter<bool>("patrol", true);
     // "auto"(기본) → 우/하 우선 규칙으로 순회 루프 생성(그래프 로드 후). 그 외는 수동 정점 목록.
@@ -160,15 +184,50 @@ private:
     task_pub_->publish(ts);
   }
 
-  void send_path(const std::string & robot, double x0, double y0, const Vertex & target)
+  // 로봇에게 줄 경로를 만든다. `verts` 는 **navgraph 정점 인덱스 열**(간선을 따라간다).
+  //
+  // ## 왜 정점 열을 그대로 주나
+  // 전역 플래너에게 매번 "다음 정점 하나"만 맡기면, 이 축소맵(통로 폭 0.20m)에서는
+  // 6~20cm 짜리 계획을 수십 번 시키는 꼴이 된다. 실제로 NavFn 이 그걸 못 만들고
+  //   "Failed to create a plan from potential when a legal potential was found"
+  // 로 실패했고, BT 가 복구동작(spin/backup)을 돌려 로봇이 엉뚱한 곳을 배회했다.
+  //
+  // navgraph 의 정점·간선은 **사람이 통로 중심에 맞춰 직접 찍은 것**이라, 그 열을
+  // 그대로 경유점으로 주면 벽에서 떨어진 안전한 경로가 된다. 로봇 쪽 드라이버가
+  // 이걸 NavigateThroughPoses 로 넘겨 멈춤 없이 통과한다.
+  //
+  // ## 자세(yaw)
+  // 각 경유점의 yaw 는 **그 다음 점으로 향하는 방향**이다. 예전엔 yaw 를 안 채워서
+  // 0(맵 +x)으로 나갔고, yaw_goal_tolerance 0.15rad 탓에 정점마다 "이동 → 다시 yaw 0
+  // 으로 제자리 회전"을 반복했다(노드당 10초, 화면상 엉뚱한 곳을 쳐다봄).
+  // ⚠️ 마지막 정점의 자세는 waypoint.yaml 에 정의된 값(예: 서가를 바라보는 방향)을
+  //    써야 맞다 — 지금 navgraph 생성기가 그 yaw 를 버리고 있어 후속 과제로 남긴다.
+  void send_path(const std::string & robot, double x0, double y0,
+                 const std::vector<int> & verts)
   {
+    if (verts.empty()) { return; }
     PathRequest req;
     req.fleet_name = fleet_name_;
     req.robot_name = robot;
     req.task_id = robot + "-" + std::to_string(++path_seq_);   // 고유 task_id (slotcar dedup 회피)
+
+    std::vector<RmfLocation> pts;
+    pts.reserve(verts.size() + 1);
     RmfLocation p0; p0.x = x0; p0.y = y0; p0.level_name = "L1";
-    RmfLocation p1; p1.x = target.x; p1.y = target.y; p1.level_name = "L1";
-    req.path = {p0, p1};
+    pts.push_back(p0);                       // [0] 은 출발점(로봇 현재 위치)이지 목적지가 아니다
+    for (int v : verts) {
+      const Vertex & vx = graph_.vertex(v);
+      RmfLocation p; p.x = vx.x; p.y = vx.y; p.level_name = "L1";
+      pts.push_back(p);
+    }
+    // 각 점의 yaw = 다음 점으로 향하는 방향. 마지막 점은 직전 구간 방향을 유지한다.
+    for (size_t i = 0; i + 1 < pts.size(); ++i) {
+      const double dx = pts[i + 1].x - pts[i].x, dy = pts[i + 1].y - pts[i].y;
+      pts[i].yaw = (std::hypot(dx, dy) > 1e-6) ? std::atan2(dy, dx) : 0.0;
+    }
+    if (pts.size() >= 2) { pts.back().yaw = pts[pts.size() - 2].yaw; }
+
+    req.path = pts;
     path_pub_->publish(req);
   }
 
@@ -260,7 +319,7 @@ private:
       if (t.moving && std::hypot(r.x - t.last_x, r.y - t.last_y) < 0.02) { t.no_move++; }
       else { t.no_move = 0; }
       t.last_x = r.x; t.last_y = r.y;
-      if (t.no_move > kStuckTicks) {
+      if (stuck_ticks_ > 0 && t.no_move > stuck_ticks_) {
         RCLCPP_ERROR(get_logger(), "[%s] %s ⚠ 무진행(슬롯카 stuck 추정) → 예약 해제·task 취소",
                      t.id.c_str(), t.robot.c_str());
         if (t.idx < t.path.size()) { traffic_->release_node(t.robot, t.path[t.idx]); }
@@ -270,7 +329,7 @@ private:
         it = tasks_.erase(it); continue;
       }
 
-      if (t.moving && d < kArrive) {
+      if (t.moving && d < arrive_radius_) {
         // 도착: 예약한 목표 노드는 그대로 소유(다음 출발 때 release). 엣지 예약은 없음.
         RCLCPP_INFO(get_logger(), "[%s] %s 도착 v%d", t.id.c_str(), t.robot.c_str(), t.path[t.idx]);
         t.idx++;
@@ -299,7 +358,17 @@ private:
         MoveDecision dec = traffic_->request_move(t.robot, cur, next, compute_priority(t.robot, t));
         if (dec == MoveDecision::GRANT) {
           if (cur != next) { traffic_->release_node(t.robot, cur); }   // 출발 순간 이전 노드 해제 (cur==next=start==goal 케이스는 목표 유지)
-          send_path(t.robot, r.x, r.y, graph_.vertex(next));
+          // full_path 면 남은 정점을 전부 실어 보낸다 — 로봇이 간선을 따라 멈춤 없이 간다.
+          // ⚠️ 예약(traffic)은 여전히 **다음 한 노드**만 잡는다. 로봇이 여러 대면 예약하지
+          //    않은 노드로 들어갈 수 있으므로, 다중 로봇 운영 전에 예약도 구간 단위로
+          //    확장해야 한다. 그때까지는 `-p full_path:=false` 로 한 노드씩 되돌릴 수 있다.
+          std::vector<int> route;
+          if (full_path_) {
+            for (size_t k = t.idx; k < t.path.size(); ++k) { route.push_back(t.path[k]); }
+          } else {
+            route.push_back(next);
+          }
+          send_path(t.robot, r.x, r.y, route);
           t.moving = true; t.wait_logged = false; t.stuck = false; t.wait_ticks = 0;   // 풀림 → escalation 해제
           RCLCPP_INFO(get_logger(), "[%s] %s → v%d (GRANT)", t.id.c_str(), t.robot.c_str(), next);
         } else if (dec == MoveDecision::DEADLOCK) {
@@ -677,6 +746,9 @@ private:
   Navgraph graph_;
   std::string navgraph_file_;
   std::string fleet_name_;
+  int stuck_ticks_{0};   // 0 = 무진행 감지 비활성
+  double arrive_radius_{kArriveDefault};   // 도착 판정 반경(m) — 맵 축척마다 다름
+  bool full_path_{false};                  // true 면 남은 정점 전부 전송(단일 로봇 디버깅용)
   bool patrol_{false};
   std::vector<int> patrol_route_;
   std::map<std::string, std::string> robot_mode_;   // 로봇 → PATROL|IDLE|STOP|CHARGE

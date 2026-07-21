@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { adminApi, type ErdResponse } from "@/lib/admin-api";
 
 export const Route = createFileRoute("/admin/_authed/dev/erd")({
-  head: () => ({ meta: [{ title: "Labi Admin — ERD" }] }),
+  head: () => ({ meta: [{ title: "LiBi Admin — ERD" }] }),
   component: ErdPage,
 });
 

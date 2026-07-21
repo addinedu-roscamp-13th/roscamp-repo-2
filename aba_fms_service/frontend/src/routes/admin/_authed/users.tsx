@@ -55,7 +55,7 @@ import {
 } from "@/lib/admin-api";
 
 export const Route = createFileRoute("/admin/_authed/users")({
-  head: () => ({ meta: [{ title: "Labi Admin — 관리자 목록" }] }),
+  head: () => ({ meta: [{ title: "LiBi Admin — 관리자 목록" }] }),
   component: UsersPage,
 });
 

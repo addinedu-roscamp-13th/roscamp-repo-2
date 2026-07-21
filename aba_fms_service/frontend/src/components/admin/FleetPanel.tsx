@@ -340,7 +340,11 @@ export function FleetPanel() {
                     </td>
                     <td className="py-2 pr-3">
                       {r.state ?? "—"}
-                      {r.state_source === "panel" ? (
+                      {/* 로봇이 실제 발행한 값과, 이 화면에서 손으로 설정한 값을 구분해서
+                          보여준다 — 둘을 섞으면 "왜 배차가 안 되지"를 추적할 수 없다. */}
+                      {r.state_source === "fsm" ? (
+                        <span className="ml-1 text-xs text-emerald-600">(로봇)</span>
+                      ) : r.state_source === "panel" ? (
                         <span className="ml-1 text-xs text-muted-foreground">
                           (패널 설정)
                         </span>

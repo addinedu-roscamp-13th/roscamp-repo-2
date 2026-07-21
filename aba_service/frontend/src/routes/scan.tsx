@@ -5,7 +5,7 @@ import { ArrowLeft, Camera, Copy, Check, ScanLine, RotateCcw } from "lucide-reac
 import { useState } from "react";
 
 export const Route = createFileRoute("/scan")({
-  head: () => ({ meta: [{ title: "Labi Bot — 바코드/QR 인식" }] }),
+  head: () => ({ meta: [{ title: "LiBi — 바코드/QR 인식" }] }),
   component: ScanPage,
 });
 

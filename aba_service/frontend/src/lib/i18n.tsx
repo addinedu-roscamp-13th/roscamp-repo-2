@@ -12,7 +12,7 @@ export const LANGS: { code: Lang; label: string; native: string; speech: string 
 type Dict = Record<string, Record<Lang, string>>;
 
 export const t: Dict = {
-  appName: { KR: "Labi Bot", EN: "Labi Bot", ZH: "Labi Bot", VI: "Labi Bot" },
+  appName: { KR: "LiBi", EN: "LiBi", ZH: "LiBi", VI: "LiBi" },
   tagline: {
     KR: "책으로 다시 태어나다",
     EN: "Reborn through books",
@@ -44,10 +44,10 @@ export const t: Dict = {
     VI: "Vui lòng chọn ngôn ngữ",
   },
   storeNow: {
-    KR: "현재 매장",
-    EN: "Current store",
-    ZH: "当前门店",
-    VI: "Cửa hàng hiện tại",
+    KR: "현재 지점",
+    EN: "Current branch",
+    ZH: "当前分馆",
+    VI: "Chi nhánh hiện tại",
   },
   tapToTalk: {
     KR: "탭하여 말하기",
@@ -62,12 +62,11 @@ export const t: Dict = {
     VI: "Đang nghe...",
   },
   bestseller: { KR: "베스트셀러 / 신간", EN: "Bestsellers / New", ZH: "畅销 / 新书", VI: "Bán chạy / Mới" },
-  storeMap: { KR: "서점 내부 지도", EN: "Store Map", ZH: "店内地图", VI: "Bản đồ cửa hàng" },
-  cafe: { KR: "북카페 & 편의시설", EN: "Cafe & Amenities", ZH: "书咖 & 设施", VI: "Cafe & Tiện ích" },
+  storeMap: { KR: "도서관 내부 지도", EN: "Library Map", ZH: "馆内地图", VI: "Bản đồ thư viện" },
   navHome: { KR: "홈", EN: "Home", ZH: "首页", VI: "Trang chủ" },
   navSearch: { KR: "도서 검색", EN: "Search", ZH: "图书", VI: "Tìm sách" },
   navMap: { KR: "공간 안내", EN: "Map", ZH: "地图", VI: "Bản đồ" },
-  navChat: { KR: "Labi Bot", EN: "Labi Bot AI", ZH: "Labi Bot", VI: "Labi Bot AI" },
+  navChat: { KR: "LiBi AI", EN: "LiBi AI", ZH: "LiBi AI", VI: "LiBi AI" },
   navMe: { KR: "설정", EN: "Settings", ZH: "设置", VI: "Cài đặt" },
   searchPh: {
     KR: "책 제목, 저자, 또는 '과학 신간'처럼",
@@ -79,7 +78,7 @@ export const t: Dict = {
   soldOut: { KR: "품절", EN: "Sold out", ZH: "售罄", VI: "Hết hàng" },
   showOnMap: { KR: "🗺️ 위치 지도로 보기", EN: "🗺️ Show on map", ZH: "🗺️ 在地图上查看", VI: "🗺️ Xem trên bản đồ" },
   hotTitle: {
-    KR: "지금 서점에서 가장 핫한 책 TOP 5",
+    KR: "지금 도서관에서 가장 핫한 책 TOP 5",
     EN: "Top 5 hottest books right now",
     ZH: "现在最热门的5本书",
     VI: "5 cuốn sách hot nhất hiện nay",

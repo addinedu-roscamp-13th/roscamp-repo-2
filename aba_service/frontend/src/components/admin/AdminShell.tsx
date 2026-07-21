@@ -1,11 +1,14 @@
-import {
-  Link,
-  useNavigate,
-  useRouterState,
-} from "@tanstack/react-router";
+import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import {
+  BarChart3,
+  Bell,
+  BookMarked,
   BookOpen,
+  ClipboardCheck,
+  Library,
+  ListChecks,
+  ShieldAlert,
   Bot,
   ChevronDown,
   ChevronRight,
@@ -41,6 +44,26 @@ type NavGroup = {
 
 const NAV_GROUPS: NavGroup[] = [
   {
+    key: "ops",
+    label: "운영",
+    icon: ListChecks,
+    items: [
+      { to: "/admin/ops", label: "운영 대시보드", icon: LayoutDashboard },
+      { to: "/admin/robots", label: "실시간 모니터링", icon: Bot },
+      { to: "/admin/tasks", label: "작업 지시", icon: ListChecks },
+      { to: "/admin/alerts", label: "작업 알림 · 로그", icon: Bell },
+      {
+        to: "/admin/reports",
+        label: "정리 · 분류 리포트",
+        icon: ClipboardCheck,
+      },
+      { to: "/admin/members", label: "회원 · 대여/반납", icon: BookMarked },
+      { to: "/admin/books", label: "도서 · 서가 관리", icon: Library },
+      { to: "/admin/insight", label: "통합 검색 · 통계", icon: BarChart3 },
+      { to: "/admin/security", label: "야간 보안", icon: ShieldAlert },
+    ],
+  },
+  {
     key: "manage",
     label: "관리",
     icon: LayoutDashboard,
@@ -58,7 +81,11 @@ const NAV_GROUPS: NavGroup[] = [
       { to: "/admin/dev/tables", label: "테이블 정의서", icon: Table2 },
       { to: "/admin/dev/erd", label: "ERD", icon: GitFork },
       { to: "/admin/dev/architecture", label: "아키텍처", icon: Layers },
-      { to: "/admin/dev/server-ops", label: "서버 운영 가이드", icon: ServerCog },
+      {
+        to: "/admin/dev/server-ops",
+        label: "서버 운영 가이드",
+        icon: ServerCog,
+      },
     ],
   },
 ];
@@ -104,7 +131,9 @@ export function AdminShell({
       <header className="flex h-[60px] shrink-0 items-stretch border-b border-slate-200/70 bg-white shadow-[0_1px_3px_rgba(15,23,42,0.05)]">
         <div className="hidden w-[240px] shrink-0 items-center gap-2.5 border-r border-slate-200/70 bg-[#F8F9FB] px-4 md:flex">
           <Bot className="h-6 w-6 shrink-0 text-orange-500" />
-          <span className="truncate text-[14px] font-bold text-slate-800">Labi Admin</span>
+          <span className="truncate text-[14px] font-bold text-slate-800">
+            LiBi Admin
+          </span>
         </div>
         <div className="flex flex-1 items-center justify-between gap-3 px-3 md:px-4">
           <div className="flex min-w-0 items-center gap-2 md:gap-3">
@@ -154,7 +183,9 @@ export function AdminShell({
           )}
         >
           <div className="mb-2 flex items-center justify-between px-3 md:hidden">
-            <p className="text-[13px] font-semibold text-slate-700">관리자 메뉴</p>
+            <p className="text-[13px] font-semibold text-slate-700">
+              관리자 메뉴
+            </p>
             <button
               type="button"
               className="inline-flex h-8 w-8 items-center justify-center rounded-md hover:bg-slate-100"
@@ -212,7 +243,11 @@ function NavGroupBlock({
     <div className="flex flex-col gap-0.5">
       <button
         onClick={() => setOpen((v) => !v)}
-        className={cn(itemBase, "w-full text-left", groupActive ? itemActive : itemDefault)}
+        className={cn(
+          itemBase,
+          "w-full text-left",
+          groupActive ? itemActive : itemDefault,
+        )}
       >
         <GroupIcon className="h-4 w-4 shrink-0" />
         <span className="flex-1">{group.label}</span>

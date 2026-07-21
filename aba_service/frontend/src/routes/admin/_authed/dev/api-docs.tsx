@@ -3,7 +3,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { AdminShell } from "@/components/admin/AdminShell";
 
 export const Route = createFileRoute("/admin/_authed/dev/api-docs")({
-  head: () => ({ meta: [{ title: "Labi Admin — API 문서" }] }),
+  head: () => ({ meta: [{ title: "LiBi Admin — API 문서" }] }),
   component: ApiDocsPage,
 });
 

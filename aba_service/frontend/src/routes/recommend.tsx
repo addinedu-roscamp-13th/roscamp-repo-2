@@ -10,7 +10,7 @@ const CATS = ["all", "literature", "art", "science", "humanities", "kids"] as co
 type Cat = (typeof CATS)[number];
 
 export const Route = createFileRoute("/recommend")({
-  head: () => ({ meta: [{ title: "Labi Bot — 추천 랭킹" }] }),
+  head: () => ({ meta: [{ title: "LiBi — 추천 랭킹" }] }),
   component: Recommend,
 });
 

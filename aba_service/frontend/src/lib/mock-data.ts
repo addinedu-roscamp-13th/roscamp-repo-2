@@ -13,8 +13,13 @@ export type Book = {
 };
 
 export const STORE = {
-  name: { KR: "○○문고 강남점", EN: "○○ Books Gangnam", ZH: "○○书店 江南店", VI: "○○ Sách Gangnam" },
-  short: "강남점",
+  name: {
+    KR: "가산 에듀인에듀점",
+    EN: "Gasan Eduin-Edu",
+    ZH: "加山 Eduin-Edu 店",
+    VI: "Gasan Eduin-Edu",
+  },
+  short: "가산 에듀인에듀점",
 };
 
 export const BOOKS: Book[] = [

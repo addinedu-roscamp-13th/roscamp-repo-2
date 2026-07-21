@@ -1,4 +1,4 @@
-# Labi Bot Backend
+# LiBi Backend (로봇제어 관리자 · FMS)
 
 FastAPI 기반 중앙 관리자 API 서버입니다. MariaDB와 SQLAlchemy async를 사용하며, 주행 로봇 상태/명령은 ROS2 fleet link를 기본 경로로 처리합니다. 로봇 온보드 FastAPI는 주변장치와 HTTP 폴백 역할로 남아 있습니다.
 
@@ -143,7 +143,7 @@ OLLAMA_URL=http://127.0.0.1:11434
 
 ```ini
 [Unit]
-Description=Labi Bot Admin API
+Description=LiBi Admin API
 After=network.target
 
 [Service]

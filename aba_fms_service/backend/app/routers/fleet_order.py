@@ -96,3 +96,16 @@ async def report_result(body: ResultRequest, _: Admin = Depends(get_current_admi
     """다리 완료 보고 주입 — 실제로는 fleet task_state/fleet_cmd_result 배선이 부른다."""
     svc.orchestrator().on_result(body.cmd_id, body.ok, body.msg)
     return {"ok": True}
+
+@router.delete("/order/{task_id}")
+async def dismiss_order(task_id: str, _: Admin = Depends(get_current_admin)):
+    """끝난 주문을 큐에서 치운다.
+
+    `cancel` 은 종료 상태(COMPLETED/FAILED/CANCELLED)를 무시하도록 되어 있어서, 한 번
+    실패한 주문은 화면에서 없앨 방법이 없었다. 실패 주문이 쌓이면 큐를 읽을 수 없다.
+    진행 중인 주문은 지우지 않는다 — 그건 cancel 의 몫이다.
+    """
+    ok = svc.orchestrator().dismiss(task_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail="진행 중이거나 없는 주문입니다")
+    return {"ok": True, "dismissed": task_id}

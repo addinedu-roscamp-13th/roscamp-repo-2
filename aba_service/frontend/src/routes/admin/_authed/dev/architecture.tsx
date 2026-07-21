@@ -13,7 +13,7 @@ import type { ComponentType } from "react";
 import { AdminShell } from "@/components/admin/AdminShell";
 
 export const Route = createFileRoute("/admin/_authed/dev/architecture")({
-  head: () => ({ meta: [{ title: "Labi Admin — 아키텍처" }] }),
+  head: () => ({ meta: [{ title: "LiBi Admin — 아키텍처" }] }),
   component: ArchitecturePage,
 });
 

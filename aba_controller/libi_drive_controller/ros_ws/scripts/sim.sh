@@ -19,7 +19,9 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROS_WS_DIR="$(dirname "$SCRIPT_DIR")"
-SESSION="pinky_sim"
+# 한 노트북에서 sim 을 여러 개(다른 이름·도메인) 띄울 수 있게 세션 이름을 바깥에서 줄 수 있다.
+# 안 주면 예전과 같은 pinky_sim — kill.sh 는 이 이름을 지운다.
+SESSION="${SIM_SESSION:-pinky_sim}"
 
 WORLD_PATH="$ROS_WS_DIR/src/pinky_pro/pinky_navigation/worlds/arte2.sdf"
 MAP_PATH="$ROS_WS_DIR/src/pinky_pro/pinky_navigation/map/arte2.yaml"
@@ -73,6 +75,21 @@ tmux new-window -t "$SESSION" -n fleet-link \
 if [ "$WITH_FSM" = true ]; then
   tmux new-window -t "$SESSION" -n fsm \
     bash -c "$LIBI_MODES_SETUP && echo '[fsm] libi_modes 미션 FSM (domain $SIM_DOMAIN_ID, robot_id=$FSM_ROBOT_ID)...' && ros2 run libi_modes fsm_node --ros-args -p robot_id:=$FSM_ROBOT_ID; exec bash"
+fi
+
+# 경로 드라이버 — fleet_node 가 정한 경로를 nav2 로 옮긴다. **로봇 쪽 구성요소**라
+# 여기(sim)에 둔다(실물은 drive-pi/pi.sh 가 같은 일을 한다).
+#
+# 이게 없으면 배차는 성공하는데(로봇에 goal_vertex 가 찍힘) 로봇이 안 움직이고,
+# fleet_node 가 "무진행 → task 취소"로 판단해 주문이 FAILED 로 떨어진다.
+# 반대 방향(로봇 위치 → fleet_node)은 서버의 fms_service.sh 가 띄운다.
+PATH_DRIVER="$ROS_WS_DIR/../scripts/path_request_driver.py"
+if [ -f "$PATH_DRIVER" ]; then
+  FLEET_WS_SETUP="$ROS_WS_DIR/../../../aba_fms_service/fleet_ws/install/setup.bash"
+  DRIVER_SETUP="$ROS_SETUP"
+  [ -f "$FLEET_WS_SETUP" ] && DRIVER_SETUP="$DRIVER_SETUP && source '$FLEET_WS_SETUP'"
+  tmux new-window -t "$SESSION" -n path-driver \
+    bash -c "$DRIVER_SETUP && echo '[path-driver] fleet_node 경로 -> nav2 (domain $SIM_DOMAIN_ID, robot=$FSM_ROBOT_ID)...' && python3 '$PATH_DRIVER' --robot '$FSM_ROBOT_ID'; exec bash"
 fi
 
 tmux select-window -t "$SESSION:gazebo"

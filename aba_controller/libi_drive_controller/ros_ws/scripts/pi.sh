@@ -69,6 +69,22 @@ if [ "$WITH_LED" = true ]; then
     bash -c "$ROS_SETUP && echo '[led] 상태별 LED (fsm_state 토픽 구독, root 필요 — pinkyled 가 자동 sudo 재실행)...' && ros2 launch pinky_led state_led.launch.xml; exec bash"
 fi
 
+# 경로 드라이버 — fleet_node 가 정한 경로를 nav2 로 옮긴다. **없으면 로봇이 안 움직인다.**
+# 반대 방향(로봇 위치 → fleet_node)은 서버의 fms_service.sh 가 띄운다.
+#
+# ⚠️ --robot 은 fleet_node 가 PathRequest.robot_name 에 싣는 이름과 **정확히** 같아야 한다
+#    (= DB rc_robots.name). 다르면 명령을 전부 무시해 조용히 안 움직인다.
+PATH_DRIVER="$ROS_WS_DIR/../scripts/path_request_driver.py"
+if [ -f "$PATH_DRIVER" ]; then
+  FLEET_WS_SETUP="$ROS_WS_DIR/../../../aba_fms_service/fleet_ws/install/setup.bash"
+  DRIVER_SETUP="$ROS_SETUP"
+  [ -f "$FLEET_WS_SETUP" ] && DRIVER_SETUP="$DRIVER_SETUP && source '$FLEET_WS_SETUP'"
+  tmux new-window -t "$SESSION" -n path-driver \
+    bash -c "$DRIVER_SETUP && echo '[path-driver] fleet_node 경로 -> nav2 (robot=$FSM_ROBOT_ID)...' && python3 '$PATH_DRIVER' --robot '$FSM_ROBOT_ID'; exec bash"
+else
+  echo "[pi] ⚠️ path_request_driver.py 가 없습니다 — 배차해도 로봇이 안 움직입니다: $PATH_DRIVER"
+fi
+
 tmux select-window -t "$SESSION:hw"
 # 인터랙티브(TTY)일 때만 붙는다. 백그라운드(nohup/cron/ssh)면 세션은 그대로 두고 안내만
 # 한다 — 세션·서비스는 위에서 이미 떠 있어 백그라운드에서도 정상 동작한다.

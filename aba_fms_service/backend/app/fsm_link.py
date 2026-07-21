@@ -118,6 +118,16 @@ def snapshot(robot_id: str) -> dict[str, Any] | None:
     return out
 
 
+def known_ids() -> list[str]:
+    """캐시에 들어와 있는 로봇 식별자 목록 — 로봇이 스스로 발행한 `robot_id` 그대로다.
+
+    all_snapshots() 는 엔트리를 통째로 복사한다. 키만 필요한 조회(fsm 라우터의
+    resolve_robot_id)가 요청마다 그 비용을 낼 이유가 없어 따로 둔다.
+    """
+    with _lock:
+        return list(_cache)
+
+
 def all_snapshots() -> dict[str, dict[str, Any]]:
     with _lock:
         items = {k: dict(v) for k, v in _cache.items()}

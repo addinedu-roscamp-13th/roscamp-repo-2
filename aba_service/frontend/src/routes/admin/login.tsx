@@ -15,7 +15,7 @@ import { Label } from "@/components/ui/label";
 import { adminApi, ApiError, getToken, setToken } from "@/lib/admin-api";
 
 export const Route = createFileRoute("/admin/login")({
-  head: () => ({ meta: [{ title: "Labi Admin — 로그인" }] }),
+  head: () => ({ meta: [{ title: "LiBi Admin — 로그인" }] }),
   component: LoginPage,
 });
 
@@ -57,7 +57,7 @@ function LoginPage() {
           <div className="mx-auto flex size-11 items-center justify-center rounded-xl bg-primary/10">
             <Bot className="size-6 text-primary" />
           </div>
-          <CardTitle className="text-xl">Labi Admin</CardTitle>
+          <CardTitle className="text-xl">LiBi Admin</CardTitle>
           <CardDescription>관리자 계정으로 로그인하세요</CardDescription>
         </CardHeader>
         <CardContent>

@@ -7,7 +7,7 @@ import { adminApi } from "@/lib/admin-api";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/admin/_authed/dev/tables")({
-  head: () => ({ meta: [{ title: "Labi Admin — 테이블 정의서" }] }),
+  head: () => ({ meta: [{ title: "LiBi Admin — 테이블 정의서" }] }),
   component: TablesPage,
 });
 
