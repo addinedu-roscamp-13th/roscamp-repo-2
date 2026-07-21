@@ -114,8 +114,15 @@ class Orchestrator:
         (실제 구현: NAVIGATE→fleet_node/fleet_cmd, PERFORM_ACTION→fleet_cmd. 배선 계층 담당)
     """
 
-    def __init__(self, dispatch_leg, *, release_robot=None, retry_max: int = 1):
+    def __init__(self, dispatch_leg, *, release_robot=None, task_lifecycle=None,
+                 retry_max: int = 1):
         self._dispatch_leg = dispatch_leg
+        #: task_lifecycle(robot, phase) — phase 는 "start" | "done" | "failed".
+        #  로봇의 미션 FSM 을 task 수명주기에 맞춰 움직이는 신호다(libi_modes 는
+        #  task_assigned 로 WORKING 에 들어가고 task_done 으로 나온다).
+        #  **다리 단위가 아니라 task 단위**여야 한다 — 팔 다리마다 WORKING 을 들락거리면
+        #  주행 중에 로봇이 작업 상태가 아니게 된다. 안 꽂으면 no-op.
+        self._task_lifecycle = task_lifecycle
         #: release_robot(robot) -> None — 로봇을 배선 계층에서 놓아준다(선택).
         #  주문을 취소·실패 처리해도 **로봇 쪽은 여전히 그 일을 하고 있다.** 코어는
         #  fleet_node 를 모르므로, 실제로 멈추는 일은 이 훅이 한다. 안 꽂으면 no-op.
@@ -169,7 +176,10 @@ class Orchestrator:
         leg = task.current_leg()
         if leg is None:                     # 다리 다 소진 → 완료
             task.status = TaskStatus.COMPLETED
+            self._lifecycle(task, "done")
             return
+        if task.leg_idx == 0 and leg.attempts == 0:
+            self._lifecycle(task, "start")  # 첫 다리 직전에 딱 한 번
         leg.attempts += 1
         try:
             cmd_id = self._dispatch_leg(task.id, task.robot, leg)
@@ -210,7 +220,18 @@ class Orchestrator:
             return
         task.status = TaskStatus.FAILED
         task.reason = reason
+        self._lifecycle(task, "failed")
         self._release(task)
+
+    def _lifecycle(self, task: Task, phase: str) -> None:
+        """배선 계층에 task 수명주기를 알린다(로봇 FSM 전이용). 실패해도 상태 전이는 막지 않는다."""
+        if self._task_lifecycle is None or not task.robot:
+            return
+        try:
+            self._task_lifecycle(task.robot, phase)
+        except Exception:  # noqa: BLE001
+            log.exception("[orchestrator] 수명주기 신호 실패: %s %s (task=%s)",
+                          task.robot, phase, task.id)
 
     def _release(self, task: Task) -> None:
         """배선 계층에 "이 로봇 이제 안 쓴다"를 알린다.
@@ -240,6 +261,7 @@ class Orchestrator:
                 self._queue.remove(task_id)
             task.status = TaskStatus.CANCELLED
             task.reason = "취소됨"
+            self._lifecycle(task, "failed")   # 로봇 입장에선 "작업이 끝났다"가 같다
             self._release(task)
 
     def force_advance(self, task_id: str) -> None:

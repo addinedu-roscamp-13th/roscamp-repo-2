@@ -54,6 +54,11 @@ def set_dispatch(dispatch_leg) -> None:
     _orc._dispatch_leg = dispatch_leg  # noqa: SLF001 — 서비스 층이 코어를 소유
 
 
+def set_lifecycle(task_lifecycle) -> None:
+    """task 시작/끝 신호 훅을 꽂는다 — 로봇 미션 FSM 을 WORKING 으로 넣고 뺀다."""
+    _orc._task_lifecycle = task_lifecycle  # noqa: SLF001
+
+
 def set_release(release_robot) -> None:
     """취소·실패 시 로봇을 놓아주는 훅을 꽂는다(코어 재생성 없이).
 

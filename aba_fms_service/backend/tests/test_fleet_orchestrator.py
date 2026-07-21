@@ -307,3 +307,68 @@ def test_without_hook_cancel_still_works():
     orc.assign(tid, "Pinkysim")
     orc.cancel(tid)
     assert orc.get(tid).status == TaskStatus.CANCELLED
+
+
+# ── task 수명주기 신호 (로봇 미션 FSM 전이) ─────────────────────────────────
+#
+# libi_modes 의 WorkingBranch 는 맨 앞이 IsMode("WORKING") 이라, 로봇이 WORKING 이
+# 아니면 팔 명령(ArmExec)이 아예 안 돈다. 주행은 fleet_node 가 직접 몰기 때문에 로봇은
+# 계속 IDLE/PATROL 로 남아 있었다 — 그래서 task 시작/끝을 따로 알려야 한다.
+
+def test_lifecycle_start_fires_once_at_task_start():
+    seen = []
+    orc = Orchestrator(FakeDispatcher(), task_lifecycle=lambda r, p: seen.append((r, p)))
+    tid = orc.submit_delivery(book="B1", pickup=7, dropoff=3)
+    orc.assign(tid, "Pinky-3")
+    assert seen == [("Pinky-3", "start")]
+
+
+def test_lifecycle_does_not_fire_per_leg():
+    """다리마다 보내면 주행 중에 WORKING 을 들락거린다."""
+    seen = []
+    d = FakeDispatcher()
+    orc = Orchestrator(d, task_lifecycle=lambda r, p: seen.append((r, p)))
+    tid = orc.submit_delivery(book="B1", pickup=7, dropoff=3)
+    orc.assign(tid, "Pinky-3")
+    orc.on_result("c1", ok=True)          # 다리 1 완료 → 다리 2
+    orc.on_result("c2", ok=True)          # 다리 2 완료 → 다리 3
+    assert [p for _, p in seen] == ["start"], "중간 다리에서는 아무 신호도 안 나간다"
+
+
+def test_lifecycle_done_on_completion():
+    seen = []
+    d = FakeDispatcher()
+    orc = Orchestrator(d, task_lifecycle=lambda r, p: seen.append((r, p)))
+    tid = orc.submit_delivery(book="B1", pickup=7, dropoff=3)
+    orc.assign(tid, "Pinky-3")
+    for cid in ("c1", "c2", "c3", "c4"):
+        orc.on_result(cid, ok=True)
+    assert orc.get(tid).status == TaskStatus.COMPLETED
+    assert [p for _, p in seen] == ["start", "done"]
+
+
+def test_lifecycle_failed_on_cancel_and_failure():
+    seen = []
+    orc = Orchestrator(FakeDispatcher(), task_lifecycle=lambda r, p: seen.append((r, p)))
+    tid = orc.submit_delivery(book="B1", pickup=7, dropoff=3)
+    orc.assign(tid, "Pinky-3")
+    orc.cancel(tid)
+    assert [p for _, p in seen] == ["start", "failed"]
+
+    seen.clear()
+    orc2 = Orchestrator(FakeDispatcher(raise_on=[1]), retry_max=0,
+                        task_lifecycle=lambda r, p: seen.append((r, p)))
+    t2 = orc2.submit_delivery(book="B1", pickup=7, dropoff=3)
+    orc2.assign(t2, "Pinky-3")
+    assert orc2.get(t2).status == TaskStatus.FAILED
+    assert [p for _, p in seen] == ["start", "failed"]
+
+
+def test_lifecycle_hook_failure_does_not_block():
+    def boom(_r, _p):
+        raise RuntimeError("링크 없음")
+
+    orc = Orchestrator(FakeDispatcher(), task_lifecycle=boom)
+    tid = orc.submit_delivery(book="B1", pickup=7, dropoff=3)
+    orc.assign(tid, "Pinky-3")
+    assert orc.get(tid).status == TaskStatus.EXECUTING

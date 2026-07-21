@@ -239,6 +239,34 @@ def on_task_state(payload: dict) -> None:
         log.exception("[dispatch] on_result 실패 cmd=%s", cmd_id)
 
 
+#: task 수명주기 → 로봇 미션 FSM 전이 신호 (libi_modes registry.py 의 트리거 이름).
+#   task_assigned : IDLE/PATROL/INTERACTING → WORKING
+#   task_done     : WORKING → PATROL
+#   task_failed   : WORKING → PATROL
+LIFECYCLE_ACTIONS = {"start": "task_assigned", "done": "task_done", "failed": "task_failed"}
+
+
+def real_lifecycle(robot: str, phase: str) -> None:
+    """주문 시작/끝을 로봇에 알려 미션 FSM 을 WORKING 으로 넣고 뺀다.
+
+    ⚠️ **왜 필요한가**: libi_modes 의 `WorkingBranch` 는 맨 앞이 `IsMode("WORKING")` 이라,
+    로봇이 WORKING 이 아니면 팔 명령(ArmExec)이 아예 실행되지 않는다. 그런데 주행은
+    fleet_node 가 직접 nav2 를 몰기 때문에 로봇은 계속 IDLE/PATROL 로 남아 있었다
+    (실측: 관제에 state=IDLE 인 채로 주문이 진행됐다).
+
+    **task 단위**로만 보낸다 — 다리마다 보내면 주행 중에 WORKING 을 들락거린다.
+    링크가 없으면 조용히 넘어간다(주행 자체는 fleet_node 가 하므로 진행은 막지 않는다).
+    """
+    action = LIFECYCLE_ACTIONS.get(phase)
+    if not action:
+        return
+    cmd_id = fleet_telemetry.send_command_async(robot, action=action, args={})
+    if cmd_id:
+        log.info("[lifecycle] %s → %s (cmd=%s)", robot, action, cmd_id)
+    else:
+        log.warning("[lifecycle] %s → %s 전송 실패 (명령 링크 없음)", robot, action)
+
+
 def on_cmd_result(res: dict) -> None:
     """`/fleet_cmd_result` 훅 — 로봇 BT 가 끝낸 팔 다리를 orchestrator 에 알린다.
 
@@ -354,6 +382,7 @@ def install() -> None:
 
     svc.set_dispatch(real_dispatch)
     svc.set_release(real_release)
+    svc.set_lifecycle(real_lifecycle)
     fleet_link.add_task_state_hook(on_task_state)
     fleet_telemetry.add_cmd_result_hook(on_cmd_result)
 

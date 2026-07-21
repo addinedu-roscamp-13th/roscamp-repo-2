@@ -38,10 +38,14 @@ from std_msgs.msg import Bool, Float32, Float64, String
 class RosProviders:
     def __init__(self, node, *, battery_topic="battery/percent", docked_topic="is_docked",
                  fault_topic="fault", cmd_topic="fleet_cmd", ui_touch_topic="ui_last_touch_at",
-                 mission_actions=("goal", "goto", "home", "mission_start")):
+                 mission_actions=("goal", "goto", "home", "mission_start"),
+                 arm_actions=("perform_action",)):
         self._node = node
         self._log = node.get_logger()
         self._mission_actions = set(mission_actions)
+        # 팔 명령은 이름을 그대로 active_command 로 쓴다 — ArmExec 의 handles 와 맞춰야 한다
+        # (working_actions.ArmExec: handles={"perform_action"}).
+        self._arm_actions = set(arm_actions)
 
         self._battery = None
         self._docked = None
@@ -89,6 +93,12 @@ class RosProviders:
         self._command_received_at = self._now()
         if action in self._mission_actions:
             self._active_command = "navigate"      # WorkingBranch 의 NavigationExec 이 받는다
+        elif action in self._arm_actions:
+            # 팔 명령도 **실행 커맨드**다 — WorkingBranch 의 ArmExec 이 받는다.
+            # 예전엔 이 갈래가 없어서 perform_action 이 last_command 로 새어 나갔고,
+            # ArmExec 은 ACTIVE_COMMAND 만 보므로 **영원히 안 잡혔다**.
+            # 이름을 그대로 쓴다 — 매핑을 두면 ArmExec.handles 와 어긋날 여지가 생긴다.
+            self._active_command = action
         else:
             self._last_command = action
 

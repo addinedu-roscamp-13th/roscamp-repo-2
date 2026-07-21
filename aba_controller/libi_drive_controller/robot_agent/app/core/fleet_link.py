@@ -194,6 +194,26 @@ def _dispatch(action: str, args: dict) -> tuple[bool, int, Any, str]:
 
         return True, 200, {"success": True, "name": name, "path": path}, ""
 
+    if action == "perform_action":
+        # 팔 동작(집기/놓기). FMS orchestrator 가 다리 하나로 내려보낸다.
+        #
+        # 이 명령은 **BT 도 같이 본다** — libi_modes 의 providers 가 /fleet_cmd 를 구독해
+        # blackboard(active_command) 에 올리고, WorkingBranch 의 ArmExec 가 집어 실행한다.
+        # 여기서 하는 일은 그 명령을 **받았다고 인정하고 결과를 돌려주는 것**뿐이다.
+        # 인정하지 않으면 "알 수 없는 action" 이 /fleet_cmd_result 로 나가고, FMS 는 그걸
+        # 다리 실패로 받아 주문이 FAILED 로 떨어진다(실측).
+        #
+        # ⚠️ 팔 하드웨어(libi_handy_controller)는 아직 없다. 그래서 지금은 **접수만** 하고
+        #    성공으로 답한다. 실제 팔이 붙으면 여기서 팔 드라이버를 호출하고 그 결과를
+        #    돌려주면 된다 — FMS 쪽 코드는 그대로 둬도 된다.
+        act = str(args.get("action") or "")
+        book = str(args.get("book") or "")
+        at = str(args.get("at") or "")
+        print(f"[fleet_link] perform_action 접수: {act}({book}) at {at} "
+              f"— 팔 미배선이라 즉시 성공 처리", flush=True)
+        return True, 200, {"success": True, "action": act, "book": book, "at": at,
+                           "arm": "stub"}, ""
+
     return False, 400, None, f"알 수 없는 action: {action}"
 
 
