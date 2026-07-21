@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { AdminShell } from "@/components/admin/AdminShell";
+import { VoiceControlPanel } from "@/components/admin/VoiceControlPanel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -414,8 +415,15 @@ function ChatPage() {
           </CardContent>
         </Card>
 
-        {/* Right 1 col: 통신 상태 + 명령어 가이드 */}
-        <div className="flex flex-col gap-4 h-[70vh] min-h-0">
+        {/* Right 1 col: 음성 제어 + 통신 상태 + 명령어 가이드 */}
+        <div className="flex flex-col gap-4 h-[70vh] min-h-0 overflow-y-auto">
+        <VoiceControlPanel
+          onResult={(r) => {
+            if (r.requires_confirm) toast.warning(r.spoken);
+            else if (r.success) toast.success(r.spoken);
+            else toast.error(r.spoken);
+          }}
+        />
         <CommStatusPanel comm={comm} robots={robots} activeRobotId={activeRobotId} onSelectRobot={setActiveRobotId} />
         <Card className="flex-1 min-h-0 flex flex-col">
           <CardHeader className="border-b border-slate-100 py-3 shrink-0">

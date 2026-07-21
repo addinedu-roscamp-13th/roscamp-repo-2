@@ -232,6 +232,9 @@ export interface Nav2State {
   map: Nav2Grid | null;
   pose: Nav2Pose | null;
   path: Array<{ x: number; y: number }>;
+  // 원시 라이다 — 맵 좌표 [x, y] 목록. costmap 은 inflation 이 씌워진 결과라
+  // 센서가 실제로 뭘 보는지 구분되지 않아 별도 레이어로 받는다.
+  scan: { points: Array<[number, number]> } | null;
   local_costmap: Nav2Grid | null;
   global_costmap: Nav2Grid | null;
   battery: { percent: number | null; voltage: number | null };
@@ -913,6 +916,16 @@ export const adminApi = {
       `/api/fleet/order/${taskId}/cancel`,
       { method: "POST" },
     ),
+
+  // ── 음성 대화 제어 (OpenAI Realtime) ────────────────────────────────────────
+  voiceSession: () =>
+    request<VoiceSession>("/api/voice/session", { method: "POST" }),
+  voiceExecute: (body: VoiceExecuteInput) =>
+    request<VoiceExecuteResult>("/api/voice/execute", { method: "POST", body: JSON.stringify(body) }),
+  voiceCommand: (command_text: string, confirm: boolean) =>
+    request<VoiceExecuteResult>("/api/voice/command", { method: "POST", body: JSON.stringify({ command_text, confirm }) }),
+  voiceTasks: (commands: string[], confirm: boolean) =>
+    request<VoiceExecuteResult>("/api/voice/tasks", { method: "POST", body: JSON.stringify({ commands, confirm }) }),
 };
 
 // ── FSM + BT (2단계) ─────────────────────────────────────────────────────────
@@ -994,6 +1007,35 @@ export interface AdminFollowGrant {
   robot_id: string;
   granted_at: number; // epoch seconds
   state_stale: boolean; // 승인은 살아있는데 로봇 상태 수신이 끊긴 경우
+}
+
+export interface VoiceSession {
+  client_secret: string;
+  expires_at: number | null;
+  model: string;
+  voice: string;
+}
+
+export type VoiceStepAction = "forward" | "backward" | "turn_left" | "turn_right" | "stop";
+
+export interface VoiceStep {
+  action: VoiceStepAction;
+  value?: number | null;
+}
+
+export interface VoiceExecuteInput {
+  robot_number: number;
+  steps: VoiceStep[];
+  confirm: boolean;
+}
+
+export interface VoiceExecuteResult {
+  success: boolean;
+  spoken: string;
+  requires_confirm?: boolean;
+  robot?: string;
+  robots?: Array<{ number: number | null; name: string }>;
+  results?: Array<{ step: number; action: string; value?: number | null; success: boolean; detail?: string; note?: string }>;
 }
 
 export type MarkerActionType =

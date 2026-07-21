@@ -52,8 +52,8 @@ python3 -m venv .venv
 | 항목 | 값 |
 |------|----|
 | 기본 계정 | `admin` / `admin1234` |
-| API 베이스 | `http://192.168.0.19:9001` |
-| API 문서 | `http://192.168.0.19:9001/docs` |
+| API 베이스 | `http://192.168.1.4:9001` |
+| API 문서 | `http://192.168.1.4:9001/docs` |
 
 ## 주요 API
 
@@ -109,12 +109,12 @@ python3 -m venv .venv
 
 ```bash
 # 1) 로그인해서 JWT 발급
-TOKEN=$(curl -s -X POST http://192.168.0.19:9001/api/auth/login \
+TOKEN=$(curl -s -X POST http://192.168.1.4:9001/api/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"username":"<관리자ID>","password":"<PW>"}' | jq -r '.access_token')
 
 # 2) 주행로봇 1(robot_id=3) → C 구역으로 이동
-curl -X POST 'http://192.168.0.19:9001/api/control/goto?robot_id=3' \
+curl -X POST 'http://192.168.1.4:9001/api/control/goto?robot_id=3' \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"name":"C"}'

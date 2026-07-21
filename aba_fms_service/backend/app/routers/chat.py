@@ -9,9 +9,27 @@ from app.database import get_admin_db, get_robot_db
 from app.deps import get_current_admin
 from app.models import Admin, Conversation, Message
 from app.robot_dispatch import call_local_api as _call_local_api
-from app.routers.robot_learning import InterpretIn, interpret as interpret_robot_command
+from app.routers.robot_learning import InterpretIn, interpret as interpret_robot_command, _robot_number
+
+import re
 
 router = APIRouter(prefix="/api/chat", tags=["admin-chat"])
+
+# 복합 명령 분해: 한 문장에 여러 동작(예: 'LCD 표시하면서 홈으로 이동')이 있으면
+# 연결어로 쪼개 각각 interpret 에 태운다. 음성 경로(run_robot_tasks)와 동일한 철학.
+_COMPOUND_SPLIT = re.compile(r"\s*(?:,|、|그리고|하면서|하며|면서|한?\s*다음에?|그\s*다음에?|한?\s*뒤에?|한?\s*후에?|고\s*나서)\s*")
+# 쪼갠 뒤 남는 무의미한 꼬리말(중복 '이동해줘' 등)은 버린다.
+_COMPOUND_FILLER = re.compile(r"^(?:그리고|또|그\s*다음|다음|이동(?:해줘|해|할게|하자)?|해줘|줘|시작)$")
+
+
+def _split_compound(text: str) -> list[str]:
+    """복합 문장을 하위 명령 리스트로. 로봇 번호가 빠진 조각엔 앞 문장의 번호를 붙인다."""
+    parts = [p.strip(" .\t,") for p in _COMPOUND_SPLIT.split(text)]
+    frags = [p for p in parts if len(p) >= 2 and not _COMPOUND_FILLER.match(p)]
+    num = _robot_number(text)
+    if num is not None:
+        frags = [f if _robot_number(f) is not None else f"주행로봇{num} {f}" for f in frags]
+    return frags
 
 class ChatMessageReq(BaseModel):
     session_id: str
@@ -72,13 +90,34 @@ async def send_chat_message(
     chat_db.add(Message(conversation_id=conversation.id, role="user", content=req.user_message))
     await chat_db.commit()
 
-    result = await interpret_robot_command(
-        InterpretIn(text=req.user_message, execute=req.execute, confirm=req.confirm),
-        request=request,
-        db=admin_db,
-        rdb=chat_db,
-        _admin=_admin,
-    )
+    async def _interpret(text: str) -> dict[str, Any]:
+        return await interpret_robot_command(
+            InterpretIn(text=text, execute=req.execute, confirm=req.confirm),
+            request=request,
+            db=admin_db,
+            rdb=chat_db,
+            _admin=_admin,
+        )
+
+    # 1) 복합 명령이면 하위 명령별로 실행하고 결과를 합친다.
+    frags = _split_compound(req.user_message)
+    if len(frags) >= 2:
+        sub = [(f, await _interpret(f)) for f in frags]
+        matched = [(f, r) for f, r in sub if r.get("matched")]
+        if matched:
+            lines = [f"🤖 {len(matched)}개 동작을 순서대로 처리했어요."]
+            for f, r in matched:
+                lines.append("")
+                lines.append(_format_interpret_bot_message(f, r))
+            bot_msg_content = "\n".join(lines)
+            success = all(bool((r.get("result") or {}).get("success", r.get("matched"))) for _, r in matched)
+            result: dict[str, Any] = {"matched": True, "compound": True, "results": [r for _, r in matched]}
+            chat_db.add(Message(conversation_id=conversation.id, role="assistant", content=bot_msg_content))
+            await chat_db.commit()
+            return {"success": success, "response": bot_msg_content, "bot_message": bot_msg_content, "interpretation": result}
+
+    # 2) 단일 명령(또는 복합 분해 실패) → 원문 그대로 1회 해석.
+    result = await _interpret(req.user_message)
     bot_msg_content = _format_interpret_bot_message(req.user_message, result)
 
     chat_db.add(Message(conversation_id=conversation.id, role="assistant", content=bot_msg_content))

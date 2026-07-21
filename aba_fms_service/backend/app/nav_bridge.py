@@ -26,6 +26,10 @@ LOC_FILE = os.environ.get(
 )
 _loc_lock = threading.Lock()
 
+# /api/state 의 scan 다운샘플 상한. sllidar DenseBoost 는 한 바퀴 수천 점이라
+# 그대로 실으면 페이로드가 커진다(맵이 2.14×1.32m 라 360점이면 이미 과촘촘).
+SCAN_MAX_POINTS = 360
+
 
 def load_locations() -> dict:
     """{'A': {'x':..,'y':..,'yaw':..}, ...} 형태 dict 반환."""
@@ -96,6 +100,7 @@ def build_node():
     from nav_msgs.msg import OccupancyGrid, Path
     from nav2_msgs.action import NavigateToPose
     from nav2_msgs.msg import Costmap
+    from sensor_msgs.msg import LaserScan
     from tf2_ros import Buffer, TransformListener
     from slam_toolbox.srv import SaveMap, Reset
     from std_msgs.msg import String, Float32
@@ -129,6 +134,16 @@ def build_node():
 
             # ---- path: 기본 QoS ----
             self.create_subscription(Path, "plan", self.path_callback, 10)
+
+            # ---- laser scan: 원시 라이다. costmap(=inflation 적용본)과 구분해서 보기 위함.
+            # 센서 데이터라 BEST_EFFORT QoS 여야 sllidar 퍼블리셔와 매칭된다.
+            self.scan_msg = None
+            scan_qos = QoSProfile(
+                history=QoSHistoryPolicy.KEEP_LAST,
+                depth=1,
+                reliability=QoSReliabilityPolicy.BEST_EFFORT,
+            )
+            self.create_subscription(LaserScan, "scan", self.scan_callback, scan_qos)
 
             # ---- local costmap: costmap / costmap_raw 둘 다 시도 ----
             self.local_costmap_seen = False
@@ -187,6 +202,10 @@ def build_node():
         def path_callback(self, msg):
             with self.lock:
                 self.path_msg = msg
+
+        def scan_callback(self, msg):
+            with self.lock:
+                self.scan_msg = msg
 
         def local_costmap_callback(self, msg):
             with self.lock:
@@ -262,6 +281,7 @@ def build_node():
                 local_costmap_msg = self.local_costmap_msg
                 global_costmap_msg = self.global_costmap_msg
                 tf_pose = self.tf_pose
+                scan_msg = self.scan_msg
 
             map_json = None
             if map_msg is not None:
@@ -324,6 +344,32 @@ def build_node():
                     "data": list(global_costmap_msg.data),
                 }
 
+            # 원시 라이다 → 맵 좌표 점 목록. costmap 은 inflation 이 씌워진 결과라
+            # 실제 센서가 뭘 보는지 구분되지 않으므로 이 레이어를 따로 제공한다.
+            # 스캔이 맵 벽선에 얹히지 않으면 AMCL 위치추정이 틀어진 것.
+            scan_json = None
+            if scan_msg is not None and len(scan_msg.ranges) > 0:
+                src_frame = scan_msg.header.frame_id or "base_scan"
+                ox, oy, oyaw = self.transform_origin_to_map(0.0, 0.0, 0.0, src_frame)
+                c, s = math.cos(oyaw), math.sin(oyaw)
+                rmin = scan_msg.range_min
+                rmax = scan_msg.range_max
+                n = len(scan_msg.ranges)
+                # 페이로드 억제: 최대 SCAN_MAX_POINTS 개만 (맵이 2m 대라 360점이면 충분히 촘촘).
+                step = max(1, math.ceil(n / SCAN_MAX_POINTS))
+                pts = []
+                for i in range(0, n, step):
+                    r = scan_msg.ranges[i]
+                    if not math.isfinite(r) or r < rmin or r > rmax:
+                        continue  # inf/nan = 미측정
+                    a = scan_msg.angle_min + i * scan_msg.angle_increment
+                    lx, ly = r * math.cos(a), r * math.sin(a)
+                    pts.append([
+                        round(ox + c * lx - s * ly, 3),
+                        round(oy + s * lx + c * ly, 3),
+                    ])
+                scan_json = {"frame": src_frame, "points": pts}
+
             with self.mission_lock:
                 mission_json = {
                     "status": self.mission_status,
@@ -337,6 +383,7 @@ def build_node():
                 "map": map_json,
                 "pose": pose_json,
                 "path": path_json,
+                "scan": scan_json,
                 "local_costmap": local_costmap_json,
                 "global_costmap": global_costmap_json,
                 "battery": {

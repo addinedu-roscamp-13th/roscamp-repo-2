@@ -6,7 +6,7 @@ from app.database import AdminSessionLocal, init_db
 from app.models import Admin
 from app.hardware.camera_stream import camera as camera_hw
 from app.hardware.pinky_greeting_monitor import pinky_greeting_monitor
-from app.routers import admin_follow, arm, aruco_dock, auth, camera, chat, dashboard, dev, drive, fleet, fleet_order, fsm, human_follow_robot, maps, marker_actions, mission_control, nav, pinky_yolo, robot, robot_learning, robots, ros, users, webrtc_robot
+from app.routers import admin_follow, arm, aruco_dock, auth, camera, chat, dashboard, dev, drive, fleet, fleet_order, fsm, human_follow_robot, maps, marker_actions, mission_control, nav, pinky_yolo, robot, robot_learning, robots, ros, users, voice, webrtc_robot
 from app.security import hash_password
 
 app = FastAPI(title="Labi Bot Admin API", version="1.0.0")
@@ -43,6 +43,7 @@ app.include_router(human_follow_robot.router)
 app.include_router(webrtc_robot.router)
 app.include_router(aruco_dock.router)
 app.include_router(marker_actions.router)
+app.include_router(voice.router)
 
 @app.get("/api/health")
 async def health():
@@ -77,7 +78,7 @@ async def _seed():
                 Robot(
                     name="CentralServer",
                     robot_type="server",
-                    ip_address="192.168.0.19",
+                    ip_address="192.168.1.4",
                     port=9001,
                     description="중앙 AI 서버",
                     is_active=True,
@@ -87,7 +88,7 @@ async def _seed():
                     robot_type="arm",
                     ip_address="192.168.0.70",
                     port=9001,
-                    ai_server_url="http://192.168.0.19:9001",
+                    ai_server_url="http://192.168.1.4:9001",
                     description="로봇팔 JetCobot",
                     is_active=True,
                 ),
@@ -108,8 +109,8 @@ async def _seed():
             )).scalars().all()
             updated = False
             for arm in arms:
-                if arm.ai_server_url != "http://192.168.0.19:9001":
-                    arm.ai_server_url = "http://192.168.0.19:9001"
+                if arm.ai_server_url != "http://192.168.1.4:9001":
+                    arm.ai_server_url = "http://192.168.1.4:9001"
                     updated = True
             if updated:
                 await db.commit()

@@ -687,9 +687,21 @@ def _extract_numeric_value(text: str, unit_pattern: str) -> float | None:
     return float(m.group(1)) if m else None
 
 
+# LCD/화면 출력 명령 판별 — 표시 '내용'에 홈/이동/정지/앞뒤 같은 주행 단어가 들어가도
+# 주행 명령으로 오인하지 않도록, 규칙 기반 주행 파서보다 우선해서 걸러낸다.
+_DISPLAY_TARGET = re.compile(r"(lcd|엘시디|화면|디스플레이|display)", re.IGNORECASE)
+_DISPLAY_VERB = re.compile(r"(출력|표시|띄워|띄우|보여|나타내|써줘|적어|프린트)")
+
+
+def _is_display_command(text: str) -> bool:
+    return bool(_DISPLAY_TARGET.search(text) and _DISPLAY_VERB.search(text))
+
+
 def _direct_relative_motion_intent(text: str) -> dict[str, Any] | None:
     """LLM 없이 처리할 수 있는 짧은 수동 이동/회전 명령."""
     intent = _strip_robot_ref(text) or text
+    if _is_display_command(intent):
+        return None
     lower = intent.lower()
 
     distance = _extract_numeric_value(lower, r"cm|센치|센티|센티미터")
@@ -740,6 +752,9 @@ def _direct_relative_motion_intent(text: str) -> dict[str, Any] | None:
 def _direct_nav_intent(text: str) -> dict[str, Any] | None:
     """LLM 없이 처리할 수 있는 기본 Nav2 명령을 판별한다."""
     intent = _strip_robot_ref(text) or text
+    # LCD/화면 출력 명령이면 표시 내용에 홈/이동/정지 등이 있어도 주행으로 오인하지 않는다.
+    if _is_display_command(intent):
+        return None
     if re.search(r"(정지|멈춰|멈춤|스톱|stop|취소|중단)", intent, re.IGNORECASE):
         return {"action_type": "mission_stop", "name": "Nav2 정지", "params": {}}
     if re.search(r"(홈|home|복귀|원점)", intent, re.IGNORECASE):
