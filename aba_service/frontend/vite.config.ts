@@ -22,9 +22,10 @@ export default defineConfig({
     proxy: {
       // All backend APIs are called under the same-origin `/api` prefix so they
       // are easy to tell apart from page routes. In dev we forward `/api` to the
-      // FastAPI backend; in production nginx proxies `/api` -> :8010.
+      // FastAPI backend, which listens on :8000 (backend/run.sh, ui/library.sh,
+      // ecosystem.config.js, tests/connectivity 모두 8000 기준).
       "/api": {
-        target: "http://127.0.0.1:8010",
+        target: "http://127.0.0.1:8000",
         changeOrigin: true,
         ws: true,
       },
