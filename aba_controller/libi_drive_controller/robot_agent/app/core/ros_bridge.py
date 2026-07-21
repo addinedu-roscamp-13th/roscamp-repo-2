@@ -484,9 +484,16 @@ def _bridge_thread() -> None:
                     except Exception:
                         pass
 
-            def nav_to(self, x, y, yaw, stop_event=None) -> bool:
-                """완료까지 블로킹(미션 워커 스레드용)."""
-                if not self._ensure_nav_action(3.0):
+            def nav_to(self, x, y, yaw, stop_event=None, wait_action_sec: float = None) -> bool:
+                """완료까지 블로킹(미션 워커 스레드용).
+
+                `wait_action_sec` 는 액션서버를 기다리는 시간이다. 기본 3초는 **콜드부팅에
+                너무 짧다** — pi.sh 로 띄우면 nav2 창이 `/scan` 을 기다렸다가 라이프사이클을
+                올리느라 30초 넘게 걸린다. 그 사이 미션이 시작되면 첫 지점에서 바로 실패했다
+                (실측: 부팅 +30초에 "액션서버 없음" → 미션 스레드 종료 → 순찰이 A 에서 멈춤).
+                미션 첫 지점은 넉넉히 기다리도록 호출측이 값을 준다.
+                """
+                if not self._ensure_nav_action(3.0 if wait_action_sec is None else wait_action_sec):
                     self.get_logger().error("navigate_to_pose 액션서버 없음")
                     return False
                 self._goal_done.clear()

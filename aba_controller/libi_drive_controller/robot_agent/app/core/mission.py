@@ -50,8 +50,20 @@ def _set(status: str | None = None, current: str | None = ...) -> None:
 
 
 # ── 미션(순찰/경유) ─────────────────────────────────────────
+#: 첫 지점은 nav2 기동을 기다려 준다.
+#  pi.sh 로 콜드부팅하면 nav2 창이 `/scan` 을 기다렸다가 라이프사이클을 올리느라 30초가
+#  넘게 걸린다. 그 전에 미션이 시작되면 첫 goal 이 "액션서버 없음"으로 즉시 실패했다.
+FIRST_GOAL_WAIT_SEC = 60.0
+#: 한 지점을 몇 번까지 다시 시도할지. 0 이면 예전처럼 한 번 실패에 미션 종료.
+POINT_RETRIES = 2
+#: 재시도 간격(초).
+RETRY_GAP_SEC = 2.0
+
+
 def _mission_worker(names: list[str], loop: bool) -> None:
     _set("running", None)
+    first = True
+    skipped = 0          # 재시도까지 실패해서 건너뛴 지점 수
     while not _mission_stop.is_set():
         for nm in names:
             if _mission_stop.is_set():
@@ -60,18 +72,41 @@ def _mission_worker(names: list[str], loop: bool) -> None:
             if p is None:
                 continue
             _set("running", nm)
-            ok = ros_bridge.nav_to(
-                float(p["x"]), float(p["y"]), float(p.get("yaw", 0.0)),
-                stop_event=_mission_stop,
-            )
+
+            # 실패해도 바로 미션을 죽이지 않는다.
+            # 예전엔 `if not ok: _set("failed"); return` 이라 **한 번 실패에 워커 스레드가
+            # 그 자리에서 끝났다.** 부팅 직후 nav2 가 아직 없거나 한 지점에서 경로를 못 찾으면
+            # 순찰 전체가 A 에서 멈춘 채 고정됐다(관제엔 계속 failed/A). 경로 드라이버
+            # (path_request_driver)는 이미 쿨다운 재시도를 하는데 여기만 방어가 없었다.
+            ok = False
+            for attempt in range(POINT_RETRIES + 1):
+                if _mission_stop.is_set():
+                    break
+                ok = ros_bridge.nav_to(
+                    float(p["x"]), float(p["y"]), float(p.get("yaw", 0.0)),
+                    stop_event=_mission_stop,
+                    wait_action_sec=FIRST_GOAL_WAIT_SEC if first else None,
+                )
+                first = False
+                if ok or _mission_stop.is_set():
+                    break
+                if attempt < POINT_RETRIES:
+                    _mission_stop.wait(RETRY_GAP_SEC)
+
             if _mission_stop.is_set():
                 break
             if not ok:
-                _set("failed", nm)
-                return
+                # 이 지점은 포기하고 **다음 지점으로 넘어간다.** 순찰은 계속돼야 한다.
+                # 대신 건너뛴 사실을 기억했다가 끝에서 failed 로 보고한다 — 조용히 done 이
+                # 되면 "다 돌았다"고 오해한다.
+                skipped += 1
+
         if not loop:
             break
-    _set("stopped" if _mission_stop.is_set() else "done", None)
+    if _mission_stop.is_set():
+        _set("stopped", None)
+    else:
+        _set("done" if skipped == 0 else "failed", None)
 
 
 def start_mission(names: list[str], loop: bool) -> bool:
