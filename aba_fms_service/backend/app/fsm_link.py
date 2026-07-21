@@ -118,6 +118,35 @@ def snapshot(robot_id: str) -> dict[str, Any] | None:
     return out
 
 
+def match_key(s: str) -> str:
+    """이름 비교 전용 정규화 — 하이픈·밑줄·공백을 지우고 대소문자를 무시한다.
+
+    캐시 키는 **로봇이 스스로 발행한 robot_id** 라, DB(`rc_robots.name`)의 표기와
+    다를 수 있다(`pinky3` vs `Pinky-3`). 그 차이만 흡수하려는 것이므로 이 값을
+    밖으로 내보내지 않는다 — 조회 결과로는 항상 캐시의 **원본 키**를 쓴다.
+    """
+    return s.replace("-", "").replace("_", "").replace(" ", "").casefold()
+
+
+def resolve_id(raw: str, known=None) -> str:
+    """UI/DB 가 쓰는 이름 → **캐시에 실제로 있는 키**.
+
+    표기 차이는 흡수하되 캐시의 원본 키를 돌려준다. 캐시에 없으면 입력을 그대로
+    통과시킨다(조용히 버리면 "왜 안 보이지"가 되고, 안 오면 화면에 드러난다).
+    `known` 은 테스트용 주입구다.
+    """
+    if not raw:
+        return raw
+    ids = list(known_ids() if known is None else known)
+    if raw in ids:
+        return raw
+    want = match_key(raw)
+    for rid in ids:
+        if match_key(rid) == want:
+            return rid
+    return raw
+
+
 def known_ids() -> list[str]:
     """캐시에 들어와 있는 로봇 식별자 목록 — 로봇이 스스로 발행한 `robot_id` 그대로다.
 

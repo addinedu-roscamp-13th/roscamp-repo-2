@@ -177,3 +177,35 @@ def test_service_calls_fail_closed_without_a_link():
 
 def test_bad_mode_is_rejected_before_reaching_the_fleet():
     assert fleet_link.set_robot_mode("pinky1", "STOP")["reason"] == "bad_mode"
+
+
+# ── 이름 표기가 다를 때 (실측 사고) ──────────────────────────────────────────
+#
+# FSM 캐시 키는 로봇이 스스로 발행한 robot_id 이고, 배차 표의 이름은 DB(rc_robots.name)
+# 에서 온다. 로봇을 `pinky3` 로 띄우고 DB 엔 `Pinky-3` 로 등록해 두면 정확히 일치하지
+# 않아 상태가 통째로 비었다 — 관제에 "상태 미상 / 배차 가능 0대".
+# 정작 /api/fsm/state 로는 잘 보였다(거기만 표기 차이를 흡수하고 있었다).
+
+def test_rows_find_fsm_entry_despite_notation():
+    robots = {"Pinky-3": dict(fleet_link._empty_robot(), name="Pinky-3")}
+    fsm = {"pinky3": {"current_state": "IDLE", "battery_percent": 77.0}}
+    rows = fleet_link.build_rows(robots, {}, {}, {}, fsm)
+    assert rows[0]["state"] == "IDLE"
+    assert rows[0]["state_source"] == "fsm"
+    assert rows[0]["battery"] == 77.0
+
+
+def test_rows_prefer_exact_name_over_loose_match():
+    """표기 흡수가 **정확히 일치하는 로봇**을 가로채면 안 된다."""
+    robots = {"Pinky-3": dict(fleet_link._empty_robot(), name="Pinky-3")}
+    fsm = {"pinky3": {"current_state": "ERROR"}, "Pinky-3": {"current_state": "IDLE"}}
+    rows = fleet_link.build_rows(robots, {}, {}, {}, fsm)
+    assert rows[0]["state"] == "IDLE"
+
+
+def test_rows_unknown_robot_has_no_fsm_entry():
+    robots = {"Pinky-9": dict(fleet_link._empty_robot(), name="Pinky-9")}
+    fsm = {"pinky3": {"current_state": "IDLE"}}
+    rows = fleet_link.build_rows(robots, {}, {}, {}, fsm)
+    assert rows[0]["state"] is None
+    assert rows[0]["state_source"] == "unknown"

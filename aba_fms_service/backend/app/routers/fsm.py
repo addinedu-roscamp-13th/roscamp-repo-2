@@ -28,43 +28,22 @@ HISTORY_DEFAULT_LIMIT = 20
 TASK_CANCELLED_SENTINEL = "__task_cancelled__"
 
 
-def _match_key(s: str) -> str:
-    """비교 전용 정규화 — 하이픈·밑줄·공백을 지우고 대소문자를 무시한다.
-
-    표기 차이를 흡수하려는 것뿐이라 **이 값을 밖으로 내보내지 않는다**
-    (resolve_robot_id 는 캐시에 있는 원본 키를 돌려준다).
-    """
-    return s.replace("-", "").replace("_", "").replace(" ", "").casefold()
-
-
 def resolve_robot_id(raw: str, known: Iterable[str] | None = None) -> str:
-    """UI 가 보낸 로봇 식별자를 **FSM 캐시에 실제로 들어있는 키**로 맞춘다.
+    """UI 가 보낸 로봇 식별자를 **FSM 캐시에 실제로 있는 키**로 맞춘다.
 
     FSM 경로의 정본은 로봇이 스스로 발행하는 `robot_id` 다. `/libi/fsm_state` 는
-    로봇별 네임스페이스가 없는 공용 토픽이고(domain_bridge 설정 주석 참고),
-    fsm_link 는 payload 의 `robot_id` 를 그대로 캐시 키로 쓴다. 로봇 쪽
-    (libi_modes `ros/state_io.py`)도 전이 요청을 그 문자열과 **정확히** 비교해 거른다.
+    로봇별 네임스페이스가 없는 공용 토픽이고, fsm_link 는 payload 의 `robot_id` 를
+    그대로 캐시 키로 쓴다. 로봇 쪽(libi_modes `ros/state_io.py`)도 전이 요청을 그
+    문자열과 **정확히** 비교해 거른다.
 
-    그래서 여기서 브릿지 키(`Pinky-3` → `pinky3`)로 바꾸면 안 된다. 예전엔 그렇게
-    했는데 캐시엔 `Pinky-3` 로 들어있어 조회가 늘 빗나갔고(화면은 항상 "수신 대기"),
+    그래서 브릿지 키(`Pinky-3` → `pinky3`)로 바꾸면 안 된다. 예전엔 그렇게 했는데
+    캐시엔 `Pinky-3` 로 들어있어 조회가 늘 빗나갔고(화면은 항상 "수신 대기"),
     전이 요청도 로봇이 이름 불일치로 버렸다. 브릿지 키는 토픽 **접두사**를 쓰는
-    텔레메트리 경로(fleet_telemetry)의 규칙이지 FSM 경로의 규칙이 아니다.
-    같은 캐시를 읽는 admin_follow 도 원본 이름을 그대로 쓴다.
+    텔레메트리 경로의 규칙이지 FSM 경로의 규칙이 아니다.
 
-    표기 차이(하이픈·대소문자)는 흡수하되 돌려주는 값은 **캐시의 원본 키**다.
-    캐시에 없으면 입력을 그대로 통과시킨다 — 조용히 버리면 "왜 안 보이지"가 되고,
-    상태가 안 오면 화면에 "수신 대기"로 드러나는 편이 낫다.
+    규칙 자체는 fsm_link 가 소유한다 — 배차 표(fleet_link.build_rows)도 같은 걸 쓴다.
     """
-    if not raw:
-        return raw
-    ids = list(fsm_link.known_ids() if known is None else known)
-    if raw in ids:
-        return raw
-    want = _match_key(raw)
-    for rid in ids:
-        if _match_key(rid) == want:
-            return rid
-    return raw
+    return fsm_link.resolve_id(raw, known)
 
 
 class TransitionRequest(BaseModel):

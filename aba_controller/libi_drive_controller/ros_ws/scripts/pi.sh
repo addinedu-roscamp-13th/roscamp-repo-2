@@ -47,7 +47,17 @@ ROS_SETUP="source /opt/ros/jazzy/setup.bash && source '$ROS_WS_DIR/install/setup
 # libi_modes 는 별도 워크스페이스라 그쪽 install 도 겹쳐 source 한다.
 # 도메인은 셸에 이미 설정된 로봇 도메인을 그대로 쓴다 (실기는 로봇별 88/89/…).
 LIBI_MODES_WS="$ROS_WS_DIR/../../libi_modes/ros_ws"
-FSM_ROBOT_ID="${FSM_ROBOT_ID:-pinky1}"
+# ⚠️ **기본값을 두지 않는다.** 예전엔 `pinky1` 이 기본이라 인자 없이 이 스크립트를 직접
+# 실행해도 그냥 떴는데, 어느 로봇도 그 이름이 아니라서 조용히 어긋났다:
+#   fsm_node 가 robot_id=pinky1 로 발행 → fleet_node 는 DB 이름(Pinky-3)으로 조회 → 안 붙음
+#   (관제에 "상태 미상", 배차 가능 0대 / path-driver 는 경로를 전부 무시)
+# 이름은 DB `rc_robots.name` 과 정확히 같아야 한다. 보통 scripts/drive-pi/pi.sh 가 넣어 준다.
+if [ -z "${FSM_ROBOT_ID:-}" ]; then
+  echo "[pi] ❌ FSM_ROBOT_ID 가 없습니다 — 로봇 이름 없이는 띄우지 않습니다." >&2
+  echo "     scripts/drive-pi/pi.sh --robot <DB이름>  으로 실행하세요 (예: --robot Pinky-3)." >&2
+  echo "     직접 부를 때는:  FSM_ROBOT_ID=Pinky-3 $0" >&2
+  exit 1
+fi
 LIBI_MODES_SETUP="$ROS_SETUP && source '$LIBI_MODES_WS/install/setup.bash'"
 
 tmux new-session -d -s "$SESSION" -n hw \

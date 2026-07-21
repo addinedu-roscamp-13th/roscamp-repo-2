@@ -172,6 +172,31 @@ def parse_json_map(raw: str) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def _fsm_entry(fsm: dict[str, dict[str, Any]], name: str) -> dict[str, Any]:
+    """이 로봇의 FSM 캐시 항목. 표기가 달라도 찾는다.
+
+    ⚠️ 캐시 키는 **로봇이 스스로 발행한 robot_id** 이고, 이 표의 이름은 DB
+    (`rc_robots.name`)에서 온다. 둘이 늘 같지는 않다 — 로봇을 `pinky3` 로 띄우고
+    DB 엔 `Pinky-3` 로 등록해 두면 정확히 일치하지 않아 **상태가 통째로 빈다**
+    (실측: 관제에 "상태 미상", 배차 가능 0대. 정작 /api/fsm/state 로는 잘 보였다 —
+    거기만 표기 차이를 흡수하고 있었기 때문이다).
+
+    규칙은 fsm_link 가 소유한다(fsm 라우터도 같은 걸 쓴다).
+
+    ⚠️ 이건 **표시를 살리는 안전망**일 뿐이다. 이름이 어긋나면 로봇 쪽 경로 드라이버가
+    PathRequest 를 이름으로 걸러 **배차해도 움직이지 않는다.** 근본 해결은 로봇을
+    DB 와 같은 이름으로 띄우는 것이다(`pi.sh --robot <DB이름>`).
+    """
+    entry = fsm.get(name)
+    if entry is not None:
+        return entry
+    want = fsm_link.match_key(name)
+    for key, value in fsm.items():
+        if fsm_link.match_key(key) == want:
+            return value
+    return {}
+
+
 def build_rows(
     robots: dict[str, dict[str, Any]],
     echo: dict[str, dict[str, Any]],
@@ -203,7 +228,7 @@ def build_rows(
         base = robots.get(name, _empty_robot())
         ec = echo.get(name, {})
         # 끊긴 FSM 캐시는 없는 셈 친다 — 마지막으로 본 상태를 현재처럼 보여주면 안 된다.
-        fs = fsm.get(name) or {}
+        fs = _fsm_entry(fsm, name)
         if fs.get("stale"):
             fs = {}
         fsm_state = fs.get("current_state")

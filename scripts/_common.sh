@@ -38,9 +38,15 @@ need_py_module() {
 
 # pinky3 → ROBOT_ID=pinky3, ROBOT_IP=$PINKY3_IP (.env 에서).
 resolve_pinky() {
-  ROBOT_ID="${1:?로봇 이름이 필요합니다 (pinky1|pinky2|pinky3)}"
+  ROBOT_ID="${1:?로봇 이름이 필요합니다 (예: pinky3 · Pinky-3)}"
   local key
-  key="$(echo "$ROBOT_ID" | tr '[:lower:]' '[:upper:]')_IP"   # PINKY3_IP
+  # ⚠️ 영숫자만 남긴다. 셸 변수명에는 `-` 를 쓸 수 없어서, DB 이름(`Pinky-3`)을 그대로
+  # 넣으면 `PINKY-3_IP` 가 되어 `invalid variable name` 으로 죽었다.
+  # 이제 `pinky3` 든 `Pinky-3` 든 같은 키(PINKY3_IP)로 간다.
+  key="$(printf '%s' "$ROBOT_ID" | tr -cd '[:alnum:]' | tr '[:lower:]' '[:upper:]')_IP"
+  if [ -z "$key" ] || [ "$key" = "_IP" ]; then
+    die "로봇 이름에서 IP 키를 만들 수 없습니다: '$ROBOT_ID'"
+  fi
   ROBOT_IP="${!key:-}"
 }
 
