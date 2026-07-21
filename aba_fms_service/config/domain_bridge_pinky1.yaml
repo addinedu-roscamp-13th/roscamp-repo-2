@@ -44,6 +44,11 @@ topics:
     type: std_msgs/msg/String
     reversed: True
     remap: /fleet_cmd
+  # 역방향 속도 명령: 86의 /pinky1/cmd_vel 발행 → 로봇 도메인의 /cmd_vel
+  pinky1/cmd_vel:
+    type: geometry_msgs/msg/Twist
+    reversed: True
+    remap: /cmd_vel
 
   # ── libi_modes 미션 FSM (2026-07-20) ─────────────────────────────────────────
   # 상태·BT 스냅샷은 payload 안에 robot_id 가 들어 있어 서버에서 토픽을 나누지 않는다

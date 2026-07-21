@@ -49,6 +49,11 @@ SEED: list[dict] = [
      "triggers": ["엘리제를 위하여", "엘리제", "엘리제 연주", "엘리제를 위하여 연주해", "엘리제 연주해줘"]},
     {"name": "멜로디 - 학교종", "action_type": "buzzer_melody", "params": {"melody": "school_bell"},
      "triggers": ["학교종", "학교종 연주", "학교 종소리", "학교종 쳐줘", "학교종 연주해"]},
+    # LED
+    {"name": "LED - 켜기", "action_type": "led_fill", "params": {"r": 255, "g": 255, "b": 255},
+     "triggers": ["LED 켜", "LED 켜줘", "엘이디 켜", "불 켜", "빨간 LED", "LED 빨간색", "빨간색으로 켜줘"]},
+    {"name": "LED - 끄기", "action_type": "led_clear", "params": {},
+     "triggers": ["LED 꺼", "LED 꺼줘", "엘이디 꺼", "불 꺼", "LED 끄기"]},
     # 정지 (모터 정지)
     {"name": "정지 - 모터 멈춤", "action_type": "stop", "params": {},
      "triggers": ["정지", "멈춰", "그만", "스톱", "멈춤"]},

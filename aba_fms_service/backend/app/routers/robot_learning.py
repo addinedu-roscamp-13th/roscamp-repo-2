@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import re
+import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -57,17 +59,54 @@ def _dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+def _call_local_get(path: str, headers: dict | None = None, base_url: str = ROBOT_SERVER_URL, timeout: int = 15) -> tuple[bool, str]:
+    url = f"{base_url}{path}"
+    req_headers = {}
+    if headers and "Authorization" in headers:
+        req_headers["Authorization"] = headers["Authorization"]
+    try:
+        req = urllib.request.Request(url, headers=req_headers, method="GET")
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            return True, response.read().decode("utf-8")
+    except urllib.error.HTTPError as e:
+        try:
+            err_msg = e.read().decode("utf-8")
+        except Exception:
+            err_msg = e.reason
+        return False, f"HTTP {e.code}: {err_msg}"
+    except Exception as e:
+        return False, str(e)
+
+
 def _effective_success(http_ok: bool, body: str) -> bool:
     """로봇이 HTTP 200 으로 {"success": false} 를 돌려줄 수 있으므로 본문의 success 도 반영."""
     if not http_ok:
         return False
     try:
         data = json.loads(body)
-        if isinstance(data, dict) and "success" in data:
-            return bool(data["success"])
+        if isinstance(data, dict):
+            if "success" in data:
+                return bool(data["success"])
+            if "ok" in data:
+                return bool(data["ok"])
+            if "error" in data and data["error"]:
+                return False
+            if "returncode" in data and data["returncode"] not in (None, 0):
+                return False
     except Exception:
         pass
     return True
+
+
+def _robot_status_xy(base_url: str, headers: dict) -> tuple[tuple[float, float] | None, str]:
+    ok, body = _call_local_get("/api/status", headers, base_url, timeout=8)
+    if not ok:
+        return None, body
+    try:
+        data = json.loads(body)
+        return (float(data["x"]), float(data["y"])), body
+    except Exception:
+        return None, body
 
 
 def _command_success(action_type: str, http_ok: bool, body: str) -> bool:
@@ -204,6 +243,47 @@ def _dispatch_call(action_type: str, path: str, headers: dict, body: dict, robot
         # 주행(nav2)은 ROS ack + 폴백 여유가 필요 → 넉넉한 타임아웃
         return call_local_api(path, headers, body, base, timeout=25)
     base = f"http://{robot.ip_address}:{robot.port}" if robot is not None else ROBOT_SERVER_URL
+    if action_type == "relative_move" and robot is not None and path == "/api/robot/motor/move":
+        repeat = max(1, min(8, int(body.get("repeat", 1) or 1)))
+        motor_body = {k: v for k, v in body.items() if k != "repeat"}
+        call_local_api("/api/robot/motor/stop", headers, {}, base, timeout=8)
+        results: list[str] = []
+        for idx in range(repeat):
+            http_ok, response_text = call_local_api(path, headers, motor_body, base, timeout=int(float(motor_body.get("duration", 0.5)) + 10))
+            results.append(response_text)
+            if not _effective_success(http_ok, response_text):
+                call_local_api("/api/robot/motor/stop", headers, {}, base, timeout=8)
+                return False, response_text
+            if idx < repeat - 1:
+                time.sleep(0.08)
+        call_local_api("/api/robot/motor/stop", headers, {}, base, timeout=8)
+        return True, json.dumps({"success": True, "mode": "direct_motor", "repeat": repeat, "responses": results}, ensure_ascii=False)
+
+    if action_type == "relative_move" and robot is not None and path == "/api/robot/move":
+        # 기존 robot_agent의 거리 이동 경로는 자체 ROS bridge를 사용한다.
+        # teleop 패키지가 없는 로봇도 있으므로 teleop 실패만으로 이동을 막지 않는다.
+        before_xy, before_status = _robot_status_xy(base, headers)
+        call_local_api("/api/robot/motor/stop", headers, {}, base, timeout=8)
+        call_local_api("/api/robot/process/teleop/start", headers, {}, base, timeout=8)
+        http_ok, response_text = call_local_api(path, headers, body, base)
+        time.sleep(0.3)
+        after_xy, after_status = _robot_status_xy(base, headers)
+        target_m = abs(float(body.get("distance", 0.0) or 0.0))
+        if _effective_success(http_ok, response_text) and before_xy is not None and after_xy is not None and target_m > 0:
+            moved_m = math.hypot(after_xy[0] - before_xy[0], after_xy[1] - before_xy[1])
+            min_expected_m = min(0.03, max(0.01, target_m * 0.1))
+            if moved_m < min_expected_m:
+                detail = {
+                    "success": False,
+                    "error": (
+                        f"명령 응답은 왔지만 실제 위치 변화가 {moved_m:.3f}m입니다. "
+                        "로봇 구동 상태를 확인해 주세요."
+                    ),
+                    "target_m": target_m,
+                    "moved_m": round(moved_m, 4),
+                }
+                return False, json.dumps(detail, ensure_ascii=False)
+        return http_ok, response_text
     return call_local_api(path, headers, body, base)
 
 
@@ -502,8 +582,12 @@ def _extract_lcd_text(text: str) -> str | None:
     # 2) LCD/화면 에 <문구> (라고) <동사>
     m = re.search(
         r"(?:LCD|화면|스크린)\s*에?\s*(.+?)\s*(?:라고|이라고|라는|이라는)?\s*" + _LCD_VERBS,
-        text,
+        text, re.IGNORECASE,
     )
+    if m:
+        return m.group(1).strip() or None
+    # 3) 동사 없이 'LCD 에 <문구> (이)라고' 만 있는 경우(예: '키고/켜고' 로 쪼개진 뒤)
+    m = re.search(r"(?:LCD|화면|스크린)\s*에?\s*(.+?)\s*(?:라고|이라고|라는|이라는)\s*$", text, re.IGNORECASE)
     if m:
         return m.group(1).strip() or None
     return None
@@ -541,6 +625,23 @@ def _extract_emotion(text: str) -> str | None:
     return None
 
 
+def _extract_led_color(text: str) -> dict[str, int] | None:
+    t = text.lower()
+    if re.search(r"빨강|빨간|레드|red", t):
+        return {"r": 255, "g": 0, "b": 0}
+    if re.search(r"초록|녹색|그린|green", t):
+        return {"r": 0, "g": 255, "b": 0}
+    if re.search(r"파랑|파란|블루|blue", t):
+        return {"r": 0, "g": 0, "b": 255}
+    if re.search(r"노랑|노란|옐로|yellow", t):
+        return {"r": 255, "g": 180, "b": 0}
+    if re.search(r"하양|하얀|흰색|화이트|white", t):
+        return {"r": 255, "g": 255, "b": 255}
+    if re.search(r"보라|퍼플|purple", t):
+        return {"r": 160, "g": 0, "b": 255}
+    return None
+
+
 def _apply_overrides(action_type: str, text: str, params: dict[str, Any]) -> dict[str, Any]:
     """자연어 문장에서 파라미터를 추출해 저장된 params 를 덮어쓴다."""
     p = dict(params)
@@ -563,6 +664,11 @@ def _apply_overrides(action_type: str, text: str, params: dict[str, Any]) -> dic
         if msg:
             p["text"] = msg
             p["lcd_text"] = msg
+
+    if action_type == "led_fill":
+        color = _extract_led_color(text)
+        if color:
+            p.update(color)
     return p
 
 
@@ -694,7 +800,11 @@ _DISPLAY_VERB = re.compile(r"(출력|표시|띄워|띄우|보여|나타내|써�
 
 
 def _is_display_command(text: str) -> bool:
-    return bool(_DISPLAY_TARGET.search(text) and _DISPLAY_VERB.search(text))
+    # LCD 대상 + (표시동사 또는 '(이)라고' 인용) 이면 화면 출력으로 본다.
+    return bool(
+        _DISPLAY_TARGET.search(text)
+        and (_DISPLAY_VERB.search(text) or re.search(r"(?:이?라고|이?라는)", text))
+    )
 
 
 def _direct_relative_motion_intent(text: str) -> dict[str, Any] | None:
@@ -710,8 +820,21 @@ def _direct_relative_motion_intent(text: str) -> dict[str, Any] | None:
         distance = meter * 100.0
     angle = _extract_numeric_value(lower, r"도|deg|degree")
 
+    # 유턴/제자리 돌기 — "뒤" 를 후진 이동으로 오인하지 않도록 이동 판정보다 먼저 처리한다.
+    # (bare "돌아" 는 '돌아와/순회' 와 겹쳐 위험하므로 '유턴/뒤로 돌/반대로 돌/돌아서/돌려/제자리…돌' 만.)
+    if re.search(r"(유턴|뒤로\s*돌|반대로\s*돌|돌아서|돌려|제자리[^.]*돌)", lower):
+        deg = angle if angle is not None else 180.0
+        deg = max(5.0, min(180.0, deg))
+        direction = "right" if re.search(r"(오른|우)", lower) else "left"
+        return {
+            "action_type": "relative_turn",
+            "name": f"{deg:g}도 회전",
+            "params": {"direction": direction, "angle_deg": deg},
+            "source": "rule-motor",
+        }
+
     if re.search(r"(뒤|후진|back)", lower):
-        cm = max(1.0, min(40.0, distance or 10.0))
+        cm = max(1.0, distance or 10.0)
         return {
             "action_type": "relative_move",
             "name": f"{cm:g}cm 후진",
@@ -719,8 +842,8 @@ def _direct_relative_motion_intent(text: str) -> dict[str, Any] | None:
             "source": "rule-motor",
         }
 
-    if re.search(r"(앞|전진|forward)", lower):
-        cm = max(1.0, min(40.0, distance or 10.0))
+    if re.search(r"(앞|전진|직진|곧장|forward)", lower):
+        cm = max(1.0, distance or 10.0)
         return {
             "action_type": "relative_move",
             "name": f"{cm:g}cm 전진",

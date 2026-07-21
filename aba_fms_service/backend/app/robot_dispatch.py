@@ -27,7 +27,7 @@ DRIVING_ACTIONS: set[str] = {
 
 # 주행(nav2)은 로봇 온보드 HTTP 가 아니라 중앙서버 /api/control/*(→ROS→nav2) 로 라우팅해야 한다.
 # 실행부에서 base_url=중앙서버, path 에 ?robot_id=<DB id> 를 붙인다.
-CONTROL_ACTIONS: set[str] = {"goto", "mission_start", "mission_stop", "home"}
+CONTROL_ACTIONS: set[str] = {"goto", "mission_start", "mission_stop", "home", "relative_move"}
 
 
 def call_local_api(
@@ -131,14 +131,31 @@ def resolve_learned_command(action_type: str, params: dict[str, Any] | None) -> 
             return None, {}, "buzzer_melody: 연주할 멜로디(melody)가 없습니다."
         return "/api/robot/buzzer/melody/play", {"melody": name}, None
 
+    if action_type == "led_fill":
+        r = int(p.get("r", 255))
+        g = int(p.get("g", 255))
+        b = int(p.get("b", 255))
+        return "/api/robot/led/fill", {
+            "r": max(0, min(255, r)),
+            "g": max(0, min(255, g)),
+            "b": max(0, min(255, b)),
+        }, None
+
+    if action_type == "led_clear":
+        return "/api/robot/led/clear", {}, None
+
+    if action_type == "led_brightness":
+        brightness = int(p.get("brightness", p.get("value", 128)))
+        return "/api/robot/led/brightness", {"brightness": max(0, min(255, brightness))}, None
+
     if action_type == "relative_move":
-        cm = max(1.0, min(40.0, abs(float(p.get("distance_cm", 10.0)))))
+        cm = abs(float(p.get("distance_cm", 10.0)))
+        if cm > 100.0:
+            return None, {}, f"relative_move: {cm:g}cm 상대 직진은 지원하지 않습니다. 1m 초과 이동은 Nav2 저장 위치/순회 명령을 사용하세요."
         direction = str(p.get("direction") or "forward")
-        speed = int(p.get("speed", 35))
-        sign = -1 if direction == "backward" else 1
-        duration = _bounded_duration(cm / 12.0)
-        note = f"상대 이동은 모터 시간 기반 추정입니다: {cm:g}cm, duration={duration}s"
-        return "/api/robot/motor/move", {"left": sign * speed, "right": sign * speed, "duration": duration}, note
+        speed = max(0.02, min(0.25, float(p.get("speed_mps", p.get("speed", 0.08)))))
+        note = f"ROS2 cmd_vel 상대 이동: {cm:g}cm"
+        return "/api/control/relative-move", {"direction": direction, "distance_m": cm / 100.0, "speed_mps": speed}, note
 
     if action_type == "relative_turn":
         deg = max(5.0, min(180.0, abs(float(p.get("angle_deg", 20.0)))))

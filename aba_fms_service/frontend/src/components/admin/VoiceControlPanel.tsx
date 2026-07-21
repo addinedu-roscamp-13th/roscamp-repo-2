@@ -99,7 +99,9 @@ export function VoiceControlPanel({
         <div className="rounded-lg border border-slate-100 bg-white px-3 py-2 text-[11px] leading-relaxed text-slate-500">
           이렇게 말해보세요:<br />
           "1번 로봇 직진 10cm 이동 후 왼쪽으로 회전하고 10cm 이동 후 정지"<br />
-          "2번 앞으로 20센티" · "정지"
+          "2번 앞으로 20센티" · "정지" · "1번 뒤로 돌아"(유턴)<br />
+          다중 주문(최대 4개): "1번 A로 이동 후 완료되면 뒤로 돌아 30cm 직진"<br />
+          "직진/앞으로"는 앞에 장애물이 있으면 라이다로 자동 정지합니다.
         </div>
 
         {lastError && (

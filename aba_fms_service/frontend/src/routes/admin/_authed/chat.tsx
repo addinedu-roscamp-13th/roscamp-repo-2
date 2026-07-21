@@ -51,10 +51,13 @@ const GREETING = [
   "안녕하세요! 🤖 주행로봇 제어 챗봇입니다.",
   "",
   "이렇게 말해보세요:",
-  '• "웃어줘" · "벨 소리" · "삐 소리내" · "정지"',
+  '• "웃어줘" · "벨 소리" · "LED 빨간색으로 켜줘" · "LED 꺼줘" · "정지"',
   '• "주행로봇1 LCD에 안녕 출력"',
   '• "주행로봇1 뒤로 10cm" · "2번 앞으로 20cm" · "1번 왼쪽 30도"',
+  '• "1번 뒤로 돌아"(유턴) · "1번 우측으로 50cm"(우회전 90° 후 전진)',
   '• "2번 주차해" · "주행로봇1 충전소 이동"',
+  '• 다중 주문(최대 4개, 채팅·음성 공통): "1번 A로 이동 후 완료되면 뒤로 돌아 30cm 직진"',
+  '  — "직진/앞으로"는 앞에 장애물이 있으면 라이다로 자동 정지합니다.',
   "",
   "문장 앞에 \"주행로봇1\", \"2번\" 처럼 번호를 붙이면 해당 로봇으로 전송됩니다.",
 ].join("\n");
@@ -63,10 +66,13 @@ const NOT_MATCHED = [
   "🤖 해당 명령을 이해하지 못했어요.",
   "",
   "이렇게 말해보세요:",
-  '• "웃어줘" · "벨 소리" · "삐 소리내" · "정지"',
+  '• "웃어줘" · "벨 소리" · "LED 빨간색으로 켜줘" · "LED 꺼줘" · "정지"',
   '• "주행로봇1 LCD에 안녕 출력"',
   '• "주행로봇1 뒤로 10cm" · "2번 앞으로 20cm" · "1번 왼쪽 30도"',
+  '• "1번 뒤로 돌아"(유턴) · "1번 우측으로 50cm"(우회전 90° 후 전진)',
   '• "2번 주차해" · "주행로봇1 충전소 이동"',
+  '• 다중 주문(최대 4개, 채팅·음성 공통): "1번 A로 이동 후 완료되면 뒤로 돌아 30cm 직진"',
+  '  — "직진/앞으로"는 앞에 장애물이 있으면 라이다로 자동 정지합니다.',
 ].join("\n");
 
 const SESSION_ID = "admin-robot-control-session";
@@ -98,7 +104,19 @@ function actionSummary(interp: Awaited<ReturnType<typeof adminApi.interpretComma
     return `${target} → ${parts.join(" + ")}`;
   }
   if (actionType === "mission_start") return `${target} → 순회 시작`;
-  if (actionType === "relative_move") return `${target} → 짧은 전/후진`;
+  if (actionType === "relative_move") {
+    // 백엔드 _strip_robot_ref 와 동일하게 로봇 지칭어부터 제거한다 —
+    // 안 그러면 "주행로봇1" 의 1 을 거리로 오인해 "1cm" 로 표시된다.
+    const intent = command
+      .replace(/주행\s*로봇\s*\d*\s*번?/g, " ")
+      .replace(/로봇\s*\d+\s*번?/g, " ")
+      .replace(/\d+\s*번/g, " ");
+    const dir = /(뒤|후진|back)/i.test(intent) ? "후진" : "전진";
+    // 단위가 붙은 숫자만 거리로 인정(단위 없는 숫자는 무시). 백엔드 파싱과 일치.
+    const value = intent.match(/(\d+(?:\.\d+)?)\s*(m|미터|meter|cm|센티|센치)/i);
+    const dist = value ? value[1] + value[2].replace("미터", "m").replace("meter", "m").replace("센티", "cm").replace("센치", "cm") : "상대";
+    return target + " → " + dist + " " + dir;
+  }
   if (actionType === "relative_turn") return `${target} → 짧은 좌/우 회전`;
   if (actionType === "mission_stop" || actionType === "stop") return `${target} → 정지`;
   if (actionType === "home") return `${target} → 홈 복귀`;
@@ -107,7 +125,27 @@ function actionSummary(interp: Awaited<ReturnType<typeof adminApi.interpretComma
   if (actionType === "lcd_text") return `${target} → LCD 문구 표시`;
   if (actionType === "buzzer") return `${target} → 소리 재생`;
   if (actionType === "buzzer_melody") return `${target} → 멜로디 연주`;
+  if (actionType === "led_fill") return `${target} → LED 켜기`;
+  if (actionType === "led_clear") return `${target} → LED 끄기`;
+  if (actionType === "led_brightness") return `${target} → LED 밝기 조정`;
   return `${target} → ${interp.kind === "scenario" ? "시나리오 실행" : "명령 실행"}`;
+}
+
+function userFacingError(detail: string): string {
+  if (!detail) return "알 수 없는 에러";
+  try {
+    const parsed = JSON.parse(detail);
+    if (parsed && typeof parsed === "object") {
+      const error = typeof parsed.error === "string" ? parsed.error : null;
+      const moved = typeof parsed.moved_m === "number" ? parsed.moved_m : null;
+      const target = typeof parsed.target_m === "number" ? parsed.target_m : null;
+      if (error && moved != null && target != null) return error + " (목표 " + Math.round(target * 100) + "cm, 실제 " + Math.round(moved * 100) + "cm)";
+      if (error) return error;
+    }
+  } catch {
+    /* plain text response */
+  }
+  return detail.length > 140 ? detail.slice(0, 140) + "..." : detail;
 }
 
 function ChatPage() {
@@ -161,10 +199,13 @@ function ChatPage() {
   // interpret 실행 결과를 지정한 말풍선에 렌더 (실행 완료/실패 + 정지 버튼)
   const renderInterpResult = (id: string, interp: Awaited<ReturnType<typeof adminApi.interpretCommand>>, target: string, command: string) => {
     const ok = interp.result?.success;
-    const detail = interp.result?.stopped_at ? `'${interp.result.stopped_at}'에서 중단` : interp.result?.response ?? interp.result?.message ?? "알 수 없는 에러";
+    const rawDetail = interp.result?.stopped_at ? "'" + interp.result.stopped_at + "'에서 중단" : interp.result?.response ?? interp.result?.message ?? "알 수 없는 에러";
+    const detail = userFacingError(rawDetail);
     const summary = actionSummary(interp, target, command);
+    // 성공이라도 안전정지 등 부가 설명(백엔드 message)이 있으면 함께 보여준다.
+    const note = ok ? (interp.result?.message ?? "") : "";
     const doneMsg = ok
-      ? `🤖 실행했어요.\n\n${summary}`
+      ? `🤖 실행했어요.\n\n${summary}${note ? `\n\n${note}` : ""}`
       : `❌ 실행 실패: ${detail}`;
     const stoppable = Boolean(ok) && (interp.kind === "scenario" || DRIVING_ACTION_TYPES.has(interp.result?.action_type ?? ""));
     setComm(ok ? { phase: "ok", label: summary } : { phase: "fail", label: summary, detail });
@@ -445,6 +486,7 @@ function ChatPage() {
                 <li>• <b>표정</b>: "웃어줘", "화내줘", "슬픈 표정", "인사해" (기쁨·화남·슬픔·인사·신남 등)</li>
                 <li>• <b>사운드</b>: "벨 소리 내줘", "삐 소리내", "알람 울려"</li>
                 <li>• <b>LCD 문구</b>: "주행로봇1 LCD에 안녕 출력"</li>
+                <li>• <b>LED</b>: "주행로봇1 LED 빨간색으로 켜줘", "LED 꺼줘"</li>
               </ul>
             </div>
 
@@ -508,7 +550,7 @@ function commHeadline(comm: CommState): { text: string; tone: "muted" | "active"
     case "sending": return { text: `발행됨 · 결과 대기: ${comm.label}`, tone: "active" };
     case "not_matched": return { text: "미매칭 — 등록된 액션/시나리오와 일치하지 않아 발행하지 않았습니다.", tone: "warn" };
     case "ok": return { text: `완료: ${comm.label}`, tone: "ok" };
-    case "fail": return { text: `실패: ${comm.label}${comm.detail ? ` (${comm.detail})` : ""}`, tone: "fail" };
+    case "fail": return { text: "실패: " + comm.label, tone: "fail" };
   }
 }
 
@@ -625,13 +667,13 @@ function RobotLiveStatus({ robot }: { robot: Robot }) {
           online ? "bg-emerald-50 text-emerald-600" : "bg-slate-100 text-slate-400"
         )}>
           {online ? <Wifi className="h-3 w-3" /> : <WifiOff className="h-3 w-3" />}
-          {online ? "온라인" : "오프라인"}
+          {online ? "ROS 상태 수신" : "ROS 상태 미수신"}
         </span>
         <span className={cn(
           "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium",
           bridgeUp ? "bg-sky-50 text-sky-600" : "bg-amber-50 text-amber-600"
         )}>
-          {bridgeUp ? "브릿지 연결됨 (ROS2)" : "브릿지 끊김 → HTTP 폴백"}
+          {bridgeUp ? "ROS 브릿지 연결" : "HTTP로 명령 전송"}
         </span>
         {percent != null && (
           <span className="inline-flex items-center gap-1 rounded-full bg-slate-50 px-2 py-0.5 text-[10px] text-slate-500">

@@ -39,6 +39,8 @@ from app.routers.robot_learning import (
     _resolve_robot,
     interpret as interpret_robot_command,
 )
+# 챗과 동일한 복합명령 분해 + goto 도착 대기를 음성에서도 재사용한다(다중 주문 동일 동작).
+from app.routers.chat import _split_compound, _wait_arrival, _COMPOUND_MAX
 
 router = APIRouter(prefix="/api/voice", tags=["admin-voice"])
 
@@ -375,6 +377,36 @@ async def _run_one_command(
     return {"command": command_text, "success": False, "spoken": "명령 처리 중 문제가 생겼어요."}
 
 
+async def _run_sequence(
+    frags: list[str], confirm: bool, request: Request, db: AsyncSession, rdb: AsyncSession, admin: Admin,
+) -> list[dict[str, Any]]:
+    """하위 명령들을 순서대로 실행. goto 성공 뒤에는 도착까지 대기한다('완료되면' 순차).
+    챗의 복합 실행과 동일한 규칙 — 음성/채팅 다중 주문 동작을 일치시킨다."""
+    results: list[dict[str, Any]] = []
+    for f in frags:
+        out = await _run_one_command(f, confirm, request, db, rdb, admin)
+        results.append(out)
+        interp = out.get("interpret") or {}
+        run = interp.get("result") or {}
+        atype = run.get("action_type") or interp.get("action_type")
+        if atype == "goto" and bool(run.get("success")):
+            await _wait_arrival(f, interp, db)
+    return results
+
+
+def _sequence_spoken(results: list[dict[str, Any]]) -> tuple[bool, str]:
+    done = sum(1 for r in results if r.get("success"))
+    total = len(results)
+    if total == 1:
+        return bool(results[0].get("success")), results[0]["spoken"]
+    if done == total:
+        return True, f"네, {total}개 동작을 순서대로 실행했어요."
+    if done == 0:
+        return False, "동작을 실행하지 못했어요. " + (results[0]["spoken"] if results else "")
+    fail = next((r for r in results if not r.get("success")), None)
+    return False, f"{total}개 중 {done}개는 됐는데 일부 실패했어요. " + (fail["spoken"] if fail else "")
+
+
 @router.post("/command")
 async def command(
     body: VoiceCommandReq,
@@ -385,9 +417,16 @@ async def command(
 ):
     """음성으로 받은 일반 명령을 관제 챗봇과 동일한 interpret 파이프라인으로 실행한다.
 
+    한 문장에 여러 동작이 있으면 챗과 동일하게 분해해 순차 실행한다(다중 주문).
     LCD/표정/사운드는 즉시 실행되고, 위치이동·주차 같은 주행성 명령은 confirm(=음성 주행 허용)이
     켜져 있어야 실제로 움직인다.
     """
+    frags = _split_compound(body.command_text)
+    if len(frags) >= 2:
+        results = await _run_sequence(frags, body.confirm, request, db, rdb, admin)
+        ok, spoken = _sequence_spoken(results)
+        return {"success": ok, "spoken": spoken,
+                "interpret": {"compound": True, "results": [r.get("interpret") for r in results]}}
     out = await _run_one_command(body.command_text, body.confirm, request, db, rdb, admin)
     return {"success": out["success"], "spoken": out["spoken"], "interpret": out.get("interpret")}
 
@@ -409,19 +448,12 @@ async def tasks(
     if not cmds:
         return {"success": False, "spoken": "실행할 명령이 없어요.", "results": []}
 
-    results: list[dict[str, Any]] = []
+    # 각 명령을 챗과 동일 규칙으로 한 번 더 분해(횡이동→회전+전진, 유턴 등)한 뒤 평탄화.
+    frags: list[str] = []
     for c in cmds:
-        results.append(await _run_one_command(c, body.confirm, request, db, rdb, admin))
+        frags.extend(_split_compound(c) or [c])
+    frags = frags[:_COMPOUND_MAX]  # 다중 주문 상한(3~4개)
 
-    done = sum(1 for r in results if r.get("success"))
-    total = len(results)
-    all_ok = done == total
-    if all_ok:
-        spoken = results[0]["spoken"] if total == 1 else f"네, {total}개 동작을 순서대로 실행했어요."
-    elif done == 0:
-        spoken = "동작을 실행하지 못했어요. " + (results[0]["spoken"] if results else "")
-    else:
-        # 실패한 첫 명령의 사유를 알려 준다.
-        fail = next((r for r in results if not r.get("success")), None)
-        spoken = f"{total}개 중 {done}개는 됐는데 일부 실패했어요. " + (fail["spoken"] if fail else "")
+    results = await _run_sequence(frags, body.confirm, request, db, rdb, admin)
+    all_ok, spoken = _sequence_spoken(results)
     return {"success": all_ok, "spoken": spoken, "results": results}

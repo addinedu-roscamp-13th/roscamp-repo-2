@@ -1,4 +1,5 @@
 import asyncio
+import math
 import json
 import os
 import re
@@ -14,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, Field
 
 from app.database import get_robot_db
+from app import ros_bridge
 from app.models import LcdImage
 
 from .auth import get_current_admin
@@ -490,6 +492,46 @@ async def sensor_imu(_=Depends(get_current_admin)):
 
 
 # ── 모터 ──────────────────────────────────────────────────────────────────────
+
+class MotorDriveDistanceReq(BaseModel):
+    distance_m: float = Field(..., gt=0.0, le=1.0)
+    direction: str = "forward"
+    speed_mps: float = Field(0.08, gt=0.02, le=0.25)
+    timeout_s: float | None = Field(None, ge=1.0, le=30.0)
+
+
+@router.post("/motor/drive-distance")
+async def motor_drive_distance(req: MotorDriveDistanceReq, _=Depends(get_current_admin)):
+    start = ros_bridge.get_topic("odom")
+    if not start:
+        return {"success": False, "error": "odom 데이터가 없어 거리 기반 직진을 실행할 수 없습니다. Nav2/odom 상태를 확인하세요."}
+
+    direction = -1.0 if req.direction == "backward" else 1.0
+    target = float(req.distance_m)
+    speed = float(req.speed_mps) * direction
+    timeout = req.timeout_s or min(30.0, max(4.0, target / max(abs(speed), 0.01) + 3.0))
+    start_x = float(start.get("x", 0.0))
+    start_y = float(start.get("y", 0.0))
+    started_at = time.monotonic()
+    moved = 0.0
+
+    try:
+        while time.monotonic() - started_at < timeout:
+            odom = ros_bridge.get_topic("odom")
+            if not odom:
+                break
+            moved = math.hypot(float(odom.get("x", 0.0)) - start_x, float(odom.get("y", 0.0)) - start_y)
+            if moved >= target:
+                return {"success": True, "distance_m": round(moved, 3), "target_m": target}
+            if not ros_bridge.publish_cmd_vel(speed, 0.0):
+                return {"success": False, "error": "cmd_vel 발행 실패", "distance_m": round(moved, 3), "target_m": target}
+            await asyncio.sleep(0.05)
+        return {"success": False, "error": "목표 거리 도달 전 시간 초과", "distance_m": round(moved, 3), "target_m": target}
+    finally:
+        for _ in range(3):
+            ros_bridge.publish_cmd_vel(0.0, 0.0)
+            await asyncio.sleep(0.03)
+
 
 class MotorMoveReq(BaseModel):
     left: int = Field(..., ge=-100, le=100)
