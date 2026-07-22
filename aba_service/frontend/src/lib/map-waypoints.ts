@@ -20,7 +20,7 @@ export const MAP_ASPECT = 63 / 108;
 export const WAYPOINTS: MapWaypoint[] = [
   { name: "과학-1", label: "과학-1", kind: "shelf", x: 0.4232, y: 0.3858 },
   { name: "과학-2", label: "과학-2", kind: "shelf", x: 0.4232, y: 0.4376 },
-  { name: "문학-1", label: "문학-1", kind: "shelf", x: 0.2244, y: 0.237 },
+  { name: "문학-1", label: "문학-1", kind: "shelf", x: 0.2244, y: 0.2509 },
   { name: "문학-2", label: "문학-2", kind: "shelf", x: 0.1232, y: 0.237 },
   { name: "미술작품", label: "미술작품", kind: "shelf", x: 0.7586, y: 0.265 },
   {
@@ -174,6 +174,8 @@ export const LANES: [string, string][] = [
   ["예술-1", "예술-2"],
   ["문학-1", "예술-2"],
   ["문학-1", "문학-2"],
+  ["문학-1", "복도-3"],
+  ["문학-1", "복도-5"],
   ["과학-2", "인문학-2"],
   ["테이블-1번-좌", "테이블-복도-1"],
   ["테이블-1번-우", "테이블-복도-5"],

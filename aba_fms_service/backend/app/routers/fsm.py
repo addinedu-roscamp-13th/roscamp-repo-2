@@ -6,6 +6,7 @@ INSTRUCTION.md 2단계. **폴링 API 를 만들지 않는다** — 실시간 갱
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -20,6 +21,8 @@ from app.models import Admin
 from app.security import decode_token
 
 router = APIRouter(prefix="/api/fsm", tags=["fsm"])
+
+log = logging.getLogger(__name__)
 
 HISTORY_DEFAULT_LIMIT = 20
 
@@ -137,6 +140,27 @@ async def get_history(
             for r in rows
         ],
     }
+
+
+@router.delete("/history")
+async def clear_history(
+    robot_id: str | None = Query(None, description="비우면 모든 로봇의 이력을 지운다"),
+    db: AsyncSession = Depends(get_admin_db),
+    admin: Admin = Depends(get_current_admin),
+):
+    """전이 이력 삭제 — 발표·녹화 전에 화면을 비우는 용도.
+
+    ⚠️ 감사 로그를 지우는 기능이다. **지운 사실은 서버 로그에 WARNING 으로 남긴다** —
+    화면에서 사라져도 누가 언제 몇 건을 지웠는지는 추적할 수 있어야 한다.
+    자세한 배경은 `fsm_audit.clear_transitions` 참고.
+    """
+    key = resolve_robot_id(robot_id) if robot_id else None
+    removed = await fsm_audit.clear_transitions(db, robot_id=key)
+    log.warning(
+        "FSM 전이 이력 삭제 — 관리자=%s 대상=%s 삭제=%d건",
+        admin.username, key or "(전체 로봇)", removed,
+    )
+    return {"ok": True, "removed": removed, "robot_id": key}
 
 
 async def _report_task_cancelled(robot_id: str) -> None:

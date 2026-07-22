@@ -1,4 +1,11 @@
 libi_modes:
+  # 상태를 최소 이만큼은 유지한다(초). 한 tick 안에 들어갔다 나오는 상태는 LED·관제 패널·
+  # 감사로그 어디에도 안 남아, 관제에서 눌러도 아무 일 없는 것처럼 보인다.
+  #   CHARGING         이미 충전돼 있으면 BatteryCheck(>=40) 이 첫 tick 에 통과
+  #   SECURITY_PATROL  랩 드라이버가 곧바로 success 를 주면 랩이 한 tick 만에 끝남
+  # 정상적으로 오래 걸리는 경우엔 아무 영향이 없다 — 상태 진입 시각부터 재므로 이미 충족된다.
+  # ⚠️ 고장(FaultDetected)은 이 지연 밖에 있다. 늦춰지는 건 정상 이탈뿐이다.
+  min_dwell_sec: 3.0
   battery:
     ready: 40         # CHARGING -> IDLE
     charged: 80       # IDLE -> PATROL (auto, docked only)

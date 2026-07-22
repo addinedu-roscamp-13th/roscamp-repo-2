@@ -87,7 +87,7 @@ vertices:
     yaw: 3.1415
   문학-1:
     x: 0.0988
-    y: -0.335
+    y: -0.331
     yaw: 3.1415
   문학-2:
     x: -0.0288
@@ -205,12 +205,6 @@ lanes:
   bidirectional: true
 - from: 문학-1
   to: 예술-2
-  bidirectional: true
-- from: 문학-1
-  to: 복도-3
-  bidirectional: true
-- from: 문학-1
-  to: 복도-5
   bidirectional: true
 - from: 문학-1
   to: 문학-2

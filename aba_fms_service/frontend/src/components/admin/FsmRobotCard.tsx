@@ -147,6 +147,35 @@ export function FsmRobotCard({
     onError: () => toast.error("전이 요청을 보내지 못했습니다."),
   });
 
+  // 이력 삭제 — 발표·녹화 전에 화면을 비우는 용도. 이 카드의 로봇 것만 지운다.
+  //
+  // ⚠️ 식별자는 **조회와 똑같이** robotName 을 쓴다 (resolvedId 가 아니라).
+  //    되돌릴 수 없는 삭제라, "화면에 보이는 범위 = 지워지는 범위" 가 보장돼야 한다.
+  //    둘이 다른 값이면 캐시가 비는 순간 백엔드에서 서로 다른 키로 정규화될 수 있고,
+  //    그러면 지웠는데 목록이 그대로인 상황이 된다.
+  const clearHistory = useMutation({
+    mutationFn: () => adminApi.fsmClearHistory(robotName!),
+    onSuccess: (result) => {
+      toast.success(`전이 이력 ${result.removed}건을 삭제했습니다.`);
+      queryClient.invalidateQueries({
+        queryKey: ["fsm", "history", robotName],
+      });
+    },
+    onError: () => toast.error("전이 이력을 삭제하지 못했습니다."),
+  });
+
+  function handleClearHistory() {
+    if (!robotName) return;
+    if (
+      !window.confirm(
+        `[${robotName}] 전이 이력을 모두 삭제할까요?\n\n` +
+          "⚠️ 되돌릴 수 없습니다. 감사 로그라서, 지운 기록은 서버 로그에만 남습니다.",
+      )
+    )
+      return;
+    clearHistory.mutate();
+  }
+
   function handleExecute() {
     if (!target || !robotName) return;
     const warning = force
@@ -305,9 +334,20 @@ export function FsmRobotCard({
 
             {/* ── 전이 이력: 카드 하단 남는 공간을 채우는 스크롤 로그 ── */}
             <div className="flex min-h-0 flex-1 flex-col px-3 py-2.5">
-              <h3 className="mb-1.5 shrink-0 text-xs font-bold text-slate-700">
-                전이 이력
-              </h3>
+              <div className="mb-1.5 flex shrink-0 items-center justify-between">
+                <h3 className="text-xs font-bold text-slate-700">전이 이력</h3>
+                <button
+                  type="button"
+                  onClick={handleClearHistory}
+                  disabled={
+                    clearHistory.isPending ||
+                    (historyQuery.data?.items ?? []).length === 0
+                  }
+                  className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-rose-50 hover:text-rose-600 disabled:pointer-events-none disabled:opacity-40"
+                >
+                  {clearHistory.isPending ? "삭제 중..." : "이력 삭제"}
+                </button>
+              </div>
               <div
                 ref={historyRef}
                 className="min-h-0 flex-1 space-y-1 overflow-y-auto text-sm text-muted-foreground"

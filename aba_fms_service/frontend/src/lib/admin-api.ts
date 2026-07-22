@@ -1066,6 +1066,14 @@ export const adminApi = {
     request<{ ok: boolean; items: FsmHistoryItem[] }>(
       `/api/fsm/history?robot_id=${encodeURIComponent(robotId)}&limit=${limit}`,
     ),
+  // robotId 를 생략하면 **모든 로봇**의 이력을 지운다 — 호출부에서 반드시 확인받을 것.
+  fsmClearHistory: (robotId?: string) =>
+    request<{ ok: boolean; removed: number; robot_id: string | null }>(
+      robotId
+        ? `/api/fsm/history?robot_id=${encodeURIComponent(robotId)}`
+        : "/api/fsm/history",
+      { method: "DELETE" },
+    ),
 
   // 관리자 추종 승인 기록. 추종 제어는 ai_service↔로봇 직결이라 FSM 에 안 잡히므로,
   // 이 기록이 "이 로봇이 지금 추종 중"인지 아는 유일한 단서다.
