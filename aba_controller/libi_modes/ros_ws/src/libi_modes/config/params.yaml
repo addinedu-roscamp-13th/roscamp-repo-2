@@ -1,11 +1,15 @@
 libi_modes:
-  # 상태를 최소 이만큼은 유지한다(초). 한 tick 안에 들어갔다 나오는 상태는 LED·관제 패널·
-  # 감사로그 어디에도 안 남아, 관제에서 눌러도 아무 일 없는 것처럼 보인다.
-  #   CHARGING         이미 충전돼 있으면 BatteryCheck(>=40) 이 첫 tick 에 통과
-  #   SECURITY_PATROL  랩 드라이버가 곧바로 success 를 주면 랩이 한 tick 만에 끝남
-  # 정상적으로 오래 걸리는 경우엔 아무 영향이 없다 — 상태 진입 시각부터 재므로 이미 충족된다.
-  # ⚠️ 고장(FaultDetected)은 이 지연 밖에 있다. 늦춰지는 건 정상 이탈뿐이다.
-  min_dwell_sec: 3.0
+  # 관제 패널이 시킨 전이를 이 시간(초)만큼 붙잡는다. 그 동안 BT 는 스스로 상태를 못 바꾼다.
+  #
+  # 없으면 패널에서 눌러도 같은 tick 에 되돌아가 화면상 아무 일도 안 일어난다:
+  #   CHARGING         이미 충전돼 있으면 BatteryCheck(>=40) 이 즉시 통과 → IDLE
+  #   SECURITY_PATROL  랩 드라이버가 곧바로 success → SetNextMode(IDLE) → IDLE
+  #
+  # ⚠️ 로봇이 스스로 못 나가는 것이지 조작이 잠기는 게 아니다 — 사람은 유지 중에도
+  #    다른 상태로 바꿀 수 있다(패널 전이는 이 관문을 안 거친다).
+  # ⚠️ ERROR 는 막지 않는다. 고장은 유지 시간과 무관하게 즉시 반영된다.
+  # 0 이면 기능이 꺼진다(예전 동작).
+  manual_hold_sec: 2.0
   battery:
     ready: 40         # CHARGING -> IDLE
     charged: 80       # IDLE -> PATROL (auto, docked only)

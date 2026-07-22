@@ -168,7 +168,10 @@ class FsmNode(Node):
         self._bb.set(Keys.CURRENT_MODE, BOOT_STATE)
         self._bb.set(Keys.DISABLED_BRANCHES, disabled_branches)
 
-        self._io = StateIO(self, robot_id)
+        # 패널 전이를 이 시간만큼은 붙잡는다 — 안 그러면 BT 가 다음 tick 에 되돌려서
+        # 관제 화면·LED 에 아무 일도 안 일어난 것처럼 보인다 (state_io.apply_pending 참고).
+        self._io = StateIO(self, robot_id,
+                           manual_hold_sec=float(params.get("manual_hold_sec", 0.0)))
         self._boot_arm_home()
         self.create_timer(1.0 / tick_hz, self._tick)
         self.get_logger().info(

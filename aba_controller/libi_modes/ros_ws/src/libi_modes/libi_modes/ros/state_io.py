@@ -28,6 +28,7 @@
 """
 import json
 import threading
+import time
 
 import py_trees
 from py_trees.common import Access, Status
@@ -96,6 +97,8 @@ def validate(current: str, target: str, force: bool, error_code: str) -> tuple:
 
 class StateIO:
     def __init__(self, node, robot_id, *,
+                 manual_hold_sec=2.0,
+                 clock=time.monotonic,
                  led_state_topic="fsm_state",
                  state_topic="/libi/fsm_state",
                  snapshot_topic="/libi/bt_snapshot",
@@ -108,6 +111,8 @@ class StateIO:
         self._log = node.get_logger()
         self._lock = threading.Lock()
         self._pending = None
+        self._manual_hold_sec = manual_hold_sec
+        self._clock = clock
 
         self._led_pub = node.create_publisher(String, led_state_topic, 10)
         self._state_pub = node.create_publisher(String, state_topic, 10)
@@ -118,7 +123,7 @@ class StateIO:
         self._srv = node.create_service(RequestTransition, service_name, self._on_request_srv)
 
         self._bb = py_trees.blackboard.Client(name="state_io")
-        for key in (Keys.CURRENT_MODE, Keys.ERROR_CODE):
+        for key in (Keys.CURRENT_MODE, Keys.ERROR_CODE, Keys.HOLD_UNTIL):
             self._bb.register_key(key=key, access=Access.WRITE)
         for key in (Keys.BATTERY_PERCENT, Keys.IS_DOCKED):
             self._bb.register_key(key=key, access=Access.READ)
@@ -168,12 +173,25 @@ class StateIO:
         self._result_pub.publish(out)
 
     def apply_pending(self):
-        """tick 맨 앞에서 노드가 부른다. 적용했으면 True."""
+        """tick 맨 앞에서 노드가 부른다. 적용했으면 True.
+
+        ## 왜 여기서 유지 시간을 찍나
+
+        패널이 시킨 전이는 **BT 가 다음 tick 에 곧바로 되돌릴 수 있다.** 이미 충전된
+        로봇을 CHARGING 으로 보내면 `BatteryCheck(>=40)` 이 즉시 통과해 같은 tick 에
+        IDLE 로 나가고, 관제 화면에는 아무 일도 안 일어난 것처럼 보인다.
+
+        그래서 사람이 시킨 전이에만 유지 시각을 남긴다. `RequestTransition` 이 이걸 보고
+        **BT 의 자동 전이만** 그때까지 미룬다 — 사람의 다음 전이는 이 경로로 오므로 막히지
+        않는다. 즉 "로봇이 스스로 못 나가는" 것이지 조작이 잠기는 게 아니다.
+        """
         with self._lock:
             target, self._pending = self._pending, None
         if target is None:
             return False
         self._bb.set(Keys.CURRENT_MODE, target)
+        if self._manual_hold_sec > 0:
+            self._bb.set(Keys.HOLD_UNTIL, self._clock() + self._manual_hold_sec)
         return True
 
     # ── 발행 ──────────────────────────────────────────────────────────────────

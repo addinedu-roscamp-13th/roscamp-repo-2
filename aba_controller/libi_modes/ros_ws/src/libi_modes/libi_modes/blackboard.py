@@ -27,6 +27,10 @@ class Keys:
     # [디버그] 잠긴 상태 브랜치 집합. IsMode 가 여기 든 상태면 FAILURE → Selector 가 건너뜀.
     # main.py 가 param/env 로 1회 seed. 비어있으면(기본) 동작 변화 없음.
     DISABLED_BRANCHES = "disabled_branches"
+    # 이 시각(monotonic)까지는 BT 가 스스로 상태를 못 바꾼다. 관제 패널이 전이를 시킨
+    # 직후에만 state_io 가 채운다 — 누른 상태가 곧바로 자동 이탈로 사라지지 않게 한다.
+    # 비어 있으면(평상시) 아무 영향 없다. 자세한 배경은 request_transition.py 참고.
+    HOLD_UNTIL = "hold_until"
 
 
 def get(blackboard, key, default=None):
