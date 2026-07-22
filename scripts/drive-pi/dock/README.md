@@ -61,9 +61,9 @@ BT → /fleet_cmd{dock} → dock_runner → park_dock._park_loop
 
 ---
 
-## ❓ 작성자에게 물어볼 것 두 가지
+## ❓ 작성자에게 물어볼 것
 
-의도는 위와 같은데, **지금 배선은 그렇게 안 돌아간다.** 아래 둘은 코드를 읽어서 확인한
+의도는 위와 같은데, **지금 배선은 그렇게 안 돌아간다.** 아래는 코드를 읽어서 확인한
 사실이고, 어느 쪽이 맞는지는 **실물에서 돌려 본 사람만 안다.**
 
 ### ① BT 가 아르코 접근 단계를 건너뛴다
@@ -78,8 +78,6 @@ BT → /fleet_cmd{dock} → dock_runner → park_dock._park_loop
 `_rotate_to_marker` 대신 `_rotate_to_odom` 을 타고, 마커는 한 번도 안 본다.
 
 > **물어볼 것**: 아르코 접근을 빼고 라인만으로 충분하던가? 아니면 배선이 빠진 건가?
-> 전자면 `aruco_dock` 은 관제 수동 버튼 전용으로 남기고, 후자면 `dock_runner` 의
-> 기본값을 `marker` 로 바꿔야 한다 (`park_dock` 에 이미 그 경로가 있다).
 
 ### ② 라인 검출이 카메라가 아니라 IR 이다
 
@@ -100,7 +98,6 @@ BT → /fleet_cmd{dock} → dock_runner → park_dock._park_loop
 
 > **물어볼 것**: IR 이 더 잘 돼서 갈아탄 건가, 아니면 카메라 경로가 미완성인가?
 > 전자면 `_grab_frame`/`_detect_line` 은 죽은 코드라 지워야 하고, 머리말도 고쳐야 한다.
-> 후자면 왜 안 불리는지 찾아야 한다.
 
 ### ③ `park_dock` 이 아르코 접근을 조합하지 않는다 — **가장 큰 격차**
 
@@ -121,34 +118,25 @@ aruco_dock._detect(...)                           # 마커 검출 — **각도 �
 캘리브레이션 pose 로 축이탈 보정, 근접 사전 정렬, 초음파 벽 정지 — **`park_dock` 은
 이걸 한 번도 부르지 않는다.** 호출하는 곳은 `/dock/start`(관제 수동 버튼)뿐이다.
 
-```
-머리말 의도   아르코 접근(호밍·축정렬·근접정렬)  →  라인 미세조정  →  벽 정지
-park_dock     제자리 회전만                      →  라인          →  벽 정지
-현재 BT       TF yaw 회전 (마커도 안 봄)         →  라인          →  벽 정지
-```
-
 > **물어볼 것**: `park_dock` 이 `_dock_loop` 을 안 부르는 게 의도인가?
-> - **의도라면** — 아르코는 관제 수동 전용이고, 자동 주차는 "회전 + 라인"이 전부다.
->   그러면 머리말의 "아르코 접근 → 라인 미세조정"은 **사람이 관제에서 아르코를 돌린 뒤
->   라인을 돌리는 2단계 수동 절차**를 뜻한 것일 수 있다.
-> - **아니라면** — `park_dock` 에 아르코 접근 단계가 통째로 빠져 있다.
->
 > ⚠️ 그래서 `DOCK_MARKER_ID` 를 줘도 **아르코 접근은 안 일어난다.** 진입각만 마커로 잡는다.
 
 ### ④ `action: "dock"` 을 아무도 안 보낸다
 
 `fleet_link._dispatch` 에 `dock` 처리를 넣어 `dock_runner` 로 잇긴 했는데,
-**그 액션을 보내는 곳이 저장소에 없다.** BT 의 복귀 드라이버는 `home` 을 보낸다:
+**그 액션을 보내는 곳이 저장소에 없다.** BT 의 복귀 드라이버는 주차장 좌표로 `goal` 을 보낸다:
 
 ```python
-"return_dock": FleetCmdDriver(self, "home")        # libi_modes/main.py
+"return_dock": FleetCmdDriver(self, "goal", args_fn=lambda: {"x":…, "y":…, "yaw":0})
 ```
 
-`home` → `mission.go_home()` → 로봇에 `HOME` 이 등록돼 있으면 거기로, 없으면 맵 원점.
-**즉 지금 복귀는 정밀 주차를 아예 안 거치고 nav2 로 한 점을 찍고 끝난다.**
+**즉 지금 복귀는 정밀 주차를 아예 안 거치고 nav2 로 주차장 정점까지 가고 끝난다.**
+`/is_docked` 는 `dock_confirm.py` 가 위치(반경 0.12m)로 판정한다.
 
 **이 답에 따라 CPU 도 달라진다.** 지금은 IR·초음파 폴링 12 Hz 뿐이라 거의 안 먹는데,
 카메라 경로가 살아나면 매 프레임 OpenCV 가 돌아 얘기가 완전히 달라진다.
+
+---
 
 ## 왜 쪼개 놨나
 
@@ -193,10 +181,6 @@ DOCK_MARKER_ID=7 ./2-rotate.sh          # 진입각만 마커로
 ```bash
 cd ~/controller/drive/robot_agent && pm2 start ecosystem.config.js
 ```
-
-BT 경로(`/fleet_cmd{dock}`)는 서버 없이도 된다 — `fleet_link` 이 같은 프로세스에서
-`dock_runner` 를 부르기 때문이다. 그쪽이 **실제로 도는 길**이므로, 주차가 한 번
-맞고 나면 검증은 BT 경로로 하는 게 낫다.
 
 ## ⚠️ 실물 미검증
 

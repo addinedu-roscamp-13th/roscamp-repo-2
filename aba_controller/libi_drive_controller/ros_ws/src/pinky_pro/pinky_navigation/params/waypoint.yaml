@@ -198,6 +198,12 @@ lanes:
   to: 예술-2
   bidirectional: true
 - from: 문학-1
+  to: 복도-3
+  bidirectional: true
+- from: 문학-1
+  to: 복도-5
+  bidirectional: true
+- from: 문학-1
   to: 예술-2
   bidirectional: true
 - from: 문학-1

@@ -153,88 +153,114 @@ function RequestPage() {
           </p>
         ) : null}
 
-        {/* 1단계 — 책 고르기 */}
+        {/* 1단계 — 책 고르기
+            고르고 나면 목록을 접는다. 20권이 펼쳐진 채로 있으면 2단계까지
+            한참 스크롤해야 하는데, 이미 고른 뒤의 목록은 볼 이유가 없다. */}
         <section className="mt-5">
           <h2 className="text-sm font-bold text-foreground">1. 책 고르기</h2>
-          <div className="mt-2 flex items-center gap-2 rounded-2xl border border-border bg-card p-2 shadow-card">
-            <SearchIcon className="ml-2 size-4 text-muted-foreground" />
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder={tr("searchPh")}
-              className="flex-1 bg-transparent py-2 text-sm outline-none placeholder:text-muted-foreground"
-            />
-            {query ? (
-              <button
-                onClick={() => setQuery("")}
-                className="text-muted-foreground"
-                aria-label="clear"
-              >
-                <X className="size-4" />
-              </button>
-            ) : null}
-          </div>
 
-          <div className="mt-3 space-y-2">
-            {books.length === 0 ? (
-              <p className="rounded-2xl border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
-                검색 결과가 없습니다.
-              </p>
-            ) : null}
-            {books.slice(0, 20).map((b) => {
-              const active = picked?.bookId === b.bookId;
-              return (
-                <div
-                  key={b.id}
-                  className={`rounded-2xl border bg-card p-3 shadow-card transition-colors ${
-                    active
-                      ? "border-primary ring-2 ring-primary/30"
-                      : "border-border"
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <span
-                      className={`flex size-12 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br ${b.color} text-2xl`}
-                    >
-                      {b.cover}
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-semibold text-foreground">
-                        {b.title[lang]}
-                      </p>
-                      <p className="truncate text-xs text-muted-foreground">
-                        {b.author}
-                      </p>
-                      <span className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-primary">
-                        <MapPin className="size-3" />
-                        {b.zone} · {b.shelf}
+          {picked ? (
+            <div className="mt-2 flex items-center gap-3 rounded-2xl border border-primary bg-card p-3 shadow-card ring-2 ring-primary/30">
+              <span
+                className={`flex size-12 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br ${picked.color} text-2xl`}
+              >
+                {picked.cover}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-semibold text-foreground">
+                  {picked.title[lang]}
+                </p>
+                <p className="truncate text-xs text-muted-foreground">
+                  {picked.author}
+                </p>
+                <span className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-primary">
+                  <MapPin className="size-3" />
+                  {picked.zone} · {picked.shelf}
+                </span>
+              </div>
+              <button
+                onClick={() => setPicked(null)}
+                className="shrink-0 rounded-full bg-secondary px-3 py-1.5 text-xs font-bold text-secondary-foreground"
+              >
+                다시 고르기
+              </button>
+            </div>
+          ) : (
+            <>
+              <div className="mt-2 flex items-center gap-2 rounded-2xl border border-border bg-card p-2 shadow-card">
+                <SearchIcon className="ml-2 size-4 text-muted-foreground" />
+                <input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder={tr("searchPh")}
+                  className="flex-1 bg-transparent py-2 text-sm outline-none placeholder:text-muted-foreground"
+                />
+                {query ? (
+                  <button
+                    onClick={() => setQuery("")}
+                    className="text-muted-foreground"
+                    aria-label="clear"
+                  >
+                    <X className="size-4" />
+                  </button>
+                ) : null}
+              </div>
+
+              {/* 목록만 스크롤한다 — 검색창은 위에 남고 2·3단계는 아래에 붙어 있다.
+                  이렇게 두면 검색어를 고쳐 가며 찾는 동안에도 페이지가 안 길어진다. */}
+              <div className="mt-3 max-h-[46vh] space-y-2 overflow-y-auto pr-1">
+                {books.length === 0 ? (
+                  <p className="rounded-2xl border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
+                    검색 결과가 없습니다.
+                  </p>
+                ) : null}
+                {/* 여기 오는 건 아직 아무것도 안 골랐을 때뿐이다(picked 면 위에서 접었다).
+                    그래서 "선택됨" 상태를 따로 그릴 일이 없다. */}
+                {books.slice(0, 20).map((b) => (
+                  <div
+                    key={b.id}
+                    className="rounded-2xl border border-border bg-card p-3 shadow-card transition-colors"
+                  >
+                    <div className="flex items-center gap-3">
+                      <span
+                        className={`flex size-12 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br ${b.color} text-2xl`}
+                      >
+                        {b.cover}
                       </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-semibold text-foreground">
+                          {b.title[lang]}
+                        </p>
+                        <p className="truncate text-xs text-muted-foreground">
+                          {b.author}
+                        </p>
+                        <span className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-primary">
+                          <MapPin className="size-3" />
+                          {b.zone} · {b.shelf}
+                        </span>
+                      </div>
+                      {/* 대여 중이면 요청 자체를 못 고르게 하고 예약으로 보낸다 */}
+                      {b.inStock ? (
+                        <button
+                          onClick={() => setPicked(b)}
+                          className="shrink-0 rounded-full bg-secondary px-3 py-1.5 text-xs font-bold text-secondary-foreground"
+                        >
+                          선택
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => void reserve(b)}
+                          className="shrink-0 rounded-full bg-muted px-3 py-1.5 text-xs font-bold text-muted-foreground"
+                        >
+                          대출 중 · 예약
+                        </button>
+                      )}
                     </div>
-                    {/* 대여 중이면 요청 자체를 못 고르게 하고 예약으로 보낸다 */}
-                    {b.inStock ? (
-                      <button
-                        onClick={() => setPicked(active ? null : b)}
-                        className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-bold ${
-                          active
-                            ? "bg-primary text-primary-foreground"
-                            : "bg-secondary text-secondary-foreground"
-                        }`}
-                      >
-                        {active ? "선택됨" : "선택"}
-                      </button>
-                    ) : (
-                      <button
-                        onClick={() => void reserve(b)}
-                        className="shrink-0 rounded-full bg-muted px-3 py-1.5 text-xs font-bold text-muted-foreground"
-                      >
-                        대출 중 · 예약
-                      </button>
-                    )}
                   </div>
-                </div>
-              );
-            })}
-          </div>
+                ))}
+              </div>
+            </>
+          )}
         </section>
 
         {/* 2단계 — 어떻게 받을지 */}
