@@ -22,6 +22,23 @@ namespace libi_fleet
 // 매번 nav2 목표를 갈아치워 status=6(ABORTED)로 **출발하자마자 멈추는** 증상이 났다.
 constexpr double kArriveDefault = 0.35;
 
+// 경유 노드 선행 통과 반경(m) — `prefetch_radius`. 0 이면 꺼짐(기존 동작).
+//
+// 경유 노드는 도착 전 **이 거리 안에 들면 지난 것으로 보고** 다음 노드를 미리 예약·발행한다.
+// 로봇이 감속해 서기 전에 새 목표를 받아 그대로 이어 달리게 하려는 것이다.
+// 마지막 노드에는 적용하지 않는다 — 거기서는 실제로 서야 한다(정밀 정지·완료 판정).
+//
+// ⚠️ 실효값은 **레인 길이의 절반**으로 한 번 더 깎인다(fleet_node.cpp). 이 값만으로
+//    판정하면 반경이 레인보다 커지는 순간(arte2 최소 레인 0.062m) 출발과 동시에 다음
+//    노드를 잡아 그 노드를 건너뛰고 코너를 가로지른다.
+//
+// ⚠️ **arrive_radius 보다 커야 효과가 있다.** 작거나 같으면 도착 판정이 먼저 걸려
+//    조용히 꺼진 것과 같아진다. 기본값 0.10 은 arte2(arrive_radius 0.05) 기준이고,
+//    실제 건물 축척(arrive_radius 기본 0.35)에서는 이 값이 더 작아 자동으로 꺼진다 —
+//    맵을 키우면 arrive_radius 와 함께 이 값도 올려야 한다.
+//    지금 켜졌는지 꺼졌는지는 fleet_node 시작 로그에 찍는다.
+constexpr double kPrefetchDefault = 0.10;
+
 // 교통 우선순위 인코딩(단일 int): tier(가장 큼) > task 나이(오래된=큼) > 배터리(낮은=큼).
 //   tier: 순회=0 · 작업=1 · 충전복귀(CHARGE)=2 · 완전막힘(STUCK, 동적)=3
 constexpr int kTierStep = 50000000;      // tier 간 간격 (age 최대치 kSeqMax*kAgeStep 보다 큼)

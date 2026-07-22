@@ -87,6 +87,25 @@ public:
     //   ros2 run libi_fleet fleet_node --ros-args -p arrive_radius:=0.05
     arrive_radius_ = declare_parameter<double>("arrive_radius", kArriveDefault);
 
+    // 경유 노드를 "지났다"고 볼 반경(m). arrive_radius_ 이하면 꺼진다(시작 로그에 찍는다).
+    //
+    // ## 왜 필요한가 — 노드마다 서는 문제
+    // 로봇은 노드 하나씩 nav2 목표를 받는다(full_path_=false). 그런데 nav2 는 목표에
+    // **감속해서 정지**하므로, 다음 노드를 도착 후에 허가하면 정점마다 선다:
+    //
+    //     이동 → 감속 → 정지 → (틱 150ms + 예약 + 새 목표) → 재출발
+    //
+    // 그래서 경유 노드는 도착 전 **근처에 오면** 지난 것으로 보고 다음 노드를 미리
+    // 예약·발행한다. 로봇은 서기 전에 새 목표를 받아 그대로 이어 달린다.
+    //
+    // ⚠️ **마지막 노드에는 적용하지 않는다.** 거기서는 실제로 서야 하고(서가 앞 정밀
+    //    정지, 작업 완료 판정), 느슨하게 보면 도착하지 않았는데 완료로 보고된다.
+    //
+    // ⚠️ 반경을 레인 길이의 절반으로 제한한다. 고정값만 쓰면 **레인보다 큰 반경**이
+    //    생겨(arte2 최단 레인 0.062m) 출발하자마자 다음 노드를 잡고, 그 노드를 통째로
+    //    건너뛰어 코너를 가로지른다. 짧은 레인에서는 자동으로 기존 동작으로 돌아간다.
+    prefetch_radius_ = declare_parameter<double>("prefetch_radius", kPrefetchDefault);
+
     // 남은 정점을 전부 보낼지. **기본 false — 다음 한 노드만 보낸다.**
     //
     // ⚠️ 한 번에 다 보내면 로봇이 예약하지 않은 노드로 들어가 **교통 협상이 무력화된다**
@@ -167,6 +186,17 @@ public:
 
     timer_ = create_wall_timer(std::chrono::milliseconds(150),
                                std::bind(&FleetNode::on_timer, this));
+    // 선행 통과는 arrive_radius 보다 커야 동작한다. 작으면 **조용히 꺼진 것과 같아져**
+    // "왜 여전히 노드마다 서지"를 한참 찾게 된다. 그래서 켜짐/꺼짐을 시작할 때 못 박는다.
+    if (prefetch_radius_ > arrive_radius_) {
+      RCLCPP_INFO(get_logger(), "선행 통과 ON — 경유 노드 %.3fm (레인 절반으로 제한) / 도착 %.3fm",
+                  prefetch_radius_, arrive_radius_);
+    } else {
+      RCLCPP_WARN(get_logger(),
+                  "선행 통과 OFF — prefetch_radius(%.3f) ≤ arrive_radius(%.3f). "
+                  "노드마다 감속·정지한다. 켜려면 arrive_radius 보다 크게 줄 것.",
+                  prefetch_radius_, arrive_radius_);
+    }
     RCLCPP_INFO(get_logger(), "libi_fleet FMS up");
   }
 
@@ -345,9 +375,23 @@ private:
         it = tasks_.erase(it); continue;
       }
 
-      if (t.moving && d < arrive_radius_) {
+      // 판정 반경: 마지막 노드는 정확히(arrive_radius_), 경유 노드는 미리(prefetch_radius_).
+      // 경유 노드를 일찍 지난 것으로 보면 다음 노드 예약·발행이 앞당겨져, 로봇이 감속해
+      // 서기 전에 새 목표를 받는다. 자세한 배경은 위 prefetch_radius 파라미터 주석 참고.
+      const bool final_node = (t.idx + 1 >= t.path.size());
+      double reach = arrive_radius_;
+      if (!final_node && prefetch_radius_ > arrive_radius_ && t.idx >= 1) {
+        // 레인 길이의 절반을 넘지 않게 깎는다 — 안 그러면 짧은 레인에서 노드를 건너뛴다.
+        const Vertex & pv = graph_.vertex(t.path[t.idx - 1]);
+        const double lane = std::hypot(pv.x - tv.x, pv.y - tv.y);
+        reach = std::max(arrive_radius_, std::min(prefetch_radius_, 0.5 * lane));
+      }
+
+      if (t.moving && d < reach) {
         // 도착: 예약한 목표 노드는 그대로 소유(다음 출발 때 release). 엣지 예약은 없음.
-        RCLCPP_INFO(get_logger(), "[%s] %s 도착 v%d", t.id.c_str(), t.robot.c_str(), t.path[t.idx]);
+        RCLCPP_INFO(get_logger(), "[%s] %s %s v%d", t.id.c_str(), t.robot.c_str(),
+                    final_node ? "도착" : (reach > arrive_radius_ ? "선행통과" : "통과"),
+                    t.path[t.idx]);
         t.idx++;
         t.moving = false;
         t.reroutes = 0;   // 노드 도달 = 진전 → 우회 카운터 리셋
@@ -776,6 +820,7 @@ private:
   std::string fleet_name_;
   int stuck_ticks_{0};   // 0 = 무진행 감지 비활성
   double arrive_radius_{kArriveDefault};   // 도착 판정 반경(m) — 맵 축척마다 다름
+  double prefetch_radius_{kPrefetchDefault};  // 경유 노드 선행 통과 반경(m). 0 이면 꺼짐
   bool full_path_{false};                  // true 면 남은 정점 전부 전송(단일 로봇 디버깅용)
   int resend_ticks_{7};                    // 이동 중 경로 재발행 주기(틱). 0=끔
   bool patrol_{false};

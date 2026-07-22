@@ -177,7 +177,19 @@ controller_server:
       # ========= 안전 관련 =========
       # 장애물과 너무 가까워지면 속도 줄이거나 정지하는 옵션들
       use_approach_velocity_scaling: true
-      min_approach_linear_velocity: 0.05
+      # [2026-07-22] 목표 근처 감속이 **설정만 되어 있고 실제로는 안 걸리고 있었다.**
+      #   approach_velocity_scaling_dist 를 안 적어 RPP 기본값 0.6m 가 쓰였는데,
+      #   이 맵은 **최장 레인이 0.581m** 라 모든 주행이 통째로 감속 구간 안에 들어간다.
+      #   그러면 scaling 이 늘 작아져 하한(min_approach_linear_velocity)에 걸리고,
+      #   결과적으로 속도가 **평평하다가 목표점에서 뚝 끊긴다** — 감속이 아니라 상시 저속이었다.
+      #     중앙 레인 0.196m : 0.07 × (0.196/0.6) = 0.023 → 하한 0.05 로 올라붙음
+      #   nav2 자신도 이 상황을 경고한다("larger than forward costmap extent → permanent slowdown").
+      #
+      #   그래서 ① 감속 구간을 맵 축척에 맞춰 좁히고 ② 하한을 실제로 내려간 값으로 낮춘다.
+      #   0.12m 는 최단 레인(0.062m)의 두 배쯤 — 짧은 레인은 전 구간 감속, 나머지는
+      #   desired_linear_vel 로 달리다 마지막 0.12m 에서 부드럽게 줄어든다.
+      approach_velocity_scaling_dist: 0.12
+      min_approach_linear_velocity: 0.02   # 0.05 → 0.02  하한이 높으면 감속 자체가 안 보인다
       inflation_cost_scaling_factor: 10.0
       regulated_linear_scaling_min_radius: 0.20   # [2026-06-30] 0.5 → 0.20
       regulated_linear_scaling_min_speed: 0.08
