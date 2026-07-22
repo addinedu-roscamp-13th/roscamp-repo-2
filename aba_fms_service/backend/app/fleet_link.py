@@ -48,6 +48,10 @@ TOPIC_OCCUPANCY = "/fms/occupancy"
 TOPIC_ROUTES = "/fms/routes"
 TOPIC_GOALS = "/fms/goals"
 TOPIC_ROBOT_STATE = "/robot_state"
+#: fleet_node 가 발행하는 주행 경로. 예전엔 로봇 쪽 path_request_driver 가 직접 받아
+#  nav2 로 넣었는데, 그러면 로봇 BT 를 우회해 FSM 이 WORKING 으로 가지 않았다.
+#  이제 여기서 받아 /fleet_cmd{navigate} 로 BT 에 넘긴다.
+TOPIC_PATH_REQUESTS = "/robot_path_requests"
 
 FRESH_SEC = 10.0
 CALL_TIMEOUT_SEC = 4.0
@@ -99,6 +103,24 @@ _task_state_hooks: list[Any] = []
 def add_task_state_hook(fn) -> None:
     if fn not in _task_state_hooks:
         _task_state_hooks.append(fn)
+
+
+# fleet_node 가 낸 주행 경로를 받아갈 곳. orchestrator 배선(fleet_dispatch_bridge)이
+# 여기에 핸들러를 걸어 로봇의 BT 로 내려보낸다.
+_path_request_hooks: list[Any] = []
+
+
+def add_path_request_hook(fn) -> None:
+    if fn not in _path_request_hooks:
+        _path_request_hooks.append(fn)
+
+
+def _fire_path_request_hooks(robot: str, points: list) -> None:
+    for fn in list(_path_request_hooks):
+        try:
+            fn(robot, points)
+        except Exception as exc:  # noqa: BLE001 — 훅 하나가 구독 스레드를 죽이면 안 된다
+            print(f"[fleet_link] path_request 훅 실패: {exc}", flush=True)
 
 
 def _fire_task_state_hooks(payload: dict) -> None:
@@ -462,6 +484,7 @@ def _fleet_thread() -> None:
 
         from libi_fleet_msgs.msg import TaskState
         from libi_fleet_msgs.srv import SetBattery, SetPlugins, SetRobotMode, SubmitTask
+        from rmf_fleet_msgs.msg import PathRequest
         from rmf_fleet_msgs.msg import RobotState as RmfRobotState
 
         ctx = rclpy.Context()
@@ -523,7 +546,19 @@ def _fleet_thread() -> None:
         node.create_subscription(RmfRobotState, TOPIC_ROBOT_STATE, on_robot_state, 10)
         node.create_subscription(String, TOPIC_OCCUPANCY, on_occupancy, 10)
         node.create_subscription(String, TOPIC_ROUTES, on_routes, 10)
+        def on_path_request(msg) -> None:
+            """fleet_node 가 허가한 다음 노드. 로봇 BT 로 넘긴다.
+
+            `msg.path[0]` 은 로봇의 현재 위치(출발점)이고 그 뒤가 목적지다 —
+            0번을 목표로 주면 nav2 가 거리 0 경로를 못 만들어 즉시 실패한다.
+            """
+            pts = [(float(p.x), float(p.y), float(p.yaw)) for p in msg.path]
+            if len(pts) < 2:
+                return
+            _fire_path_request_hooks(str(msg.robot_name or ""), pts[1:])
+
         node.create_subscription(String, TOPIC_GOALS, on_goals, 10)
+        node.create_subscription(PathRequest, TOPIC_PATH_REQUESTS, on_path_request, 10)
 
         _clients[SRV_SUBMIT] = node.create_client(SubmitTask, SRV_SUBMIT)
         _clients[SRV_PLUGINS] = node.create_client(SetPlugins, SRV_PLUGINS)

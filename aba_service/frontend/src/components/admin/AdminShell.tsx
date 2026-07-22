@@ -19,6 +19,7 @@ import {
   LogOut,
   Menu,
   ServerCog,
+  Stamp,
   Table2,
   Users,
   X,
@@ -51,6 +52,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: "/admin/ops", label: "운영 대시보드", icon: LayoutDashboard },
       { to: "/admin/robots", label: "실시간 모니터링", icon: Bot },
       { to: "/admin/tasks", label: "작업 지시", icon: ListChecks },
+      { to: "/admin/approvals", label: "대여 승인", icon: Stamp },
       { to: "/admin/alerts", label: "작업 알림 · 로그", icon: Bell },
       {
         to: "/admin/reports",

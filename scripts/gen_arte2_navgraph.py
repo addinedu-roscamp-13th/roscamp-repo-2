@@ -63,11 +63,18 @@ def main() -> None:
     lines.append("    vertices:")
     for n in names:
         v = verts[n]
+        # yaw 는 그 지점에서 로봇이 바라볼 방향이다(서가 정면, 도킹 자세).
+        # 예전엔 버렸는데, 그러면 fleet_node 가 **진행 방향**만 쓰게 되어 로봇이 서가를
+        # 옆으로 보고 서고 주차장에도 아무 방향으로 들어간다.
+        # 없는 정점은 키를 아예 빼서 "방향 지정 없음"과 "동쪽(0)을 보라"를 구분한다.
+        meta = f"name: '{n}'"
+        if v.get("yaw") is not None:
+            meta += f", yaw: {v['yaw']}"
         lines += [
             f"    # {idx[n]} {n}",
             f"    - - {v['x']}",
             f"      - {v['y']}",
-            f"      - {{name: '{n}'}}",
+            f"      - {{{meta}}}",
         ]
     lines += ["lifts: {}", ""]
 

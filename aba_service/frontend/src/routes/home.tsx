@@ -105,13 +105,19 @@ function Home() {
           />
         </form>
 
-        {/* Quick menu */}
-        <section className="mt-3 grid grid-cols-2 gap-3">
+        {/* Quick menu — 요청은 검색과 분리된 화면(`/request`)으로 간다 */}
+        <section className="mt-3 grid grid-cols-3 gap-3">
+          <QuickCard
+            to="/request"
+            icon={BookMarked}
+            label="도서 요청"
+            tone="primary"
+          />
           <QuickCard
             to="/recommend"
             icon={TrendingUp}
             label={tr("bestseller")}
-            tone="primary"
+            tone="muted"
           />
           <QuickCard
             to="/map"
@@ -186,7 +192,7 @@ function QuickCard({
   label,
   tone,
 }: {
-  to: "/recommend" | "/map";
+  to: "/recommend" | "/map" | "/request";
   icon: typeof Mic;
   label: string;
   tone: "primary" | "accent" | "muted";

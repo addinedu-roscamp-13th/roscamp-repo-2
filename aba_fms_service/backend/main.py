@@ -1,3 +1,6 @@
+import logging
+import os
+
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +11,21 @@ from app.hardware.camera_stream import camera as camera_hw
 from app.hardware.pinky_greeting_monitor import pinky_greeting_monitor
 from app.routers import admin_follow, arm, aruco_dock, auth, camera, chat, dashboard, dev, drive, fleet, fleet_order, fsm, human_follow_robot, maps, marker_actions, mission_control, nav, pinky_yolo, robot, robot_learning, robots, ros, users, voice, webrtc_robot
 from app.security import hash_password
+
+# ── 로깅 ────────────────────────────────────────────────────────────────────
+# ⚠️ **이걸 안 하면 `log.info` 가 전부 사라진다.**
+# 파이썬 루트 로거의 기본 레벨은 WARNING 이라, 핸들러도 레벨도 없이 `getLogger(...)` 만
+# 쓰면 info 는 조용히 버려진다. 2026-07-21 디버깅 내내 "로그에 아무것도 없다"며 헤맸는데,
+# 실제로는 찍히고 버려지고 있었다 — `[dispatch]`·`[arm]`·`[lifecycle]` 이 그랬고,
+# 눈에 보이던 `[reconcile]`·`[release]` 는 우연히 warning 이라 통과한 것이었다.
+#
+# 레벨은 LIBI_LOG_LEVEL 로 바꾼다 (기본 INFO). 시끄러우면 WARNING.
+logging.basicConfig(
+    level=os.environ.get("LIBI_LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
+    datefmt="%H:%M:%S",
+    force=True,          # uvicorn 이 먼저 잡아둔 핸들러를 밀어낸다 (없으면 무시된다)
+)
 
 app = FastAPI(title="LiBi Admin API", version="1.0.0")
 

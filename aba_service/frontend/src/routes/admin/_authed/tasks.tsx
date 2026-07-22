@@ -21,6 +21,14 @@ export const Route = createFileRoute("/admin/_authed/tasks")({
  *
  * 로봇을 **지정**하면 그 로봇에 배차하고, **비워두면** 큐에 대기시켜 자동 배차 대상이 된다
  * (fleet_node 의 dispatcher 플러그인이 고른다).
+ *
+ * ## 종류마다 폼이 다르다
+ * 예전에는 8종이 전부 같은 폼(대상·출발지·목적지)이었고 `kind` 는 라벨일 뿐이었다.
+ * 이제 **백엔드가 종류별 필드 목록(`fields`)을 내려주고 화면은 그대로 그린다** — 화면에
+ * 종류 표를 다시 적으면 백엔드와 어긋난다.
+ *
+ * `mode:"state"`(복귀·순찰)는 작업이 아니라 **로봇 모드 변경**이다. 주문이 생기지 않으며
+ * 대상 로봇을 반드시 골라야 한다.
  */
 
 const STATUS_TONE: Record<string, string> = {
@@ -30,6 +38,15 @@ const STATUS_TONE: Record<string, string> = {
   COMPLETED: "bg-emerald-500/15 text-emerald-700",
   FAILED: "bg-rose-500/15 text-rose-700",
   CANCELLED: "bg-muted text-muted-foreground",
+};
+
+/** 목적지 칸의 이름 — 종류마다 뜻이 다르다. 없으면 그냥 「목적지」. */
+const DROPOFF_LABEL: Record<string, string> = {
+  transfer: "목적지 — 전달할 곳",
+  sort: "목적지 — 분류대",
+  tidy: "점검할 서가",
+  dispatch: "대기 위치",
+  porter: "목적지 — 내릴 곳",
 };
 
 const SHELVES = NAMED_WAYPOINTS.filter((w) => w.kind === "shelf");
@@ -48,9 +65,15 @@ function TasksPage() {
   // 지시 폼
   const [kind, setKind] = useState("transfer");
   const [book, setBook] = useState("");
+  const [cargo, setCargo] = useState("");
   const [pickup, setPickup] = useState(SHELVES[0]?.name ?? "");
   const [dropoff, setDropoff] = useState(DESTS[0]?.name ?? "");
   const [robot, setRobot] = useState("");
+
+  // 고른 종류의 정의 — 어떤 칸을 보여줄지, 주문인지 모드 변경인지가 여기서 나온다.
+  const spec = kinds.find((k) => k.key === kind);
+  const shows = (field: string) => spec?.fields.includes(field) ?? false;
+  const isModeChange = spec?.mode === "state";
 
   // 도서 목록 — 책을 고르면 출발지를 그 책의 서가(zone)로 자동 설정한다.
   // 사서가 "이 책 어느 서가더라"를 외우지 않아도 되고, 오타로 엉뚱한 정점에 보내는 일도 없다.
@@ -94,19 +117,50 @@ function TasksPage() {
     return () => clearInterval(t);
   }, [load]);
 
+  /** 종류에 필요한 칸이 다 찼는가 — 안 쓰는 칸은 보지 않는다. */
+  const ready = (() => {
+    if (!spec || !linked) return false;
+    if (spec.mode === "state") return !!robot; // 복귀·순찰은 대상 로봇이 필수
+    if (shows("book") && !book.trim()) return false;
+    if (shows("cargo") && !cargo.trim()) return false;
+    if (shows("pickup") && !pickup) return false;
+    if (shows("dropoff") && !dropoff) return false;
+    return true;
+  })();
+
   const submit = async () => {
     setErr(null);
     setMsg(null);
+    if (!spec) return;
     try {
-      const res = await ops.createTask({ kind, book, pickup, dropoff, robot });
-      setMsg(
-        res.warn
-          ? `${res.task_id} 접수 — ${res.warn}`
-          : res.assigned
-            ? `${res.task_id} 접수 + ${res.assigned} 배차`
-            : `${res.task_id} 접수 (자동 배차 대기)`,
-      );
-      setBook("");
+      // 안 쓰는 칸은 아예 보내지 않는다 — 「정리」에 책 이름이 실리면 로봇이 집으러 간다.
+      const res = await ops.createTask({
+        kind,
+        ...(shows("book") ? { book } : {}),
+        ...(shows("cargo") ? { cargo } : {}),
+        ...(shows("pickup") ? { pickup } : {}),
+        ...(shows("dropoff") ? { dropoff } : {}),
+        robot,
+      });
+
+      if (res.mode === "state") {
+        setMsg(
+          res.accepted
+            ? `${res.robot} → ${res.state} 모드로 전환했습니다`
+            : `${res.robot} 이(가) 거절했습니다 (현재 ${res.current_state}) — ${res.reason}`,
+        );
+      } else {
+        const where = res.dropoff ? ` → ${res.dropoff}` : "";
+        setMsg(
+          res.warn
+            ? `${res.task_id} 접수${where} — ${res.warn}`
+            : res.assigned
+              ? `${res.task_id} 접수${where} + ${res.assigned} 배차`
+              : `${res.task_id} 접수${where} (자동 배차 대기)`,
+        );
+        setBook("");
+        setCargo("");
+      }
       await load();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "지시 실패");
@@ -155,70 +209,105 @@ function TasksPage() {
               </button>
             ))}
           </div>
-          <p className="mt-2 text-xs text-muted-foreground">
-            {kinds.find((k) => k.key === kind)?.desc}
-          </p>
+          <p className="mt-2 text-xs text-muted-foreground">{spec?.desc}</p>
+          {spec?.hint ? (
+            <p className="mt-1 text-xs text-primary">💡 {spec.hint}</p>
+          ) : null}
 
+          {/* 종류에 필요한 칸만 그린다 — 필드 목록은 백엔드가 준다 */}
           <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <Labeled label="대상(도서/짐)">
-              <input
-                value={book}
-                onChange={(e) => onBookChange(e.target.value)}
-                list="ops-book-list"
-                placeholder="도서 제목 (고르면 서가 자동)"
-                className="h-9 w-full rounded-md border px-3 text-sm outline-none focus:ring-2 focus:ring-primary"
-              />
-              {/* 도서 목록을 datalist 로 — 고르면 위 onBookChange 가 출발지를 채운다 */}
-              <datalist id="ops-book-list">
-                {books.map((b) => (
-                  <option key={b.id} value={b.title_kr}>
-                    {b.author} · {b.zone}
-                    {b.in_stock ? "" : " (대출 중)"}
-                  </option>
-                ))}
-              </datalist>
-            </Labeled>
-            <Labeled label="출발지 — 집을 곳">
-              <select
-                value={pickup}
-                onChange={(e) => {
-                  setPickup(e.target.value);
-                  setPickupAuto(null); // 손으로 바꿨으면 자동 안내는 지운다
-                }}
-                className="h-9 w-full rounded-md border px-2 text-sm"
-              >
-                {NAMED_WAYPOINTS.map((w) => (
-                  <option key={w.name} value={w.name}>
-                    {w.label}
-                  </option>
-                ))}
-              </select>
-              {pickupAuto ? (
-                <span className="block text-[11px] text-emerald-700">
-                  ✔ {pickupAuto}
-                </span>
-              ) : null}
-            </Labeled>
-            <Labeled label="목적지">
-              <select
-                value={dropoff}
-                onChange={(e) => setDropoff(e.target.value)}
-                className="h-9 w-full rounded-md border px-2 text-sm"
-              >
-                {NAMED_WAYPOINTS.map((w) => (
-                  <option key={w.name} value={w.name}>
-                    {w.label}
-                  </option>
-                ))}
-              </select>
-            </Labeled>
-            <Labeled label="로봇 (비우면 자동)">
+            {shows("book") ? (
+              <Labeled label="대상 도서">
+                <input
+                  value={book}
+                  onChange={(e) => onBookChange(e.target.value)}
+                  list="ops-book-list"
+                  placeholder="도서 제목 (고르면 서가 자동)"
+                  className="h-9 w-full rounded-md border px-3 text-sm outline-none focus:ring-2 focus:ring-primary"
+                />
+                {/* 도서 목록을 datalist 로 — 고르면 위 onBookChange 가 출발지를 채운다 */}
+                <datalist id="ops-book-list">
+                  {books.map((b) => (
+                    <option key={b.id} value={b.title_kr}>
+                      {b.author} · {b.zone}
+                      {b.in_stock ? "" : " (대출 중)"}
+                    </option>
+                  ))}
+                </datalist>
+              </Labeled>
+            ) : null}
+
+            {shows("cargo") ? (
+              <Labeled label="짐 이름">
+                <input
+                  value={cargo}
+                  onChange={(e) => setCargo(e.target.value)}
+                  placeholder="예: 행사용 의자 (도서 목록에 없는 물건)"
+                  className="h-9 w-full rounded-md border px-3 text-sm outline-none focus:ring-2 focus:ring-primary"
+                />
+              </Labeled>
+            ) : null}
+
+            {shows("pickup") ? (
+              <Labeled label="출발지 — 집을 곳">
+                <select
+                  value={pickup}
+                  onChange={(e) => {
+                    setPickup(e.target.value);
+                    setPickupAuto(null); // 손으로 바꿨으면 자동 안내는 지운다
+                  }}
+                  className="h-9 w-full rounded-md border px-2 text-sm"
+                >
+                  {NAMED_WAYPOINTS.map((w) => (
+                    <option key={w.name} value={w.name}>
+                      {w.label}
+                    </option>
+                  ))}
+                </select>
+                {pickupAuto ? (
+                  <span className="block text-[11px] text-emerald-700">
+                    ✔ {pickupAuto}
+                  </span>
+                ) : null}
+              </Labeled>
+            ) : null}
+
+            {shows("dropoff") ? (
+              <Labeled label={DROPOFF_LABEL[kind] ?? "목적지"}>
+                <select
+                  value={dropoff}
+                  onChange={(e) => setDropoff(e.target.value)}
+                  className="h-9 w-full rounded-md border px-2 text-sm"
+                >
+                  {NAMED_WAYPOINTS.map((w) => (
+                    <option key={w.name} value={w.name}>
+                      {w.label}
+                    </option>
+                  ))}
+                </select>
+              </Labeled>
+            ) : null}
+
+            {spec?.auto_dropoff === "book_zone" ? (
+              <Labeled label="목적지 (자동)">
+                <p className="flex h-9 items-center rounded-md border bg-muted px-3 text-sm text-muted-foreground">
+                  {books.find((b) => b.title_kr === book)?.zone ??
+                    "도서를 고르면 그 책의 서가"}
+                </p>
+              </Labeled>
+            ) : null}
+
+            <Labeled
+              label={isModeChange ? "로봇 (필수)" : "로봇 (비우면 자동)"}
+            >
               <select
                 value={robot}
                 onChange={(e) => setRobot(e.target.value)}
                 className="h-9 w-full rounded-md border px-2 text-sm"
               >
-                <option value="">— 자동 배차 —</option>
+                <option value="">
+                  {isModeChange ? "— 로봇을 고르세요 —" : "— 자동 배차 —"}
+                </option>
                 {robots.map((r) => (
                   <option key={r.name} value={r.name}>
                     {r.name} ({r.state ?? "상태미상"})
@@ -230,10 +319,10 @@ function TasksPage() {
 
           <button
             onClick={() => void submit()}
-            disabled={!book || !linked}
+            disabled={!ready}
             className="mt-3 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50"
           >
-            작업 지시
+            {isModeChange ? `${spec?.label} 지시 (모드 변경)` : "작업 지시"}
           </button>
         </section>
 

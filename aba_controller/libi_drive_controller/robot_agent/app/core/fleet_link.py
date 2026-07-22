@@ -63,6 +63,11 @@ def _save_locations(locs: dict | None) -> None:
             print(f"[fleet_link] location '{nm}' 저장 실패: {e}", flush=True)
 
 
+#: libi_modes BT 가 소유하는 명령. 이 실행기는 수락만 하고 실행하지 않는다.
+#  (BT 가 처리한 뒤 실행 층 액션 goal/arm_home/... 으로 되돌아온다)
+BT_LAYER_ACTIONS = frozenset({"navigate"})
+
+
 def _dispatch(action: str, args: dict) -> tuple[bool, int, Any, str]:
     """(ok, status, data, msg) — ok=False 는 HTTP 라면 에러 응답이었을 상황."""
     from app.core import locations, mission, ros_bridge
@@ -194,6 +199,36 @@ def _dispatch(action: str, args: dict) -> tuple[bool, int, Any, str]:
 
         return True, 200, {"success": True, "name": name, "path": path}, ""
 
+    if action in BT_LAYER_ACTIONS:
+        # ── BT 층 명령 — 여기서 실행하지 않는다 ──────────────────────────────
+        # `/fleet_cmd` 에는 소비자가 둘이다:
+        #   ① 이 실행기(fleet_link)      goal/goto/home/… 을 실제로 수행
+        #   ② libi_modes BT (providers)  명령을 blackboard 에 올려 브랜치가 처리
+        # FMS 가 BT 에게 주는 명령(navigate 등)까지 여기서 실행하면 **같은 주행이 두 번**
+        # 나간다. 그렇다고 "알 수 없는 action" 으로 답하면 FMS 가 그걸 다리 실패로 받아
+        # 주문이 FAILED 로 떨어진다(실측: perform_action 이 그랬다).
+        # 그래서 **수락만 하고 아무것도 하지 않는다** — 실제 수행은 BT 가 자기 드라이버로
+        # 다시 이 함수를 부를 때(goal/arm_home/…) 일어난다.
+        return True, 202, {"accepted": True, "handled_by": "bt"}, ""
+
+    if action == "dock":
+        # 정밀 도킹(주차). BT 의 ReturningBranch 가 nav2 로 입구까지 온 다음 이걸 부른다.
+        #
+        # nav2 는 주차장 "근처"까지만 데려다준다 — 충전 단자에 맞추려면 마커·테이프·벽
+        # 거리를 보는 폐루프가 필요하고, 그건 app/routers/park_dock.py 에 이미 있다.
+        # 여기서는 HTTP 를 거치지 않고 같은 프로세스에서 그 코루틴을 돌린다.
+        #
+        # ⚠️ **아직 아무도 이 액션을 보내지 않는다.** BT 의 복귀 드라이버는 주차장
+        #    좌표로 `goal` 을 보낼 뿐이다. 정밀 주차를 붙이려면 그쪽을 먼저 바꿔야 한다
+        #    (scripts/drive-pi/dock/README.md 의 미결 1~4). 실물 미검증.
+        from app.core import dock_runner
+
+        ok, why = dock_runner.run_park(**{k: v for k, v in args.items() if v is not None})
+        _publish_docked(ok)
+        if not ok:
+            return False, 502, {"docked": False}, why
+        return True, 200, {"docked": True}, ""
+
     if action == "perform_action":
         # 팔 동작(집기/놓기). FMS orchestrator 가 다리 하나로 내려보낸다.
         #
@@ -242,6 +277,11 @@ def _link_thread() -> None:
         result_pub = node.create_publisher(String, "fleet_cmd_result", 10)
         status_pub = node.create_publisher(String, "fleet_status", qos_latched)
         costmap_pub = node.create_publisher(String, "fleet_costmaps", qos_big)
+        # 도킹 확인 신호. libi_modes 의 ReturnNavigation 이 이걸 받아야
+        # RETURNING → CHARGING 이 일어난다. 상태이지 사건이므로 latched 로 둔다.
+        from std_msgs.msg import Bool
+        docked_pub = node.create_publisher(Bool, "is_docked", qos_latched)
+        _set_docked_publisher(lambda v: docked_pub.publish(Bool(data=bool(v))))
 
         def publish_result(cmd_id: str, ok: bool, status: int, data: Any, msg: str) -> None:
             payload = json.dumps(
@@ -324,6 +364,20 @@ def _link_thread() -> None:
         executor.spin()
     except Exception as e:
         print(f"[fleet_link] 비활성화(HTTP 경로만 동작): {e}", flush=True)
+
+
+_docked_publish = None
+
+
+def _set_docked_publisher(fn) -> None:
+    """ROS 스레드가 만든 발행자를 모듈에 걸어 둔다 (_dispatch 는 노드를 모른다)."""
+    global _docked_publish
+    _docked_publish = fn
+
+
+def _publish_docked(value: bool) -> None:
+    if _docked_publish is not None:
+        _docked_publish(value)
 
 
 def start() -> None:

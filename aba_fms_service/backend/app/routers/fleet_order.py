@@ -3,7 +3,8 @@
 각 UI(사서/회원·libi_gui·관제)가 여기로 주문을 넣고(통일 창구), 관제 패널이 큐·진행을
 읽고 자동/수동 배차·force-advance 로 디버깅한다.
 
-- POST /api/fleet/order              주문 접수(배달) → task_id
+- POST /api/fleet/order              주문 접수 → task_id
+                                     `kind`: delivery(4다리, 기본) | navigate(주행 1다리)
 - GET  /api/fleet/orders             전체 task 스냅샷 (패널 표시)
 - GET  /api/fleet/orders/pending     대기 큐(미배정)
 - POST /api/fleet/order/{id}/assign  배차(로봇 지정=수동, 자동은 dispatcher가 이 호출을 대신)
@@ -14,7 +15,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from app import fleet_orchestrator_service as svc
 from app.deps import get_current_admin
@@ -22,13 +23,38 @@ from app.models import Admin
 
 router = APIRouter(prefix="/api/fleet", tags=["fleet-order"])
 
+#: 주문 종류 → 다리 구성. 사서 화면의 「작업 종류」 8종은 상위(aba_service)가 이 둘 중
+#: 하나로 접어서 보낸다 — 여기는 "몇 다리짜리인가"만 안다.
+#:   delivery : 주행 → 집기 → 주행 → 놓기 (이송·진열·분류·짐꾼)
+#:   navigate : 주행 (정리·파견)
+#: 「복귀」·「순찰」은 주문이 아니라 **로봇 모드 변경**이라 여기로 오지 않는다
+#: (POST /api/fsm/transition).
+ORDER_KINDS = ("delivery", "navigate")
+
 
 class OrderRequest(BaseModel):
-    book: str
-    pickup: str            # 선반 waypoint (도서→선반→waypoint 는 상위 데이터 계층, #27)
+    #: 배달이면 집을 물건과 집을 곳이 필요하고, 주행이면 목적지만 필요하다.
+    kind: str = "delivery"
+    book: str = ""
+    pickup: str = ""       # 선반 waypoint (도서→선반→waypoint 는 상위 데이터 계층, #27)
     dropoff: str           # 배달지 waypoint(고정 세트)
     requester: str = ""
     priority: int = 0
+
+    @model_validator(mode="after")
+    def _check_kind(self) -> "OrderRequest":
+        """종류에 필요한 값이 다 왔는지 본다.
+
+        pydantic 단계에서 막아야 기존처럼 422 로 거절된다 — 배달 주문에 book 이 빠지면
+        예전에도 422 였고, kind 를 도입했다고 그 계약이 바뀌면 안 된다.
+        """
+        if self.kind not in ORDER_KINDS:
+            raise ValueError(f"kind 는 {ORDER_KINDS} 중 하나여야 합니다")
+        if not self.dropoff:
+            raise ValueError("dropoff 는 비울 수 없습니다")
+        if self.kind == "delivery" and not (self.book and self.pickup):
+            raise ValueError("배달 주문은 book 과 pickup 이 필요합니다")
+        return self
 
 
 class AssignRequest(BaseModel):
@@ -43,9 +69,13 @@ class ResultRequest(BaseModel):
 
 @router.post("/order")
 async def create_order(body: OrderRequest, _: Admin = Depends(get_current_admin)):
-    tid = svc.orchestrator().submit_delivery(
-        book=body.book, pickup=body.pickup, dropoff=body.dropoff,
-        requester=body.requester, priority=body.priority)
+    if body.kind == "navigate":
+        tid = svc.orchestrator().submit_navigation(
+            dropoff=body.dropoff, requester=body.requester, priority=body.priority)
+    else:
+        tid = svc.orchestrator().submit_delivery(
+            book=body.book, pickup=body.pickup, dropoff=body.dropoff,
+            requester=body.requester, priority=body.priority)
     return {"ok": True, "task_id": tid}
 
 

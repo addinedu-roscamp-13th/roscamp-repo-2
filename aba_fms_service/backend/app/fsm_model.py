@@ -51,7 +51,8 @@ STATE_DESCRIPTIONS: dict[str, str] = {
     "ERROR": "고장, 비상정지 등 복구가 필요한 상태",
 }
 
-# 부팅 진입점 — 전이 박스의 `[*] -> RETURNING`. 실제 상태에서 도달할 수 있는 곳이 아니다.
+# 부팅 진입점 — 전이 박스의 `[*] -> IDLE`. 실제 상태에서 도달할 수 있는 곳이 아니다.
+# (2026-07-22 RETURNING -> IDLE 변경 — 이유는 libi_modes/main.py 의 BOOT_STATE 주석)
 # registry.py 에서는 `registry.START`("[*]") 로 적혀 있다.
 #
 # 여기서는 "__START__" 를 쓴다. 이 값은 API 응답으로 프론트까지 나가는데, 상태 이름과
@@ -85,7 +86,7 @@ class Edge(NamedTuple):
 # libi_modes/registry.py TRANSITIONS 와 1:1 (source "*" 만 START/ANY 로 풀어 적었다).
 # 순서까지 원본과 같게 유지한다 — 프론트의 linkStyle 인덱스가 이 순서를 따른다.
 EDGES: tuple[Edge, ...] = (
-    Edge(START, "RETURNING", "boot"),
+    Edge(START, "IDLE", "boot"),
     Edge("RETURNING", "CHARGING", "docked"),
     Edge("CHARGING", "IDLE", "battery_charged [battery >= 40%]"),
     Edge("IDLE", "PATROL", "patrol_request (auto [battery >= 80% && is_docked] / manual)"),

@@ -6,7 +6,12 @@
 namespace libi_fleet
 {
 
-struct Vertex { double x; double y; };
+// yaw 는 그 정점에서 로봇이 **바라볼 방향**이다(서가 정면, 충전 도킹 자세 등).
+// 지나가는 경유지에는 의미가 없고 **목적지일 때만** 쓴다 — 경유지에서까지 이 각도로
+// 돌면 로봇이 매 노드마다 제자리 회전을 한다.
+// has_yaw 가 false 면 그 정점은 방향 지정이 없다는 뜻이고, 그때는 진행 방향을 그대로 쓴다
+// (0.0 을 "방향 없음"으로 쓰면 **동쪽을 보라**는 지시와 구별되지 않는다).
+struct Vertex { double x; double y; double yaw = 0.0; bool has_yaw = false; };
 
 // navgraph(yaml) 로드 + 최근접 정점 + Dijkstra 최단경로.
 class Navgraph

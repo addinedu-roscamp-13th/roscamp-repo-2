@@ -251,6 +251,11 @@ class DeliveryRequest(Base):
 
     FMS orchestrator 가 진짜 상태를 들고 있으므로 여기 상태는 **사본이 아니라 접수 기록**이다
     (누가·어떤 책을·어디로 요청했고 FMS task_id 가 무엇인지). 진행 상황은 FMS 에 물어본다.
+
+    ## 승인(`approval`)
+    `borrow`(대여)는 책이 관외로 나가므로 **사서 승인 뒤에야** FMS 주문이 나간다. 승인 전에는
+    `approval='PENDING_APPROVAL'` 이고 `fms_task_id` 가 빈 문자열이다. `read`(열람)는 책이
+    관내에 남아 되돌리기 쉬우므로 승인 없이 바로 주문한다(`approval='APPROVED'`).
     """
 
     __tablename__ = "cb_delivery_requests"
@@ -283,7 +288,26 @@ class DeliveryRequest(Base):
         String(50), nullable=False, comment="전달 waypoint (테이블 또는 안네데스크)"
     )
     fms_task_id: Mapped[str] = mapped_column(
-        String(64), nullable=False, comment="FMS orchestrator 가 발급한 task_id"
+        String(64),
+        nullable=False,
+        default="",
+        comment="FMS orchestrator 가 발급한 task_id (승인 전이면 빈 문자열)",
+    )
+    approval: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="APPROVED",
+        server_default="APPROVED",
+        comment="승인 상태 (PENDING_APPROVAL=사서 승인 대기 | APPROVED=승인·주문됨 | REJECTED=반려)",
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, comment="사서가 승인/반려한 시각 (승인 불필요면 NULL)"
+    )
+    decided_by: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, comment="승인/반려한 사서 계정"
+    )
+    reject_reason: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, comment="반려 사유 (반려가 아니면 NULL)"
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False, comment="접수 시각"

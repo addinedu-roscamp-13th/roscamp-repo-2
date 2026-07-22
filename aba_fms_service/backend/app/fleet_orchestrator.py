@@ -106,6 +106,16 @@ def decompose_delivery(*, book: str, pickup, dropoff) -> list[Leg]:
     ]
 
 
+def decompose_navigation(*, dropoff) -> list[Leg]:
+    """주행만 = 한 곳으로 가서 끝.
+
+    집고 놓을 물건이 없는 지시(서가 정돈 점검 「정리」, 지정 위치 대기 「파견」)가 여기 해당한다.
+    배달 4다리로 내보내면 **있지도 않은 책을 집으러 간다** — 종류마다 다리 구성이 달라야 하는
+    이유가 이것이다.
+    """
+    return [Leg(LegType.NAVIGATE, {"waypoint": dropoff})]
+
+
 class Orchestrator:
     """주문 큐 + composite task 상태기. 스레드 안전(요청 핸들러 + ROS 콜백이 함께 건드림).
 
@@ -115,8 +125,16 @@ class Orchestrator:
     """
 
     def __init__(self, dispatch_leg, *, release_robot=None, task_lifecycle=None,
-                 retry_max: int = 1):
+                 on_event=None, retry_max: int = 1):
         self._dispatch_leg = dispatch_leg
+        #: on_event(kind, task, leg) -> None — 사람에게 보일 **사건**을 알린다.
+        #  task_lifecycle 과 목적이 다르다:
+        #    task_lifecycle  로봇을 움직이는 신호 (WORKING 진입/이탈). task 단위.
+        #    on_event        사람에게 보일 알림 ("책이 도착했다"). **다리 단위**로도 낸다 —
+        #                    "지금 어떤 상태인가"는 폴링으로 알 수 있지만
+        #                    "방금 도착했다"는 사건이 아니면 표현할 방법이 없다.
+        #  안 꽂으면 no-op. 여기서 실패해도 주문 진행은 막지 않는다.
+        self._on_event = on_event
         #: task_lifecycle(robot, phase) — phase 는 "start" | "done" | "failed".
         #  로봇의 미션 FSM 을 task 수명주기에 맞춰 움직이는 신호다(libi_modes 는
         #  task_assigned 로 WORKING 에 들어가고 task_done 으로 나온다).
@@ -139,6 +157,12 @@ class Orchestrator:
                         priority: int = 0) -> str:
         legs = decompose_delivery(book=book, pickup=pickup, dropoff=dropoff)
         return self._enqueue("delivery", legs, requester=requester, priority=priority)
+
+    def submit_navigation(self, *, dropoff, requester: str = "",
+                          priority: int = 0) -> str:
+        """주행만 하는 주문(정리·파견). 다리가 1개라 도착하면 곧바로 COMPLETED 다."""
+        legs = decompose_navigation(dropoff=dropoff)
+        return self._enqueue("navigate", legs, requester=requester, priority=priority)
 
     def submit(self, task_type: str, legs: list[Leg], *, requester: str = "",
                priority: int = 0) -> str:
@@ -177,9 +201,11 @@ class Orchestrator:
         if leg is None:                     # 다리 다 소진 → 완료
             task.status = TaskStatus.COMPLETED
             self._lifecycle(task, "done")
+            self._event("task_done", task, None)
             return
         if task.leg_idx == 0 and leg.attempts == 0:
             self._lifecycle(task, "start")  # 첫 다리 직전에 딱 한 번
+            self._event("task_started", task, leg)
         leg.attempts += 1
         try:
             cmd_id = self._dispatch_leg(task.id, task.robot, leg)
@@ -207,6 +233,10 @@ class Orchestrator:
             if leg is None or leg.cmd_id != cmd_id:
                 return                       # stale (다리가 이미 넘어감)
             if ok:
+                # 이 다리가 끝났다는 건, 주행 다리라면 **목적지에 도착했다**는 뜻이다.
+                # 다리를 넘기기 **전에** 알린다 — 넘긴 뒤엔 방금 끝난 다리가 뭐였는지
+                # 알 수 없다(current_leg 가 다음 것을 가리킨다).
+                self._event("leg_done", task, leg)
                 task.leg_idx += 1
                 self._start_leg(task)        # 다음 다리(없으면 COMPLETED)
             else:
@@ -221,7 +251,17 @@ class Orchestrator:
         task.status = TaskStatus.FAILED
         task.reason = reason
         self._lifecycle(task, "failed")
+        self._event("task_failed", task, None)
         self._release(task)
+
+    def _event(self, kind: str, task: Task, leg: "Leg | None") -> None:
+        """사건을 알린다. 실패해도 주문 진행은 막지 않는다 — 알림이 주문보다 덜 중요하다."""
+        if self._on_event is None:
+            return
+        try:
+            self._on_event(kind, task, leg)
+        except Exception:  # noqa: BLE001
+            log.exception("[orchestrator] 사건 알림 실패: %s (task=%s)", kind, task.id)
 
     def _lifecycle(self, task: Task, phase: str) -> None:
         """배선 계층에 task 수명주기를 알린다(로봇 FSM 전이용). 실패해도 상태 전이는 막지 않는다."""

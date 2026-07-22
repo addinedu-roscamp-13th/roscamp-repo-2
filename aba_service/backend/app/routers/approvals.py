@@ -1,0 +1,139 @@
+"""사서 승인 — 회원의 **대여 신청**을 승인/반려한다.
+
+## 왜 승인이 필요한가
+대여는 책이 관외로 나간다. 되돌리려면 회원을 다시 불러야 하므로 사서가 한 번 본다.
+열람(자리로 받기)은 책이 관내에 남으니 승인 없이 바로 나간다 — 그래서 여기에는
+`kind='borrow'` 만 올라온다.
+
+## 주문은 승인 시점에 나간다
+회원이 신청한 순간에는 `cb_delivery_requests` 행만 생기고 FMS 는 **아무것도 모른다**.
+사서가 승인을 눌러야 `delivery.dispatch_to_fms()` 가 주문을 내고 task_id 가 채워진다.
+FMS 가 못 받으면 503 을 돌려주고 행은 **승인 대기 그대로** 둔다(fail-closed) — 승인만
+찍히고 로봇은 안 움직이는 상태가 제일 나쁘다.
+"""
+
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from ..database import get_db
+from ..models import AdminUser, Book, DeliveryRequest, Member
+from ..security import get_current_admin
+from .delivery import APPROVED, PENDING, REJECTED, dispatch_to_fms
+
+router = APIRouter(prefix="/api/admin/ops", tags=["ops-approvals"])
+
+
+class RejectRequest(BaseModel):
+    reason: str = ""
+
+
+def _row_out(row: DeliveryRequest, book: Book | None, member: Member | None) -> dict:
+    return {
+        "id": row.id,
+        "kind": row.kind,
+        "approval": row.approval,
+        "book_id": row.book_id,
+        "book_title": book.title_kr if book else "(삭제된 도서)",
+        "book_in_stock": bool(book.in_stock) if book else False,
+        "member_id": row.member_id,
+        "member_username": member.username if member else "(탈퇴 회원)",
+        "member_name": (member.full_name if member else None),
+        "pickup": row.pickup,
+        "dropoff": row.dropoff,
+        "fms_task_id": row.fms_task_id,
+        "reject_reason": row.reject_reason,
+        "decided_at": row.decided_at,
+        "decided_by": row.decided_by,
+        "created_at": row.created_at,
+    }
+
+
+def _load(db: Session, rows: list[DeliveryRequest]) -> list[dict]:
+    return [
+        _row_out(r, db.get(Book, r.book_id), db.get(Member, r.member_id)) for r in rows
+    ]
+
+
+@router.get("/approvals")
+def list_approvals(
+    limit: int = Query(default=50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    _: AdminUser = Depends(get_current_admin),
+):
+    """승인 대기 목록 + 최근 처리 내역. FMS 를 부르지 않는다(우리 DB 만 본다)."""
+    pending = db.scalars(
+        select(DeliveryRequest)
+        .where(DeliveryRequest.approval == PENDING)
+        .order_by(DeliveryRequest.created_at.asc())
+        .limit(limit)
+    ).all()
+    recent = db.scalars(
+        select(DeliveryRequest)
+        .where(DeliveryRequest.approval.in_((APPROVED, REJECTED)))
+        .where(DeliveryRequest.decided_at.is_not(None))
+        .order_by(DeliveryRequest.decided_at.desc())
+        .limit(limit)
+    ).all()
+    return {"pending": _load(db, list(pending)), "recent": _load(db, list(recent))}
+
+
+def _get_pending(db: Session, req_id: int) -> DeliveryRequest:
+    row = db.get(DeliveryRequest, req_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="요청을 찾을 수 없습니다")
+    if row.approval != PENDING:
+        raise HTTPException(
+            status_code=409, detail=f"이미 처리된 요청입니다 ({row.approval})"
+        )
+    return row
+
+
+@router.post("/approvals/{req_id}/approve")
+def approve(
+    req_id: int,
+    db: Session = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin),
+):
+    """승인 — 이때 FMS 주문이 생기고 로봇이 움직인다."""
+    row = _get_pending(db, req_id)
+    book = db.get(Book, row.book_id)
+    if book is None:
+        raise HTTPException(status_code=409, detail="도서가 삭제되어 승인할 수 없습니다")
+    if not book.in_stock:
+        # 신청 이후에 누가 빌려간 경우 — 로봇이 없는 책을 찾으러 가면 안 된다.
+        raise HTTPException(
+            status_code=409, detail="그 사이 대여된 도서입니다. 반려하고 예약을 안내하세요."
+        )
+
+    member = db.get(Member, row.member_id)
+    # FMS 가 못 받으면 여기서 503 이 올라가고 행은 PENDING 그대로 남는다(fail-closed).
+    row.fms_task_id = dispatch_to_fms(book, row.dropoff, member.username if member else "")
+    row.approval = APPROVED
+    row.decided_at = datetime.now()
+    row.decided_by = admin.username
+    row.reject_reason = None
+    db.commit()
+    db.refresh(row)
+    return _row_out(row, book, member)
+
+
+@router.post("/approvals/{req_id}/reject", status_code=status.HTTP_200_OK)
+def reject(
+    req_id: int,
+    body: RejectRequest,
+    db: Session = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin),
+):
+    """반려 — FMS 주문은 생기지 않고 회원 화면에 반려로 보인다."""
+    row = _get_pending(db, req_id)
+    row.approval = REJECTED
+    row.decided_at = datetime.now()
+    row.decided_by = admin.username
+    row.reject_reason = (body.reason or "").strip()[:255] or "사서가 반려했습니다"
+    db.commit()
+    db.refresh(row)
+    return _row_out(row, db.get(Book, row.book_id), db.get(Member, row.member_id))

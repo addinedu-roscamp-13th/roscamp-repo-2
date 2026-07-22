@@ -39,7 +39,9 @@ def test_follow_admin_reaches_the_follow_driver(seed, read, tick):
 
 def test_navigate_does_not_reach_the_follow_driver(seed, tick):
     """The three exec leaves must stay mutually exclusive."""
-    seed(**{Keys.CURRENT_MODE: "WORKING", Keys.ACTIVE_COMMAND: "navigate"})
+    seed(**{Keys.CURRENT_MODE: "WORKING", Keys.ACTIVE_COMMAND: "navigate",
+            Keys.NAV_TARGET: {"x": 1.0, "y": 2.0, "yaw": 0.0},
+            Keys.ROBOT_POSE: {"x": 0.0, "y": 0.0}})
     nav, arm, follow = FakeDriver(), FakeDriver(), FakeDriver()
     tick(working.create(PARAMS, nav, arm, follow, clock=lambda: 1.0))
     assert nav.started and not follow.started

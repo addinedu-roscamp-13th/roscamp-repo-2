@@ -108,7 +108,17 @@ controller_server:
 
     # Goal checker
     general_goal_checker:
-      stateful: True
+      # [2026-07-22] True -> False. stateful 은 XY 허용오차를 한 번 만족하면 그 사실을
+      #   **기억해** 이후로는 yaw 만 본다(제자리 회전 중 위치가 조금 흔들려도 목표를
+      #   놓치지 않게 하려는 장치). 그런데 우리는 노드마다 목표를 **선점(preempt)** 한다 —
+      #   fleet_node 는 도착 판정 반경 0.05m 에서 다음 노드를 허가하는데 nav2 는 0.03m
+      #   까지 가려 하므로, 매 홉의 마지막 몇 cm 구간에서 반드시 선점이 겹친다.
+      #   그 순간 직전 목표의 완료가 **새 목표의 완료로 보고**됐다:
+      #     "Begin navigating from (0.34,-1.01) to (0.38,-1.36)" → 40ms 뒤 "Reached the goal!"
+      #   로봇은 0.35m 떨어진 채로 주행이 끝나고, 아무도 다시 몰지 않아 그대로 섰다
+      #   (실측 2회, 두 번 다 직전 목표에서 0.036~0.037m 지점).
+      #   stateful 을 끄면 목표 판정이 매 주기 XY 부터 다시 확인한다.
+      stateful: False
       plugin: "nav2_controller::SimpleGoalChecker"
       # ⚠️ [2026-07-21] fleet_node 의 도착 판정(arrive_radius=0.05)보다 **작아야** 한다.
       #   둘이 같으면(0.05=0.05) 여유가 0 이라, nav2 가 5.0cm 지점에서 멈추면

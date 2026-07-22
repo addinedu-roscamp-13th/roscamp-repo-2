@@ -2,7 +2,6 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { AppShell } from "@/components/AppShell";
 import { fetchCatalog, type CatalogBook } from "@/lib/books-api";
 import { LANGS, useI18n } from "@/lib/i18n";
-import { getToken, memberApi, TABLES } from "@/lib/member";
 import { useSpeechRecognition } from "@/lib/use-speech";
 import { Mic, Search as SearchIcon, MapPin, X } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -17,6 +16,13 @@ export const Route = createFileRoute("/search")({
   component: SearchPage,
 });
 
+/**
+ * 도서 검색 — **찾기만 한다.**
+ *
+ * 예전에는 이 화면이 검색·로그인 유도·요청·자리 선택·예약을 다 했다. 목적이 흐려서
+ * 요청은 「도서 요청」 화면(`/request`)으로 전부 옮겼다. 여기 남는 것은
+ * "무슨 책이 어디 있고 지금 빌릴 수 있는가" 뿐이다.
+ */
 function SearchPage() {
   const { lang, tr } = useI18n();
   const { q } = Route.useSearch();
@@ -25,17 +31,14 @@ function SearchPage() {
   const speechLang = LANGS.find((l) => l.code === lang)?.speech ?? "ko-KR";
   const { listening, transcript, start, stop } =
     useSpeechRecognition(speechLang);
-  const [selected, setSelected] = useState<string | null>(null);
 
   useEffect(() => setQuery(q ?? ""), [q]);
   useEffect(() => {
     if (transcript) setQuery(transcript);
   }, [transcript]);
 
-  // 도서는 DB(cb_books)에서 온다 — 요청/예약이 실제 도서 id 와 서가 위치를 필요로 한다.
+  // 도서는 DB(cb_books)에서 온다 — 서가 위치와 재고를 그대로 보여준다.
   const [results, setResults] = useState<CatalogBook[]>([]);
-  const [notice, setNotice] = useState<string | null>(null);
-  const loggedIn = getToken() !== null;
 
   useEffect(() => {
     let cancelled = false;
@@ -46,27 +49,6 @@ function SearchPage() {
       cancelled = true;
     };
   }, [query]);
-
-  const request = async (
-    book: CatalogBook,
-    kind: "read" | "borrow",
-    table?: string,
-  ) => {
-    setNotice(null);
-    try {
-      const res =
-        kind === "read"
-          ? await memberApi.requestRead(book.bookId, table ?? TABLES[0].value)
-          : await memberApi.requestBorrow(book.bookId);
-      setNotice(
-        kind === "read"
-          ? `«${res.book_title}» 을(를) ${res.dropoff} 로 가져다 드릴게요`
-          : `«${res.book_title}» 을(를) 안내데스크로 가져다 놓을게요. 사서에게 받아가세요`,
-      );
-    } catch (err) {
-      setNotice(err instanceof Error ? err.message : "요청하지 못했습니다");
-    }
-  };
 
   return (
     <AppShell>
@@ -107,12 +89,6 @@ function SearchPage() {
           </p>
         )}
 
-        {notice ? (
-          <p className="mt-3 rounded-xl bg-primary-soft px-3 py-2 text-xs font-medium text-primary">
-            {notice}
-          </p>
-        ) : null}
-
         <div className="mt-5 space-y-3">
           {results.length === 0 && (
             <p className="py-8 text-center text-sm text-muted-foreground">
@@ -152,80 +128,26 @@ function SearchPage() {
                   </div>
                 </div>
               </div>
-              {/* 요청 — 대여 중인 책은 로봇이 가지러 갈 수 없으므로 예약으로 유도한다 */}
-              {b.inStock ? (
-                loggedIn ? (
-                  <div className="grid grid-cols-2 border-t border-border">
-                    <button
-                      onClick={() =>
-                        setSelected(selected === b.id ? null : b.id)
-                      }
-                      className="border-r border-border py-2.5 text-xs font-bold text-primary"
-                    >
-                      📖 자리로 받기
-                    </button>
-                    <button
-                      onClick={() => void request(b, "borrow")}
-                      className="py-2.5 text-xs font-bold text-primary"
-                    >
-                      🧾 대여 신청
-                    </button>
-                  </div>
-                ) : (
-                  <Link
-                    to="/login"
-                    className="block w-full border-t border-border bg-primary-soft py-2.5 text-center text-xs font-bold text-primary"
-                  >
-                    로그인하고 요청하기
-                  </Link>
-                )
-              ) : (
-                <button
-                  onClick={() =>
-                    void memberApi
-                      .reserve(b.bookId)
-                      .then(() =>
-                        setNotice("예약했습니다. 반납되면 알려드릴게요"),
-                      )
-                      .catch((e) =>
-                        setNotice(
-                          e instanceof Error
-                            ? e.message
-                            : "예약하지 못했습니다",
-                        ),
-                      )
-                  }
-                  disabled={!loggedIn}
-                  className="block w-full border-t border-border bg-muted py-2.5 text-xs font-bold text-muted-foreground disabled:opacity-60"
-                >
-                  {loggedIn ? "대출 중 — 예약하기" : "대출 중"}
-                </button>
-              )}
-              {selected === b.id && b.inStock && (
-                <div className="border-t border-border bg-muted/40 p-3">
-                  <p className="mb-2 text-[11px] font-semibold text-foreground">
-                    어느 자리로 가져다 드릴까요?
-                  </p>
-                  <div className="grid grid-cols-3 gap-1.5">
-                    {TABLES.map((t) => (
-                      <button
-                        key={t.value}
-                        onClick={() => void request(b, "read", t.value)}
-                        className="rounded-lg border border-border bg-card py-2 text-[10px] font-medium text-foreground"
-                      >
-                        {t.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
             </article>
           ))}
         </div>
 
+        {/* 요청은 이 화면의 일이 아니다 — 별도 화면으로 보낸다 */}
+        <Link
+          to="/request"
+          className="mt-6 block rounded-2xl border-2 border-dashed border-primary/40 bg-primary-soft/40 p-4 text-center"
+        >
+          <p className="text-sm font-semibold text-primary">
+            책을 받아보고 싶으세요? 도서 요청하기 →
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            자리로 받기 · 대여 신청 · 예약을 한 곳에서
+          </p>
+        </Link>
+
         <Link
           to="/chat"
-          className="mt-6 block rounded-2xl border-2 border-dashed border-primary/30 bg-primary-soft/40 p-4 text-center"
+          className="mt-3 block rounded-2xl border-2 border-dashed border-primary/30 bg-primary-soft/40 p-4 text-center"
         >
           <p className="text-sm font-semibold text-primary">
             못 찾으셨나요? LiBi에게 물어보세요

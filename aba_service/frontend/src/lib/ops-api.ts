@@ -90,10 +90,48 @@ export interface OrderRow {
   reason: string;
 }
 
+/**
+ * 작업 종류 정의 — **입력 폼도 여기서 나온다.**
+ *
+ * 예전에는 8종이 전부 같은 폼이었다. 종류마다 필요한 입력이 다르므로 백엔드
+ * (`routers/ops.py::TASK_KINDS`)가 필드 목록을 함께 내려주고 화면은 그대로 그린다.
+ * `.tsx` 에 종류 목록을 다시 적지 않는다 — 두 벌을 두면 반드시 어긋난다.
+ */
 export interface TaskKind {
   key: string;
   label: string;
   desc: string;
+  /** order = FMS 주문(task), state = 로봇 모드 변경(복귀·순찰) */
+  mode: "order" | "state";
+  /** mode=order 일 때 다리 구성: delivery(4다리) | navigate(1다리) */
+  order_kind?: "delivery" | "navigate";
+  /** mode=state 일 때 목표 상태 */
+  target_state?: string;
+  /** 화면이 그릴 입력칸: book | cargo | pickup | dropoff */
+  fields: string[];
+  /** 목적지를 자동으로 채우는 규칙 (진열 = 도서의 zone) */
+  auto_dropoff?: string;
+  hint?: string;
+}
+
+/** 회원 대여 신청 — 사서 승인 대기/처리 내역 한 줄. */
+export interface ApprovalRow {
+  id: number;
+  kind: string;
+  approval: "PENDING_APPROVAL" | "APPROVED" | "REJECTED";
+  book_id: number;
+  book_title: string;
+  book_in_stock: boolean;
+  member_id: number;
+  member_username: string;
+  member_name: string | null;
+  pickup: string;
+  dropoff: string;
+  fms_task_id: string;
+  reject_reason: string | null;
+  decided_at: string | null;
+  decided_by: string | null;
+  created_at: string;
 }
 
 export interface AdminBook {
@@ -133,18 +171,31 @@ export const ops = {
     opsApi<{ linked: boolean; orders: OrderRow[]; kinds: TaskKind[] }>(
       "/api/admin/ops/tasks",
     ),
+  /**
+   * 작업 지시. 종류에 따라 응답이 다르다 —
+   * `mode:"order"` 면 주문이 생기고, `mode:"state"` 면 로봇 모드만 바뀐다(주문 없음).
+   */
   createTask: (body: {
     kind: string;
-    book: string;
-    pickup: string;
-    dropoff: string;
+    book?: string;
+    cargo?: string;
+    pickup?: string;
+    dropoff?: string;
     robot?: string;
     priority?: number;
   }) =>
-    opsApi<{ task_id: string; assigned: string | null; warn?: string }>(
-      "/api/admin/ops/tasks",
-      { method: "POST", body: JSON.stringify(body) },
-    ),
+    opsApi<{
+      mode: "order" | "state";
+      task_id?: string;
+      assigned?: string | null;
+      dropoff?: string;
+      warn?: string;
+      robot?: string;
+      state?: string;
+      accepted?: boolean;
+      current_state?: string;
+      reason?: string;
+    }>("/api/admin/ops/tasks", { method: "POST", body: JSON.stringify(body) }),
   cancelTask: (id: string) =>
     opsApi<{ ok: boolean }>(`/api/admin/ops/tasks/${id}/cancel`, {
       method: "POST",
@@ -172,6 +223,21 @@ export const ops = {
       members: { id: number; username: string; full_name: string | null }[];
       zones: string[];
     }>(`/api/admin/ops/search?q=${encodeURIComponent(q)}`),
+  /** 대여 승인 — 대기 목록 + 최근 처리 내역. */
+  approvals: () =>
+    opsApi<{ pending: ApprovalRow[]; recent: ApprovalRow[] }>(
+      "/api/admin/ops/approvals",
+    ),
+  /** 승인 — **이때 처음으로 FMS 주문이 생긴다.** */
+  approve: (id: number) =>
+    opsApi<ApprovalRow>(`/api/admin/ops/approvals/${id}/approve`, {
+      method: "POST",
+    }),
+  reject: (id: number, reason: string) =>
+    opsApi<ApprovalRow>(`/api/admin/ops/approvals/${id}/reject`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    }),
   stats: () =>
     opsApi<{
       loans_by_category: { category: string; count: number }[];

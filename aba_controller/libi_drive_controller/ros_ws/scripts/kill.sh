@@ -78,11 +78,24 @@ PATTERNS=(
   "sllidar"
   # fleet_node <-> 로봇을 잇는 어댑터 두 개. tmux 창으로 뜨지만 세션이 죽어도 살아남는
   # 경우가 있어(오늘 실제로 남았다) 이름으로도 확실히 쓸어담는다.
-  #   path_request_driver : fleet_node 경로 -> nav2   (로봇 쪽)
+  #   path_request_driver : fleet_node 경로 -> nav2   (로봇 쪽, 지금은 BT 폴백)
   #   robot_state_adapter : 로봇 위치 -> fleet_node   (서버 쪽)
+  #   dock_confirm        : 주차장 도착 -> /is_docked (sim·실물 공통)
+  #   sim_battery         : 배터리 흉내 -> /battery/percent (sim 전용)
   "path_request_driver.py"
   "robot_state_adapter.py"
+  "dock_confirm.py"
+  "set_initial_pose.py"
+  "sim_battery.py"
 )
+
+# 도킹은 모터를 직접 물고 있다. 스크립트로 시작했으면 반드시 멈춰 둔다 —
+# 안 그러면 다음 시험에서 로봇이 혼자 돌고 있다.
+# 노트북에서는 :9001 이 FMS 백엔드라 404 가 오고 아무 일도 안 일어난다(무해).
+if command -v curl >/dev/null 2>&1; then
+  curl -s -m 3 -X POST "http://127.0.0.1:9001/api/park/stop" -d '{}' \
+    -H 'Content-Type: application/json' >/dev/null 2>&1 && echo "park/stop 요청함"
+fi
 for pattern in "${PATTERNS[@]}"; do
   kill_pattern "$pattern"
 done

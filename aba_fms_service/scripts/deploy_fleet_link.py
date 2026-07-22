@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """fleet_link(로봇 온보드 ROS2 명령/상태 링크) 배포 스크립트 (2026-07-08).
 
-backend/app/fleet_link_robot.py 를 각 핑키 로봇의
-robot_agent/app/core/fleet_link.py 로 올리고, server.py lifespan 에
-fleet_link.start() 를 멱등하게 배선한 뒤 pm2 robot_agent 를 재시작한다.
+저장소의 `aba_controller/.../robot_agent/app/core/fleet_link.py` 를 각 핑키 로봇의
+같은 경로로 올리고, server.py lifespan 에 fleet_link.start() 를 멱등하게 배선한 뒤
+pm2 robot_agent 를 재시작한다.
+
+⚠️ [2026-07-22] 원본이 `backend/app/fleet_link_robot.py` 였는데, 그건 로봇 소스의
+**복사본**이라 시간이 지나며 갈라졌다. 실제로 BT 주행 전환(`BT_LAYER_ACTIONS`) 이
+복사본에 반영되지 않아, 그대로 배포했으면 실물이 `navigate` 를 직접 실행해
+**같은 주행이 두 갈래로 나갔다**. 복사본을 지우고 로봇 소스를 직접 올린다.
 
 사용:
   python3 scripts/deploy_fleet_link.py 192.168.0.42   # 한 대
@@ -21,7 +26,9 @@ from pathlib import Path
 import paramiko
 
 REPO = Path(__file__).resolve().parent.parent
-SRC = REPO / "backend" / "app" / "fleet_link_robot.py"
+# 저장소 루트 = aba_fms_service 의 부모
+SRC = (REPO.parent / "aba_controller" / "libi_drive_controller" / "robot_agent"
+       / "app" / "core" / "fleet_link.py")
 
 ROBOT_IPS = ["192.168.0.28", "192.168.0.42", "192.168.0.2"]
 SSH_USER, SSH_PW = "pinky", "1"
@@ -35,7 +42,7 @@ ANCHOR = "    bridge.set_driver(driver)\n"
 WIRING = (
     "\n"
     "    # [2026-07-08] fleet link — 중앙서버와 ROS2 토픽 통신 (HTTP 폴링 대체).\n"
-    "    # 배포/원본: bot_ai_server/backend/app/fleet_link_robot.py (deploy_fleet_link.py)\n"
+    "    # 배포 원본: aba_controller/.../robot_agent/app/core/fleet_link.py (deploy_fleet_link.py)\n"
     "    if settings.robot_type is RobotType.driving:\n"
     "        from app.core import fleet_link\n"
     "        fleet_link.start()\n"

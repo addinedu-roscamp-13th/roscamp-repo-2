@@ -19,7 +19,8 @@ def test_transition_box_edges_are_complete():
     """전이 박스 18개 간선(그룹 전이 확장 후 20개)이 하나도 빠지거나 더해지지 않았는지."""
     pairs = {(e.source, e.target) for e in fsm_model.EDGES}
     expected = {
-        (fsm_model.START, "RETURNING"),
+        # [2026-07-22] RETURNING -> IDLE (부팅 상태 변경 — libi_modes/main.py BOOT_STATE 주석)
+        (fsm_model.START, "IDLE"),
         ("RETURNING", "CHARGING"),
         ("CHARGING", "IDLE"),
         ("IDLE", "PATROL"),
@@ -162,7 +163,7 @@ def test_unknown_state_is_rejected():
 def test_mermaid_source_contains_every_edge():
     src = fsm_model.to_mermaid()
     assert src.startswith("stateDiagram-v2")
-    assert "[*] --> RETURNING" in src
+    assert "[*] --> IDLE" in src
     for edge in fsm_model.EDGES:
         if edge.source == fsm_model.START:
             continue

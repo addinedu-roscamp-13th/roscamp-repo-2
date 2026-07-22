@@ -31,7 +31,10 @@ START = "[*]"
 ANY = "(any)"
 
 TRANSITIONS = [
-    ("[*]", "RETURNING", "boot"),
+    # [2026-07-22] RETURNING -> IDLE. 부팅 상태로 RETURNING 을 쓰면 켜자마자 AMCL 수렴
+    # 전에 주행을 시작하고, 충전소에 이미 있어도 왕복한다. 팔 자세 문제는 부팅 시
+    # 팔 홈 복귀를 한 번 보내는 것으로 따로 푼다 (main.py `_boot_arm_home`).
+    ("[*]", "IDLE", "boot"),
     ("RETURNING", "CHARGING", "docked"),
     ("CHARGING", "IDLE", "battery_charged [battery >= 40%]"),
     ("IDLE", "PATROL", "patrol_request (auto [battery >= 80% && is_docked] / manual)"),

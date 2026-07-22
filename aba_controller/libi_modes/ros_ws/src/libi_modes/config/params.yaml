@@ -7,6 +7,25 @@ libi_modes:
     ui_idle_timeout_sec: 20
   working:
     command_timeout_sec: 120
+    # NavigationExec 의 도착 판정 반경(m). **fleet_node 의 arrive_radius 와 같은 값을 쓴다.**
+    #   같은 뜻("도착했다")을 두 곳이 판단하는데 값이 다르면 반드시 어긋난다.
+    #   BT 가 더 관대하면(값이 크면) 관제는 아직 주행 중인데 BT 는 명령을 놓아 버리고,
+    #   BT 가 더 엄격하면 관제가 다음 노드를 줬는데 BT 는 이전 목적지를 붙들고 있다.
+    #   또 이 값은 **최소 레인(0.062m)보다 작아야** 옆 노드와 구분이 된다.
+    #   전체 부등식:
+    #     update_min_d(0.02) < xy_goal_tolerance(0.03) < arrive_tolerance_m = arrive_radius(0.05)
+    #                                                                       < 최소 레인(0.062)
+    arrive_tolerance_m: 0.05
+    # 도착하지 않은 채 이 시간이 지나면 같은 목적지로 goal 을 **다시** 낸다.
+    #   nav2 주행은 도착 없이 끝날 수 있다(ABORTED, 또는 선점 순간 직전 목표의 완료가
+    #   새 목표의 완료로 보고되는 경우). 그때 다시 몰아 줄 주체가 필요하다.
+    #   재전송은 **BT 가 해야 한다** — 도착 여부를 아는 건 BT 뿐이라, FMS 가 시간만 보고
+    #   보내면 정상 주행 중에도 끼어들어 불필요한 선점을 만든다.
+    #   실측 정상 홉은 2~17초다. 그보다 넉넉히 잡는다.
+    arrive_resend_sec: 10
+    # 목적지가 바뀐 뒤 이 시간 안에 도착 못 하면 그 주행을 실패로 본다.
+    #   없으면 "아직 가는 중"과 "영영 못 감"이 구별되지 않아 로봇이 조용히 선다.
+    arrive_timeout_sec: 60
   returning:
     dock_retry_max: 3
   security_patrol:

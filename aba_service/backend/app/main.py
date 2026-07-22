@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import get_settings
 from .routers import (
+    approvals,
     auth,
     books,
     circulation,
@@ -51,6 +52,7 @@ app.include_router(delivery.router)
 app.include_router(circulation.router)
 app.include_router(ops.router)
 app.include_router(ops_extra.router)
+app.include_router(approvals.router)
 
 
 @app.on_event("startup")

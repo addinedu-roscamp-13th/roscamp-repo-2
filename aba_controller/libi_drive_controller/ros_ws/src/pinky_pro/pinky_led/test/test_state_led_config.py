@@ -1,3 +1,15 @@
+"""색 매핑 YAML — 무엇을 강제로 지키는가.
+
+## 이 파일이 지키는 규칙 셋
+
+    ① 색   = 무엇을 하는 중인가   색상 4개 + 오류 빨강 (Okabe-Ito, 색각 이상 대비)
+    ② 깜빡 = 주의                 없음 → 1.5s → 0.5s. **깜빡이는 상태는 최대 2개**
+    ③ 휘도 = 활성도               약함 = 쉬는 중 / 밝음 = 사람이 관여 중
+
+②를 코드로 막아 두는 이유: 저배터리 경고·부팅 표시 같은 걸 넣을 때 깜빡임에 손대고
+싶어진다. 세 개가 깜빡이는 순간 "깜빡임 = 주의"라는 뜻이 흐려지는데, **그걸 아무도
+못 알아챈 채 배포된다.** 그래서 로더가 거절한다.
+"""
 from pathlib import Path
 
 import pytest
@@ -14,106 +26,168 @@ def _cfg():
     return load(CONFIG_PATH)
 
 
-def _minimal_doc():
-    """A valid-but-boring document, used to test the validator's rejections in isolation."""
-    states = {
-        name: {"color": [1, 2, 3], "pattern": "solid", "period_sec": 1.0, "level": 1.0}
-        for name in list(REQUIRED_STATES) + [NO_SIGNAL]
+def _doc(states=None, **root):
+    base = {
+        "brightness": 1.0, "num_pixels": 8, "gamma": 2.2, "state_timeout_sec": 5.0,
+        "states": states if states is not None else {
+            name: {"color": [1, 2, 3], "pattern": "solid",
+                   "period_sec": 0.0, "level": 1.0}
+            for name in list(REQUIRED_STATES) + [NO_SIGNAL]
+        },
     }
-    return {"led_state": {"brightness": 1.0, "num_pixels": 8,
-                          "state_timeout_sec": 3.0, "states": states}}
+    base.update(root)
+    return {"led_state": base}
 
 
-def _is_reddish(color):
-    red, green, blue = color
-    return red > 150 and green < 100 and blue < 100
-
+# ── 배포되는 설정 ────────────────────────────────────────────────────────────
 
 def test_shipped_config_covers_all_eight_states_plus_no_signal():
     cfg = _cfg()
-    assert len(REQUIRED_STATES) == 8
-    for state in REQUIRED_STATES:
-        assert state in cfg.styles
-    assert NO_SIGNAL in cfg.styles
+    for name in list(REQUIRED_STATES) + [NO_SIGNAL]:
+        assert name in cfg.styles, name
 
 
-def test_shipped_config_matches_the_instruction_draft_mapping():
+def test_at_most_two_states_blink():
+    """원칙 ②. 이게 깨지면 사람이 무엇이 급한지 알 수 없다."""
+    blinkers = [n for n in _cfg().blinking_states if n != NO_SIGNAL]
+    assert len(blinkers) <= 2, blinkers
+
+
+def test_the_blink_periods_are_three_times_apart():
+    """1.5s 와 0.5s. 1.0s 를 끼우면 곁눈으로 구분이 안 된다."""
     cfg = _cfg()
-    assert cfg.styles["CHARGING"].pattern == patterns.BREATHING
-    assert cfg.styles["IDLE"].pattern == patterns.SOLID
-    assert cfg.styles["PATROL"].pattern == patterns.FLOW
-    assert cfg.styles["SECURITY_PATROL"].pattern == patterns.BLINK
-    assert cfg.styles["INTERACTING"].pattern == patterns.SOLID
-    assert cfg.styles["WORKING"].pattern == patterns.FLOW
-    assert cfg.styles["RETURNING"].pattern == patterns.BLINK
-    assert cfg.styles["ERROR"].pattern == patterns.BLINK
-    # 초안 표의 '느린/빠른' 관계가 실제 주기에 반영되어 있는지
-    assert cfg.styles["PATROL"].period_sec > cfg.styles["WORKING"].period_sec
-    assert cfg.styles["SECURITY_PATROL"].period_sec > cfg.styles["ERROR"].period_sec
-    # IDLE 은 '약한 상시 점등', INTERACTING 은 '밝은 상시 점등'
-    assert cfg.styles["IDLE"].level < cfg.styles["INTERACTING"].level
+    periods = sorted({cfg.styles[n].period_sec for n in cfg.blinking_states})
+    assert periods == [0.5, 1.5], periods
 
 
-def test_red_is_reserved_for_error_only():
+def test_error_blinks_fastest():
+    """가장 급한 게 가장 빨라야 한다 — 반대면 사람이 반대로 읽는다.
+
+    NO_SIGNAL 은 일부러 ERROR 와 같은 그림이라 비교 대상이 아니다.
+    """
     cfg = _cfg()
-    assert _is_reddish(cfg.styles["ERROR"].color)
+    others = [cfg.styles[n].period_sec
+              for n in cfg.blinking_states if n not in ("ERROR", NO_SIGNAL)]
+    assert others, "비교할 다른 깜빡임이 하나는 있어야 이 시험이 의미가 있다"
+    assert all(cfg.styles["ERROR"].period_sec < p for p in others)
+
+
+def test_error_colour_is_not_reused_by_a_normal_state():
+    """빨강을 평상 상태에 쓰면 '빨강 = 문제'라는 학습이 무너진다.
+
+    "붉은 계열인가"로는 못 가른다 — 주홍(#D55E00, WORKING)과 빨강(#D50000, ERROR)은
+    RGB 로 보면 이웃이다. Okabe-Ito 팔레트가 둘을 구분되게 고른 것이므로,
+    지켜야 할 건 색조가 아니라 **ERROR 의 색을 다른 데 쓰지 않는 것**이다.
+    """
+    cfg = _cfg()
+    error_color = cfg.styles["ERROR"].color
     for name, style in cfg.styles.items():
-        if name != "ERROR":
-            assert not _is_reddish(style.color), (
-                f"{name} uses a red-ish colour reserved for ERROR")
+        if name in ("ERROR", NO_SIGNAL):
+            continue
+        assert style.color != error_color, f"{name} 가 ERROR 색을 쓴다: {style.color}"
 
 
-def test_every_state_is_distinguishable_without_colour():
-    """색각 이상 대비 — 색을 못 봐도 (패턴, 주기, 밝기) 조합만으로 서로 구별되어야 한다."""
+def test_solid_states_have_no_period():
+    """solid 에 주기가 남아 있으면 '언젠가 깜빡이게 할 값'으로 오해된다."""
+    for name, style in _cfg().styles.items():
+        if style.pattern == patterns.SOLID:
+            assert style.period_sec == 0.0, name
+
+
+def test_idle_is_the_dimmest():
+    """원칙 ③ — 쉬는 중이 가장 어둡다."""
     cfg = _cfg()
-    signatures = {name: style.signature() for name, style in cfg.styles.items()}
-    assert len(set(signatures.values())) == len(signatures), (
-        f"states share a motion signature: {signatures}")
+    idle = cfg.styles["IDLE"].level
+    assert all(idle <= s.level for n, s in cfg.styles.items() if n != "IDLE")
 
 
-def test_global_knobs_are_present_and_sane():
+def test_night_patrol_is_dimmer_than_day_patrol_with_the_same_colour():
+    """같은 일(순찰)이므로 색은 같고, 야간이라 어둡다 — 색이 아니라 휘도로 가른다."""
     cfg = _cfg()
-    assert 0.0 <= cfg.brightness <= 1.0
-    assert cfg.state_timeout_sec > 0
-    assert cfg.num_pixels > 0
+    day, night = cfg.styles["PATROL"], cfg.styles["SECURITY_PATROL"]
+    assert day.color == night.color
+    assert night.level < day.level
 
 
-def test_style_for_unknown_state_falls_back_to_no_signal():
+def test_no_signal_looks_like_trouble():
+    """관제가 로봇을 못 보는 상황은 사람이 가 봐야 하는 상황이다 — 고장과 다르지 않다."""
     cfg = _cfg()
-    assert cfg.style_for("NOT_A_STATE") is cfg.styles[NO_SIGNAL]
+    assert cfg.styles[NO_SIGNAL].signature() == cfg.styles["ERROR"].signature()
 
 
-def test_parse_rejects_missing_state():
-    doc = _minimal_doc()
-    del doc["led_state"]["states"]["ERROR"]
-    with pytest.raises(ConfigError, match="ERROR"):
-        parse(doc)
+# ── 로더가 거절해야 하는 것 ──────────────────────────────────────────────────
+
+def test_parse_rejects_a_third_blinking_state():
+    """②를 잊고 늘리는 걸 코드가 막는다."""
+    states = {
+        name: {"color": [1, 2, 3], "pattern": "solid", "period_sec": 0.0, "level": 1.0}
+        for name in list(REQUIRED_STATES) + [NO_SIGNAL]
+    }
+    for name in ("ERROR", "RETURNING", "CHARGING"):
+        states[name] = {"color": [1, 2, 3], "pattern": "blink",
+                        "period_sec": 0.5, "level": 1.0}
+    with pytest.raises(ConfigError, match="깜빡이는 상태"):
+        parse(_doc(states))
+
+
+def test_parse_rejects_blink_without_a_period():
+    states = {
+        name: {"color": [1, 2, 3], "pattern": "solid", "period_sec": 0.0, "level": 1.0}
+        for name in list(REQUIRED_STATES) + [NO_SIGNAL]
+    }
+    states["ERROR"] = {"color": [1, 2, 3], "pattern": "blink",
+                       "period_sec": 0.0, "level": 1.0}
+    with pytest.raises(ConfigError, match="period_sec"):
+        parse(_doc(states))
+
+
+def test_parse_rejects_solid_with_a_period():
+    states = {
+        name: {"color": [1, 2, 3], "pattern": "solid", "period_sec": 0.0, "level": 1.0}
+        for name in list(REQUIRED_STATES) + [NO_SIGNAL]
+    }
+    states["IDLE"]["period_sec"] = 2.0
+    with pytest.raises(ConfigError, match="period_sec"):
+        parse(_doc(states))
 
 
 def test_parse_rejects_unknown_pattern():
-    doc = _minimal_doc()
-    doc["led_state"]["states"]["IDLE"]["pattern"] = "strobe"
-    with pytest.raises(ConfigError, match="strobe"):
-        parse(doc)
+    states = {
+        name: {"color": [1, 2, 3], "pattern": "solid", "period_sec": 0.0, "level": 1.0}
+        for name in list(REQUIRED_STATES) + [NO_SIGNAL]
+    }
+    states["IDLE"]["pattern"] = "breathing"     # 없앤 패턴이다
+    with pytest.raises(ConfigError, match="pattern"):
+        parse(_doc(states))
 
 
-def test_parse_rejects_bad_colour_and_bad_period():
-    doc = _minimal_doc()
-    doc["led_state"]["states"]["IDLE"]["color"] = [1, 2]
-    with pytest.raises(ConfigError):
-        parse(doc)
+def test_parse_rejects_missing_state():
+    states = {
+        name: {"color": [1, 2, 3], "pattern": "solid", "period_sec": 0.0, "level": 1.0}
+        for name in list(REQUIRED_STATES) + [NO_SIGNAL]
+    }
+    del states["WORKING"]
+    with pytest.raises(ConfigError, match="WORKING"):
+        parse(_doc(states))
 
-    doc = _minimal_doc()
-    doc["led_state"]["states"]["IDLE"]["period_sec"] = 0
-    with pytest.raises(ConfigError):
-        parse(doc)
+
+def test_parse_rejects_bad_gamma():
+    with pytest.raises(ConfigError, match="gamma"):
+        parse(_doc(gamma=0.0))
+
+
+def test_gamma_defaults_when_absent():
+    """예전 설정 파일에는 gamma 키가 없다 — 그것 때문에 로봇이 안 뜨면 안 된다."""
+    doc = _doc()
+    del doc["led_state"]["gamma"]
+    assert parse(doc).gamma == 2.2
 
 
 def test_changing_only_the_yaml_changes_the_output():
-    """검수 기준: '파라미터 파일 수정만으로 색상·주기를 바꿀 수 있을 것' — 코드는 그대로."""
-    doc = _minimal_doc()
-    doc["led_state"]["states"]["IDLE"]["color"] = [10, 20, 30]
-    doc["led_state"]["states"]["IDLE"]["period_sec"] = 9.5
-    cfg = parse(doc)
-    assert cfg.styles["IDLE"].color == (10, 20, 30)
-    assert cfg.styles["IDLE"].period_sec == 9.5
+    """색을 바꾸는 데 코드 수정도 재빌드도 필요 없다는 계약."""
+    states = {
+        name: {"color": [1, 2, 3], "pattern": "solid", "period_sec": 0.0, "level": 1.0}
+        for name in list(REQUIRED_STATES) + [NO_SIGNAL]
+    }
+    states["PATROL"]["color"] = [9, 9, 9]
+    assert parse(_doc(states)).styles["PATROL"].color == (9, 9, 9)

@@ -50,14 +50,14 @@ def test_transition_table_matches_the_18_documented_edges():
     assert len(registry.TRANSITIONS) == 20, "18 written edges, with the 3-state battery_low group expanded to 3"
     targets = {(f, t) for f, t, _ in registry.TRANSITIONS}
     assert (registry.ANY, "ERROR") in targets
-    assert (registry.START, "RETURNING") in targets
+    assert (registry.START, "IDLE") in targets
     assert ("ERROR", "IDLE") in targets
 
 
 def test_start_and_any_are_distinct_pseudo_sources():
     """The two pseudo-sources must never collapse into one wildcard.
 
-    The transition box writes them differently — `[*] -> RETURNING` is the boot entry, while
+    The transition box writes them differently — `[*] -> IDLE` is the boot entry, while
     `(any) -> ERROR` genuinely applies from everywhere. A consumer that read one shared
     wildcard as "from every state" would expand boot into WORKING -> RETURNING and
     INTERACTING -> RETURNING: exactly the two edges the design omits so a task in flight and
@@ -72,7 +72,10 @@ def test_start_and_any_are_distinct_pseudo_sources():
     )
 
     boot = [(f, t, trig) for f, t, trig in registry.TRANSITIONS if f == registry.START]
-    assert boot == [(registry.START, "RETURNING", "boot")], "boot is the only start edge"
+    # [2026-07-22] RETURNING -> IDLE. 부팅 상태가 **조용히 바뀌면 안 되는 값**이라 여기
+    # 고정해 둔다 — 로봇이 켜지자마자 무엇을 하는지가 달라진다.
+    # 바꾼 근거는 main.py 의 BOOT_STATE 주석.
+    assert boot == [(registry.START, "IDLE", "boot")], "boot is the only start edge"
 
     group = [(f, t, trig) for f, t, trig in registry.TRANSITIONS if f == registry.ANY]
     assert group == [(registry.ANY, "ERROR", "fault")], "fault is the only any-state edge"

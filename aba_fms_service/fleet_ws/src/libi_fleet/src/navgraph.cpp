@@ -19,7 +19,13 @@ bool Navgraph::load(const std::string & path, const std::string & level)
   }
   vertices_.clear();
   for (const auto & v : lvl["vertices"]) {
-    vertices_.push_back(Vertex{v[0].as<double>(), v[1].as<double>()});
+    Vertex vx{v[0].as<double>(), v[1].as<double>(), 0.0, false};
+    // [2] 는 정점 메타 맵이다 ({name: '입구', yaw: 1.5708}). yaw 는 있을 수도 없을 수도 있다.
+    if (v.size() > 2 && v[2].IsMap() && v[2]["yaw"]) {
+      vx.yaw = v[2]["yaw"].as<double>();
+      vx.has_yaw = true;
+    }
+    vertices_.push_back(vx);
   }
   adj_.assign(vertices_.size(), {});
   for (const auto & ln : lvl["lanes"]) {

@@ -23,6 +23,8 @@ def create(params: dict, driver) -> py_trees.behaviour.Behaviour:
     returns and PatrolNavigation is terminated (motors stopped) before the transition.
     """
     low = params["battery"]["low"]
+    # 순회 주행도 배달과 같은 판정을 쓴다 — 같은 뜻을 두 값으로 두면 반드시 어긋난다.
+    work = params["working"]
     return py_trees.composites.Sequence(
         name="PatrolBranch",
         memory=False,
@@ -32,7 +34,8 @@ def create(params: dict, driver) -> py_trees.behaviour.Behaviour:
                 name="PatrolAndWatch",
                 policy=ParallelPolicy.SuccessOnOne(),
                 children=[
-                    PatrolNavigation(driver),
+                    PatrolNavigation(driver, work["arrive_tolerance_m"],
+                                     work["arrive_resend_sec"], work["arrive_timeout_sec"]),
                     exit_watchdog("PatrolExitConditions", [
                         FaultDetected(),
                         BatteryCheck("<=", low, "RETURNING"),

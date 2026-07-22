@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { AppShell } from "@/components/AppShell";
 import {
+  APPROVAL_LABEL,
   memberApi,
   setToken,
   type DeliveryRequestOut,
@@ -188,7 +189,7 @@ function MePage() {
 
           {tab === "requests" &&
             (requests.length === 0 ? (
-              <Empty text="요청 내역이 없습니다. 도서 검색에서 요청해 보세요" />
+              <Empty text="요청 내역이 없습니다. 「도서 요청」 화면에서 신청해 보세요" />
             ) : (
               requests.map((r) => (
                 <Card key={r.id}>
@@ -196,11 +197,26 @@ function MePage() {
                     cover={r.kind === "borrow" ? "🧾" : "📖"}
                     title={r.book_title}
                     sub={`${r.kind === "borrow" ? "대여(안내데스크)" : "열람"} · ${r.dropoff}`}
-                    badge={{
-                      text: r.status ?? "접수",
-                      tone: r.status === "COMPLETED" ? "ok" : "warn",
-                    }}
+                    // 승인 상태가 먼저다 — 승인 대기/반려는 로봇 진행 상황 자체가 없다.
+                    badge={
+                      r.approval === "PENDING_APPROVAL"
+                        ? {
+                            text: APPROVAL_LABEL.PENDING_APPROVAL,
+                            tone: "warn",
+                          }
+                        : r.approval === "REJECTED"
+                          ? { text: APPROVAL_LABEL.REJECTED, tone: "bad" }
+                          : {
+                              text: r.status ?? "접수",
+                              tone: r.status === "COMPLETED" ? "ok" : "warn",
+                            }
+                    }
                   />
+                  {r.reject_reason ? (
+                    <p className="mt-2 rounded-lg bg-destructive/10 px-2 py-1 text-[11px] text-destructive">
+                      반려 사유: {r.reject_reason}
+                    </p>
+                  ) : null}
                   {r.leg_count ? (
                     <div className="mt-2">
                       <div className="h-1.5 overflow-hidden rounded-full bg-muted">
@@ -269,12 +285,20 @@ function MePage() {
             ))}
         </div>
 
-        <Link
-          to="/search"
-          className="mt-6 block rounded-xl border border-dashed border-border p-3 text-center text-xs text-muted-foreground"
-        >
-          도서 검색으로 이동 →
-        </Link>
+        <div className="mt-6 grid grid-cols-2 gap-2">
+          <Link
+            to="/request"
+            className="block rounded-xl border border-dashed border-primary/40 p-3 text-center text-xs font-semibold text-primary"
+          >
+            도서 요청하기 →
+          </Link>
+          <Link
+            to="/search"
+            className="block rounded-xl border border-dashed border-border p-3 text-center text-xs text-muted-foreground"
+          >
+            도서 검색으로 이동 →
+          </Link>
+        </div>
       </div>
     </AppShell>
   );

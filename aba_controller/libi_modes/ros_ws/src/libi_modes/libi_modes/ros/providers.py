@@ -9,7 +9,8 @@
 |---|---|---|
 | `battery_percent` | `/battery/percent` (Float32) | 연결됨 — pinky_bringup 의 battery_publisher |
 | `last_command` / `active_command` | `/fleet_cmd` (String JSON) | 연결됨 — FMS 가 브릿지로 내려보냄 |
-| `is_docked` | `docked_topic` (Bool) | **발행자 없음** — 토픽이 안 오면 None(모름) 유지 |
+| `is_docked` | `docked_topic` (Bool) | 연결됨 — sim: `sim_dock_confirm.py`(주차장 반경) / 실물: 라인 추종 주차 |
+| `robot_pose` | `/amcl_pose` (PoseWithCovarianceStamped) | 연결됨 — nav2 AMCL. `NavigationExec` 의 도착 판정 |
 | `fault` | `fault_topic` (Bool) | **발행자 없음** — 기본 False |
 | `ui_last_touch_at` | `ui_touch_topic` (Float64) | **발행자 없음** — libi_gui 가 붙으면 채워진다 |
 
@@ -32,17 +33,33 @@ provider 값을 다시 써넣으므로, provider 가 계속 같은 값을 돌려
 """
 import json
 
+from geometry_msgs.msg import PoseWithCovarianceStamped
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool, Float32, Float64, String
+
+#: `/amcl_pose` 는 TRANSIENT_LOCAL 로 발행된다 — 기본 QoS(VOLATILE)로 구독하면
+#: 아무것도 못 받는다. 조용히 위치가 안 오면 NavigationExec 이 영영 도착 판정을
+#: 못 하므로, 여기서 QoS 를 틀리면 증상이 "로봇이 안 멈춘다" 로 나타난다.
+_LATCHED = QoSProfile(depth=1)
+_LATCHED.durability = DurabilityPolicy.TRANSIENT_LOCAL
+_LATCHED.reliability = ReliabilityPolicy.RELIABLE
 
 
 class RosProviders:
     def __init__(self, node, *, battery_topic="battery/percent", docked_topic="is_docked",
                  fault_topic="fault", cmd_topic="fleet_cmd", ui_touch_topic="ui_last_touch_at",
+                 pose_topic="/amcl_pose",
                  mission_actions=("goal", "goto", "home", "mission_start"),
+                 nav_actions=("navigate",),
                  arm_actions=("perform_action",)):
         self._node = node
         self._log = node.get_logger()
         self._mission_actions = set(mission_actions)
+        # BT 층 주행 명령. mission_actions 와 달리 **목적지를 함께 싣고 온다.**
+        #   mission_actions : 실행 층 액션(goal/goto/home/…)이 지나가는 걸 보고
+        #                     "주행 중이구나" 로만 표시한다 (인자는 안 본다)
+        #   nav_actions     : FMS 가 BT 에게 직접 주는 명령 — args 의 목적지를 저장한다
+        self._nav_actions = set(nav_actions)
         # 팔 명령은 이름을 그대로 active_command 로 쓴다 — ArmExec 의 handles 와 맞춰야 한다
         # (working_actions.ArmExec: handles={"perform_action"}).
         self._arm_actions = set(arm_actions)
@@ -52,6 +69,8 @@ class RosProviders:
         self._fault = False
         self._last_command = None
         self._active_command = None
+        self._nav_target = None
+        self._robot_pose = None
         self._command_received_at = 0.0
         self._ui_last_touch_at = 0.0
 
@@ -60,6 +79,7 @@ class RosProviders:
         node.create_subscription(Bool, fault_topic, self._on_fault, 10)
         node.create_subscription(String, cmd_topic, self._on_cmd, 10)
         node.create_subscription(Float64, ui_touch_topic, self._on_ui_touch, 10)
+        node.create_subscription(PoseWithCovarianceStamped, pose_topic, self._on_pose, _LATCHED)
 
     # ── 콜백 (캐시에 담기만 한다) ──────────────────────────────────────────────
 
@@ -91,7 +111,21 @@ class RosProviders:
         if not action:
             return
         self._command_received_at = self._now()
-        if action in self._mission_actions:
+        if action in self._nav_actions:
+            # FMS 가 준 BT 층 주행 명령 — 목적지를 함께 저장한다.
+            # NavigationExec 의 드라이버가 이 값을 읽어 실행 층(goal)으로 내려보낸다.
+            args = cmd.get("args") or {}
+            try:
+                self._nav_target = {
+                    "x": float(args["x"]),
+                    "y": float(args["y"]),
+                    "yaw": float(args.get("yaw", 0.0)),
+                }
+            except (KeyError, TypeError, ValueError):
+                self._log.warning(f"navigate 명령에 좌표가 없다: {args!r}")
+                return
+            self._active_command = "navigate"
+        elif action in self._mission_actions:
             self._active_command = "navigate"      # WorkingBranch 의 NavigationExec 이 받는다
         elif action in self._arm_actions:
             # 팔 명령도 **실행 커맨드**다 — WorkingBranch 의 ArmExec 이 받는다.
@@ -101,6 +135,10 @@ class RosProviders:
             self._active_command = action
         else:
             self._last_command = action
+
+    def _on_pose(self, msg):
+        p = msg.pose.pose.position
+        self._robot_pose = {"x": float(p.x), "y": float(p.y)}
 
     def _now(self):
         return self._node.get_clock().now().nanoseconds / 1e9
@@ -127,5 +165,7 @@ class RosProviders:
             "last_command": lambda: self._last_command,
             "ui_last_touch_at": lambda: self._ui_last_touch_at,
             "active_command": lambda: self._active_command,
+            "nav_target": lambda: self._nav_target,
+            "robot_pose": lambda: self._robot_pose,
             "command_received_at": lambda: self._command_received_at,
         }

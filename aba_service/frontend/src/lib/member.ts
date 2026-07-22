@@ -49,6 +49,15 @@ export interface WishlistItem {
   created_at: string;
 }
 
+/** 승인 상태 — 대여 신청만 `PENDING_APPROVAL` 로 시작한다(열람은 바로 `APPROVED`). */
+export type Approval = "PENDING_APPROVAL" | "APPROVED" | "REJECTED";
+
+export const APPROVAL_LABEL: Record<Approval, string> = {
+  PENDING_APPROVAL: "사서 승인 대기",
+  APPROVED: "승인됨",
+  REJECTED: "반려됨",
+};
+
 export interface DeliveryRequestOut {
   id: number;
   book_id: number;
@@ -58,6 +67,8 @@ export interface DeliveryRequestOut {
   dropoff: string;
   fms_task_id: string;
   created_at: string;
+  approval: Approval;
+  reject_reason: string | null;
   status: string | null;
   leg_idx: number | null;
   leg_count: number | null;
@@ -161,6 +172,27 @@ export const memberApi = {
       body: JSON.stringify({ book_id: bookId }),
     }),
   requests: () => call<DeliveryRequestOut[]>("/api/member/requests"),
+  /**
+   * 내 주문에서 일어난 **사건** (도착·완료 알림).
+   *
+   * `requests()` 가 주는 건 "지금 어떤 상태인가"라 도착한 순간을 알 수 없다 —
+   * 도착 직후와 10분 뒤가 똑같이 보인다. 알림은 사건이어야 한다.
+   * `since` 에 마지막으로 본 seq 를 주면 그 뒤 것만 온다.
+   */
+  notifications: (since = 0) =>
+    call<MemberNotification[]>(
+      `/api/member/request/notifications?since=${since}`,
+    ),
+};
+
+export type MemberNotification = {
+  seq: number;
+  ts: number;
+  /** leg_done = 한 구간 끝남(도착) · task_done = 배달 완료 · task_failed = 실패 */
+  kind: string;
+  text: string;
+  task_id: string;
+  book_title: string;
 };
 
 /** 열람 요청 시 고를 수 있는 자리 — 백엔드 화이트리스트와 같아야 한다. */

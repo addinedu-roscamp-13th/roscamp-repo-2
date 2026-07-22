@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
+import { ArrivalToast } from "./ArrivalToast";
 import { BottomNav } from "./BottomNav";
 import { LanguageSwitcher } from "./LanguageSwitcher";
 import { useI18n } from "@/lib/i18n";
@@ -19,6 +20,9 @@ export function AppShell({
   const { lang, tr } = useI18n();
   return (
     <div className="mx-auto flex min-h-screen max-w-md flex-col bg-background">
+      {/* 로봇 도착 알림 — 어느 화면에 있든 떠야 해서 여기 둔다.
+          책이 도착하는 순간 회원이 「요청 현황」 탭을 보고 있을 이유가 없다. */}
+      <ArrivalToast />
       <header className="sticky top-0 z-30 flex items-center justify-between gap-2 border-b border-border bg-paper px-4 py-3">
         <div className="flex min-w-0 flex-col">
           <span className="font-serif text-lg font-bold leading-none text-primary">

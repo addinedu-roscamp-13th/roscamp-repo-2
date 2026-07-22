@@ -22,7 +22,7 @@ async def lifespan(app: FastAPI):
     bridge.set_driver(driver)
 
     # [2026-07-08] fleet link — 중앙서버와 ROS2 토픽 통신 (HTTP 폴링 대체).
-    # 배포/원본: bot_ai_server/backend/app/fleet_link_robot.py (deploy_fleet_link.py)
+    # 배포 원본: aba_controller/.../robot_agent/app/core/fleet_link.py (deploy_fleet_link.py)
     if settings.robot_type is RobotType.driving:
         from app.core import fleet_link
         fleet_link.start()

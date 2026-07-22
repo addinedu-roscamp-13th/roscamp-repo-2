@@ -79,20 +79,30 @@ if [ "$WITH_LED" = true ]; then
     bash -c "$ROS_SETUP && echo '[led] 상태별 LED (fsm_state 토픽 구독, root 필요 — pinkyled 가 자동 sudo 재실행)...' && ros2 launch pinky_led state_led.launch.xml; exec bash"
 fi
 
-# 경로 드라이버 — fleet_node 가 정한 경로를 nav2 로 옮긴다. **없으면 로봇이 안 움직인다.**
-# 반대 방향(로봇 위치 → fleet_node)은 서버의 fms_service.sh 가 띄운다.
+# 주행 경로는 이제 **BT 를 지난다** — path_request_driver 창은 일부러 없다.
 #
-# ⚠️ --robot 은 fleet_node 가 PathRequest.robot_name 에 싣는 이름과 **정확히** 같아야 한다
-#    (= DB rc_robots.name). 다르면 명령을 전부 무시해 조용히 안 움직인다.
-PATH_DRIVER="$ROS_WS_DIR/../scripts/path_request_driver.py"
-if [ -f "$PATH_DRIVER" ]; then
-  FLEET_WS_SETUP="$ROS_WS_DIR/../../../aba_fms_service/fleet_ws/install/setup.bash"
-  DRIVER_SETUP="$ROS_SETUP"
-  [ -f "$FLEET_WS_SETUP" ] && DRIVER_SETUP="$DRIVER_SETUP && source '$FLEET_WS_SETUP'"
-  tmux new-window -t "$SESSION" -n path-driver \
-    bash -c "$DRIVER_SETUP && echo '[path-driver] fleet_node 경로 -> nav2 (robot=$FSM_ROBOT_ID)...' && python3 '$PATH_DRIVER' --robot '$FSM_ROBOT_ID'; exec bash"
-else
-  echo "[pi] ⚠️ path_request_driver.py 가 없습니다 — 배차해도 로봇이 안 움직입니다: $PATH_DRIVER"
+#   FMS  fleet_node → /robot_path_requests → fleet_dispatch_bridge
+#        → /fleet_cmd{navigate} → libi_modes  WorkingBranch ▸ NavigationExec
+#        → /fleet_cmd{goal} → robot_agent fleet_link → nav2
+#
+# 예전엔 path_request_driver.py 가 /robot_path_requests 를 받아 nav2 로 **직접** 몰았다.
+# 그래서 로봇 FSM 이 배달 중에도 IDLE/PATROL 로 남았고, 관제가 배달 중인 로봇을
+# "배차 가능"으로 표시했다. 둘을 같이 띄우면 같은 주행이 두 갈래로 나간다.
+# 되돌려야 하면 서버 .env 의 LIBI_NAV_VIA_BT=0 으로 두고 그 파일을 손으로 띄운다.
+
+# 주차장 도착을 위치로 확인해 /is_docked 를 낸다. **sim 과 같은 노드다.**
+#
+# 이게 없으면 RETURNING 이 영영 안 끝난다 — 부팅 상태가 RETURNING 이라 로봇이 첫
+# 상태에서 한 발짝도 못 나가고, 배차 대상(IDLE/PATROL)이 되지 못한다.
+#
+# ⚠️ 원래는 정밀 주차(테이프 추종) 폐루프가 이 신호를 낼 자리였는데, 그 경로가 아직
+#    복귀에 배선돼 있지 않다 (scripts/drive-pi/dock/README.md 의 미결 1~4).
+#    지금 복귀는 nav2 로 주차장 정점까지 가는 것이 전부라, 도착 판정도 위치로 한다.
+DOCK_CONFIRM="$ROS_WS_DIR/../scripts/dock_confirm.py"
+NAVGRAPH="$ROS_WS_DIR/../../../aba_fms_service/fleet_ws/maps/library/arte2.navgraph.yaml"
+if [ -f "$DOCK_CONFIRM" ]; then
+  tmux new-window -t "$SESSION" -n dock-confirm \
+    bash -c "$ROS_SETUP && echo '[dock-confirm] 주차장 도착 → /is_docked ...' && python3 '$DOCK_CONFIRM' --navgraph '$NAVGRAPH'; exec bash"
 fi
 
 tmux select-window -t "$SESSION:hw"

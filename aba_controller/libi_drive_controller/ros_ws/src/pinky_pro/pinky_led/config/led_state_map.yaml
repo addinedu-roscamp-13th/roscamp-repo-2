@@ -1,25 +1,47 @@
 # 상태 -> LED 색상·패턴 매핑.
-# 이 파일만 고치면 색·주기·밝기가 바뀐다 (코드 수정 불필요).
+# 이 파일만 고치면 색·주기·밝기가 바뀐다 (코드 수정 불필요, 재빌드 불필요).
 #
-#   pattern    : solid | breathing | blink | flow
-#   period_sec : 한 사이클 길이(초). '느린/빠른'은 전부 이 값으로 표현한다.
-#                solid 에서는 쓰이지 않지만 값은 있어야 한다.
-#   level      : 그 상태의 상대 밝기(0.0-1.0). 전역 brightness 와 곱해진다.
+#   pattern    : solid | blink        ← 이 둘뿐이다. 애니메이션은 없앴다.
+#   period_sec : blink 한 사이클(초). solid 는 반드시 0.
+#   level      : 그 상태의 상대 휘도(0.0-1.0). 전역 brightness 와 곱해진 뒤 감마가 걸린다.
 #
-# 빨강(red-dominant)은 ERROR 전용이다. 다른 상태에 쓰면 테스트가 실패한다.
-# 색각 이상 대비: 어떤 두 상태도 (pattern, period_sec, level) 조합이 겹치면 안 된다.
+# ─────────────────────────────────────────────────────────────────────────────
+# 설계 원칙 — 색을 바꾸기 전에 반드시 읽을 것
+#
+#   ① 색   = 무엇을 하는 중인가.   색상 4개 + 오류 빨강.
+#            Okabe-Ito 팔레트라 색각 이상(적록·청황)에서도 서로 구분된다.
+#   ② 깜빡 = 주의.                 없음 → 1.5s → 0.5s 순으로 급해진다.
+#   ③ 휘도 = 활성도.               약함 = 쉬는 중 / 밝음 = 사람이 관여 중.
+#
+# 금지 사항
+#   - 깜빡이는 상태를 3개 이상 만들지 말 것. 저배터리·부팅 표시를 넣고 싶어질 때
+#     깜빡임에 손대고 싶어지는데, 그 순간 원칙 ②가 무너진다. 색이나 휘도로 풀 것.
+#     (설정 로더가 3개째부터 거절한다 — 잊고 늘리는 걸 막으려고 검사로 박아 뒀다.)
+#   - blink 주기를 1.0s 로 두지 말 것. 1.5s 와 0.5s 의 3배 차이가 구분의 핵심이다.
+#   - breathing / flow 같은 애니메이션 금지. 렌더 루프를 되살리게 되고(CPU),
+#     "빠른 흐름"과 "느린 깜빡임"이 헷갈린다.
+#   - 전환 crossfade 금지. 즉시 반영한다.
+#
+# 저배터리(15% 미만)를 여기에 넣지 않는 이유는 README 와 설계 문서를 볼 것 —
+# 요약하면 **배터리는 이미 상태로 드러난다**(15% 이하면 FSM 이 RETURNING 으로 보낸다).
+# ─────────────────────────────────────────────────────────────────────────────
 led_state:
-  brightness: 1.0          # 전역 밝기. 야간 순찰 시 낮춘다 (예: 0.3)
+  brightness: 1.0          # 전역 밝기. 야간에 낮춘다 (예: 0.3)
   num_pixels: 8            # pinkyled.LED 기본 픽셀 수
-  state_timeout_sec: 3.0   # 이 시간 넘게 상태 토픽이 없으면 NO_SIGNAL 패턴
+  gamma: 2.2               # 감마 보정. 없으면 IDLE(15%)이 거의 안 보인다
+  state_timeout_sec: 5.0   # 이 시간 넘게 상태 토픽이 없으면 두절 표시
 
   states:
-    CHARGING:        { color: [  0, 200,  60], pattern: breathing, period_sec: 4.0,  level: 0.9  }  # 초록 · 느린 호흡
-    IDLE:            { color: [255, 255, 255], pattern: solid,     period_sec: 1.0,  level: 0.25 }  # 흰색 · 약한 상시 점등
-    PATROL:          { color: [  0,  90, 255], pattern: flow,      period_sec: 3.0,  level: 0.8  }  # 파랑 · 느린 흐름
-    SECURITY_PATROL: { color: [150,   0, 220], pattern: blink,     period_sec: 2.0,  level: 0.7  }  # 보라 · 느린 깜빡임
-    INTERACTING:     { color: [  0, 210, 210], pattern: solid,     period_sec: 1.0,  level: 1.0  }  # 청록 · 밝은 상시 점등
-    WORKING:         { color: [255, 130,   0], pattern: flow,      period_sec: 0.8,  level: 0.9  }  # 주황 · 빠른 흐름
-    RETURNING:       { color: [255, 210,   0], pattern: blink,     period_sec: 1.0,  level: 0.85 }  # 노랑 · 깜빡임
-    ERROR:           { color: [255,   0,   0], pattern: blink,     period_sec: 0.25, level: 1.0  }  # 빨강 · 빠른 깜빡임
-    NO_SIGNAL:       { color: [255, 255, 255], pattern: blink,     period_sec: 0.2,  level: 0.6  }  # 상태 미수신 · 흰색 빠른 깜빡임
+    CHARGING:        { color: [230, 159,   0], pattern: solid, period_sec: 0.0, level: 1.00 }  # #E69F00 앰버
+    RETURNING:       { color: [230, 159,   0], pattern: blink, period_sec: 1.5, level: 1.00 }  # #E69F00 앰버 · 복귀 중
+    IDLE:            { color: [255, 255, 255], pattern: solid, period_sec: 0.0, level: 0.15 }  # #FFFFFF 흰색 · 쉬는 중
+    PATROL:          { color: [  0, 114, 178], pattern: solid, period_sec: 0.0, level: 1.00 }  # #0072B2 청색
+    SECURITY_PATROL: { color: [  0, 114, 178], pattern: solid, period_sec: 0.0, level: 0.35 }  # #0072B2 청색 · 야간
+    INTERACTING:     { color: [213,  94,   0], pattern: solid, period_sec: 0.0, level: 1.00 }  # #D55E00 주홍
+    WORKING:         { color: [213,  94,   0], pattern: solid, period_sec: 0.0, level: 1.00 }  # #D55E00 주홍
+    ERROR:           { color: [213,   0,   0], pattern: blink, period_sec: 0.5, level: 1.00 }  # #D50000 빨강 · 고장
+
+    # 진짜 상태가 아니라 **상태 토픽이 끊겼다**는 표시.
+    # ERROR 와 같은 그림을 쓴다 — 관제가 로봇을 못 보는 상황은 사람이 가 봐야 하는
+    # 상황이고, 그 점에서 고장과 다르지 않다. 별도 색·주기를 주면 깜빡이는 상태가 3개가 된다.
+    NO_SIGNAL:       { color: [213,   0,   0], pattern: blink, period_sec: 0.5, level: 1.00 }

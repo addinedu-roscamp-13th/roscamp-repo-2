@@ -3,14 +3,17 @@
 코어(fleet_orchestrator.Orchestrator)는 순수 로직이라 "다리를 어떻게 실제로 내보내는가"를
 모른다. 여기서 그 `dispatch_leg` 을 채운다.
 
-## dispatch 배선 상태 (중요)
-- 주행(NAVIGATE): fleet_link.submit_task(dropoff=waypoint) → fleet_node 가 교통까지 처리.
-- 팔(PERFORM_ACTION): Drive Controller 로 fleet_cmd(perform_action) → Drive 가 Handy 로 넘김.
+## dispatch 배선 상태
 
-지금은 **실제 로봇 dispatch 가 미배선**이라(라이브 fleet_node/fleet_cmd 검증 필요), 기본
-dispatch 는 "로그 + 스텁 cmd_id" 다. 그래서 **로봇 없이도 패널에서 주문·배차·force-advance
-로 시퀀스를 검증**할 수 있다(디버그 목적과 정확히 맞음). 실제 배선은 아래 _real_dispatch
-자리에 넣고 완료 신호(fleet task_state / fleet_cmd_result)를 orchestrator.on_result 로 연결.
+실배선은 `app.fleet_dispatch_bridge` 가 소유한다 (`real_dispatch`). 기동 시
+`LIBI_REAL_DISPATCH=1` 이면 그쪽이 `set_dispatch()` 로 갈아끼운다.
+
+- 주행(NAVIGATE): fleet_link.submit_task(dropoff=waypoint) → fleet_node 가 교통까지 처리.
+  fleet_node 가 허가한 노드는 `/fleet_cmd{navigate}` 로 로봇 BT 에 내려간다.
+- 팔(PERFORM_ACTION): `/fleet_cmd{perform_action}` → 로봇 BT 의 ArmExec.
+
+여기 남은 `_stub_dispatch` 는 **로봇 없이 패널에서 주문·배차·force-advance 로 시퀀스를
+확인**하는 용도의 기본값이다. 실배선을 안 켜면 이게 쓰인다.
 """
 from __future__ import annotations
 
@@ -31,17 +34,6 @@ def _stub_dispatch(task_id: str, robot: str, leg) -> str:
     return cmd_id
 
 
-def _real_dispatch(task_id: str, robot: str, leg) -> str:
-    """[TODO] 실제 로봇 dispatch. 배선 시 이걸 set_dispatch 로 넣는다.
-
-    NAVIGATE → app.fleet_link.submit_task(dropoff=str(leg.params['waypoint']), robot=robot);
-               반환 task_id, 완료는 fleet task_states(COMPLETED) 를 on_result 로.
-    PERFORM_ACTION → fleet_cmd(perform_action, leg.params) 발행; 완료는 fleet_cmd_result.
-    ⚠️ 라이브 fleet_node/로봇 필요 — 검증 후 활성화.
-    """
-    raise NotImplementedError("실제 dispatch 미배선 — _stub_dispatch 사용 중")
-
-
 _orc = Orchestrator(_stub_dispatch)
 
 
@@ -57,6 +49,11 @@ def set_dispatch(dispatch_leg) -> None:
 def set_lifecycle(task_lifecycle) -> None:
     """task 시작/끝 신호 훅을 꽂는다 — 로봇 미션 FSM 을 WORKING 으로 넣고 뺀다."""
     _orc._task_lifecycle = task_lifecycle  # noqa: SLF001
+
+
+def set_on_event(on_event) -> None:
+    """사람에게 보일 사건 훅을 꽂는다 — "책이 도착했다" 알림의 출발점."""
+    _orc._on_event = on_event  # noqa: SLF001
 
 
 def set_release(release_robot) -> None:

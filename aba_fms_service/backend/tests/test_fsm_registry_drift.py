@@ -92,7 +92,10 @@ def test_pseudo_state_markers_stay_distinct():
 
     start_edges = [tuple(t) for t in transitions if t[0] == fsm_model._REGISTRY_START]
     any_edges = [tuple(t) for t in transitions if t[0] == fsm_model._REGISTRY_ANY]
-    assert start_edges == [(fsm_model._REGISTRY_START, "RETURNING", "boot")], start_edges
+    # [2026-07-22] RETURNING -> IDLE. 부팅 상태를 여기 고정해 두는 이유는 그게 **조용히
+    # 바뀌면 안 되는 값**이기 때문이다 — 로봇이 켜지자마자 무엇을 하는지가 달라진다.
+    # 바꾼 근거는 libi_modes/main.py 의 BOOT_STATE 주석.
+    assert start_edges == [(fsm_model._REGISTRY_START, "IDLE", "boot")], start_edges
     assert any_edges == [(fsm_model._REGISTRY_ANY, "ERROR", "fault")], any_edges
 
     pseudo = {fsm_model._REGISTRY_START, fsm_model._REGISTRY_ANY}

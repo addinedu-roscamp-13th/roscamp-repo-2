@@ -43,7 +43,10 @@ class FakeArmDriver:
 PARAMS = {
     "battery": {"ready": 40, "charged": 80, "low": 15},
     "interacting": {"ui_idle_timeout_sec": 20},
-    "working": {"command_timeout_sec": 120},
+    # 도착 판정 값은 config/params.yaml 과 같은 뜻이지만, 시험에서는 계산이 눈에
+    # 보이도록 딱 떨어지는 값을 쓴다 (0.1m / 10초 / 60초).
+    "working": {"command_timeout_sec": 120, "arrive_tolerance_m": 0.1,
+                "arrive_resend_sec": 10, "arrive_timeout_sec": 60},
     "returning": {"dock_retry_max": 3},
 }
 

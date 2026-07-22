@@ -108,6 +108,7 @@ function OpsPage() {
 
           <div className="flex flex-wrap gap-2">
             <Quick to="/admin/tasks" label="작업 지시 →" />
+            <Quick to="/admin/approvals" label="대여 승인 →" />
             <Quick to="/admin/robots" label="실시간 모니터링 →" />
             <Quick to="/admin/members" label="회원 · 대여/반납 →" />
             <Quick to="/admin/books" label="도서 관리 →" />

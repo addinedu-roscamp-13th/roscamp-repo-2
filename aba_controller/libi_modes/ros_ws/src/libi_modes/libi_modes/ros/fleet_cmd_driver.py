@@ -1,6 +1,6 @@
 """액션 leaf 의 start/poll/stop 을 `/fleet_cmd` 왕복으로 구현한다.
 
-로봇에는 이미 `fleet_link_robot.py` 가 떠 있다 — `/fleet_cmd`(JSON) 을 구독해 실행하고
+로봇에는 이미 `robot_agent` 의 `fleet_link` 가 떠 있다 — `/fleet_cmd`(JSON) 을 구독해 실행하고
 `/fleet_cmd_result` 로 결과를 돌려준다. 요청/응답을 `id` 로 대조하는 비동기 구조라
 `DriverAction` 이 요구하는 모양과 그대로 맞는다. 새 프로토콜을 만들 이유가 없다.
 
@@ -17,7 +17,7 @@ import json
 class FleetCmdDriver:
     """`/fleet_cmd` 한 종류의 액션을 담당하는 드라이버.
 
-    action: fleet_link_robot 의 `_dispatch` 가 아는 액션 이름 ("goto", "home", ...)
+    action: robot_agent fleet_link 의 `_dispatch` 가 아는 액션 이름 ("goal", "home", ...)
     args_fn: 호출 시점에 인자 dict 를 만드는 콜러블 (목적지가 매번 다르므로)
     """
 

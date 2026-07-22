@@ -107,17 +107,24 @@ def _authed(path: str, method: str, body: dict | None) -> tuple[bool, str]:
 
 def submit_order(
     *,
-    book: str,
-    pickup: str,
+    book: str = "",
+    pickup: str = "",
     dropoff: str,
     requester: str = "",
     priority: int = 0,
+    kind: str = "delivery",
 ) -> tuple[bool, str]:
-    """배달 주문 접수. 성공하면 `(True, task_id)`, 실패하면 `(False, 사유)`."""
+    """주문 접수. 성공하면 `(True, task_id)`, 실패하면 `(False, 사유)`.
+
+    `kind` 가 다리 구성을 정한다 — `delivery`(주행→집기→주행→놓기 4다리) 또는
+    `navigate`(주행 1다리). 주행만 하는 지시(정리·파견)를 배달로 내보내면 로봇이 있지도
+    않은 책을 집으러 간다.
+    """
     ok, text = _authed(
         "/api/fleet/order",
         "POST",
         {
+            "kind": kind,
             "book": book,
             "pickup": pickup,
             "dropoff": dropoff,
@@ -133,6 +140,36 @@ def submit_order(
         return False, "FMS 주문 응답 형식 오류"
 
 
+def request_transition(
+    robot: str, target_state: str, force: bool = False
+) -> tuple[bool, dict]:
+    """로봇 모드(미션 FSM 상태) 변경 요청. `(호출성공, 응답)`.
+
+    ## 왜 `/api/fleet/mode` 가 아닌가
+    FMS 에는 모드를 건드리는 경로가 둘이다.
+      - `POST /api/fleet/mode` → `fleet_link.set_robot_mode`. **FMS 가 들고 있는 관측값만**
+        바꾼다(fleet_node 의 `robot_mode_` 맵). 자기 docstring 에 "sim·디버그 전용,
+        여기서 바꾸면 로봇의 실제 FSM 과 어긋난다"고 적혀 있다. 로봇은 아무 것도 모른다.
+      - `POST /api/fsm/transition` → `fsm_link.request_transition`. `/libi/fsm_transition_request`
+        로 **로봇에게 실제로 요청**하고, 로봇의 `state_io` 가 전이표로 판정해 수락/거부한다.
+    사서가 「복귀」를 눌렀을 때 로봇이 진짜 복귀해야 하므로 후자를 쓴다.
+
+    `ok=False` 는 FMS 를 못 불렀다는 뜻이고, 로봇이 거부한 것은 `ok=True` + `accepted=False`
+    로 온다(전이표에 없는 간선 등). 둘은 사서에게 다르게 보여야 한다.
+    """
+    ok, text = _authed(
+        "/api/fsm/transition",
+        "POST",
+        {"robot_id": robot, "target_state": target_state, "force": force},
+    )
+    if not ok:
+        return False, {"reason": text}
+    try:
+        return True, json.loads(text)
+    except ValueError:
+        return False, {"reason": "FMS 전이 응답 형식 오류"}
+
+
 def list_orders() -> tuple[bool, list[dict]]:
     """FMS 주문 스냅샷. 실패하면 `(False, [])` — 화면은 진행상황 없이도 떠야 한다."""
     ok, text = _authed("/api/fleet/orders", "GET", None)
@@ -142,6 +179,25 @@ def list_orders() -> tuple[bool, list[dict]]:
         return True, json.loads(text).get("orders", [])
     except ValueError:
         return False, []
+
+
+def list_events(since: int = 0, limit: int = 50) -> tuple[bool, list[dict], int]:
+    """FMS 주문 **사건** (도착·완료 알림). `(성공?, 사건들, 마지막 seq)`.
+
+    주문 **상태**(`list_orders`)와 다른 것을 가져온다. 상태로는 "방금 도착했다"를
+    표현할 수 없다 — 도착한 순간과 10분 뒤가 똑같이 보인다. 알림은 사건이어야 한다.
+
+    `since` 에 마지막으로 본 seq 를 주면 그 뒤 것만 온다. 실패해도 화면은 떠야 하므로
+    `(False, [], since)` 로 조용히 물러난다 — 알림이 없다고 도서 목록까지 막을 이유는 없다.
+    """
+    ok, text = _authed(f"/api/fleet/events?since={int(since)}&limit={int(limit)}", "GET", None)
+    if not ok:
+        return False, [], since
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return False, [], since
+    return True, data.get("events", []), int(data.get("latest", since))
 
 
 def cancel_order(task_id: str) -> tuple[bool, str]:

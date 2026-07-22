@@ -23,17 +23,103 @@ from ..security import get_current_admin
 
 router = APIRouter(prefix="/api/admin/ops", tags=["ops"])
 
-#: 작업 지시 종류 — 로봇이 수행할 수 있는 일. 라벨은 화면이 그대로 쓴다.
+#: 분류(sort) 주문의 대상 — 개별 도서가 아니라 반납함에 쌓인 것을 한 번에 옮긴다.
+SORT_CARGO = "반납 도서 일괄"
+
+#: 작업 지시 종류 — 로봇이 수행할 수 있는 일. **화면의 입력 폼도 이 표에서 나온다.**
+#:
+#: 예전에는 8종이 전부 같은 폼이었고 `kind` 는 라벨일 뿐이라, 「복귀」를 골라도 책을
+#: 집으러 가고 「순찰」을 골라도 목적지 한 곳으로 갔다. 종류마다 성격이 다르므로
+#: **필요한 입력**과 **보내는 방식**을 함께 적는다.
+#:
+#: `mode` 가 둘이다:
+#:   - `order` : FMS 주문(task)을 만든다. `order_kind` 가 다리 구성을 정한다
+#:               (`delivery`=주행→집기→주행→놓기 4다리, `navigate`=주행 1다리).
+#:   - `state` : 주문이 아니라 **로봇 모드 변경**이다. 모드가 바뀌면 해당 BT 브랜치가
+#:               알아서 돈다 — 있지도 않은 책을 집으러 가지 않는다.
+#:
+#: `fields` 는 화면이 그릴 입력칸이다:
+#:   book(도서 목록에서 선택) · cargo(짐 이름 자유 입력) · pickup(출발지) · dropoff(목적지)
 TASK_KINDS = [
-    {"key": "transfer", "label": "이송", "desc": "서가 → 지정 위치로 도서 운반"},
-    {"key": "shelve", "label": "진열", "desc": "수거된 도서를 서가에 꽂기"},
-    {"key": "sort", "label": "분류", "desc": "반납 도서를 분류대에서 정리"},
-    {"key": "tidy", "label": "정리", "desc": "서가 정돈 점검"},
-    {"key": "porter", "label": "짐꾼", "desc": "짐을 실어 지정 위치로"},
-    {"key": "dispatch", "label": "파견", "desc": "지정 위치로 이동 대기"},
-    {"key": "return", "label": "복귀", "desc": "충전 스테이션으로 복귀"},
-    {"key": "patrol", "label": "순찰", "desc": "지정 경로 순회"},
+    {
+        "key": "transfer",
+        "label": "이송",
+        "desc": "서가 → 지정 위치로 도서 운반",
+        "mode": "order",
+        "order_kind": "delivery",
+        "fields": ["book", "pickup", "dropoff"],
+        "hint": "책을 고르면 출발지가 그 책의 서가로 자동 설정됩니다.",
+    },
+    {
+        "key": "shelve",
+        "label": "진열",
+        "desc": "수거된 도서를 서가에 꽂기",
+        "mode": "order",
+        "order_kind": "delivery",
+        "fields": ["book", "pickup"],
+        # 목적지는 사서가 고르지 않는다 — 책이 정한다(도서의 zone).
+        "auto_dropoff": "book_zone",
+        "hint": "목적지는 그 도서의 서가로 자동 지정됩니다.",
+    },
+    {
+        "key": "sort",
+        "label": "분류",
+        "desc": "반납 도서를 분류대에서 정리",
+        "mode": "order",
+        "order_kind": "delivery",
+        "fields": ["pickup", "dropoff"],
+        # 개별 도서가 아니라 반납함에 쌓인 것을 한 번에 옮긴다.
+        "fixed_book": SORT_CARGO,
+        "hint": "대상은 «반납 도서 일괄» 로 고정입니다. 반납함 → 분류대.",
+    },
+    {
+        "key": "tidy",
+        "label": "정리",
+        "desc": "서가 정돈 점검",
+        "mode": "order",
+        "order_kind": "navigate",
+        "fields": ["dropoff"],
+        "hint": "점검할 서가로 다녀옵니다. 집고 놓는 동작이 없어 주행 1다리입니다.",
+    },
+    {
+        "key": "porter",
+        "label": "짐꾼",
+        "desc": "짐을 실어 지정 위치로",
+        "mode": "order",
+        "order_kind": "delivery",
+        "fields": ["cargo", "pickup", "dropoff"],
+        "hint": "도서 목록에 없는 물건입니다. 짐 이름을 직접 적어주세요.",
+    },
+    {
+        "key": "dispatch",
+        "label": "파견",
+        "desc": "지정 위치로 이동 대기",
+        "mode": "order",
+        "order_kind": "navigate",
+        "fields": ["dropoff"],
+        "hint": "지정 위치까지 가서 대기합니다. 주행 1다리입니다.",
+    },
+    {
+        "key": "return",
+        "label": "복귀",
+        "desc": "충전 스테이션으로 복귀",
+        "mode": "state",
+        "target_state": "RETURNING",
+        "fields": [],
+        "hint": "작업이 아니라 모드 변경입니다. 로봇을 지정해 주세요 — 복귀·도킹은 로봇이 합니다.",
+    },
+    {
+        "key": "patrol",
+        "label": "순찰",
+        "desc": "지정 경로 순회",
+        "mode": "state",
+        "target_state": "PATROL",
+        "fields": [],
+        "hint": "작업이 아니라 모드 변경입니다. 순찰 경로는 로봇의 PatrolBranch 가 정합니다.",
+    },
 ]
+
+KIND_BY_KEY = {k["key"]: k for k in TASK_KINDS}
 
 
 # ── 대시보드 ────────────────────────────────────────────────────────────────
@@ -138,24 +224,107 @@ def tasks(_: AdminUser = Depends(get_current_admin)):
 
 
 class OrderRequest(BaseModel):
+    """작업 지시. **종류마다 필요한 칸이 다르다** — 검증은 `TASK_KINDS` 표가 한다.
+
+    필요 없는 칸은 안 보내도 되고(기본값 빈 문자열), 자동으로 채우는 칸(진열의 목적지)은
+    보내도 무시된다.
+    """
+
     kind: str = "transfer"
-    book: str
-    pickup: str
-    dropoff: str
-    #: 빈 값이면 자동(경매/휴리스틱) 배차.
+    book: str = ""
+    #: 도서 목록에 없는 물건(짐꾼). `book` 과 같은 자리에 들어가지만 서가 자동채움이 없다.
+    cargo: str = ""
+    pickup: str = ""
+    dropoff: str = ""
+    #: 빈 값이면 자동(경매/휴리스틱) 배차. 모드 변경(복귀·순찰)에서는 **필수**다.
     robot: str = ""
     priority: int = 0
 
 
+def _resolve_order(spec: dict, body: OrderRequest, db: Session) -> tuple[str, str, str]:
+    """종류 정의에 따라 (대상, 출발지, 목적지)를 확정한다.
+
+    "필요 없는 필드는 안 받고, 없는 필드는 채워 넣는다" — 진열의 목적지는 도서의 서가에서
+    나오고, 분류의 대상은 «반납 도서 일괄» 로 고정이다.
+    """
+    fields = spec["fields"]
+
+    # 대상 — 도서 / 짐 / 고정 문구 중 하나.
+    if "book" in fields:
+        target = body.book.strip()
+        if not target:
+            raise HTTPException(status_code=400, detail="도서를 선택해 주세요")
+    elif "cargo" in fields:
+        target = body.cargo.strip() or body.book.strip()
+        if not target:
+            raise HTTPException(status_code=400, detail="짐 이름을 입력해 주세요")
+    else:
+        target = spec.get("fixed_book", "")
+
+    pickup = body.pickup.strip() if "pickup" in fields else ""
+    if "pickup" in fields and not pickup:
+        raise HTTPException(status_code=400, detail="출발지를 선택해 주세요")
+
+    if spec.get("auto_dropoff") == "book_zone":
+        # 목적지는 책이 정한다 — 제목이 카탈로그에 있어야 서가를 알 수 있다.
+        hit = db.scalars(select(Book).where(Book.title_kr == target).limit(1)).first()
+        if hit is None or not hit.zone:
+            raise HTTPException(
+                status_code=400,
+                detail=f"«{target}» 의 서가를 찾을 수 없어 진열 목적지를 정할 수 없습니다",
+            )
+        dropoff = hit.zone
+    else:
+        dropoff = body.dropoff.strip()
+        if not dropoff:
+            raise HTTPException(status_code=400, detail="목적지를 선택해 주세요")
+
+    return target, pickup, dropoff
+
+
 @router.post("/tasks", status_code=status.HTTP_201_CREATED)
 def create_task(
-    body: OrderRequest, _: AdminUser = Depends(get_current_admin)
+    body: OrderRequest,
+    db: Session = Depends(get_db),
+    _: AdminUser = Depends(get_current_admin),
 ):
-    """작업 지시 — 로봇 지정(특정) 또는 미지정(랜덤/자동) 둘 다 지원한다."""
+    """작업 지시 — 종류에 따라 **주문**이거나 **로봇 모드 변경**이다.
+
+    로봇 지정(특정)/미지정(자동 배차) 둘 다 지원한다. 단 「복귀」·「순찰」은 대상 로봇이
+    있어야 하므로 지정이 필수다.
+    """
+    spec = KIND_BY_KEY.get(body.kind)
+    if spec is None:
+        raise HTTPException(status_code=400, detail=f"알 수 없는 작업 종류: {body.kind}")
+
+    # ── 모드 변경(복귀·순찰) — task 가 아니다 ──────────────────────────────
+    if spec["mode"] == "state":
+        if not body.robot:
+            raise HTTPException(
+                status_code=400, detail=f"「{spec['label']}」 는 로봇을 지정해야 합니다"
+            )
+        ok, res = fms_client.request_transition(body.robot, spec["target_state"])
+        if not ok:
+            # FMS 를 못 불렀다. 로봇이 "그 전이는 안 된다"고 한 경우는 아래로 내려간다.
+            raise HTTPException(
+                status_code=503, detail=f"모드 변경 실패 — {res.get('reason', '')}"
+            )
+        return {
+            "mode": "state",
+            "robot": body.robot,
+            "state": spec["target_state"],
+            "accepted": bool(res.get("accepted")),
+            "current_state": res.get("current_state", ""),
+            "reason": res.get("reason", ""),
+        }
+
+    # ── 주문(task) ────────────────────────────────────────────────────────
+    target, pickup, dropoff = _resolve_order(spec, body, db)
     ok, value = fms_client.submit_order(
-        book=body.book,
-        pickup=body.pickup,
-        dropoff=body.dropoff,
+        kind=spec["order_kind"],
+        book=target,
+        pickup=pickup,
+        dropoff=dropoff,
         requester=f"사서:{body.kind}",
         priority=body.priority,
     )
@@ -167,8 +336,18 @@ def create_task(
         ok2, res = fms_client.assign_order(value, body.robot)
         assigned = body.robot if ok2 else None
         if not ok2:
-            return {"task_id": value, "assigned": None, "warn": f"배차 실패: {res[:120]}"}
-    return {"task_id": value, "assigned": assigned}
+            return {
+                "mode": "order",
+                "task_id": value,
+                "assigned": None,
+                "warn": f"배차 실패: {res[:120]}",
+            }
+    return {
+        "mode": "order",
+        "task_id": value,
+        "assigned": assigned,
+        "dropoff": dropoff,
+    }
 
 
 @router.post("/tasks/{task_id}/cancel")

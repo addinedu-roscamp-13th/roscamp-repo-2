@@ -235,6 +235,13 @@ private:
       pts[i].yaw = (std::hypot(dx, dy) > 1e-6) ? std::atan2(dy, dx) : 0.0;
     }
     if (pts.size() >= 2) { pts.back().yaw = pts[pts.size() - 2].yaw; }
+    // 마지막 점이 **정점 자신의 자세**를 가지고 있으면 그걸 쓴다 — 서가를 정면으로
+    // 보고 서야 팔이 책을 집을 수 있고, 주차장은 도킹 방향으로 서야 한다.
+    // 경유지에는 적용하지 않는다(노드마다 제자리 회전을 하게 된다).
+    if (!verts.empty()) {
+      const Vertex & last = graph_.vertex(verts.back());
+      if (last.has_yaw) { pts.back().yaw = last.yaw; }
+    }
 
     req.path = pts;
     path_pub_->publish(req);

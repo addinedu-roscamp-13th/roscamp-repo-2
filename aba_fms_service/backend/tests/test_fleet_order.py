@@ -91,3 +91,55 @@ def test_double_assign_409(client):
     client.post(f"/api/fleet/order/{tid}/assign", json={"robot": "pinky3"})
     r = client.post(f"/api/fleet/order/{tid}/assign", json={"robot": "pinky1"})
     assert r.status_code == 409
+
+
+# ── 주문 종류별 다리 구성 (R14) ──────────────────────────────────────────────
+# 「정리」·「파견」은 집고 놓을 물건이 없다. 배달 4다리로 내보내면 있지도 않은 책을
+# 집으러 간다 — 여기서 다리 개수를 못박는다.
+
+
+def test_navigate_order_has_one_leg(client, dispatch):
+    r = client.post("/api/fleet/order",
+                    json={"kind": "navigate", "dropoff": "문학-1"})
+    assert r.status_code == 200, r.text
+    tid = r.json()["task_id"]
+
+    task = client.get("/api/fleet/orders").json()["orders"][0]
+    assert task["task_type"] == "navigate"
+    assert task["leg_count"] == 1
+
+    client.post(f"/api/fleet/order/{tid}/assign", json={"robot": "pinky3"})
+    assert [c[2] for c in dispatch.calls] == ["navigate"]
+
+    # 한 다리를 마치면 곧바로 완료 — 집기/놓기를 기다리지 않는다.
+    client.post(f"/api/fleet/order/{tid}/advance")
+    assert client.get("/api/fleet/orders").json()["orders"][0]["status"] == "COMPLETED"
+
+
+def test_navigate_order_needs_no_book_or_pickup(client):
+    assert client.post("/api/fleet/order",
+                       json={"kind": "navigate", "dropoff": "주차장"}).status_code == 200
+
+
+def test_delivery_is_still_the_default_kind(client):
+    tid = _order(client)["task_id"]
+    task = client.get("/api/fleet/orders").json()["orders"][0]
+    assert task["id"] == tid
+    assert task["task_type"] == "delivery"
+    assert task["leg_count"] == 4
+
+
+def test_delivery_without_book_is_still_422(client):
+    r = client.post("/api/fleet/order", json={"pickup": "7", "dropoff": "3"})
+    assert r.status_code == 422
+
+
+def test_order_without_dropoff_is_rejected(client):
+    r = client.post("/api/fleet/order", json={"kind": "navigate", "dropoff": ""})
+    assert r.status_code == 422
+
+
+def test_unknown_kind_is_rejected(client):
+    r = client.post("/api/fleet/order",
+                    json={"kind": "patrol", "dropoff": "복도-1"})
+    assert r.status_code == 422

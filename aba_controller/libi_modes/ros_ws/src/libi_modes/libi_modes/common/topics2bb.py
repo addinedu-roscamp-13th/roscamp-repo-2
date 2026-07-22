@@ -11,6 +11,8 @@ _KEY_BY_PROVIDER = {
     "ui_last_touch_at": Keys.UI_LAST_TOUCH_AT,
     "active_command": Keys.ACTIVE_COMMAND,
     "command_received_at": Keys.COMMAND_RECEIVED_AT,
+    "nav_target": Keys.NAV_TARGET,
+    "robot_pose": Keys.ROBOT_POSE,
 }
 
 

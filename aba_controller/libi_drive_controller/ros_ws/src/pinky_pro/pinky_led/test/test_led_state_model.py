@@ -1,3 +1,11 @@
+"""상태 메시지 → 보여줄 스타일. 시계 없이 판정한다.
+
+## 왜 시계가 없나
+
+예전 모델은 `frame(now)` 였고 경과 시간으로 애니메이션을 그렸다. 그러려면 노드가
+계속 물어봐야 하고, 그게 20 Hz 렌더 루프였다. 지금은 상태가 **바뀔 때만** 그리므로
+모델이 시간을 알 이유가 없다.
+"""
 from pathlib import Path
 
 from pinky_led.led_state_model import LedStateModel
@@ -10,60 +18,81 @@ def _model():
     return LedStateModel(load(CONFIG_PATH))
 
 
-def test_before_any_message_it_shows_the_no_signal_pattern():
-    """부팅 직후 아직 상태를 못 받았을 때도 뭔가는 보여야 한다."""
-    style, _ = _model().resolve(now=0.0)
-    assert style.state == NO_SIGNAL
+def test_before_any_message_it_shows_the_no_signal_style():
+    """부팅 직후 스트립이 검은 채로 남으면 '꺼진 로봇'과 구별되지 않는다."""
+    assert _model().current_style().state == NO_SIGNAL
 
 
-def test_state_message_selects_that_states_style():
-    model = _model()
-    model.on_state("WORKING", now=100.0)
-    style, elapsed = model.resolve(now=100.5)
-    assert style.state == "WORKING"
-    assert elapsed == 0.5
+def test_a_received_state_is_shown():
+    m = _model()
+    assert m.on_state("PATROL") is True
+    assert m.current_style().state == "PATROL"
 
 
-def test_transition_restarts_the_pattern_clock_immediately():
-    """검수 기준: '상태 전이 시 지연 없이 즉시 반영' — 이전 패턴의 위상을 물려받으면 안 된다."""
-    model = _model()
-    model.on_state("PATROL", now=10.0)
-    model.on_state("ERROR", now=13.0)
-    style, elapsed = model.resolve(now=13.0)
-    assert style.state == "ERROR"
-    assert elapsed == 0.0
+def test_republishing_the_same_state_reports_no_change():
+    """FSM 이 같은 상태를 20 Hz 로 재발행해도 다시 그리지 않게 하는 신호다.
+
+    이걸 True 로 돌려주면 노드가 매번 스트립을 다시 쓰고, 깜빡임 위상까지 초기화돼
+    LED 가 켜진 채로 굳는다.
+    """
+    m = _model()
+    m.on_state("PATROL")
+    assert m.on_state("PATROL") is False
 
 
-def test_repeated_same_state_does_not_restart_the_clock():
-    """같은 상태가 20Hz 로 계속 들어와도 패턴이 매번 처음으로 되감기면 안 된다."""
-    model = _model()
-    model.on_state("PATROL", now=10.0)
-    model.on_state("PATROL", now=11.0)
-    _, elapsed = model.resolve(now=12.0)
-    assert elapsed == 2.0
+def test_a_real_change_reports_change():
+    m = _model()
+    m.on_state("PATROL")
+    assert m.on_state("WORKING") is True
 
 
-def test_stale_feed_falls_back_to_no_signal_and_recovers():
-    model = _model()
-    timeout = model.config.state_timeout_sec
-    model.on_state("IDLE", now=0.0)
-    assert model.resolve(now=timeout - 0.01)[0].state == "IDLE"
-    assert model.resolve(now=timeout + 0.01)[0].state == NO_SIGNAL
-    model.on_state("IDLE", now=100.0)
-    assert model.resolve(now=100.0)[0].state == "IDLE"
+def test_unknown_state_falls_back_instead_of_crashing():
+    """모르는 문자열에 죽으면 LED 가 아니라 로봇이 멈춘다."""
+    m = _model()
+    m.on_state("맛있는_감자")
+    assert m.current_style().state == NO_SIGNAL
 
 
-def test_unknown_state_name_falls_back_to_no_signal():
-    """오타나 미지의 상태를 받아도 조용히 꺼지지 말고 NO_SIGNAL 로 알린다."""
-    model = _model()
-    model.on_state("BANANA", now=5.0)
-    assert model.resolve(now=5.0)[0].state == NO_SIGNAL
+def test_going_stale_switches_the_display():
+    m = _model()
+    m.on_state("PATROL")
+    assert m.mark_stale() is True
+    assert m.current_style().state == NO_SIGNAL
 
 
-def test_frame_returns_one_rgb_tuple_per_pixel():
-    model = _model()
-    model.on_state("ERROR", now=0.0)
-    frame = model.frame(now=0.0)
-    assert len(frame) == model.config.num_pixels
-    assert all(len(pixel) == 3 for pixel in frame)
-    assert frame[0] == model.config.styles["ERROR"].color   # blink starts ON at full level
+def test_staying_stale_reports_no_further_change():
+    """이미 두절 표시 중인데 또 그리면 타이머만 헛돈다."""
+    m = _model()
+    m.on_state("PATROL")
+    m.mark_stale()
+    assert m.mark_stale() is False
+
+
+def test_a_message_after_a_gap_recovers():
+    m = _model()
+    m.on_state("PATROL")
+    m.mark_stale()
+    assert m.on_state("PATROL") is True, "두절에서 돌아온 것도 변화다"
+    assert m.current_style().state == "PATROL"
+
+
+# ── 프레임 ───────────────────────────────────────────────────────────────────
+
+def test_frame_on_and_off_differ_for_a_blinking_state():
+    m = _model()
+    m.on_state("ERROR")
+    style = m.current_style()
+    assert m.frame(style, on=True) != m.frame(style, on=False)
+
+
+def test_frame_off_is_fully_dark():
+    m = _model()
+    m.on_state("ERROR")
+    frame = m.frame(m.current_style(), on=False)
+    assert set(frame) == {(0, 0, 0)}
+
+
+def test_frame_covers_every_pixel():
+    m = _model()
+    m.on_state("PATROL")
+    assert len(m.frame(m.current_style())) == m.config.num_pixels

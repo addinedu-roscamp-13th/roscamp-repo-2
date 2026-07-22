@@ -34,6 +34,12 @@ from typing import Any
 # 어긋나서 조용히 끊긴다(2026-07-20 실제로 겪음: DB 172.30.1.83 vs 코드
 # 192.168.0.2). key/prefix(어느 domain_bridge_pinky{N}.yaml/도메인인지)는
 # 물리적 로봇 슬롯에 고정된 정적 설정이라 이름으로만 매핑하고, IP는 DB가 진실.
+#: 브릿지 키 -> {key, prefix, name, ip}.
+#
+# ⚠️ 예전엔 **IP 로 키를 잡았다.** 그런데 sim 로봇은 전부 127.0.0.1 이라, 두 번째
+#    로봇을 등록하는 순간 첫 번째가 조용히 덮여 사라졌다 — 그 로봇에는 명령이
+#    영영 안 갔다("명령 링크 없음", 실측 R12 2대 시험). 로봇 이름은 유일하므로
+#    이름에서 유도한 브릿지 키를 쓴다.
 FLEET_ROBOTS: dict[str, dict[str, Any]] = {}
 
 def bridge_key(name: str) -> str:
@@ -77,9 +83,17 @@ def _load_fleet_robots() -> dict[str, dict[str, Any]]:
                     if not key:
                         print(f"[fleet_telemetry] 이름이 비어 있는 로봇을 건너뜀 (ip={ip})", flush=True)
                         continue
-                    # name 도 함께 둔다 — 명령 링크는 IP 로 갈리는데 orchestrator 는
-                    # 이름(rc_robots.name)만 알아서, 되짚을 길이 필요하다(ip_of).
-                    result[ip] = {"key": key, "prefix": f"/{key}", "name": name}
+                    result[key] = {"key": key, "prefix": f"/{key}", "name": name, "ip": ip}
+                # IP 를 나눠 쓰는 로봇이 있으면 알려 준다. 명령은 브릿지 키로 가므로
+                # 문제없지만, HTTP 폴백(_cache)은 IP 로 갈려 있어 서로를 덮어쓴다.
+                by_ip: dict[str, list[str]] = {}
+                for cfg in result.values():
+                    by_ip.setdefault(str(cfg["ip"]), []).append(cfg["name"])
+                for ip, names in by_ip.items():
+                    if len(names) > 1:
+                        print(f"[fleet_telemetry] ⚠️ IP {ip} 를 {names} 가 공유합니다 — "
+                              f"ROS 명령·상태는 정상이지만 HTTP 폴백 캐시는 구분하지 못합니다",
+                              flush=True)
         finally:
             conn.close()
     except Exception as e:
@@ -96,7 +110,12 @@ _started = False
 
 # 명령 링크 상태 — publisher 는 텔레메트리 스레드가 만들고 FastAPI 스레드가 쓴다.
 # 동일 publisher 동시 publish 는 rcl 수준 보장이 없으므로 _pub_lock 으로 직렬화.
-_cmd_pubs: dict[str, Any] = {}          # ip -> rclpy Publisher
+#: 브릿지 키 -> rclpy Publisher (`/<key>/fleet_cmd`).
+#
+# ⚠️ 예전엔 IP 로 갈렸다. sim 로봇은 전부 127.0.0.1 이라 **두 로봇이 발행자 하나를
+#    공유**했고, 나중에 만들어진 쪽 토픽으로만 명령이 나갔다 — 다른 로봇은 명령을
+#    받지 못했다(실측 R12 2대 시험).
+_cmd_pubs: dict[str, Any] = {}
 _StringMsg: Any = None                  # std_msgs.msg.String (텔레메트리 스레드가 설정)
 _pub_lock = threading.Lock()
 _pending: dict[str, dict[str, Any]] = {}  # cmd_id -> {"event", "result"}
@@ -147,16 +166,17 @@ def telemetry_info() -> dict[str, Any]:
     now = time.time()
     out = {}
     with _lock:
-        for ip, e in _cache.items():
-            pub = _cmd_pubs.get(ip)
+        for key, cfg in FLEET_ROBOTS.items():
+            e = _cache.get(cfg["ip"]) or _empty_entry()
+            pub = _cmd_pubs.get(key)
             subs = None
             if pub is not None:
                 try:
                     subs = pub.get_subscription_count()
                 except Exception:
                     subs = None
-            out[FLEET_ROBOTS[ip]["key"]] = {
-                "ip": ip,
+            out[key] = {
+                "ip": FLEET_ROBOTS[key]["ip"],
                 "ros_age_sec": round(now - e["_last_ros_at"], 1) if e["_last_ros_at"] else None,
                 "status_age_sec": round(now - e["_last_status_at"], 1) if e["_last_status_at"] else None,
                 "has_pose": e["pose"] is not None,
@@ -187,23 +207,33 @@ def _fire_cmd_result_hooks(res: dict) -> None:
             print(f"[fleet_telemetry] cmd_result 훅 실패: {exc}", flush=True)
 
 
-def ip_of(robot_name: str) -> str | None:
-    """로봇 이름(rc_robots.name) → IP. 명령 링크가 IP 로 갈려 있어 필요하다.
+def _norm_name(v: str) -> str:
+    return v.replace("-", "").replace("_", "").replace(" ", "").casefold()
+
+
+def key_of(robot_name: str) -> str | None:
+    """로봇 이름(rc_robots.name) → 브릿지 키. 명령 링크가 이 키로 갈린다.
 
     표기 차이(`Pinky-3` vs `pinky3`)를 흡수한다 — FSM 캐시에서 겪은 것과 같은 함정이다.
     """
     if not robot_name:
         return None
-
-    def norm(v: str) -> str:
-        return v.replace("-", "").replace("_", "").replace(" ", "").casefold()
-
-    want = norm(robot_name)
-    for ip, cfg in FLEET_ROBOTS.items():
+    want = _norm_name(robot_name)
+    for key, cfg in FLEET_ROBOTS.items():
         # name 은 DB 원본, key 는 브릿지 키(`Pinky-3` → `pinky3`). 둘 다 본다.
-        if norm(str(cfg.get("name", ""))) == want or norm(str(cfg.get("key", ""))) == want:
-            return ip
+        if _norm_name(str(cfg.get("name", ""))) == want or _norm_name(key) == want:
+            return key
     return None
+
+
+def ip_of(robot_name: str) -> str | None:
+    """로봇 이름 → IP. HTTP 폴백 경로가 아직 IP 를 쓴다.
+
+    ⚠️ IP 는 **유일하지 않다** (sim 로봇은 전부 127.0.0.1). 명령을 보낼 때는 쓰지 말고
+    `key_of()` 를 쓴다.
+    """
+    key = key_of(robot_name)
+    return str(FLEET_ROBOTS[key]["ip"]) if key else None
 
 
 def send_command_async(robot_name: str, action: str, args: dict | None = None) -> str | None:
@@ -213,10 +243,10 @@ def send_command_async(robot_name: str, action: str, args: dict | None = None) -
     수 초간 잡아 다른 주문까지 멈춘다. 반환한 id 가 그대로 orchestrator 의 cmd_id 가 되고,
     `/fleet_cmd_result` 가 같은 id 로 돌아오면 훅이 다리를 완료 처리한다.
     """
-    ip = ip_of(robot_name)
-    if ip is None:
+    key = key_of(robot_name)
+    if key is None:
         return None
-    pub = _cmd_pubs.get(ip)
+    pub = _cmd_pubs.get(key)
     if pub is None or _StringMsg is None:
         return None
     try:
@@ -246,7 +276,13 @@ def send_command(
 
     반환 dict 스키마(로봇 fleet_link 발행): {"id","ok","status","data","msg"}
     """
-    pub = _cmd_pubs.get(ip_address)
+    # 이 함수는 아직 IP 로 불린다(HTTP 라우터 호환). 명령 링크는 키로 갈리므로 되짚는다.
+    # IP 를 나눠 쓰는 로봇이 있으면 **누구에게 보낼지 정할 수 없다** — 조용히 엉뚱한
+    # 로봇을 움직이느니 보내지 않는다. 이름을 아는 호출부는 send_command_async 를 쓴다.
+    keys = [k for k, c in FLEET_ROBOTS.items() if str(c.get("ip")) == str(ip_address)]
+    if len(keys) != 1:
+        return None
+    pub = _cmd_pubs.get(keys[0])
     if pub is None or _StringMsg is None:
         return None
     try:
@@ -293,8 +329,8 @@ def _telemetry_thread() -> None:
     global _StringMsg, FLEET_ROBOTS
     try:
         FLEET_ROBOTS = _load_fleet_robots()
-        for ip in FLEET_ROBOTS:
-            _cache.setdefault(ip, _empty_entry())
+        for cfg in FLEET_ROBOTS.values():
+            _cache.setdefault(cfg["ip"], _empty_entry())
 
         import rclpy
         from rclpy.executors import SingleThreadedExecutor
@@ -404,8 +440,9 @@ def _telemetry_thread() -> None:
             # entry 유무와 무관하게 훅을 돌린다.
             _fire_cmd_result_hooks(res)
 
-        for ip, cfg in FLEET_ROBOTS.items():
+        for cfg in FLEET_ROBOTS.values():
             pre = cfg["prefix"]
+            ip = cfg["ip"]
             on_pose, on_map, on_plan, on_pct, on_volt, on_status, on_costmaps = _make_handlers(ip)
             # amcl_pose·map·fleet_status 는 TRANSIENT_LOCAL — 구독 즉시 마지막 값을 받는다
             node.create_subscription(PoseWithCovarianceStamped, f"{pre}/amcl_pose", on_pose, qos_latched)
@@ -417,7 +454,7 @@ def _telemetry_thread() -> None:
             node.create_subscription(String, f"{pre}/fleet_costmaps", on_costmaps,
                                      QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE))
             node.create_subscription(String, f"{pre}/fleet_cmd_result", on_cmd_result, 10)
-            _cmd_pubs[ip] = node.create_publisher(String, f"{pre}/fleet_cmd", 10)
+            _cmd_pubs[cfg["key"]] = node.create_publisher(String, f"{pre}/fleet_cmd", 10)
 
         print(f"[fleet_telemetry] ROS 구독+명령링크 시작 (domain {TELEMETRY_DOMAIN_ID}, robots {list(FLEET_ROBOTS)})", flush=True)
         executor = SingleThreadedExecutor(context=ctx)

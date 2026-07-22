@@ -1,7 +1,20 @@
 #!/usr/bin/env python3
 r"""fleet_node 의 경로 명령 → nav2 주행. **로봇 도메인에서 실행한다.**
 
-## 왜 필요한가 (끊겨 있던 고리)
+## ⚠️ 지금은 기본 경로가 아니다 (BT 우회 폴백)
+
+주행은 **BT 를 지나간다.** 서버 `fleet_dispatch_bridge` 가 `/robot_path_requests` 를 받아
+`/fleet_cmd{navigate}` 로 바꿔 보내고, `libi_modes` 의 `WorkingBranch ▸ NavigationExec`
+가 그걸 받아 `goal` 을 낸다. 그래야 로봇이 `WORKING` 으로 전이한다.
+
+이 파일이 하던 "경로 → nav2 직접 주행"은 그 전이를 **건너뛴다.** 그래서 배달 중인 로봇이
+관제에 계속 "배차 가능"으로 보였다. `sim.sh` / `pi.sh` 에서 이 창을 뺀 이유다.
+
+폴백으로 남겨 둔다 — BT 쪽이 막혔을 때 서버 `.env` 에 `LIBI_NAV_VIA_BT=0` 을 두고
+이 파일을 손으로 띄우면 예전 동작으로 돌아간다. **둘 다 켜지 않는다** (같은 주행이
+두 갈래로 나가 서로 목표를 덮어쓴다).
+
+## 왜 필요했나 (끊겨 있던 고리)
 `fleet_node` 는 교통(예약)까지 풀어 경로를 정한 뒤 `rmf_fleet_msgs/PathRequest` 를
 `/robot_path_requests` 로 발행한다. 그런데 **로봇 쪽에 이걸 구독하는 코드가 하나도 없었다.**
 그래서 배차는 성공하는데(로봇에 goal_vertex 가 찍힘) 로봇이 움직이지 않았다.

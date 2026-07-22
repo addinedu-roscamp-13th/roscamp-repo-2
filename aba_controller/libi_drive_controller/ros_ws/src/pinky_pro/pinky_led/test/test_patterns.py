@@ -1,89 +1,82 @@
-import pytest
+"""색 계산 — solid/blink 두 가지와 감마 보정.
+
+## 여기서 지키는 것
+
+애니메이션(breathing·flow)을 없앤 뒤로 그릴 그림은 상태당 **최대 2장**(ON/OFF)이다.
+그래서 `render()` 에 시간 인자가 없다 — 이게 렌더 루프를 없앨 수 있었던 이유다.
+`elapsed` 가 다시 생기면 20 Hz 루프도 같이 돌아온다.
+"""
+import inspect
 
 from pinky_led import patterns
 
 WHITE = (255, 255, 255)
-RED = (255, 0, 0)
+BLUE = (0, 114, 178)        # #0072B2 청색
 
 
-def test_solid_is_constant_over_time():
-    a = patterns.render(patterns.SOLID, 0.0, WHITE, period_sec=1.0, num_pixels=4)
-    b = patterns.render(patterns.SOLID, 7.3, WHITE, period_sec=1.0, num_pixels=4)
-    assert a == b == [WHITE] * 4
+def test_solid_lights_every_pixel_the_same():
+    assert patterns.render((10, 20, 30), num_pixels=4, gamma=1.0) == [(10, 20, 30)] * 4
 
 
-def test_level_and_brightness_multiply():
-    full = patterns.render(patterns.SOLID, 0.0, WHITE, num_pixels=1)[0]
-    half = patterns.render(patterns.SOLID, 0.0, WHITE, level=0.5, num_pixels=1)[0]
-    dim = patterns.render(patterns.SOLID, 0.0, WHITE, level=0.5, brightness=0.5, num_pixels=1)[0]
-    assert full == (255, 255, 255)
-    assert full[0] > half[0] > dim[0]
+def test_blink_off_is_completely_dark():
+    """소등 구간에 중간 밝기를 쓰면 '깜빡임'이 '숨쉬기'로 보인다."""
+    assert patterns.render(WHITE, on=False, num_pixels=3) == [(0, 0, 0)] * 3
+
+
+def test_render_takes_no_clock():
+    """시간 인자가 없다는 것 자체가 계약이다 — 있으면 렌더 루프가 필요해진다."""
+    params = inspect.signature(patterns.render).parameters
+    assert "elapsed" not in params and "period_sec" not in params
+
+
+def test_only_two_patterns_exist():
+    """세 번째 패턴은 대개 애니메이션이고, 그러면 루프가 돌아온다 — 늘리기 전에 멈춰 세운다."""
+    assert patterns.PATTERNS == (patterns.SOLID, patterns.BLINK)
+
+
+# ── 감마 ─────────────────────────────────────────────────────────────────────
+
+def test_gamma_makes_low_levels_dimmer_than_linear():
+    """PWM 은 선형인데 눈은 아니다. 15% 를 그대로 쓰면 IDLE 이 거의 안 보인다."""
+    linear = patterns.render(WHITE, level=0.15, gamma=1.0, num_pixels=1)[0]
+    corrected = patterns.render(WHITE, level=0.15, gamma=2.2, num_pixels=1)[0]
+    assert corrected[0] < linear[0]
+
+
+def test_gamma_does_not_touch_the_hue():
+    """색상값에 감마를 걸면 팔레트의 색상비가 틀어져 파랑이 보라로 보인다.
+
+    밝기에만 걸어야 어떤 휘도에서도 같은 색으로 읽힌다.
+    """
+    full = patterns.render(BLUE, level=1.0, gamma=2.2, num_pixels=1)[0]
+    dim = patterns.render(BLUE, level=0.5, gamma=2.2, num_pixels=1)[0]
+    assert full == BLUE, "최대 휘도에서는 팔레트 색 그대로여야 한다"
+    # 8비트 양자화 때문에 아주 어두운 구간에서는 비가 조금 흔들린다 — 그건 감마 탓이 아니다.
+    assert abs(dim[1] / dim[2] - BLUE[1] / BLUE[2]) < 0.03
+
+
+# ── 휘도 손잡이 ──────────────────────────────────────────────────────────────
+
+def test_full_brightness_is_the_colour_itself():
+    assert patterns.render((230, 159, 0), num_pixels=1)[0] == (230, 159, 0)
+
+
+def test_zero_level_is_off_not_a_negative_channel():
+    assert patterns.render((255, 0, 0), level=0.0, num_pixels=1)[0] == (0, 0, 0)
 
 
 def test_brightness_zero_turns_everything_off():
     """야간 조도 파라미터의 극단값 — 전역 brightness 하나로 전체가 꺼져야 한다."""
-    assert patterns.render(patterns.SOLID, 0.0, WHITE, brightness=0.0, num_pixels=3) == [(0, 0, 0)] * 3
+    assert patterns.render(WHITE, brightness=0.0, num_pixels=3) == [(0, 0, 0)] * 3
 
 
-def test_breathing_dims_at_cycle_start_and_peaks_mid_cycle():
-    period = 4.0
-    start = patterns.render(patterns.BREATHING, 0.0, WHITE, period_sec=period, num_pixels=1)[0]
-    mid = patterns.render(patterns.BREATHING, period / 2, WHITE, period_sec=period, num_pixels=1)[0]
-    end = patterns.render(patterns.BREATHING, period, WHITE, period_sec=period, num_pixels=1)[0]
-    assert start[0] < mid[0]
-    assert start == end          # one full breath returns to where it began
-    assert mid == WHITE
+def test_global_brightness_multiplies_the_state_level():
+    """야간 감광은 전역 손잡이 하나로 — 상태마다 값을 고치지 않는다."""
+    bright = patterns.render(WHITE, level=1.0, brightness=1.0, gamma=1.0, num_pixels=1)[0]
+    night = patterns.render(WHITE, level=1.0, brightness=0.3, gamma=1.0, num_pixels=1)[0]
+    assert night[0] < bright[0]
 
 
-def test_breathing_never_goes_fully_dark():
-    """호흡 패턴이 0까지 떨어지면 '꺼진 것'과 구분이 안 된다 — 최소 밝기 바닥이 있어야 한다."""
-    darkest = patterns.render(patterns.BREATHING, 0.0, WHITE, period_sec=4.0, num_pixels=1)[0]
-    assert darkest[0] > 0
-
-
-def test_blink_alternates_on_and_off_within_one_period():
-    on = patterns.render(patterns.BLINK, 0.0, RED, period_sec=1.0, num_pixels=2)
-    off = patterns.render(patterns.BLINK, 0.6, RED, period_sec=1.0, num_pixels=2)
-    assert on == [RED] * 2
-    assert off == [(0, 0, 0)] * 2
-
-
-def test_blink_period_controls_rate():
-    """Same instant, different periods -> different phase. Proves period_sec drives the rate,
-    so '느린 깜빡임' vs '빠른 깜빡임' is a YAML value and not a second pattern."""
-    fast = patterns.render(patterns.BLINK, 0.2, RED, period_sec=0.25, num_pixels=1)
-    slow = patterns.render(patterns.BLINK, 0.2, RED, period_sec=2.0, num_pixels=1)
-    assert fast == [(0, 0, 0)]
-    assert slow == [RED]
-
-
-def test_flow_head_advances_with_time():
-    period, n = 2.0, 8
-
-    def head_index(t):
-        frame = patterns.render(patterns.FLOW, t, WHITE, period_sec=period, num_pixels=n)
-        return max(range(n), key=lambda i: frame[i])
-
-    assert head_index(0.0) == 0
-    assert head_index(period / n) == 1
-    assert head_index(2 * period / n) == 2
-
-
-def test_flow_completes_one_lap_per_period():
-    period, n = 2.0, 8
-    assert (patterns.render(patterns.FLOW, 0.0, WHITE, period_sec=period, num_pixels=n)
-            == patterns.render(patterns.FLOW, period, WHITE, period_sec=period, num_pixels=n))
-
-
-def test_flow_has_a_fading_tail_not_a_single_lit_pixel():
-    frame = patterns.render(patterns.FLOW, 0.0, WHITE, period_sec=2.0, num_pixels=8)
-    lit = [i for i, c in enumerate(frame) if c != (0, 0, 0)]
-    assert len(lit) > 1
-    assert frame[0] > frame[7] > frame[6]      # head brightest, tail fading behind it
-
-
-def test_unknown_pattern_and_bad_period_raise():
-    with pytest.raises(ValueError, match="disco"):
-        patterns.render("disco", 0.0, WHITE)
-    with pytest.raises(ValueError, match="period_sec"):
-        patterns.render(patterns.SOLID, 0.0, WHITE, period_sec=0.0)
+def test_channels_stay_within_range():
+    frame = patterns.render(WHITE, level=1.0, brightness=1.0, num_pixels=2)
+    assert all(0 <= c <= 255 for pixel in frame for c in pixel)

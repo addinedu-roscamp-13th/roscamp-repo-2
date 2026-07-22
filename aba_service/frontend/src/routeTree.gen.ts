@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SearchRouteImport } from './routes/search'
 import { Route as ScanRouteImport } from './routes/scan'
+import { Route as RequestRouteImport } from './routes/request'
 import { Route as RecommendRouteImport } from './routes/recommend'
 import { Route as OcrRouteImport } from './routes/ocr'
 import { Route as MeRouteImport } from './routes/me'
@@ -32,6 +33,7 @@ import { Route as AdminAuthedOpsRouteImport } from './routes/admin/_authed/ops'
 import { Route as AdminAuthedMembersRouteImport } from './routes/admin/_authed/members'
 import { Route as AdminAuthedInsightRouteImport } from './routes/admin/_authed/insight'
 import { Route as AdminAuthedBooksRouteImport } from './routes/admin/_authed/books'
+import { Route as AdminAuthedApprovalsRouteImport } from './routes/admin/_authed/approvals'
 import { Route as AdminAuthedAlertsRouteImport } from './routes/admin/_authed/alerts'
 import { Route as AdminAuthedDevTablesRouteImport } from './routes/admin/_authed/dev/tables'
 import { Route as AdminAuthedDevServerOpsRouteImport } from './routes/admin/_authed/dev/server-ops'
@@ -52,6 +54,11 @@ const SearchRoute = SearchRouteImport.update({
 const ScanRoute = ScanRouteImport.update({
   id: '/scan',
   path: '/scan',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const RequestRoute = RequestRouteImport.update({
+  id: '/request',
+  path: '/request',
   getParentRoute: () => rootRouteImport,
 } as any)
 const RecommendRoute = RecommendRouteImport.update({
@@ -154,6 +161,11 @@ const AdminAuthedBooksRoute = AdminAuthedBooksRouteImport.update({
   path: '/books',
   getParentRoute: () => AdminAuthedRoute,
 } as any)
+const AdminAuthedApprovalsRoute = AdminAuthedApprovalsRouteImport.update({
+  id: '/approvals',
+  path: '/approvals',
+  getParentRoute: () => AdminAuthedRoute,
+} as any)
 const AdminAuthedAlertsRoute = AdminAuthedAlertsRouteImport.update({
   id: '/alerts',
   path: '/alerts',
@@ -195,12 +207,14 @@ export interface FileRoutesByFullPath {
   '/me': typeof MeRoute
   '/ocr': typeof OcrRoute
   '/recommend': typeof RecommendRoute
+  '/request': typeof RequestRoute
   '/scan': typeof ScanRoute
   '/search': typeof SearchRoute
   '/settings': typeof SettingsRoute
   '/admin': typeof AdminAuthedRouteWithChildren
   '/admin/login': typeof AdminLoginRoute
   '/admin/alerts': typeof AdminAuthedAlertsRoute
+  '/admin/approvals': typeof AdminAuthedApprovalsRoute
   '/admin/books': typeof AdminAuthedBooksRoute
   '/admin/insight': typeof AdminAuthedInsightRoute
   '/admin/members': typeof AdminAuthedMembersRoute
@@ -226,11 +240,13 @@ export interface FileRoutesByTo {
   '/me': typeof MeRoute
   '/ocr': typeof OcrRoute
   '/recommend': typeof RecommendRoute
+  '/request': typeof RequestRoute
   '/scan': typeof ScanRoute
   '/search': typeof SearchRoute
   '/settings': typeof SettingsRoute
   '/admin/login': typeof AdminLoginRoute
   '/admin/alerts': typeof AdminAuthedAlertsRoute
+  '/admin/approvals': typeof AdminAuthedApprovalsRoute
   '/admin/books': typeof AdminAuthedBooksRoute
   '/admin/insight': typeof AdminAuthedInsightRoute
   '/admin/members': typeof AdminAuthedMembersRoute
@@ -257,12 +273,14 @@ export interface FileRoutesById {
   '/me': typeof MeRoute
   '/ocr': typeof OcrRoute
   '/recommend': typeof RecommendRoute
+  '/request': typeof RequestRoute
   '/scan': typeof ScanRoute
   '/search': typeof SearchRoute
   '/settings': typeof SettingsRoute
   '/admin/_authed': typeof AdminAuthedRouteWithChildren
   '/admin/login': typeof AdminLoginRoute
   '/admin/_authed/alerts': typeof AdminAuthedAlertsRoute
+  '/admin/_authed/approvals': typeof AdminAuthedApprovalsRoute
   '/admin/_authed/books': typeof AdminAuthedBooksRoute
   '/admin/_authed/insight': typeof AdminAuthedInsightRoute
   '/admin/_authed/members': typeof AdminAuthedMembersRoute
@@ -290,12 +308,14 @@ export interface FileRouteTypes {
     | '/me'
     | '/ocr'
     | '/recommend'
+    | '/request'
     | '/scan'
     | '/search'
     | '/settings'
     | '/admin'
     | '/admin/login'
     | '/admin/alerts'
+    | '/admin/approvals'
     | '/admin/books'
     | '/admin/insight'
     | '/admin/members'
@@ -321,11 +341,13 @@ export interface FileRouteTypes {
     | '/me'
     | '/ocr'
     | '/recommend'
+    | '/request'
     | '/scan'
     | '/search'
     | '/settings'
     | '/admin/login'
     | '/admin/alerts'
+    | '/admin/approvals'
     | '/admin/books'
     | '/admin/insight'
     | '/admin/members'
@@ -351,12 +373,14 @@ export interface FileRouteTypes {
     | '/me'
     | '/ocr'
     | '/recommend'
+    | '/request'
     | '/scan'
     | '/search'
     | '/settings'
     | '/admin/_authed'
     | '/admin/login'
     | '/admin/_authed/alerts'
+    | '/admin/_authed/approvals'
     | '/admin/_authed/books'
     | '/admin/_authed/insight'
     | '/admin/_authed/members'
@@ -383,6 +407,7 @@ export interface RootRouteChildren {
   MeRoute: typeof MeRoute
   OcrRoute: typeof OcrRoute
   RecommendRoute: typeof RecommendRoute
+  RequestRoute: typeof RequestRoute
   ScanRoute: typeof ScanRoute
   SearchRoute: typeof SearchRoute
   SettingsRoute: typeof SettingsRoute
@@ -411,6 +436,13 @@ declare module '@tanstack/react-router' {
       path: '/scan'
       fullPath: '/scan'
       preLoaderRoute: typeof ScanRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/request': {
+      id: '/request'
+      path: '/request'
+      fullPath: '/request'
+      preLoaderRoute: typeof RequestRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/recommend': {
@@ -553,6 +585,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminAuthedBooksRouteImport
       parentRoute: typeof AdminAuthedRoute
     }
+    '/admin/_authed/approvals': {
+      id: '/admin/_authed/approvals'
+      path: '/approvals'
+      fullPath: '/admin/approvals'
+      preLoaderRoute: typeof AdminAuthedApprovalsRouteImport
+      parentRoute: typeof AdminAuthedRoute
+    }
     '/admin/_authed/alerts': {
       id: '/admin/_authed/alerts'
       path: '/alerts'
@@ -600,6 +639,7 @@ declare module '@tanstack/react-router' {
 
 interface AdminAuthedRouteChildren {
   AdminAuthedAlertsRoute: typeof AdminAuthedAlertsRoute
+  AdminAuthedApprovalsRoute: typeof AdminAuthedApprovalsRoute
   AdminAuthedBooksRoute: typeof AdminAuthedBooksRoute
   AdminAuthedInsightRoute: typeof AdminAuthedInsightRoute
   AdminAuthedMembersRoute: typeof AdminAuthedMembersRoute
@@ -619,6 +659,7 @@ interface AdminAuthedRouteChildren {
 
 const AdminAuthedRouteChildren: AdminAuthedRouteChildren = {
   AdminAuthedAlertsRoute: AdminAuthedAlertsRoute,
+  AdminAuthedApprovalsRoute: AdminAuthedApprovalsRoute,
   AdminAuthedBooksRoute: AdminAuthedBooksRoute,
   AdminAuthedInsightRoute: AdminAuthedInsightRoute,
   AdminAuthedMembersRoute: AdminAuthedMembersRoute,
@@ -649,6 +690,7 @@ const rootRouteChildren: RootRouteChildren = {
   MeRoute: MeRoute,
   OcrRoute: OcrRoute,
   RecommendRoute: RecommendRoute,
+  RequestRoute: RequestRoute,
   ScanRoute: ScanRoute,
   SearchRoute: SearchRoute,
   SettingsRoute: SettingsRoute,

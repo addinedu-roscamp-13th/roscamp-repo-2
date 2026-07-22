@@ -30,6 +30,9 @@ def create(params: dict, nav_driver, arm_driver, follow_driver=None,
     at claiming the tick, so any handler after it would be unreachable.
     """
     timeout = params["working"]["command_timeout_sec"]
+    arrive_tolerance = params["working"]["arrive_tolerance_m"]
+    arrive_resend = params["working"]["arrive_resend_sec"]
+    arrive_timeout = params["working"]["arrive_timeout_sec"]
     return py_trees.composites.Sequence(
         name="WorkingBranch",
         memory=False,
@@ -43,7 +46,8 @@ def create(params: dict, nav_driver, arm_driver, follow_driver=None,
                         name="CommandDispatch",
                         memory=False,
                         children=[
-                            NavigationExec(nav_driver),
+                            NavigationExec(nav_driver, arrive_tolerance, arrive_resend,
+                                           arrive_timeout, now_fn=clock),
                             ArmExec(arm_driver),
                             FollowExec(follow_driver),
                             py_trees.behaviours.Running(name="AwaitingCommand"),

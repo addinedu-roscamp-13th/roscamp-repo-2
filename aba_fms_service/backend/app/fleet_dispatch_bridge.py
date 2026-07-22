@@ -31,8 +31,9 @@ import itertools
 import logging
 import os
 import threading
+import time
 
-from app import fleet_link, fleet_telemetry
+from app import fleet_events, fleet_link, fleet_telemetry
 from app.fleet_orchestrator import LegType
 
 log = logging.getLogger("fleet_dispatch_bridge")
@@ -239,6 +240,82 @@ def on_task_state(payload: dict) -> None:
         log.exception("[dispatch] on_result 실패 cmd=%s", cmd_id)
 
 
+#: 주행을 로봇 BT 로 보낼지. **기본 켜짐.**
+#
+# 끄면(0) fleet_node 의 PathRequest 를 로봇 쪽 path_request_driver 가 직접 받아 nav2 로
+# 넣는 예전 경로가 된다. 그 경로는 **로봇 BT 를 우회**해서 FSM 이 WORKING 으로 가지 않고,
+# 관제가 배달 중인 로봇을 "배차 가능"으로 표시한다.
+NAV_VIA_BT = os.environ.get("LIBI_NAV_VIA_BT", "1") == "1"
+
+#: 같은 목적지를 다시 내려보내기 전에 기다리는 시간(초).
+#
+# fleet_node 는 이동 중 같은 경로를 ~1초마다 재발행한다(놓친 명령 자가 복구). 그대로
+# 흘려보내면 nav2 목표가 매초 선점돼 주행이 끊긴다. 그래서 걸러낸다.
+#
+# 그런데 **영원히** 걸러내면 반대쪽 고장이 생긴다. nav2 주행은 로봇이 도착하지 않은 채
+# 끝날 수 있다 — ABORTED 이거나, 선점 순간 직전 목표의 완료가 새 목표의 완료로
+# 보고되거나(실측: 로봇이 v1 에 선 채 v9 목표가 0.43초 만에 "Reached the goal!").
+# BT 의 `NavigationExec` 은 명령이 **접수**되면 끝나므로 그 사실을 알지 못하고,
+# fleet_node 의 재발행은 여기서 막혀 있으니, 로봇은 아무도 다시 몰지 않아 그대로 선다.
+# 실측으로 6분 40초를 서 있었다.
+#
+# 그래서 재발행을 **느린 심박**으로 쓴다: 같은 목적지라도 이 시간이 지나면 한 번 더
+# 보낸다. 정상 홉은 2~17초라 보통은 재전송 없이 끝나고, 멈춘 로봇만 다시 출발한다.
+#
+# ⚠️ `libi_modes` 의 `NavigationExec` 에도 재전송(`arrive_resend_sec`)이 있다.
+#    **중복이 아니라 서로 다른 고장을 막는다** — 지우기 전에 읽을 것:
+#      여기(FMS)  : 명령이 **로봇에 닿지 않은** 경우 (DDS 유실, 로봇 늦게 뜸,
+#                   로봇이 아직 WORKING 이 아니라 NavigationExec 이 안 도는 동안)
+#      BT 쪽      : 명령은 닿았는데 **주행이 도착 없이 끝난** 경우 (nav2 ABORTED 등)
+#    BT 는 자기가 못 받은 명령을 다시 보낼 수 없고, FMS 는 로봇이 도착했는지 모른다.
+#    같은 목적지가 다시 와도 BT 는 목적지가 안 바뀌었으면 goal 을 새로 내지 않으므로
+#    둘이 겹쳐도 주행을 끊지 않는다.
+NAV_RESEND_SEC = float(os.environ.get("LIBI_NAV_RESEND_SEC", "20"))
+
+#: 로봇별 (마지막 목적지, 보낸 시각).
+_last_nav: dict[str, tuple] = {}
+_nav_lock = threading.Lock()
+
+
+def should_send_nav(robot: str, key: tuple, now: float) -> bool:
+    """이 목적지를 지금 보낼까. 보내기로 하면 기억을 갱신한다.
+
+    순수한 판단이 아니라 상태를 바꾸는 게 맞다 — 판단과 기록이 갈라지면 두 요청이
+    동시에 통과한다.
+    """
+    with _nav_lock:
+        last = _last_nav.get(robot)
+        if last is not None and last[0] == key and now - last[1] < NAV_RESEND_SEC:
+            return False                # 같은 목적지 재발행 — 주행을 끊지 않는다
+        _last_nav[robot] = (key, now)
+        return True
+
+
+def on_path_request(robot: str, points: list) -> None:
+    """fleet_node 가 허가한 다음 노드를 로봇 BT 로 내려보낸다.
+
+    `points` 는 출발점을 뺀 목적지 열이다(fleet_link 가 이미 잘랐다). 노드 단위 예약이라
+    보통 1개다.
+
+    ⚠️ **다리 완료로 쓰지 않는다.** 주행 다리 하나는 여러 노드를 지나므로, `/fleet_cmd`
+    결과(홉 단위)로 다리를 끝내면 첫 홉에서 완료돼 버린다. 다리 완료는 계속
+    fleet_node 의 TaskState 가 정본이다.
+    """
+    if not NAV_VIA_BT or not robot or not points:
+        return
+    x, y, yaw = points[-1]
+    if not should_send_nav(robot, (round(x, 3), round(y, 3)), time.monotonic()):
+        return
+
+    cmd_id = fleet_telemetry.send_command_async(
+        robot, action="navigate", args={"x": x, "y": y, "yaw": yaw},
+    )
+    if cmd_id:
+        log.info("[nav] %s → BT navigate (%.3f, %.3f) cmd=%s", robot, x, y, cmd_id)
+    else:
+        log.warning("[nav] %s 주행 명령 전송 실패 (명령 링크 없음)", robot)
+
+
 #: task 수명주기 → 로봇 미션 FSM 전이 신호 (libi_modes registry.py 의 트리거 이름).
 #   task_assigned : IDLE/PATROL/INTERACTING → WORKING
 #   task_done     : WORKING → PATROL
@@ -260,6 +337,11 @@ def real_lifecycle(robot: str, phase: str) -> None:
     action = LIFECYCLE_ACTIONS.get(phase)
     if not action:
         return
+    if phase in ("done", "failed"):
+        # 목적지 중복 제거 캐시를 비운다. 안 그러면 다음 주문이 **같은 노드로 시작할 때**
+        # "이미 보낸 목적지"로 걸러져 로봇이 출발하지 않는다.
+        with _nav_lock:
+            _last_nav.pop(robot, None)
     cmd_id = fleet_telemetry.send_command_async(robot, action=action, args={})
     if cmd_id:
         log.info("[lifecycle] %s → %s (cmd=%s)", robot, action, cmd_id)
@@ -304,6 +386,8 @@ def real_release(robot: str) -> None:
     """
     if not robot:
         return
+    with _nav_lock:
+        _last_nav.pop(robot, None)      # 놓아준 로봇의 목적지 기억도 지운다
     res = fleet_link.set_robot_mode(robot, RELEASE_MODE)
     if res.get("ok"):
         log.info("[release] %s → %s (task 취소·점유 해제)", robot, RELEASE_MODE)
@@ -376,6 +460,55 @@ def _reconcile_loop() -> None:
         reconcile_once()
 
 
+#: 다리 종류별로 "무슨 일이 일어났는가"를 사람 말로 옮긴다.
+# 화면마다 이 문장을 다시 만들면(관제 하나, 회원 앱 하나) 곧 서로 다른 말을 하게 된다.
+_ARRIVAL_TEXT = {
+    "navigate": "{where} 도착",
+    "perform_action": "{what} 완료",
+}
+
+
+def _leg_summary(leg) -> tuple[str, str]:
+    """(다리 종류, 사람이 읽을 한 줄). leg 가 없으면 빈 값."""
+    if leg is None:
+        return "", ""
+    kind = getattr(leg.type, "value", str(leg.type))
+    params = leg.params or {}
+    where = str(params.get("waypoint") or params.get("at") or "")
+    what = {"pick": "책 집기", "place": "책 놓기"}.get(str(params.get("action") or ""), "작업")
+    text = _ARRIVAL_TEXT.get(kind, "{what}").format(where=where or "목적지", what=what)
+    return kind, text
+
+
+def on_orchestrator_event(kind: str, task, leg) -> None:
+    """orchestrator 의 사건을 화면이 읽을 모양으로 바꿔 발행한다.
+
+    **여기서 예외를 내면 안 된다** — 이 함수는 오케스트레이터 락 안에서 불린다.
+    (`fleet_events.publish` 자체도 예외를 삼키지만, 그 앞 변환에서 터질 수 있다.)
+    """
+    try:
+        leg_kind, text = _leg_summary(leg)
+        if kind == "task_done":
+            text = "배달 완료"
+        elif kind == "task_failed":
+            text = f"실패: {task.reason}" if task.reason else "실패"
+        elif kind == "task_started":
+            text = "작업 시작"
+        fleet_events.publish(
+            kind,
+            task_id=task.id,
+            robot=task.robot or "",
+            requester=task.requester or "",
+            status=getattr(task.status, "value", str(task.status)),
+            leg_idx=task.leg_idx,
+            leg_count=len(task.legs),
+            leg_kind=leg_kind,
+            text=text,
+        )
+    except Exception:  # noqa: BLE001
+        log.exception("[events] 사건 변환 실패 kind=%s", kind)
+
+
 def install() -> None:
     """실배선을 켠다. `LIBI_REAL_DISPATCH=1` 일 때만 main.py 가 부른다."""
     from app import fleet_orchestrator_service as svc
@@ -383,7 +516,9 @@ def install() -> None:
     svc.set_dispatch(real_dispatch)
     svc.set_release(real_release)
     svc.set_lifecycle(real_lifecycle)
+    svc.set_on_event(on_orchestrator_event)
     fleet_link.add_task_state_hook(on_task_state)
+    fleet_link.add_path_request_hook(on_path_request)
     fleet_telemetry.add_cmd_result_hook(on_cmd_result)
 
     # 고아 task 화해 — 백엔드만 재기동한 경우를 자동으로 되돌린다.

@@ -81,8 +81,14 @@ def test_idle_resume_request_frees_stopped_robot(seed, read, tick):
 
 # ── PATROL ────────────────────────────────────────────────────────────────────
 
+_PATROLLING = {Keys.CURRENT_MODE: "PATROL", Keys.BATTERY_PERCENT: 60.0,
+               Keys.ACTIVE_COMMAND: "navigate",
+               Keys.NAV_TARGET: {"x": 1.0, "y": 0.0, "yaw": 0.0},
+               Keys.ROBOT_POSE: {"x": 0.0, "y": 0.0}}
+
+
 def test_patrol_keeps_driving(seed, read, tick):
-    seed(**{Keys.CURRENT_MODE: "PATROL", Keys.BATTERY_PERCENT: 60.0})
+    seed(**_PATROLLING)
     driver = FakeDriver()
     assert tick(patrol.create(PARAMS, driver)) == Status.RUNNING
     assert read(Keys.CURRENT_MODE) == "PATROL"
@@ -91,12 +97,34 @@ def test_patrol_keeps_driving(seed, read, tick):
 
 def test_patrol_nav_never_self_completes(seed, tick):
     """Even a driver reporting success means "lap done" — patrol is endless."""
-    seed(**{Keys.CURRENT_MODE: "PATROL", Keys.BATTERY_PERCENT: 60.0})
+    seed(**_PATROLLING)
     assert tick(patrol.create(PARAMS, FakeDriver(["success"]))) == Status.RUNNING
 
 
+def test_patrol_waits_between_nodes_without_failing(seed, read, tick):
+    """다음 노드 허가를 기다리는 동안에도 순회 브랜치는 살아 있어야 한다.
+
+    관제(fleet_node)가 노드를 하나씩 허가하므로 명령이 비는 순간이 정상적으로 생긴다.
+    그때 FAILURE 를 내면 Parallel 이 무너져 브랜치가 매 tick 재진입하고, 주행이
+    처음부터 다시 시작돼 로봇이 제자리에서 덜컹거린다.
+    """
+    seed(**{Keys.CURRENT_MODE: "PATROL", Keys.BATTERY_PERCENT: 60.0})   # 명령 없음
+    driver = FakeDriver()
+    assert tick(patrol.create(PARAMS, driver)) == Status.RUNNING
+    assert read(Keys.CURRENT_MODE) == "PATROL"
+    assert not driver.started, "목적지도 없이 nav2 를 부르면 안 된다"
+
+
+def test_patrol_arrival_is_not_the_end(seed, read, tick):
+    """한 노드에 도착해도 순회는 계속된다 — 도착은 '한 노드 지났다'는 뜻이다."""
+    seed(**{**_PATROLLING, Keys.ROBOT_POSE: {"x": 1.0, "y": 0.0}})      # 이미 목적지
+    assert tick(patrol.create(PARAMS, FakeDriver())) == Status.RUNNING
+    assert read(Keys.CURRENT_MODE) == "PATROL"
+    assert read(Keys.ACTIVE_COMMAND) is None, "다음 노드를 받으려면 슬롯을 비운다"
+
+
 def test_patrol_low_battery_returns_and_stops_motors(seed, read, tick):
-    seed(**{Keys.CURRENT_MODE: "PATROL", Keys.BATTERY_PERCENT: 10.0})
+    seed(**{**_PATROLLING, Keys.BATTERY_PERCENT: 10.0})
     driver = FakeDriver()
     assert tick(patrol.create(PARAMS, driver)) == Status.SUCCESS
     assert read(Keys.CURRENT_MODE) == "RETURNING"
@@ -199,17 +227,25 @@ def test_interacting_stop_request_to_idle(seed, read, tick):
 # ── WORKING ───────────────────────────────────────────────────────────────────
 
 def test_working_dispatches_navigate(seed, read, tick):
-    seed(**{Keys.CURRENT_MODE: "WORKING", Keys.ACTIVE_COMMAND: "navigate"})
+    seed(**{Keys.CURRENT_MODE: "WORKING", Keys.ACTIVE_COMMAND: "navigate",
+            Keys.NAV_TARGET: {"x": 1.0, "y": 2.0, "yaw": 0.0},
+            Keys.ROBOT_POSE: {"x": 0.0, "y": 0.0}})
     nav, arm = FakeDriver(), FakeDriver()
     assert tick(working.create(PARAMS, nav, arm, clock=lambda: 1.0)) == Status.RUNNING
     assert nav.started and not arm.started
 
 
-def test_working_dispatches_dock_to_navigation(seed, tick):
-    seed(**{Keys.CURRENT_MODE: "WORKING", Keys.ACTIVE_COMMAND: "dock"})
+def test_working_rejects_navigate_without_a_target(seed, read, tick):
+    """목적지 없는 주행 명령은 붙들지 않고 놓는다.
+
+    붙들고 RUNNING 으로 있으면 로봇이 아무 데도 안 가면서 "주행 중"으로 보인다 —
+    그게 정확히 이 프로젝트에서 시간을 가장 많이 버린 실패 모양이다.
+    """
+    seed(**{Keys.CURRENT_MODE: "WORKING", Keys.ACTIVE_COMMAND: "navigate"})
     nav, arm = FakeDriver(), FakeDriver()
     tick(working.create(PARAMS, nav, arm, clock=lambda: 1.0))
-    assert nav.started and not arm.started
+    assert not nav.started
+    assert read(Keys.ACTIVE_COMMAND) is None, "실행할 수 없는 명령은 슬롯을 비워야 한다"
 
 
 def test_working_dispatches_perform_action_to_arm(seed, tick):

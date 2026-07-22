@@ -13,7 +13,7 @@ import asyncio
 from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
-from app import fleet_link
+from app import fleet_events, fleet_link
 from app.deps import get_current_admin
 from app.fsm_model import STATES
 from app.models import Admin
@@ -122,3 +122,54 @@ async def fleet_feed_ws(websocket: WebSocket, token: str = Query(...)):
         pass
     finally:
         fleet_link.remove_listener(loop, queue)
+
+
+# ── 도착 알림 ────────────────────────────────────────────────────────────────
+#
+# 주문 **상태**는 GET /api/fleet/orders 로 폴링하면 되지만, 그걸로는 "방금 도착했다"를
+# 표현할 수 없다 — 도착한 순간과 도착한 지 10분 뒤가 화면에서 똑같이 보인다.
+# 그래서 **사건**을 따로 낸다. 두 가지 방식을 다 지원한다:
+#   push  /api/fleet/ws/events   계속 열려 있는 화면(관제)
+#   pull  GET /api/fleet/events  폴링하는 쪽(도서관 웹은 별도 서비스라 소켓이 번거롭다)
+
+
+@router.get("/events")
+async def list_events(since: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
+                      _: Admin = Depends(get_current_admin)):
+    """`since` 보다 뒤에 일어난 사건들.
+
+    응답의 `latest` 를 다음 요청의 `since` 로 넘기면 놓치지 않는다. 화면이 잠깐 닫혀
+    있었어도 보관된 범위 안이면 뒤늦게 받을 수 있다.
+    """
+    return {"ok": True, "events": fleet_events.since(since, limit),
+            "latest": fleet_events.latest_seq()}
+
+
+@router.websocket("/ws/events")
+async def fleet_events_ws(websocket: WebSocket, token: str = Query(...),
+                          since: int = Query(0)):
+    """주문 사건 실시간 push — 도착 알림용.
+
+    `/ws/feed` 와 나눠 둔 이유: 그쪽은 `{"snapshot": …}` 만 보내기로 화면과 약속돼
+    있어서, 모양이 다른 메시지를 섞으면 기존 화면이 스냅샷을 잃는다.
+    """
+    try:
+        decode_token(token)
+    except Exception:
+        await websocket.close(code=4001)
+        return
+
+    await websocket.accept()
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue(maxsize=fleet_events.LISTENER_QUEUE_MAX)
+    fleet_events.add_listener(loop, queue)
+    try:
+        # 접속하는 동안 일어난 사건을 먼저 흘려준다 — 재접속으로 알림이 사라지지 않게.
+        for event in fleet_events.since(since):
+            await websocket.send_json({"ok": True, "event": event})
+        while True:
+            await websocket.send_json({"ok": True, "event": await queue.get()})
+    except (WebSocketDisconnect, Exception):
+        pass
+    finally:
+        fleet_events.remove_listener(loop, queue)
