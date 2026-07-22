@@ -28,6 +28,8 @@
         <Peer address="localhost"/>
         <!-- FMS 서버 (기존 ROS_STATIC_PEERS 값) -->
         <Peer address="192.168.0.19"/>
+        <!-- 추가 피어 (2026-07-21) -->
+        <Peer address="192.168.1.10"/>
         <!-- 조작용 PC / 다른 로봇이 있으면 여기에 IP 추가:
         <Peer address="192.168.0.XX"/>
         -->

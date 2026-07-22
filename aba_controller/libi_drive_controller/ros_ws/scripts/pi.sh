@@ -90,20 +90,15 @@ fi
 # "배차 가능"으로 표시했다. 둘을 같이 띄우면 같은 주행이 두 갈래로 나간다.
 # 되돌려야 하면 서버 .env 의 LIBI_NAV_VIA_BT=0 으로 두고 그 파일을 손으로 띄운다.
 
-# 주차장 도착을 위치로 확인해 /is_docked 를 낸다. **sim 과 같은 노드다.**
+# dock-confirm 창은 여기서 뺐다 (scripts/dock_confirm.py 는 그대로 남아 있다).
 #
-# 이게 없으면 RETURNING 이 영영 안 끝난다 — 부팅 상태가 RETURNING 이라 로봇이 첫
-# 상태에서 한 발짝도 못 나가고, 배차 대상(IDLE/PATROL)이 되지 못한다.
-#
-# ⚠️ 원래는 정밀 주차(테이프 추종) 폐루프가 이 신호를 낼 자리였는데, 그 경로가 아직
-#    복귀에 배선돼 있지 않다 (scripts/drive-pi/dock/README.md 의 미결 1~4).
-#    지금 복귀는 nav2 로 주차장 정점까지 가는 것이 전부라, 도착 판정도 위치로 한다.
-DOCK_CONFIRM="$ROS_WS_DIR/../scripts/dock_confirm.py"
-NAVGRAPH="$ROS_WS_DIR/../../../aba_fms_service/fleet_ws/maps/library/arte2.navgraph.yaml"
-if [ -f "$DOCK_CONFIRM" ]; then
-  tmux new-window -t "$SESSION" -n dock-confirm \
-    bash -c "$ROS_SETUP && echo '[dock-confirm] 주차장 도착 → /is_docked ...' && python3 '$DOCK_CONFIRM' --navgraph '$NAVGRAPH'; exec bash"
-fi
+# ⚠️ 되살릴 때 알아야 할 것: 이 창이 위치를 보고 /is_docked 를 내던 자리다. 아무도
+#    /is_docked 를 내지 않으면 RETURNING 이 끝나지 않아 로봇이 부팅 상태에서 못
+#    나가고 배차 대상(IDLE/PATROL)이 되지 못한다. 그 신호를 다른 곳에서 내고 있는지
+#    확인하고 띄울 것:
+#      python3 aba_controller/libi_drive_controller/scripts/dock_confirm.py \
+#        --navgraph aba_fms_service/fleet_ws/maps/library/arte2.navgraph.yaml
+#    원래 자리는 정밀 주차(테이프 추종) 폐루프였다 — scripts/drive-pi/dock/README.md 미결 1~4.
 
 tmux select-window -t "$SESSION:hw"
 # 인터랙티브(TTY)일 때만 붙는다. 백그라운드(nohup/cron/ssh)면 세션은 그대로 두고 안내만

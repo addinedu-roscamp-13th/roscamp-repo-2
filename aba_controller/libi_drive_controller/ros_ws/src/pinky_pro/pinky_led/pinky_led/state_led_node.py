@@ -69,15 +69,12 @@ class StateLedNode(Node):
 
     # ── 상태 수신 ────────────────────────────────────────────────────────────
 
-    def _now(self):
-        return self.get_clock().now().nanoseconds / 1e9
-
     def _on_state(self, msg):
-        before = self.model.active_state
-        self.model.on_state(msg.data.strip().upper(), self._now())
+        changed = self.model.on_state(msg.data.strip().upper())
         self._arm_timeout()
         # 같은 상태를 20 Hz 로 재발행해도 다시 그리지 않는다 — 바뀔 때만 일한다.
-        if self.model.active_state != before:
+        # 두절에서 복귀한 경우도 모델이 True 를 주므로 여기서 다시 그린다.
+        if changed:
             self._apply()
 
     # ── 출력 ─────────────────────────────────────────────────────────────────
