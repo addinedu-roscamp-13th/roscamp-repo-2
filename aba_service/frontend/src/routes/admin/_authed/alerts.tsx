@@ -1,8 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
+import { toast } from "sonner";
 
 import { AdminShell } from "@/components/admin/AdminShell";
-import { opsApi } from "@/lib/ops-api";
+import { ConfirmDeleteDialog } from "@/components/admin/ConfirmDeleteDialog";
+import { ops, opsApi } from "@/lib/ops-api";
 
 export const Route = createFileRoute("/admin/_authed/alerts")({
   head: () => ({ meta: [{ title: "LiBi Admin — 작업 알림 · 로그" }] }),
@@ -61,6 +63,8 @@ function AlertsPage() {
   const [logs, setLogs] = useState<LogRow[]>([]);
   const [filter, setFilter] = useState<"" | "COMPLETED" | "FAILED">("");
   const [err, setErr] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<LogRow | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -87,6 +91,21 @@ function AlertsPage() {
     void opsApi(`/api/admin/ops/security/events/${id}/ack`, { method: "POST" })
       .then(load)
       .catch((e) => setErr(e instanceof Error ? e.message : "처리 실패"));
+
+  const removeLog = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await ops.deleteTaskLog(deleteTarget.id);
+      toast.success("로그를 삭제했습니다");
+      setDeleteTarget(null);
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "삭제 실패");
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   return (
     <AdminShell title="작업 알림 · 로그">
@@ -207,6 +226,7 @@ function AlertsPage() {
                   <th className="pb-2 pr-3">다리</th>
                   <th className="pb-2 pr-3">재시도</th>
                   <th className="pb-2 pr-3">사유</th>
+                  <th className="pb-2 pr-3"></th>
                 </tr>
               </thead>
               <tbody>
@@ -234,11 +254,19 @@ function AlertsPage() {
                     <td className="py-2 pr-3 text-xs text-muted-foreground">
                       {l.reason ?? "—"}
                     </td>
+                    <td className="py-2 pr-3">
+                      <button
+                        onClick={() => setDeleteTarget(l)}
+                        className="rounded bg-rose-500/10 px-2 py-1 text-xs font-semibold text-rose-700"
+                      >
+                        삭제
+                      </button>
+                    </td>
                   </tr>
                 ))}
                 {logs.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="py-3 text-muted-foreground">
+                    <td colSpan={9} className="py-3 text-muted-foreground">
                       로그가 없습니다
                     </td>
                   </tr>
@@ -248,6 +276,20 @@ function AlertsPage() {
           </div>
         </section>
       </div>
+
+      <ConfirmDeleteDialog
+        open={!!deleteTarget}
+        onOpenChange={(o) => !o && setDeleteTarget(null)}
+        title="작업 로그 삭제"
+        description={
+          <>
+            {deleteTarget?.task_id} 로그를 삭제할까요? 삭제한 로그는 새로고침해도
+            다시 나타나지 않습니다.
+          </>
+        }
+        onConfirm={() => void removeLog()}
+        busy={deleting}
+      />
     </AdminShell>
   );
 }

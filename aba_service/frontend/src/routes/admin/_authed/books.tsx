@@ -1,7 +1,28 @@
 import { createFileRoute } from "@tanstack/react-router";
+import {
+  CheckCircle2,
+  Pencil,
+  Plus,
+  Search,
+  Trash2,
+  XCircle,
+} from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { toast } from "sonner";
 
 import { AdminShell } from "@/components/admin/AdminShell";
+import { ConfirmDeleteDialog } from "@/components/admin/ConfirmDeleteDialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { NAMED_WAYPOINTS } from "@/lib/map-waypoints";
 import {
   CATEGORY_LABEL,
@@ -25,6 +46,10 @@ export const Route = createFileRoute("/admin/_authed/books")({
 const SHELF_WAYPOINTS = NAMED_WAYPOINTS.filter((w) => w.kind === "shelf");
 const CATEGORIES = Object.keys(CATEGORY_LABEL);
 
+// 네이티브 select 를 shadcn Input 과 같은 표면으로 맞추기 위한 공용 클래스.
+const selectClass =
+  "h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50";
+
 const EMPTY = {
   title_kr: "",
   author: "",
@@ -45,6 +70,8 @@ function BooksPage() {
   });
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<AdminBook | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -80,9 +107,24 @@ function BooksPage() {
       form.id ? "수정했습니다" : "등록했습니다",
     );
 
+  const removeBook = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await ops.deleteBook(deleteTarget.id);
+      toast.success(`«${deleteTarget.title_kr}» 도서를 삭제했습니다`);
+      setDeleteTarget(null);
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "삭제 실패");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   return (
     <AdminShell title="도서 · 서가 관리">
-      <div className="space-y-4">
+      <div className="space-y-6">
         {msg ? (
           <p className="rounded-lg bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700">
             {msg}
@@ -94,16 +136,21 @@ function BooksPage() {
           </p>
         ) : null}
 
-        {/* 서가 관리 — 배치 현황 */}
-        <section className="rounded-lg border p-4">
-          <h3 className="mb-1 text-sm font-semibold">서가 배치</h3>
+        {/* 서가 배치 — 참고용 현황, 등록/목록보다 낮은 시각 무게 */}
+        <section className="rounded-lg border border-dashed bg-muted/30 p-4">
+          <h3 className="mb-1 text-sm font-semibold text-muted-foreground">
+            서가 배치 현황
+          </h3>
           <p className="mb-3 text-xs text-muted-foreground">
             서가 이름은 로봇 내비 정점과 같습니다. 도서의 위치를 바꾸면 로봇이
             집으러 가는 곳도 함께 바뀝니다.
           </p>
           <div className="flex flex-wrap gap-2">
             {shelves.map((s) => (
-              <div key={s.zone} className="rounded-lg border px-3 py-2">
+              <div
+                key={s.zone}
+                className="rounded-md border bg-card px-3 py-2"
+              >
                 <div className="text-sm font-semibold">{s.zone}</div>
                 <div className="text-xs text-muted-foreground">
                   {s.total}권 ·{" "}
@@ -121,31 +168,36 @@ function BooksPage() {
           </div>
         </section>
 
-        {/* 등록 / 수정 */}
-        <section className="rounded-lg border p-4">
-          <h3 className="mb-3 text-sm font-semibold">
-            {form.id ? `도서 수정 (#${form.id})` : "도서 등록"}
-          </h3>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <L label="제목">
-              <input
+        {/* 등록 / 수정 — 조작 영역이므로 좌측 강조 바 + 카드 표면으로 목록과 분리 */}
+        <section className="rounded-xl border border-l-4 border-l-primary bg-card p-5 shadow-card">
+          <div className="mb-4 flex items-center gap-2">
+            {form.id ? (
+              <Pencil className="size-4 text-primary" />
+            ) : (
+              <Plus className="size-4 text-primary" />
+            )}
+            <h3 className="text-sm font-semibold">
+              {form.id ? `도서 수정 (#${form.id})` : "도서 등록"}
+            </h3>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <Field label="제목">
+              <Input
                 value={form.title_kr}
                 onChange={(e) => setForm({ ...form, title_kr: e.target.value })}
-                className="h-9 w-full rounded-md border px-3 text-sm"
               />
-            </L>
-            <L label="저자">
-              <input
+            </Field>
+            <Field label="저자">
+              <Input
                 value={form.author}
                 onChange={(e) => setForm({ ...form, author: e.target.value })}
-                className="h-9 w-full rounded-md border px-3 text-sm"
               />
-            </L>
-            <L label="분야">
+            </Field>
+            <Field label="분야">
               <select
                 value={form.category}
                 onChange={(e) => setForm({ ...form, category: e.target.value })}
-                className="h-9 w-full rounded-md border px-2 text-sm"
+                className={selectClass}
               >
                 {CATEGORIES.map((c) => (
                   <option key={c} value={c}>
@@ -153,12 +205,12 @@ function BooksPage() {
                   </option>
                 ))}
               </select>
-            </L>
-            <L label="서가 (내비 정점)">
+            </Field>
+            <Field label="서가 (내비 정점)">
               <select
                 value={form.zone}
                 onChange={(e) => setForm({ ...form, zone: e.target.value })}
-                className="h-9 w-full rounded-md border px-2 text-sm"
+                className={selectClass}
               >
                 {NAMED_WAYPOINTS.map((w) => (
                   <option key={w.name} value={w.name}>
@@ -166,56 +218,51 @@ function BooksPage() {
                   </option>
                 ))}
               </select>
-            </L>
-            <L label="청구기호/줄">
-              <input
+            </Field>
+            <Field label="청구기호/줄">
+              <Input
                 value={form.shelf}
                 onChange={(e) => setForm({ ...form, shelf: e.target.value })}
                 placeholder="예: 첫째 줄"
-                className="h-9 w-full rounded-md border px-3 text-sm"
               />
-            </L>
-            <L label="표지">
-              <input
+            </Field>
+            <Field label="표지">
+              <Input
                 value={form.cover}
                 onChange={(e) => setForm({ ...form, cover: e.target.value })}
-                className="h-9 w-full rounded-md border px-3 text-sm"
               />
-            </L>
-            <L label="재고">
+            </Field>
+            <Field label="재고">
               <select
                 value={form.in_stock ? "1" : "0"}
                 onChange={(e) =>
                   setForm({ ...form, in_stock: e.target.value === "1" })
                 }
-                className="h-9 w-full rounded-md border px-2 text-sm"
+                className={selectClass}
               >
                 <option value="1">대출 가능</option>
                 <option value="0">대출 중</option>
               </select>
-            </L>
+            </Field>
             <div className="flex items-end gap-2">
-              <button
+              <Button
                 onClick={() => void save()}
                 disabled={!form.title_kr || !form.author}
-                className="h-9 flex-1 rounded-md bg-primary text-sm font-semibold text-primary-foreground disabled:opacity-50"
+                className="flex-1"
               >
                 {form.id ? "수정" : "등록"}
-              </button>
+              </Button>
               {form.id ? (
-                <button
-                  onClick={() => setForm({ ...EMPTY })}
-                  className="h-9 rounded-md bg-secondary px-3 text-sm"
-                >
+                <Button variant="outline" onClick={() => setForm({ ...EMPTY })}>
                   취소
-                </button>
+                </Button>
               ) : null}
             </div>
           </div>
         </section>
 
-        {/* 목록 */}
-        <section className="rounded-lg border p-4">
+        {/* 목록 — 조회 전용 영역, 등록 폼과 대비되도록 강조 없는 평평한 카드 */}
+        <section className="rounded-xl border bg-card p-4">
           <div className="mb-3 flex flex-wrap items-center gap-2">
             <h3 className="text-sm font-semibold">
               도서 목록{" "}
@@ -223,16 +270,19 @@ function BooksPage() {
                 ({books.length})
               </span>
             </h3>
-            <input
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="제목·저자 검색"
-              className="h-8 w-48 rounded-md border px-3 text-sm"
-            />
+            <div className="relative ml-auto w-full sm:w-56">
+              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder="제목·저자 검색"
+                className="h-8 pl-9"
+              />
+            </div>
             <select
               value={cat}
               onChange={(e) => setCat(e.target.value)}
-              className="h-8 rounded-md border px-2 text-sm"
+              className={`h-8 w-auto shrink-0 ${selectClass}`}
             >
               <option value="">전체 분야</option>
               {CATEGORIES.map((c) => (
@@ -243,94 +293,120 @@ function BooksPage() {
             </select>
           </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="text-left text-xs text-muted-foreground">
-                <tr>
-                  <th className="pb-2 pr-3">제목</th>
-                  <th className="pb-2 pr-3">저자</th>
-                  <th className="pb-2 pr-3">분야</th>
-                  <th className="pb-2 pr-3">서가</th>
-                  <th className="pb-2 pr-3">재고</th>
-                  <th className="pb-2 pr-3"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {books.map((b) => (
-                  <tr key={b.id} className="border-t">
-                    <td className="py-2 pr-3">
-                      {b.cover} {b.title_kr}
-                    </td>
-                    <td className="py-2 pr-3 text-xs">{b.author}</td>
-                    <td className="py-2 pr-3 text-xs">
-                      {CATEGORY_LABEL[b.category] ?? b.category}
-                    </td>
-                    <td className="py-2 pr-3 text-xs">
-                      {b.zone} {b.shelf}
-                    </td>
-                    <td className="py-2 pr-3">
-                      <span
-                        className={`rounded px-1.5 py-0.5 text-xs font-bold ${
-                          b.in_stock
-                            ? "bg-emerald-500/15 text-emerald-700"
-                            : "bg-muted text-muted-foreground"
-                        }`}
-                      >
-                        {b.in_stock ? "가능" : "대출중"}
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>제목</TableHead>
+                <TableHead>저자</TableHead>
+                <TableHead>분야</TableHead>
+                <TableHead>서가</TableHead>
+                <TableHead>재고</TableHead>
+                <TableHead className="text-right">작업</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {books.map((b) => (
+                <TableRow key={b.id}>
+                  <TableCell className="font-medium">
+                    {b.cover} {b.title_kr}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {b.author}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {CATEGORY_LABEL[b.category] ?? b.category}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {b.zone} {b.shelf}
+                  </TableCell>
+                  <TableCell>
+                    {b.in_stock ? (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/25 px-2.5 py-1 text-xs font-bold text-emerald-800">
+                        <CheckCircle2 className="size-3.5" />
+                        가능
                       </span>
-                    </td>
-                    <td className="py-2 pr-3">
-                      <div className="flex gap-1">
-                        <button
-                          onClick={() =>
-                            setForm({
-                              id: b.id,
-                              title_kr: b.title_kr,
-                              author: b.author,
-                              category: b.category,
-                              cover: b.cover,
-                              zone: b.zone,
-                              shelf: b.shelf,
-                              in_stock: b.in_stock,
-                            })
-                          }
-                          className="rounded bg-secondary px-2 py-1 text-xs"
-                        >
-                          수정
-                        </button>
-                        <button
-                          onClick={() =>
-                            act(() => ops.deleteBook(b.id), "삭제했습니다")
-                          }
-                          className="rounded bg-rose-500/10 px-2 py-1 text-xs text-rose-700"
-                        >
-                          삭제
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-                {books.length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="py-3 text-muted-foreground">
-                      도서가 없습니다
-                    </td>
-                  </tr>
-                ) : null}
-              </tbody>
-            </table>
-          </div>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/25 px-2.5 py-1 text-xs font-bold text-amber-800">
+                        <XCircle className="size-3.5" />
+                        대출중
+                      </span>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex justify-end gap-1">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label="수정"
+                        onClick={() =>
+                          setForm({
+                            id: b.id,
+                            title_kr: b.title_kr,
+                            author: b.author,
+                            category: b.category,
+                            cover: b.cover,
+                            zone: b.zone,
+                            shelf: b.shelf,
+                            in_stock: b.in_stock,
+                          })
+                        }
+                      >
+                        <Pencil className="size-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label="삭제"
+                        onClick={() => setDeleteTarget(b)}
+                      >
+                        <Trash2 className="size-4 text-destructive" />
+                      </Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+              {books.length === 0 ? (
+                <TableRow>
+                  <TableCell
+                    colSpan={6}
+                    className="py-6 text-center text-muted-foreground"
+                  >
+                    도서가 없습니다
+                  </TableCell>
+                </TableRow>
+              ) : null}
+            </TableBody>
+          </Table>
         </section>
       </div>
+
+      <ConfirmDeleteDialog
+        open={!!deleteTarget}
+        onOpenChange={(o) => !o && setDeleteTarget(null)}
+        title="도서 삭제"
+        description={
+          <>«{deleteTarget?.title_kr}» 도서를 삭제할까요? 되돌릴 수 없습니다.</>
+        }
+        onConfirm={() => void removeBook()}
+        busy={deleting}
+      />
     </AdminShell>
   );
 }
 
-function L({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
   return (
-    <label className="space-y-1">
-      <span className="text-xs font-medium">{label}</span>
+    <div className="space-y-1.5">
+      <Label className="text-xs font-medium text-muted-foreground">
+        {label}
+      </Label>
       {children}
-    </label>
+    </div>
   );
 }

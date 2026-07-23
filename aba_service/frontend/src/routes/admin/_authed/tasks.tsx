@@ -40,6 +40,16 @@ const STATUS_TONE: Record<string, string> = {
   CANCELLED: "bg-muted text-muted-foreground",
 };
 
+/** 진행 중인 작업이 먼저 보이도록 — 현장에서 지금 뭘 봐야 하는지가 목록 위에 온다. */
+const STATUS_PRIORITY: Record<string, number> = {
+  EXECUTING: 0,
+  ASSIGNED: 1,
+  PENDING: 2,
+  FAILED: 3,
+  COMPLETED: 4,
+  CANCELLED: 5,
+};
+
 /** 목적지 칸의 이름 — 종류마다 뜻이 다르다. 없으면 그냥 「목적지」. */
 const DROPOFF_LABEL: Record<string, string> = {
   transfer: "목적지 — 전달할 곳",
@@ -79,6 +89,12 @@ function TasksPage() {
   // 사서가 "이 책 어느 서가더라"를 외우지 않아도 되고, 오타로 엉뚱한 정점에 보내는 일도 없다.
   const [books, setBooks] = useState<AdminBook[]>([]);
   const [pickupAuto, setPickupAuto] = useState<string | null>(null);
+
+  // 상태 우선 정렬 — 지금 뛰고 있는 작업이 큐 맨 위로 온다.
+  const sortedOrders = [...orders].sort(
+    (a, b) =>
+      (STATUS_PRIORITY[a.status] ?? 9) - (STATUS_PRIORITY[b.status] ?? 9),
+  );
 
   const load = useCallback(async () => {
     try {
@@ -355,7 +371,7 @@ function TasksPage() {
                     </td>
                   </tr>
                 ) : (
-                  orders.map((o) => {
+                  sortedOrders.map((o) => {
                     const pct = o.leg_count
                       ? Math.round((o.leg_idx / o.leg_count) * 100)
                       : 0;

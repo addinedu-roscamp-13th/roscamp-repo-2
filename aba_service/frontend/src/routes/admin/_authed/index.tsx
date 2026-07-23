@@ -89,55 +89,62 @@ function DashboardPage() {
             })}
           </div>
 
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">최근 14일 대화 추이</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <ConversationsChart data={data?.conversations_per_day ?? []} />
-            </CardContent>
-          </Card>
+          <div className="grid gap-4 xl:grid-cols-3">
+            <Card className="xl:col-span-2">
+              <CardHeader>
+                <CardTitle className="text-base">최근 14일 대화 추이</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <ConversationsChart data={data?.conversations_per_day ?? []} />
+              </CardContent>
+            </Card>
 
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">최근 등록된 관리자</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>아이디</TableHead>
-                    <TableHead>이름</TableHead>
-                    <TableHead>권한</TableHead>
-                    <TableHead>등록일</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {(data?.recent_admins ?? []).map((a) => (
-                    <TableRow key={a.id}>
-                      <TableCell className="font-medium">{a.username}</TableCell>
-                      <TableCell>{a.full_name ?? "—"}</TableCell>
-                      <TableCell>
-                        <Badge variant={a.role === "superadmin" ? "default" : "secondary"}>
-                          {a.role}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-muted-foreground">
-                        {fmtDate(a.created_at)}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                  {!isLoading && (data?.recent_admins?.length ?? 0) === 0 && (
+            <Card className="xl:col-span-1">
+              <CardHeader>
+                <CardTitle className="text-base">최근 등록된 관리자</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <Table>
+                  <TableHeader>
                     <TableRow>
-                      <TableCell colSpan={4} className="text-center text-muted-foreground">
-                        데이터가 없습니다.
-                      </TableCell>
+                      <TableHead>아이디</TableHead>
+                      <TableHead>권한</TableHead>
+                      <TableHead>등록일</TableHead>
                     </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
+                  </TableHeader>
+                  <TableBody>
+                    {(data?.recent_admins ?? []).map((a) => (
+                      <TableRow key={a.id}>
+                        <TableCell className="font-medium">
+                          {a.username}
+                          {a.full_name ? (
+                            <span className="block text-xs font-normal text-muted-foreground">
+                              {a.full_name}
+                            </span>
+                          ) : null}
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant={a.role === "superadmin" ? "default" : "secondary"}>
+                            {a.role}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {fmtDate(a.created_at)}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                    {!isLoading && (data?.recent_admins?.length ?? 0) === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={3} className="text-center text-muted-foreground">
+                          데이터가 없습니다.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          </div>
         </div>
       )}
     </AdminShell>

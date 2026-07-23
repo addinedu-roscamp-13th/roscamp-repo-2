@@ -247,4 +247,13 @@ export const ops = {
       tasks_by_status: { status: string; count: number }[];
       fleet_linked: boolean;
     }>("/api/admin/ops/stats"),
+  /** 작업로그 삭제 — soft delete(hidden=True). 서버가 재수입 안 되게 보장한다. */
+  deleteTaskLog: (id: number) =>
+    opsApi<void>(`/api/admin/ops/logs/${id}`, { method: "DELETE" }),
+  /** 침입이벤트 삭제 — hard delete. */
+  deleteIntrusionEvent: (id: number) =>
+    opsApi<void>(`/api/admin/ops/security/events/${id}`, { method: "DELETE" }),
+  /** 대여승인 이력 삭제 — REJECTED 또는 종료된 APPROVED만 가능(그 외 409). */
+  deleteApprovalHistory: (id: number) =>
+    opsApi<void>(`/api/admin/ops/approvals/${id}`, { method: "DELETE" }),
 };

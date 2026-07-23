@@ -391,6 +391,9 @@ class TaskLog(Base):
     leg_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="전체 다리 수")
     retries: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="재시도 횟수")
     reason: Mapped[str | None] = mapped_column(String(255), nullable=True, comment="실패 사유")
+    hidden: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, comment="사서 삭제(soft) 여부 — 감사 보존용"
+    )
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False, comment="기록 시각"
     )

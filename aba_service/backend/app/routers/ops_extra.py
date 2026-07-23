@@ -70,7 +70,7 @@ def logs(
 ):
     """작업 결과 로그. 조회할 때마다 FMS 를 한 번 훑어 새 종료 작업을 적재한다."""
     _sync_logs(db)
-    stmt = select(TaskLog)
+    stmt = select(TaskLog).where(TaskLog.hidden.is_(False))
     if status_filter:
         stmt = stmt.where(TaskLog.status == status_filter)
     rows = db.scalars(stmt.order_by(TaskLog.recorded_at.desc()).limit(limit)).all()
@@ -91,6 +91,24 @@ def logs(
     ]
 
 
+@router.delete("/logs/{log_id}")
+def delete_log(
+    log_id: int, db: Session = Depends(get_db), _: AdminUser = Depends(get_current_admin)
+):
+    """작업로그 삭제 — hard delete 아님. `_sync_logs()`가 task_id 존재만으로 "이미 있음"을
+
+    판단하므로, 행을 진짜로 지우면 FMS 가 여전히 같은 종료 task 를 돌려주는 한 다음 조회에서
+    그대로 부활한다(`app/routers/ops_extra.py::_sync_logs`). `hidden=True` 로만 표시해
+    목록 조회(`GET /logs`)에서 걸러내고, 감사를 위해 행 자체는 남긴다.
+    """
+    row = db.get(TaskLog, log_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="로그를 찾을 수 없습니다")
+    row.hidden = True
+    db.commit()
+    return {"ok": True}
+
+
 @router.get("/alerts")
 def alerts(db: Session = Depends(get_db), _: AdminUser = Depends(get_current_admin)):
     """작업 알림 — 방금 끝난 작업(완료/실패)과 미확인 침입."""
@@ -98,7 +116,7 @@ def alerts(db: Session = Depends(get_db), _: AdminUser = Depends(get_current_adm
     since = datetime.now() - timedelta(hours=12)
     recent = db.scalars(
         select(TaskLog)
-        .where(TaskLog.recorded_at >= since)
+        .where(TaskLog.recorded_at >= since, TaskLog.hidden.is_(False))
         .order_by(TaskLog.recorded_at.desc())
         .limit(30)
     ).all()
@@ -148,7 +166,7 @@ def reports(
     since = datetime.now() - timedelta(days=days)
     rows = db.execute(
         select(TaskLog.kind, TaskLog.status, func.count(TaskLog.id))
-        .where(TaskLog.recorded_at >= since)
+        .where(TaskLog.recorded_at >= since, TaskLog.hidden.is_(False))
         .group_by(TaskLog.kind, TaskLog.status)
     ).all()
 
@@ -174,7 +192,11 @@ def reports(
 
     failures = db.scalars(
         select(TaskLog)
-        .where(TaskLog.recorded_at >= since, TaskLog.status == "FAILED")
+        .where(
+            TaskLog.recorded_at >= since,
+            TaskLog.status == "FAILED",
+            TaskLog.hidden.is_(False),
+        )
         .order_by(TaskLog.recorded_at.desc())
         .limit(20)
     ).all()
@@ -267,6 +289,19 @@ def report_intrusion(body: IntrusionReport, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(e)
     return {"id": e.id, "detected_at": e.detected_at}
+
+
+@router.delete("/security/events/{event_id}")
+def delete_intrusion_event(
+    event_id: int, db: Session = Depends(get_db), _: AdminUser = Depends(get_current_admin)
+):
+    """침입이벤트 하드 삭제. `clip_path` 가 가리키는 파일 자체는 지우지 않는다(범위 밖)."""
+    e = db.get(IntrusionEvent, event_id)
+    if e is None:
+        raise HTTPException(status_code=404, detail="이벤트를 찾을 수 없습니다")
+    db.delete(e)
+    db.commit()
+    return {"ok": True}
 
 
 @router.post("/security/events/{event_id}/ack")

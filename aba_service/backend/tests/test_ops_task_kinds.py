@@ -284,6 +284,23 @@ def test_로봇을_지정하면_배차까지_한다(client, admin_auth, fake_fms
     assert fake_fms.assigns == [("t1", "pinky2")]
 
 
+def test_로봇_미지정시_배차하지_않는다(client, admin_auth, fake_fms):
+    """관측된 현재 동작: 로봇을 지정하지 않으면 assign_order 를 부르지 않고 task 만
+    생성된다(assigned=None). 이는 보장된 계약이 아니라 현재 코드에서 관측되는
+    동작일 뿐이다 — 나중에 FMS 쪽에 자동 배차가 추가돼도 이 테스트가 깨질 필요는
+    없다. "여기서는 assign_order 가 호출되지 않았다"만 못박을 뿐, "자동 배차가
+    절대 있을 수 없다"를 못박는 게 아니다.
+    """
+    res = client.post(
+        TASKS,
+        json={"kind": "dispatch", "dropoff": "입구"},
+        headers=admin_auth,
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["assigned"] is None
+    assert fake_fms.assigns == []
+
+
 def test_인증_없이는_지시할_수_없다(client, fake_fms):
     assert client.post(TASKS, json={"kind": "tidy", "dropoff": "입구"}).status_code == 401
     assert fake_fms.orders == []

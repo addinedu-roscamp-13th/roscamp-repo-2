@@ -96,6 +96,15 @@ ensure_venv() {
   fi
 }
 
+# MariaDB(시스템 서비스)가 안 떠 있으면 시작한다. 이미 떠 있으면 아무것도 안 한다.
+# systemctl start 는 sudo 필요 — 비밀번호 프롬프트가 뜰 수 있다(인터랙티브 실행 전제).
+ensure_mariadb() {
+  systemctl is-active --quiet mariadb 2>/dev/null && return 0
+  echo "[db] MariaDB 가 안 떠 있음 → 시작 시도 (sudo 비밀번호가 필요할 수 있습니다)"
+  sudo systemctl start mariadb \
+    || die "MariaDB 시작 실패. 수동: sudo systemctl start mariadb"
+}
+
 # 이 머신의 LAN IP 첫 번째. URL 안내에 쓴다.
 lan_ip() { hostname -I 2>/dev/null | awk '{print $1}'; }
 

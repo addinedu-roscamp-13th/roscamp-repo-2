@@ -1,7 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
+import { toast } from "sonner";
 
 import { AdminShell } from "@/components/admin/AdminShell";
+import { ConfirmDeleteDialog } from "@/components/admin/ConfirmDeleteDialog";
 import { ops, type ApprovalRow } from "@/lib/ops-api";
 
 export const Route = createFileRoute("/admin/_authed/approvals")({
@@ -27,6 +29,8 @@ function ApprovalsPage() {
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<number | null>(null);
   const [reason, setReason] = useState<Record<number, string>>({});
+  const [deleteTarget, setDeleteTarget] = useState<ApprovalRow | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -66,6 +70,26 @@ function ApprovalsPage() {
     }
   };
 
+  // 재고 있어서 바로 승인 가능한 신청을 위로 — 지금 당장 처리할 수 있는 것부터 본다.
+  const sortedPending = [...pending].sort(
+    (a, b) => Number(b.book_in_stock) - Number(a.book_in_stock),
+  );
+
+  const removeHistory = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await ops.deleteApprovalHistory(deleteTarget.id);
+      toast.success("이력을 삭제했습니다");
+      setDeleteTarget(null);
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "삭제 실패");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   return (
     <AdminShell title="대여 승인">
       <div className="space-y-4">
@@ -98,7 +122,7 @@ function ApprovalsPage() {
                 대기 중인 대여 신청이 없습니다
               </p>
             ) : (
-              pending.map((r) => (
+              sortedPending.map((r) => (
                 <div key={r.id} className="rounded-md border p-3">
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                     <span className="text-sm font-semibold">
@@ -168,12 +192,13 @@ function ApprovalsPage() {
                   <th className="pb-2 pr-3">주문</th>
                   <th className="pb-2 pr-3">처리</th>
                   <th className="pb-2 pr-3">사유</th>
+                  <th className="pb-2 pr-3"></th>
                 </tr>
               </thead>
               <tbody>
                 {recent.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="py-3 text-muted-foreground">
+                    <td colSpan={7} className="py-3 text-muted-foreground">
                       처리 내역이 없습니다
                     </td>
                   </tr>
@@ -205,6 +230,14 @@ function ApprovalsPage() {
                       <td className="py-2 pr-3 text-xs text-muted-foreground">
                         {r.reject_reason ?? "—"}
                       </td>
+                      <td className="py-2 pr-3">
+                        <button
+                          onClick={() => setDeleteTarget(r)}
+                          className="rounded bg-rose-500/10 px-2 py-1 text-xs font-semibold text-rose-700"
+                        >
+                          삭제
+                        </button>
+                      </td>
                     </tr>
                   ))
                 )}
@@ -213,6 +246,20 @@ function ApprovalsPage() {
           </div>
         </section>
       </div>
+
+      <ConfirmDeleteDialog
+        open={!!deleteTarget}
+        onOpenChange={(o) => !o && setDeleteTarget(null)}
+        title="승인 이력 삭제"
+        description={
+          <>
+            «{deleteTarget?.book_title}» 이력을 삭제할까요? 진행 중인 요청은
+            삭제할 수 없습니다(그럴 경우 실패 메시지가 표시됩니다).
+          </>
+        }
+        onConfirm={() => void removeHistory()}
+        busy={deleting}
+      />
     </AdminShell>
   );
 }

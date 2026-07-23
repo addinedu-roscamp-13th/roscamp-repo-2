@@ -1,7 +1,26 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type FormEvent,
+} from "react";
+import { Pencil, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 
 import { AdminShell } from "@/components/admin/AdminShell";
+import { ConfirmDeleteDialog } from "@/components/admin/ConfirmDeleteDialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 export const Route = createFileRoute("/admin/_authed/members")({
   head: () => ({ meta: [{ title: "LiBi Admin — 회원 · 대여/반납" }] }),
@@ -85,6 +104,23 @@ function MembersPage() {
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // 회원 등록
+  const [newUsername, setNewUsername] = useState("");
+  const [newFullName, setNewFullName] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [creating, setCreating] = useState(false);
+
+  // 회원 수정(다이얼로그)
+  const [editing, setEditing] = useState<MemberRow | null>(null);
+  const [editFullName, setEditFullName] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  // 회원 비활성화(확인 다이얼로그)
+  const [deactivateTarget, setDeactivateTarget] = useState<MemberRow | null>(
+    null,
+  );
+  const [deactivating, setDeactivating] = useState(false);
+
   const load = useCallback(async () => {
     setErr(null);
     try {
@@ -128,6 +164,72 @@ function MembersPage() {
     }
   };
 
+  const createMember = async (e: FormEvent) => {
+    e.preventDefault();
+    setCreating(true);
+    try {
+      await api("/api/admin/circulation/members", {
+        method: "POST",
+        body: JSON.stringify({
+          username: newUsername.trim(),
+          full_name: newFullName.trim() || undefined,
+          password: newPassword,
+        }),
+      });
+      toast.success(`«${newUsername}» 회원을 등록했습니다`);
+      setNewUsername("");
+      setNewFullName("");
+      setNewPassword("");
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "회원 등록에 실패했습니다");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const openEdit = (m: MemberRow) => {
+    setEditing(m);
+    setEditFullName(m.full_name ?? "");
+  };
+
+  const saveEdit = async () => {
+    if (!editing) return;
+    setSaving(true);
+    try {
+      await api(`/api/admin/circulation/members/${editing.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ full_name: editFullName.trim() || null }),
+      });
+      toast.success("회원 정보를 수정했습니다");
+      setEditing(null);
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "수정에 실패했습니다");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const confirmDeactivate = async () => {
+    if (!deactivateTarget) return;
+    setDeactivating(true);
+    try {
+      await api(`/api/admin/circulation/members/${deactivateTarget.id}`, {
+        method: "DELETE",
+      });
+      toast.success(
+        `«${deactivateTarget.full_name ?? deactivateTarget.username}» 회원을 비활성화했습니다`,
+      );
+      setDeactivateTarget(null);
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "비활성화에 실패했습니다");
+    } finally {
+      setDeactivating(false);
+    }
+  };
+
   const memberLoans = useMemo(
     () =>
       selected === null ? [] : loans.filter((l) => l.member_id === selected),
@@ -166,9 +268,58 @@ function MembersPage() {
         ) : null}
 
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
-          {/* 회원 목록 */}
+          {/* 회원 관리: 등록 + 목록(수정/비활성화) */}
           <section className="rounded-lg border p-4">
-            <h3 className="mb-3 text-sm font-semibold">회원 목록</h3>
+            <h3 className="mb-3 text-sm font-semibold">회원 관리</h3>
+
+            {/* 회원 등록 */}
+            <form
+              onSubmit={createMember}
+              className="mb-4 grid gap-2 rounded-md border border-dashed p-3 sm:grid-cols-3"
+            >
+              <div className="sm:col-span-1">
+                <Label htmlFor="new-username" className="text-xs">
+                  아이디
+                </Label>
+                <Input
+                  id="new-username"
+                  value={newUsername}
+                  onChange={(e) => setNewUsername(e.target.value)}
+                  required
+                  className="mt-1 h-8 text-sm"
+                />
+              </div>
+              <div className="sm:col-span-1">
+                <Label htmlFor="new-fullname" className="text-xs">
+                  이름 (선택)
+                </Label>
+                <Input
+                  id="new-fullname"
+                  value={newFullName}
+                  onChange={(e) => setNewFullName(e.target.value)}
+                  className="mt-1 h-8 text-sm"
+                />
+              </div>
+              <div className="sm:col-span-1">
+                <Label htmlFor="new-password" className="text-xs">
+                  비밀번호
+                </Label>
+                <Input
+                  id="new-password"
+                  type="password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  required
+                  className="mt-1 h-8 text-sm"
+                />
+              </div>
+              <div className="sm:col-span-3">
+                <Button type="submit" size="sm" disabled={creating}>
+                  {creating ? "등록 중..." : "회원 등록"}
+                </Button>
+              </div>
+            </form>
+
             {loading ? (
               <p className="text-sm text-muted-foreground">불러오는 중...</p>
             ) : (
@@ -178,8 +329,10 @@ function MembersPage() {
                     <tr>
                       <th className="pb-2 pr-3">아이디</th>
                       <th className="pb-2 pr-3">이름</th>
+                      <th className="pb-2 pr-3">상태</th>
                       <th className="pb-2 pr-3">대출중</th>
                       <th className="pb-2 pr-3">누적</th>
+                      <th className="pb-2 pr-3">관리</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -194,18 +347,57 @@ function MembersPage() {
                         <td className="py-2 pr-3 font-mono text-xs">
                           {m.username}
                         </td>
-                        <td className="py-2 pr-3">{m.full_name ?? "—"}</td>
+                        <td className="py-2 pr-3">{m.full_name ?? "-"}</td>
+                        <td className="py-2 pr-3">
+                          <span
+                            className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                              m.is_active
+                                ? "bg-emerald-500/15 text-emerald-700"
+                                : "bg-muted text-muted-foreground"
+                            }`}
+                          >
+                            {m.is_active ? "활성" : "비활성"}
+                          </span>
+                        </td>
                         <td className="py-2 pr-3 tabular-nums">
                           {m.active_loans}
                         </td>
                         <td className="py-2 pr-3 tabular-nums text-muted-foreground">
                           {m.total_loans}
                         </td>
+                        <td className="py-2 pr-3">
+                          <div className="flex gap-1">
+                            <button
+                              type="button"
+                              aria-label={`${m.full_name ?? m.username} 정보 수정`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openEdit(m);
+                              }}
+                              className="rounded p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </button>
+                            {m.is_active ? (
+                              <button
+                                type="button"
+                                aria-label={`${m.full_name ?? m.username} 비활성화`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setDeactivateTarget(m);
+                                }}
+                                className="rounded p-1 text-rose-700 transition hover:bg-rose-500/10"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            ) : null}
+                          </div>
+                        </td>
                       </tr>
                     ))}
                     {members.length === 0 ? (
                       <tr>
-                        <td colSpan={4} className="py-3 text-muted-foreground">
+                        <td colSpan={6} className="py-3 text-muted-foreground">
                           회원이 없습니다
                         </td>
                       </tr>
@@ -336,6 +528,52 @@ function MembersPage() {
           </section>
         </div>
       </div>
+
+      {/* 회원 수정 다이얼로그 */}
+      <Dialog open={!!editing} onOpenChange={(o) => !o && setEditing(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>회원 정보 수정</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="edit-fullname">이름</Label>
+            <Input
+              id="edit-fullname"
+              value={editFullName}
+              onChange={(e) => setEditFullName(e.target.value)}
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setEditing(null)}
+              disabled={saving}
+            >
+              취소
+            </Button>
+            <Button onClick={() => void saveEdit()} disabled={saving}>
+              {saving ? "저장 중..." : "저장"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 회원 비활성화 확인 */}
+      <ConfirmDeleteDialog
+        open={!!deactivateTarget}
+        onOpenChange={(o) => !o && setDeactivateTarget(null)}
+        title="회원 비활성화"
+        description={
+          <>
+            «{deactivateTarget?.full_name ?? deactivateTarget?.username}»
+            회원을 비활성화할까요? 처리 중인 대출/요청/예약이 있으면
+            실패합니다.
+          </>
+        }
+        confirmLabel="비활성화"
+        onConfirm={() => void confirmDeactivate()}
+        busy={deactivating}
+      />
     </AdminShell>
   );
 }

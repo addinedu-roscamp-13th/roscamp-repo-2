@@ -187,6 +187,28 @@ def test_이미_처리한_요청은_다시_처리할_수_없다(client, member_a
     assert fms.submit_count == 1  # 두 번 나가지 않는다
 
 
+def test_동시에_두번_승인해도_한번만_처리된다(
+    client, member_auth, admin_auth, book, fms, db_session
+):
+    """두 사서가 동시에 같은 요청을 승인한다고 가정 — 둘 다 `_get_pending` 의 PENDING 체크는
+    통과했다고 치고(원자적 claim 이 없으면 둘 다 dispatch 까지 간다), 실제로는 UPDATE ...
+    WHERE approval = PENDING 로 먼저 찜한 쪽만 dispatch 되고 나머지는 409 를 받아야 한다.
+    """
+    req_id = _pending_id(client, member_auth, book)
+
+    first = client.post(f"{APPROVALS}/{req_id}/approve", headers=admin_auth)
+    second = client.post(f"{APPROVALS}/{req_id}/approve", headers=admin_auth)
+
+    results = sorted([first.status_code, second.status_code])
+    assert results == [200, 409]
+    # ★ 핵심: 두 번째 요청이 먼저 처리됐어도 dispatch 는 정확히 한 번만 나간다.
+    assert fms.submit_count == 1
+
+    db_session.expire_all()
+    row = db_session.get(DeliveryRequest, req_id)
+    assert row.approval == "APPROVED"
+
+
 def test_없는_요청을_승인하면_404(client, admin_auth, fms):
     assert client.post(f"{APPROVALS}/999/approve", headers=admin_auth).status_code == 404
 
@@ -218,10 +240,99 @@ def test_신청_뒤_대여된_책은_승인할_수_없다(
     assert fms.submit_count == 0
 
 
+def test_승인_전_다른_경로로_대출되면_승인이_막힌다(
+    client, member_auth, admin_auth, member, book, fms, db_session
+):
+    """mock 없이 — circulation.borrow() 로 실제 재고를 내린 뒤 승인을 재확인한다(원자적 recheck)."""
+    req_id = _pending_id(client, member_auth, book)
+
+    borrow_res = client.post(
+        "/api/admin/circulation/borrow",
+        json={"member_id": member.id, "book_id": book.id},
+        headers=admin_auth,
+    )
+    assert borrow_res.status_code == 201, borrow_res.text
+
+    res = client.post(f"{APPROVALS}/{req_id}/approve", headers=admin_auth)
+    assert res.status_code == 409
+    assert "그 사이 대여된" in res.json()["detail"]
+    assert fms.submit_count == 0
+
+
 def test_회원_토큰으로는_승인_API에_못_들어간다(client, member_auth, admin_auth, book, fms):
     _pending_id(client, member_auth, book)
     assert client.get(APPROVALS, headers=member_auth).status_code == 401
     assert client.get(APPROVALS).status_code == 401
+
+
+# ── 승인 이력 삭제(상태 가드) ────────────────────────────────────────────────
+# 이 표는 member/book/승인결정/진행중 FMS task 를 잇는 링크다 — 아무 때나 하드 삭제를
+# 허용하면 로봇이 계속 도는데 회원 화면에서만 사라지는 상황이 생긴다.
+
+
+def _approved_id(client, member_auth, admin_auth, book) -> int:
+    req_id = _pending_id(client, member_auth, book)
+    res = client.post(f"{APPROVALS}/{req_id}/approve", headers=admin_auth)
+    assert res.status_code == 200, res.text
+    return req_id
+
+
+def test_반려된_요청은_삭제할_수_있다(
+    client, member_auth, admin_auth, book, fms, db_session
+):
+    req_id = _pending_id(client, member_auth, book)
+    client.post(f"{APPROVALS}/{req_id}/reject", json={}, headers=admin_auth)
+
+    res = client.delete(f"{APPROVALS}/{req_id}", headers=admin_auth)
+    assert res.status_code == 204, res.text
+    db_session.expire_all()
+    assert db_session.get(DeliveryRequest, req_id) is None
+
+
+def test_승인대기_요청은_삭제할_수_없다(client, member_auth, admin_auth, book, fms):
+    req_id = _pending_id(client, member_auth, book)
+    res = client.delete(f"{APPROVALS}/{req_id}", headers=admin_auth)
+    assert res.status_code == 409
+    assert "진행 중인 요청" in res.json()["detail"]
+
+
+def test_승인됐지만_FMS_작업이_진행중이면_삭제할_수_없다(
+    client, member_auth, admin_auth, book, fms, monkeypatch
+):
+    req_id = _approved_id(client, member_auth, admin_auth, book)
+
+    from app.routers import approvals
+
+    monkeypatch.setattr(
+        approvals.fms_client,
+        "list_orders",
+        lambda: (True, [{"id": "t-1", "status": "EXECUTING"}]),
+    )
+    res = client.delete(f"{APPROVALS}/{req_id}", headers=admin_auth)
+    assert res.status_code == 409
+    assert "진행 중인 요청" in res.json()["detail"]
+
+
+def test_승인되고_FMS_작업이_종료됐으면_삭제할_수_있다(
+    client, member_auth, admin_auth, book, fms, db_session, monkeypatch
+):
+    req_id = _approved_id(client, member_auth, admin_auth, book)
+
+    from app.routers import approvals
+
+    monkeypatch.setattr(
+        approvals.fms_client,
+        "list_orders",
+        lambda: (True, [{"id": "t-1", "status": "COMPLETED"}]),
+    )
+    res = client.delete(f"{APPROVALS}/{req_id}", headers=admin_auth)
+    assert res.status_code == 204, res.text
+    db_session.expire_all()
+    assert db_session.get(DeliveryRequest, req_id) is None
+
+
+def test_없는_승인이력_삭제하면_404(client, admin_auth):
+    assert client.delete(f"{APPROVALS}/9999", headers=admin_auth).status_code == 404
 
 
 # ── 회원 화면에 보이는 상태 ──────────────────────────────────────────────────

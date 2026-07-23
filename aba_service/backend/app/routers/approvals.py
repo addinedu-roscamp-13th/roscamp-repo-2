@@ -16,13 +16,15 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from .. import fms_client
 from ..database import get_db
 from ..models import AdminUser, Book, DeliveryRequest, Member
 from ..security import get_current_admin
 from .delivery import APPROVED, PENDING, REJECTED, dispatch_to_fms
+from .ops_extra import TERMINAL as _FMS_TERMINAL_STATUSES
 
 router = APIRouter(prefix="/api/admin/ops", tags=["ops-approvals"])
 
@@ -100,19 +102,49 @@ def approve(
 ):
     """승인 — 이때 FMS 주문이 생기고 로봇이 움직인다."""
     row = _get_pending(db, req_id)
-    book = db.get(Book, row.book_id)
+    # 이 요청 자체를 먼저 원자적으로 "내가 처리한다"고 찜한다 — read-then-write 로 두면
+    # 동시에 들어온 두 번의 approve 호출이 둘 다 위 `_get_pending` 의 PENDING 체크를
+    # 통과한 뒤 둘 다 dispatch 까지 갈 수 있다. rowcount == 0 이면 그 사이 누가 먼저
+    # 이 요청을 처리(승인/반려)한 것이다.
+    claimed = db.execute(
+        update(DeliveryRequest)
+        .where(DeliveryRequest.id == row.id, DeliveryRequest.approval == PENDING)
+        .values(approval=APPROVED)
+    )
+    if claimed.rowcount == 0:
+        raise HTTPException(status_code=409, detail="이미 처리된 요청입니다")
+    # `SELECT ... FOR UPDATE` 로 잠가서 읽는다 — 이 승인이 dispatch 를 결정하는 바로 그
+    # 순간의 커밋된 값을 봐야 한다. 여기서는 in_stock 을 직접 내리지 않는다(그건
+    # circulation.borrow() 의 일이다 — 실물 인도 확정 시점에만 내려간다). 그래서
+    # borrow() 처럼 조건-그대로-UPDATE 로 반영할 대상이 없고, 값이 그대로인 no-op
+    # UPDATE 는 MariaDB 기본 드라이버(pymysql)가 "matched" 가 아니라 "changed" 행만
+    # rowcount 로 세기 때문에 항상 0으로 나와 오탐 409를 낸다 — 그래서 락 읽기를 쓴다.
+    # (SQLite 는 FOR UPDATE 를 지원하지 않고 조용히 무시하므로 테스트 인프라는 그대로 재사용된다.)
+    book = db.execute(
+        select(Book).where(Book.id == row.book_id).with_for_update()
+    ).scalar_one_or_none()
     if book is None:
+        # 위에서 이미 approval=APPROVED 로 찜해 뒀다 — 여기서 실패하면 그 찜을 되돌린다.
+        db.rollback()
         raise HTTPException(status_code=409, detail="도서가 삭제되어 승인할 수 없습니다")
     if not book.in_stock:
         # 신청 이후에 누가 빌려간 경우 — 로봇이 없는 책을 찾으러 가면 안 된다.
+        db.rollback()
         raise HTTPException(
             status_code=409, detail="그 사이 대여된 도서입니다. 반려하고 예약을 안내하세요."
         )
 
     member = db.get(Member, row.member_id)
     # FMS 가 못 받으면 여기서 503 이 올라가고 행은 PENDING 그대로 남는다(fail-closed).
-    row.fms_task_id = dispatch_to_fms(book, row.dropoff, member.username if member else "")
-    row.approval = APPROVED
+    # 위 book 행 락이 이 호출(네트워크 왕복) 동안에도 계속 잡혀 있다 — 다만
+    # fms_client.TIMEOUT_SEC(현재 8초)로 상한이 걸려 있어 MariaDB 기본
+    # innodb_lock_wait_timeout(~50초)보다 충분히 짧다. 의도된, 상한이 있는 트레이드오프.
+    try:
+        row.fms_task_id = dispatch_to_fms(book, row.dropoff, member.username if member else "")
+    except HTTPException:
+        # 위 approval=APPROVED 찜도 함께 되돌려야 승인 대기 그대로 남는다(fail-closed).
+        db.rollback()
+        raise
     row.decided_at = datetime.now()
     row.decided_by = admin.username
     row.reject_reason = None
@@ -137,3 +169,44 @@ def reject(
     db.commit()
     db.refresh(row)
     return _row_out(row, db.get(Book, row.book_id), db.get(Member, row.member_id))
+
+
+def _fms_task_terminated(task_id: str) -> bool:
+    """FMS 작업이 종료 상태(`ops_extra.TERMINAL`)인지 본다.
+
+    조회 자체가 실패하거나(FMS 다운) 목록에서 못 찾으면 안전하게 "아직 진행 중"으로
+    본다(fail-closed) — 로봇이 계속 도는데 이력만 지워지는 상황보다는 삭제를 한 번 더
+    거부하는 쪽이 낫다.
+    """
+    ok, orders = fms_client.list_orders()
+    if not ok:
+        return False
+    return any(
+        o.get("id") == task_id and o.get("status") in _FMS_TERMINAL_STATUSES
+        for o in orders
+    )
+
+
+@router.delete("/approvals/{req_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_approval_history(
+    req_id: int,
+    db: Session = Depends(get_db),
+    _: AdminUser = Depends(get_current_admin),
+):
+    """대여승인 이력 삭제 — 진짜 hard delete(이 표는 부활 버그가 없다, `ops.py` 작업로그와 다르다).
+
+    이 표는 단순 로그가 아니라 member/book/승인결정/진행중 FMS task 를 잇는 링크다.
+    `REJECTED`(주문이 애초에 없었다)는 언제나 지울 수 있지만, `APPROVED`는 연결된 FMS
+    작업이 종료 상태일 때만 지운다 — 아니면 로봇은 계속 움직이는데 회원/사서 화면에서만
+    이력이 사라지는 상황이 생긴다.
+    """
+    row = db.get(DeliveryRequest, req_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="요청을 찾을 수 없습니다")
+    deletable = row.approval == REJECTED or (
+        row.approval == APPROVED and _fms_task_terminated(row.fms_task_id)
+    )
+    if not deletable:
+        raise HTTPException(status_code=409, detail="진행 중인 요청은 삭제할 수 없습니다")
+    db.delete(row)
+    db.commit()

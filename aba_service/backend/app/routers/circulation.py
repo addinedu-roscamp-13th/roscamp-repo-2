@@ -12,12 +12,12 @@ from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import AdminUser, Book, Loan, Member, Reservation
-from ..security import get_current_admin
+from ..models import AdminUser, Book, DeliveryRequest, Loan, Member, Reservation
+from ..security import get_current_admin, hash_password
 
 router = APIRouter(prefix="/api/admin/circulation", tags=["circulation"])
 
@@ -53,6 +53,16 @@ class BorrowRequest(BaseModel):
     book_id: int
 
 
+class CreateMemberRequest(BaseModel):
+    username: str
+    full_name: str | None = None
+    password: str
+
+
+class UpdateMemberRequest(BaseModel):
+    full_name: str | None = None
+
+
 @router.get("/members", response_model=list[MemberRow])
 def list_members(
     db: Session = Depends(get_db), _: AdminUser = Depends(get_current_admin)
@@ -83,6 +93,119 @@ def list_members(
         )
         for m in rows
     ]
+
+
+def _member_row(db: Session, member: Member) -> MemberRow:
+    active_loans = db.scalar(
+        select(func.count(Loan.id)).where(
+            Loan.member_id == member.id, Loan.status == "borrowed"
+        )
+    )
+    total_loans = db.scalar(
+        select(func.count(Loan.id)).where(Loan.member_id == member.id)
+    )
+    return MemberRow(
+        id=member.id,
+        username=member.username,
+        full_name=member.full_name,
+        is_active=bool(member.is_active),
+        created_at=member.created_at,
+        active_loans=active_loans or 0,
+        total_loans=total_loans or 0,
+    )
+
+
+@router.post(
+    "/members", response_model=MemberRow, status_code=status.HTTP_201_CREATED
+)
+def create_member(
+    body: CreateMemberRequest,
+    db: Session = Depends(get_db),
+    _: AdminUser = Depends(get_current_admin),
+):
+    """사서용 회원 등록 — 현장에서 신규 회원을 바로 만든다."""
+    if db.scalar(select(Member).where(Member.username == body.username)) is not None:
+        raise HTTPException(status_code=409, detail="이미 존재하는 아이디입니다")
+
+    member = Member(
+        username=body.username,
+        full_name=body.full_name,
+        hashed_password=hash_password(body.password),
+        is_active=True,
+    )
+    db.add(member)
+    db.commit()
+    db.refresh(member)
+    return _member_row(db, member)
+
+
+@router.patch("/members/{member_id}", response_model=MemberRow)
+def update_member(
+    member_id: int,
+    body: UpdateMemberRequest,
+    db: Session = Depends(get_db),
+    _: AdminUser = Depends(get_current_admin),
+):
+    """회원 정보 수정 — 이름만. 비활성화는 `DELETE`(가드 있음) 전용, 재활성/비번리셋은 범위 밖."""
+    member = db.get(Member, member_id)
+    if member is None:
+        raise HTTPException(status_code=404, detail="회원을 찾을 수 없습니다")
+
+    if body.full_name is not None:
+        member.full_name = body.full_name
+    db.commit()
+    db.refresh(member)
+    return _member_row(db, member)
+
+
+@router.delete("/members/{member_id}", response_model=MemberRow)
+def deactivate_member(
+    member_id: int,
+    db: Session = Depends(get_db),
+    _: AdminUser = Depends(get_current_admin),
+):
+    """회원 비활성화(soft delete) — 행은 지우지 않는다. 처리 중인 대출/요청/예약이 있으면 막는다."""
+    member = db.get(Member, member_id)
+    if member is None:
+        raise HTTPException(status_code=404, detail="회원을 찾을 수 없습니다")
+
+    if member.is_active:
+        has_open_loan = (
+            db.scalar(
+                select(Loan.id).where(
+                    Loan.member_id == member.id, Loan.status == "borrowed"
+                )
+            )
+            is not None
+        )
+        has_pending_request = (
+            db.scalar(
+                select(DeliveryRequest.id).where(
+                    DeliveryRequest.member_id == member.id,
+                    DeliveryRequest.approval == "PENDING_APPROVAL",
+                )
+            )
+            is not None
+        )
+        has_waiting_reservation = (
+            db.scalar(
+                select(Reservation.id).where(
+                    Reservation.member_id == member.id,
+                    Reservation.status == "waiting",
+                )
+            )
+            is not None
+        )
+        if has_open_loan or has_pending_request or has_waiting_reservation:
+            raise HTTPException(
+                status_code=409,
+                detail="처리 중인 대출/요청/예약이 있어 비활성화할 수 없습니다",
+            )
+        member.is_active = False
+        db.commit()
+        db.refresh(member)
+
+    return _member_row(db, member)
 
 
 def _loan_row(loan: Loan, member: Member | None, book: Book | None) -> LoanRow:
@@ -134,7 +257,16 @@ def borrow(
     book = db.get(Book, body.book_id)
     if book is None:
         raise HTTPException(status_code=404, detail="도서를 찾을 수 없습니다")
-    if not book.in_stock:
+
+    # 체크와 반영을 한 UPDATE로 묶는다 — read-then-write 로 두면 동시에 같은 책을
+    # 대출하는 두 세션이 둘 다 통과할 수 있다. rowcount == 0 이면 그 사이 누가 먼저
+    # 가져간 것이다(이미 in_stock=False).
+    result = db.execute(
+        update(Book)
+        .where(Book.id == book.id, Book.in_stock.is_(True))
+        .values(in_stock=False)
+    )
+    if result.rowcount == 0:
         raise HTTPException(status_code=409, detail="이미 대출 중인 도서입니다")
 
     loan = Loan(
@@ -144,8 +276,6 @@ def borrow(
         borrowed_at=datetime.now(),
         due_at=datetime.now() + timedelta(days=LOAN_DAYS),
     )
-    # 재고를 함께 내려야 회원 화면에서 요청이 막히고 예약으로 유도된다.
-    book.in_stock = False
     db.add(loan)
     db.commit()
     db.refresh(loan)

@@ -1,8 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
+import { toast } from "sonner";
 
 import { AdminShell } from "@/components/admin/AdminShell";
-import { opsApi } from "@/lib/ops-api";
+import { ConfirmDeleteDialog } from "@/components/admin/ConfirmDeleteDialog";
+import { ops, opsApi } from "@/lib/ops-api";
 
 export const Route = createFileRoute("/admin/_authed/security")({
   head: () => ({ meta: [{ title: "LiBi Admin — 야간 보안" }] }),
@@ -35,6 +37,7 @@ function SecurityPage() {
   const [state, setState] = useState<SecurityState | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
+  const [deleteId, setDeleteId] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -70,8 +73,24 @@ function SecurityPage() {
       .then(load)
       .catch((e) => setErr(e instanceof Error ? e.message : "처리 실패"));
 
+  const removeEvent = async () => {
+    if (deleteId == null) return;
+    try {
+      await ops.deleteIntrusionEvent(deleteId);
+      toast.success("기록을 삭제했습니다");
+      setDeleteId(null);
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "삭제 실패");
+    }
+  };
+
   const night = state?.mode === "night";
   const unacked = state?.events.filter((e) => !e.acknowledged) ?? [];
+  // 미확인 침입부터 — 야간 근무자가 지금 확인해야 할 것이 목록 위에 온다.
+  const sortedEvents = [...(state?.events ?? [])].sort(
+    (a, b) => Number(a.acknowledged) - Number(b.acknowledged),
+  );
 
   return (
     <AdminShell title="야간 보안">
@@ -144,7 +163,7 @@ function SecurityPage() {
             </p>
           ) : (
             <div className="space-y-2">
-              {state.events.map((e) => (
+              {sortedEvents.map((e) => (
                 <div
                   key={e.id}
                   className={`rounded-lg border p-3 ${
@@ -170,6 +189,12 @@ function SecurityPage() {
                         확인 처리
                       </button>
                     )}
+                    <button
+                      onClick={() => setDeleteId(e.id)}
+                      className={`rounded bg-rose-500/10 px-2 py-1 text-xs font-semibold text-rose-700 ${e.acknowledged ? "ml-auto" : ""}`}
+                    >
+                      삭제
+                    </button>
                   </div>
                   {e.note ? <p className="mt-1 text-xs">{e.note}</p> : null}
 
@@ -194,6 +219,14 @@ function SecurityPage() {
           )}
         </section>
       </div>
+
+      <ConfirmDeleteDialog
+        open={deleteId != null}
+        onOpenChange={(o) => !o && setDeleteId(null)}
+        title="감지 기록 삭제"
+        description="이 감지 기록을 삭제할까요? 이 작업은 되돌릴 수 없습니다."
+        onConfirm={() => void removeEvent()}
+      />
     </AdminShell>
   );
 }
