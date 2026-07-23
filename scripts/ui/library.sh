@@ -19,6 +19,8 @@ tmux has-session -t "$SESSION" 2>/dev/null && \
   die "'$SESSION' 세션이 이미 떠 있습니다. 먼저 ./kill.sh 로 정리하세요."
 
 need "$WEB/backend/run.sh" "aba_service 백엔드 실행 스크립트"
+# 백엔드가 DATABASE_URL(MariaDB)에 붙으므로, DB 서비스가 꺼져 있으면 여기서 먼저 살린다.
+ensure_mariadb
 # run.sh 는 .venv 를 자동 생성하지 않는다(없으면 시스템 python 폴백). 여기서 보장한다.
 ensure_venv "$WEB/backend"
 ensure_npm "$WEB/frontend"
