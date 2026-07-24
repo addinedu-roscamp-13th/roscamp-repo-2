@@ -20,3 +20,6 @@ setup-labi-db.sql
 # logs / os
 *.log
 .DS_Store
+
+# TanStack Start 빌드 캐시
+.tanstack

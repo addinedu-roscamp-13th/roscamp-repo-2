@@ -9,6 +9,7 @@ import {
   Library,
   ListChecks,
   Radar,
+  Search,
   ShieldAlert,
   WifiOff,
   X,
@@ -17,6 +18,7 @@ import {
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ComponentType,
@@ -25,14 +27,13 @@ import {
 import { toast } from "sonner";
 
 import { MiniDonut, WeeklyTaskBars } from "@/components/admin/charts";
+import {
+  LoanQueuePanel,
+  MemberPickerDialog,
+  type QuickMember,
+} from "@/components/admin/circulation";
 import { AdminShell } from "@/components/admin/AdminShell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import {
   CATEGORY_LABEL,
   ops,
@@ -73,6 +74,11 @@ type StatusStyle = {
 
 /** 작업 상태 — 완료/실패/취소는 진짜 좋고나쁨의 의미가 있어 상태색을 쓴다(카테고리색과 섞지 않음). */
 const TASK_STATUS_STYLE: Record<string, StatusStyle> = {
+  ASSIGNED: {
+    color: "#0ea5e9",
+    icon: Circle,
+    label: "배정",
+  },
   COMPLETED: {
     color: "var(--chart-status-good)",
     icon: CheckCircle2,
@@ -259,8 +265,8 @@ function DashboardPage() {
               title="도서관리"
               tone="indigo"
             >
-              <div className="grid h-full grid-cols-2 gap-3">
-                <div className="flex h-full min-h-0 flex-col gap-2">
+              <div className="grid h-full grid-cols-[1.4fr_1fr] gap-3">
+                <div className="flex h-full min-h-0 flex-col gap-1">
                   {stats ? (
                     <MiniDonut
                       title="도서 분포 (책 종류)"
@@ -587,55 +593,16 @@ function DashCard({
   );
 }
 
-interface QuickMember {
-  id: number;
-  username: string;
-  full_name: string | null;
-}
-
-interface QuickBook {
-  id: number;
-  title: string;
-  author: string;
-  zone: string;
-  in_stock: boolean;
-  unavailable: boolean;
-}
-
-interface QuickLoan {
-  id: number;
-  member_id: number;
-  member_name: string;
-  book_title: string;
-  status: string;
-  overdue: boolean;
-}
-
-const PANEL_TAB = {
-  active: "bg-primary text-primary-foreground",
-  inactive: "bg-muted text-muted-foreground hover:bg-muted/70",
-};
-
-const SLOT_COUNT = 3;
-
 /**
  * 대여/반납 숏컷 — 팝업 없이 회원관리 카드 왼쪽 안에서 진행하되(대여/반납 탭 토글),
- * 도서 고르기만 주소검색 팝업처럼 별도 창으로 뺀다: 슬롯 3칸 중 하나를 누르면
- * `BookPickerDialog` 가 뜨고, 거기서 "선택"을 누르면 슬롯에 담기고 창은 닫힌다.
- * 슬롯을 다 채운 뒤 "확정" 한 번으로 담긴 것 전부를 처리한다(DB 반영은 확정 시점에만).
+ * 회원 고르기는 검색바 느낌의 트리거를 눌러 팝업(`MemberPickerDialog`)에서
+ * 검색 → "선택" → 창 닫힘으로 담는다. 도서 고르기·큐잉·확정은 회원관리 페이지와
+ * 공유하는 `LoanQueuePanel`(components/admin/circulation.tsx)이 담당한다.
  */
 function MemberQuickPanel({ onDone }: { onDone: () => void }) {
-  const [mode, setMode] = useState<"borrow" | "return">("borrow");
   const [members, setMembers] = useState<QuickMember[]>([]);
   const [memberId, setMemberId] = useState<number | null>(null);
-  const [borrowSlots, setBorrowSlots] = useState<(QuickBook | null)[]>(
-    Array(SLOT_COUNT).fill(null),
-  );
-  const [returnSlots, setReturnSlots] = useState<(QuickLoan | null)[]>(
-    Array(SLOT_COUNT).fill(null),
-  );
-  const [pickerSlot, setPickerSlot] = useState<number | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [memberPickerOpen, setMemberPickerOpen] = useState(false);
 
   useEffect(() => {
     void opsApi<QuickMember[]>("/api/admin/circulation/members")
@@ -643,360 +610,47 @@ function MemberQuickPanel({ onDone }: { onDone: () => void }) {
       .catch(() => setMembers([]));
   }, []);
 
-  const reset = () => {
-    setMemberId(null);
-    setBorrowSlots(Array(SLOT_COUNT).fill(null));
-    setReturnSlots(Array(SLOT_COUNT).fill(null));
+  const pickMember = (m: QuickMember) => {
+    setMemberId(m.id);
+    setMemberPickerOpen(false);
   };
 
-  const confirm = async () => {
-    setBusy(true);
-    try {
-      if (mode === "borrow") {
-        const picked = borrowSlots.filter((b): b is QuickBook => b !== null);
-        if (memberId === null) {
-          toast.error("회원을 선택하세요");
-          return;
-        }
-        if (picked.length === 0) {
-          toast.error("도서를 하나 이상 선택하세요");
-          return;
-        }
-        for (const b of picked) {
-          await opsApi("/api/admin/circulation/borrow", {
-            method: "POST",
-            body: JSON.stringify({ member_id: memberId, book_id: b.id }),
-          });
-        }
-        toast.success(`${picked.length}건 대출 처리했습니다 (14일)`);
-      } else {
-        const picked = returnSlots.filter((l): l is QuickLoan => l !== null);
-        if (picked.length === 0) {
-          toast.error("반납할 도서를 하나 이상 선택하세요");
-          return;
-        }
-        for (const l of picked) {
-          await opsApi(`/api/admin/circulation/loans/${l.id}/return`, {
-            method: "POST",
-          });
-        }
-        toast.success(`${picked.length}건 반납 처리했습니다`);
-      }
-      reset();
-      onDone();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "처리에 실패했습니다");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const excludeIds = (mode === "borrow" ? borrowSlots : returnSlots)
-    .filter((s): s is QuickBook | QuickLoan => s !== null)
-    .map((s) => s.id);
-
-  const pick = (item: QuickBook | QuickLoan) => {
-    if (pickerSlot === null) return;
-    const i = pickerSlot;
-    if (mode === "borrow") {
-      setBorrowSlots((prev) =>
-        prev.map((s, idx) => (idx === i ? (item as QuickBook) : s)),
-      );
-    } else {
-      setReturnSlots((prev) =>
-        prev.map((s, idx) => (idx === i ? (item as QuickLoan) : s)),
-      );
-    }
-    setPickerSlot(null);
-  };
+  const selectedMember = members.find((m) => m.id === memberId) ?? null;
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-1.5">
-      <div className="flex shrink-0 gap-1 text-xs font-semibold">
+      {/* 회원 — 제목 + 검색바 느낌 트리거(클릭하면 팝업), 한 줄 */}
+      <div className="shrink-0">
+        <p className="mb-1 text-[10px] font-semibold tracking-wide text-muted-foreground">
+          회원
+        </p>
         <button
           type="button"
-          onClick={() => setMode("borrow")}
-          className={`flex-1 rounded px-2 py-1 transition ${mode === "borrow" ? PANEL_TAB.active : PANEL_TAB.inactive}`}
+          onClick={() => setMemberPickerOpen(true)}
+          className="flex h-8 w-full items-center gap-1.5 rounded-md border bg-background px-2.5 text-left text-xs outline-none focus:ring-1 focus:ring-primary"
         >
-          대여
-        </button>
-        <button
-          type="button"
-          onClick={() => setMode("return")}
-          className={`flex-1 rounded px-2 py-1 transition ${mode === "return" ? PANEL_TAB.active : PANEL_TAB.inactive}`}
-        >
-          반납
-        </button>
-      </div>
-
-      <select
-        value={memberId ?? ""}
-        onChange={(e) => {
-          setMemberId(e.target.value ? Number(e.target.value) : null);
-          // 회원이 바뀌면 이전 회원 기준으로 담아둔 슬롯은 의미가 없어진다.
-          setBorrowSlots(Array(SLOT_COUNT).fill(null));
-          setReturnSlots(Array(SLOT_COUNT).fill(null));
-        }}
-        className="h-7 shrink-0 rounded border bg-transparent px-1.5 text-xs outline-none focus:ring-1 focus:ring-primary"
-      >
-        <option value="">회원 선택</option>
-        {members.map((m) => (
-          <option key={m.id} value={m.id}>
-            {m.full_name ?? m.username} ({m.username})
-          </option>
-        ))}
-      </select>
-
-      <div className="grid min-h-0 flex-1 grid-cols-3 gap-1.5">
-        {mode === "borrow"
-          ? borrowSlots.map((item, i) => (
-              <SlotButton
-                key={i}
-                label={item?.title}
-                sub={
-                  item
-                    ? item.unavailable
-                      ? "(사용불가)"
-                      : !item.in_stock
-                        ? "(대출중)"
-                        : undefined
-                    : undefined
-                }
-                onClick={() => setPickerSlot(i)}
-              />
-            ))
-          : returnSlots.map((item, i) => (
-              <SlotButton
-                key={i}
-                label={item?.book_title}
-                sub={item ? `· ${item.member_name}` : undefined}
-                onClick={() => setPickerSlot(i)}
-              />
-            ))}
-      </div>
-
-      <div className="flex shrink-0 gap-1.5 text-xs font-semibold">
-        <button
-          type="button"
-          disabled={busy}
-          onClick={reset}
-          className="flex-1 rounded border py-1 disabled:opacity-40"
-        >
-          초기화
-        </button>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => void confirm()}
-          className="flex-1 rounded bg-primary py-1 text-primary-foreground disabled:opacity-40"
-        >
-          확정
+          <span
+            className={`min-w-0 flex-1 truncate ${selectedMember ? "" : "text-muted-foreground"}`}
+          >
+            {selectedMember
+              ? `${selectedMember.full_name ?? selectedMember.username} (${selectedMember.username})`
+              : "회원 선택"}
+          </span>
+          <Search className="size-3.5 shrink-0 text-muted-foreground" />
         </button>
       </div>
 
-      <BookPickerDialog
-        open={pickerSlot !== null}
-        mode={mode}
-        memberId={memberId}
-        excludeIds={excludeIds}
-        onClose={() => setPickerSlot(null)}
-        onPick={pick}
+      <div className="min-h-0 flex-1">
+        <LoanQueuePanel memberId={memberId} onDone={onDone} />
+      </div>
+
+      <MemberPickerDialog
+        open={memberPickerOpen}
+        members={members}
+        onClose={() => setMemberPickerOpen(false)}
+        onPick={pickMember}
       />
     </div>
-  );
-}
-
-function SlotButton({
-  label,
-  sub,
-  onClick,
-}: {
-  label?: string;
-  sub?: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex h-full flex-col items-center justify-center gap-0.5 rounded border p-1 text-center transition hover:bg-muted/50"
-    >
-      {label ? (
-        <>
-          <span className="line-clamp-2 text-[10px] font-semibold">
-            {label}
-          </span>
-          {sub ? (
-            <span className="text-[9px] text-muted-foreground">{sub}</span>
-          ) : null}
-        </>
-      ) : (
-        <span className="text-[10px] text-muted-foreground">+ 책 선택</span>
-      )}
-    </button>
-  );
-}
-
-/**
- * 도서 선택 팝업 — 웹사이트 주소검색 팝업과 같은 패턴(검색 → 목록 → "선택" → 창 닫힘).
- * 대여 모드는 전체 도서(대출중·사용불가 포함, 그런 건 상태 표시 후 선택 비활성화),
- * 반납 모드는 대출중인 것만 보여준다(반납 대상이 아닌 책은 애초에 뜰 이유가 없음).
- */
-function BookPickerDialog({
-  open,
-  mode,
-  memberId,
-  excludeIds,
-  onClose,
-  onPick,
-}: {
-  open: boolean;
-  mode: "borrow" | "return";
-  memberId: number | null;
-  excludeIds: number[];
-  onClose: () => void;
-  onPick: (item: QuickBook | QuickLoan) => void;
-}) {
-  const [query, setQuery] = useState("");
-  const [books, setBooks] = useState<QuickBook[]>([]);
-  const [loans, setLoans] = useState<QuickLoan[]>([]);
-
-  useEffect(() => {
-    if (open) setQuery("");
-  }, [open]);
-
-  useEffect(() => {
-    if (!open || mode !== "borrow") return;
-    const t = setTimeout(() => {
-      void opsApi<QuickBook[]>(
-        `/api/admin/circulation/available-books?include_unavailable=true&q=${encodeURIComponent(query)}`,
-      )
-        .then(setBooks)
-        .catch(() => setBooks([]));
-    }, 250);
-    return () => clearTimeout(t);
-  }, [open, mode, query]);
-
-  useEffect(() => {
-    if (!open || mode !== "return" || memberId === null) return;
-    void opsApi<QuickLoan[]>("/api/admin/circulation/loans")
-      .then((all) =>
-        setLoans(
-          all.filter(
-            (l) => l.status === "borrowed" && l.member_id === memberId,
-          ),
-        ),
-      )
-      .catch(() => setLoans([]));
-  }, [open, mode, memberId]);
-
-  return (
-    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>
-            {mode === "borrow" ? "도서 선택" : "반납 도서 선택"}
-          </DialogTitle>
-        </DialogHeader>
-        {mode === "borrow" ? (
-          <>
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="도서 제목 검색"
-              className="h-9 w-full rounded-md border px-3 text-sm outline-none focus:ring-2 focus:ring-primary"
-            />
-            <div className="max-h-72 space-y-1 overflow-y-auto">
-              <div className="grid grid-cols-[1fr_auto_auto_auto] gap-2 px-2 text-xs font-semibold text-muted-foreground">
-                <span>제목</span>
-                <span>저자</span>
-                <span>상태</span>
-                <span />
-              </div>
-              {books.map((b) => {
-                const already = excludeIds.includes(b.id);
-                const disabled = !b.in_stock || b.unavailable || already;
-                const statusLabel = b.unavailable
-                  ? "사용불가"
-                  : !b.in_stock
-                    ? "대출중"
-                    : "대출가능";
-                return (
-                  <div
-                    key={b.id}
-                    className={`grid grid-cols-[1fr_auto_auto_auto] items-center gap-2 rounded border px-2 py-1.5 text-sm ${disabled ? "opacity-50" : ""}`}
-                  >
-                    <span className="min-w-0 truncate">{b.title}</span>
-                    <span className="shrink-0 text-xs text-muted-foreground">
-                      {b.author}
-                    </span>
-                    <span className="shrink-0 text-xs text-muted-foreground">
-                      {statusLabel}
-                    </span>
-                    <button
-                      type="button"
-                      disabled={disabled}
-                      onClick={() => onPick(b)}
-                      className="shrink-0 rounded bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground disabled:opacity-40"
-                    >
-                      선택
-                    </button>
-                  </div>
-                );
-              })}
-              {books.length === 0 ? (
-                <p className="p-3 text-center text-xs text-muted-foreground">
-                  검색 결과가 없습니다
-                </p>
-              ) : null}
-            </div>
-          </>
-        ) : memberId === null ? (
-          <p className="p-3 text-center text-xs text-muted-foreground">
-            회원을 먼저 선택하세요
-          </p>
-        ) : (
-          <div className="max-h-80 space-y-1 overflow-y-auto">
-            <div className="grid grid-cols-[1fr_auto_auto_auto] gap-2 px-2 text-xs font-semibold text-muted-foreground">
-              <span>제목</span>
-              <span>회원</span>
-              <span>상태</span>
-              <span />
-            </div>
-            {loans.map((l) => {
-              const already = excludeIds.includes(l.id);
-              return (
-                <div
-                  key={l.id}
-                  className={`grid grid-cols-[1fr_auto_auto_auto] items-center gap-2 rounded border px-2 py-1.5 text-sm ${already ? "opacity-50" : ""}`}
-                >
-                  <span className="min-w-0 truncate">{l.book_title}</span>
-                  <span className="shrink-0 text-xs text-muted-foreground">
-                    {l.member_name}
-                  </span>
-                  <span className="shrink-0 text-xs text-muted-foreground">
-                    {l.overdue ? "연체" : "대출중"}
-                  </span>
-                  <button
-                    type="button"
-                    disabled={already}
-                    onClick={() => onPick(l)}
-                    className="shrink-0 rounded bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground disabled:opacity-40"
-                  >
-                    선택
-                  </button>
-                </div>
-              );
-            })}
-            {loans.length === 0 ? (
-              <p className="p-3 text-center text-xs text-muted-foreground">
-                대출 중인 도서가 없습니다
-              </p>
-            ) : null}
-          </div>
-        )}
-      </DialogContent>
-    </Dialog>
   );
 }
 

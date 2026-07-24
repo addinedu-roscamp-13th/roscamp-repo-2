@@ -121,6 +121,18 @@ _pub_lock = threading.Lock()
 _pending: dict[str, dict[str, Any]] = {}  # cmd_id -> {"event", "result"}
 _pending_lock = threading.Lock()
 
+# ── 라이다 전방/후방 여유거리 + cmd_vel 직접 발행 (relative_move 안전정지용) ──────
+# rplidar_link 는 URDF 에서 rpy="0 0 pi" 로 180° 회전 장착이다. 따라서 스캔각 0 = 로봇
+# 후방, 스캔각 ±pi = 로봇 전방. base(로봇) 프레임 각도는 scan_angle + LIDAR_YAW_OFFSET
+# 로 환산한다(값을 [-pi,pi] 로 wrap). clearance/_cmd_vel_pubs 는 _cache 와 같은 IP 키다.
+LIDAR_YAW_OFFSET = math.pi
+SCAN_SECTOR_HALF_RAD = math.radians(25.0)   # 전/후방 섹터 반각(±25°)
+SCAN_FRESH_SEC = 2.0                        # 이보다 오래된 스캔은 신뢰 안 함(정지 판단은 fail-safe)
+_scan_lock = threading.Lock()
+_clearance: dict[str, dict[str, Any]] = {}  # ip -> {"front": m|None, "rear": m|None, "ts": t}
+_cmd_vel_pubs: dict[str, Any] = {}          # ip -> /pinkyN/cmd_vel rclpy Publisher
+_TwistMsg: Any = None                       # geometry_msgs.msg.Twist (텔레메트리 스레드가 설정)
+
 
 def _empty_entry() -> dict[str, Any]:
     return {
@@ -317,6 +329,32 @@ def send_command(
     return entry["result"] if ok else None
 
 
+def clearance(ip_address: str, direction: str = "forward") -> float | None:
+    """진행 방향의 최소 장애물 거리(m, 라이다 중심 기준). 스캔이 없거나
+    SCAN_FRESH_SEC 보다 오래됐으면 None(호출측이 fail-safe 로 판단)."""
+    with _scan_lock:
+        e = _clearance.get(ip_address)
+        if e is None or (time.time() - e["ts"]) > SCAN_FRESH_SEC:
+            return None
+        return e["rear"] if direction == "backward" else e["front"]
+
+
+def publish_cmd_vel(ip_address: str, linear: float, angular: float) -> bool:
+    """서버 도메인 /pinkyN/cmd_vel 로 Twist 를 발행한다. domain_bridge 가 로봇 /cmd_vel 로 역중계한다."""
+    pub = _cmd_vel_pubs.get(ip_address)
+    if pub is None or _TwistMsg is None:
+        return False
+    try:
+        msg = _TwistMsg()
+        msg.linear.x = float(linear)
+        msg.angular.z = float(angular)
+        with _pub_lock:
+            pub.publish(msg)
+        return True
+    except Exception:
+        return False
+
+
 # ── ROS 구독 노드 ───────────────────────────────────────────────────────────
 
 def _yaw_from_quat(q) -> float:
@@ -326,7 +364,7 @@ def _yaw_from_quat(q) -> float:
 
 
 def _telemetry_thread() -> None:
-    global _StringMsg, FLEET_ROBOTS
+    global _StringMsg, _TwistMsg, FLEET_ROBOTS
     try:
         FLEET_ROBOTS = _load_fleet_robots()
         for cfg in FLEET_ROBOTS.values():
@@ -337,8 +375,9 @@ def _telemetry_thread() -> None:
         from rclpy.node import Node
         from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
-        from geometry_msgs.msg import PoseWithCovarianceStamped
+        from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
         from nav_msgs.msg import OccupancyGrid, Path
+        from sensor_msgs.msg import LaserScan
         from std_msgs.msg import Float32, String
 
         # 레거시 ros_bridge(기본 컨텍스트, env 도메인)와 독립된 컨텍스트를 도메인 86으로 생성
@@ -353,6 +392,7 @@ def _telemetry_thread() -> None:
 
         node = Node("fleet_telemetry", context=ctx)
         _StringMsg = String
+        _TwistMsg = Twist
 
         def _touch(ip: str) -> None:
             _cache[ip]["_last_ros_at"] = time.time()
@@ -423,7 +463,38 @@ def _telemetry_thread() -> None:
                     _cache[ip]["global_costmap"] = data.get("global_costmap")
                     _cache[ip]["_last_status_at"] = time.time()
 
-            return on_pose, on_map, on_plan, on_batt_pct, on_batt_volt, on_fleet_status, on_fleet_costmaps
+            def on_scan(msg: "LaserScan") -> None:
+                # 전/후방 섹터의 최소 유효거리만 뽑아 캐시(원본 수백 점은 버린다).
+                amin = msg.angle_min
+                ainc = msg.angle_increment
+                rmin = msg.range_min
+                rmax = msg.range_max
+                front = math.inf
+                rear = math.inf
+                a = amin
+                two_pi = 2.0 * math.pi
+                rear_edge = math.pi - SCAN_SECTOR_HALF_RAD
+                for r in msg.ranges:
+                    if rmin <= r <= rmax:
+                        b = a + LIDAR_YAW_OFFSET
+                        b = (b + math.pi) % two_pi - math.pi   # wrap [-pi, pi]
+                        if -SCAN_SECTOR_HALF_RAD <= b <= SCAN_SECTOR_HALF_RAD:
+                            if r < front:
+                                front = r
+                        elif b >= rear_edge or b <= -rear_edge:
+                            if r < rear:
+                                rear = r
+                    a += ainc
+                entry = {
+                    "front": None if front == math.inf else round(front, 3),
+                    "rear": None if rear == math.inf else round(rear, 3),
+                    "ts": time.time(),
+                }
+                with _scan_lock:
+                    _clearance[ip] = entry
+
+            return (on_pose, on_map, on_plan, on_batt_pct, on_batt_volt,
+                    on_fleet_status, on_fleet_costmaps, on_scan)
 
         def on_cmd_result(msg: String) -> None:
             try:
@@ -443,7 +514,8 @@ def _telemetry_thread() -> None:
         for cfg in FLEET_ROBOTS.values():
             pre = cfg["prefix"]
             ip = cfg["ip"]
-            on_pose, on_map, on_plan, on_pct, on_volt, on_status, on_costmaps = _make_handlers(ip)
+            (on_pose, on_map, on_plan, on_pct, on_volt,
+             on_status, on_costmaps, on_scan) = _make_handlers(ip)
             # amcl_pose·map·fleet_status 는 TRANSIENT_LOCAL — 구독 즉시 마지막 값을 받는다
             node.create_subscription(PoseWithCovarianceStamped, f"{pre}/amcl_pose", on_pose, qos_latched)
             node.create_subscription(OccupancyGrid, f"{pre}/map", on_map, qos_latched)
@@ -454,7 +526,13 @@ def _telemetry_thread() -> None:
             node.create_subscription(String, f"{pre}/fleet_costmaps", on_costmaps,
                                      QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE))
             node.create_subscription(String, f"{pre}/fleet_cmd_result", on_cmd_result, 10)
+            # 라이다는 sensor QoS(BEST_EFFORT). 브릿지가 발행 QoS 를 자동 매칭한다.
+            node.create_subscription(
+                LaserScan, f"{pre}/scan", on_scan,
+                QoSProfile(depth=5, reliability=ReliabilityPolicy.BEST_EFFORT),
+            )
             _cmd_pubs[cfg["key"]] = node.create_publisher(String, f"{pre}/fleet_cmd", 10)
+            _cmd_vel_pubs[ip] = node.create_publisher(Twist, f"{pre}/cmd_vel", 10)
 
         print(f"[fleet_telemetry] ROS 구독+명령링크 시작 (domain {TELEMETRY_DOMAIN_ID}, robots {list(FLEET_ROBOTS)})", flush=True)
         executor = SingleThreadedExecutor(context=ctx)

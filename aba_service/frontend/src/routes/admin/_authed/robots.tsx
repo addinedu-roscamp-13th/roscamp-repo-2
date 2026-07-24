@@ -143,18 +143,14 @@ function RobotsPage() {
           </p>
         ) : null}
 
-        <div className="h-40 shrink-0">
-          <MiniDonut title="로봇 상태" data={fleetChart} />
-        </div>
-
-        <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-2">
+        <div className="flex min-h-0 flex-1 gap-4">
+          {/* 왼쪽: 지도 + 로봇 상태 요약 */}
+          <div className="flex min-h-0 w-1/2 shrink-0 flex-col gap-4 overflow-y-auto">
           {/* 지도 위 로봇 위치 — 가로(108:63)로 회전, LibraryMap.tsx 와 동일 규칙 */}
-          <section className="flex h-full min-h-0 flex-col rounded-lg border p-4">
-            <h3 className="mb-3 shrink-0 text-sm font-semibold">
-              지도 위 로봇 위치
-            </h3>
+          <section className="shrink-0 rounded-lg border p-4">
+            <h3 className="mb-3 text-lg font-semibold">지도 위 로봇 위치</h3>
             <div
-              className="relative mx-auto w-full max-w-2xl overflow-hidden rounded-lg bg-white ring-1 ring-border"
+              className="relative mx-auto w-full overflow-hidden rounded-lg bg-white ring-1 ring-border"
               style={{ aspectRatio: "108 / 63" }}
             >
               <img
@@ -202,126 +198,133 @@ function RobotsPage() {
             ) : null}
           </section>
 
-          {/* 로봇 카드 */}
-          <section className="min-h-0 space-y-2 overflow-y-auto">
+          <div className="min-h-40 flex-1">
+            <MiniDonut title="로봇 상태" data={fleetChart} size="lg" />
+          </div>
+          </div>
+
+          {/* 오른쪽: 로봇 카드 — 좌우 분할, 세로로 넉넉히 스크롤 */}
+          <section className="min-h-0 flex-1 overflow-y-auto">
             {robots.length === 0 ? (
               <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
                 관측된 로봇이 없습니다
               </p>
             ) : (
-              robots.map((r) => {
-                const order = orderFor(r.name);
-                const kindLabel = order
-                  ? (kinds.find((k) => k.key === order.task_type)?.label ??
-                    order.task_type)
-                  : null;
-                return (
-                  <div key={r.name} className="rounded-lg border p-4">
-                    <div className="flex items-center gap-2">
-                      <span className="font-semibold">{r.name}</span>
-                      <span
-                        className={`rounded px-1.5 py-0.5 text-xs font-bold ${
-                          STATE_TONE[r.state ?? ""] ??
-                          "bg-muted text-muted-foreground"
-                        }`}
-                      >
-                        {r.state ?? "상태 미상"}
-                      </span>
-                      {r.stale ? (
-                        <span className="rounded bg-rose-500/15 px-1.5 py-0.5 text-xs font-bold text-rose-700">
-                          텔레메트리 끊김
+              <div className="grid gap-2 xl:grid-cols-2">
+                {robots.map((r) => {
+                  const order = orderFor(r.name);
+                  const kindLabel = order
+                    ? (kinds.find((k) => k.key === order.task_type)?.label ??
+                      order.task_type)
+                    : null;
+                  return (
+                    <div key={r.name} className="rounded-lg border p-4">
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold">{r.name}</span>
+                        <span
+                          className={`rounded px-1.5 py-0.5 text-xs font-bold ${
+                            STATE_TONE[r.state ?? ""] ??
+                            "bg-muted text-muted-foreground"
+                          }`}
+                        >
+                          {r.state ?? "상태 미상"}
                         </span>
-                      ) : null}
-                    </div>
+                        {r.stale ? (
+                          <span className="rounded bg-rose-500/15 px-1.5 py-0.5 text-xs font-bold text-rose-700">
+                            텔레메트리 끊김
+                          </span>
+                        ) : null}
+                      </div>
 
-                    <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                      <Field label="배터리">
-                        {r.battery === null ? (
-                          "—"
+                      <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                        <Field label="배터리">
+                          {r.battery === null ? (
+                            "—"
+                          ) : (
+                            <span className="flex items-center gap-2">
+                              <span className="h-1.5 w-16 overflow-hidden rounded-full bg-muted">
+                                <span
+                                  className={`block h-full rounded-full ${
+                                    r.battery < 20
+                                      ? "bg-rose-500"
+                                      : "bg-emerald-500"
+                                  }`}
+                                  style={{
+                                    width: `${Math.max(0, Math.min(100, r.battery))}%`,
+                                  }}
+                                />
+                              </span>
+                              {r.battery}%
+                            </span>
+                          )}
+                        </Field>
+                        <Field label="위치">
+                          {r.x === null
+                            ? "—"
+                            : `${r.x.toFixed(2)}, ${(r.y as number).toFixed(2)}`}
+                        </Field>
+                        <Field label={order ? "작업 종류" : "현재 작업"}>
+                          {order ? kindLabel : r.task_id || "—"}
+                        </Field>
+                        <Field label="작업 상태">
+                          {order ? (
+                            <span
+                              className="rounded px-1.5 py-0.5 text-[10px] font-bold"
+                              style={{
+                                background:
+                                  order.status === "FAILED"
+                                    ? "var(--chart-status-critical)"
+                                    : order.status === "COMPLETED"
+                                      ? "var(--chart-status-good)"
+                                      : "var(--chart-status-warning)",
+                                color: "white",
+                              }}
+                            >
+                              {ORDER_STATUS_LABEL[order.status] ?? order.status}
+                            </span>
+                          ) : (
+                            r.task_state || "—"
+                          )}
+                        </Field>
+                        {order ? (
+                          <Field label="요청자">{order.requester || "—"}</Field>
                         ) : (
+                          <Field label="목표 정점">
+                            {r.goal_vertex === null
+                              ? "—"
+                              : (WAYPOINTS[r.goal_vertex]?.label ??
+                                `v${r.goal_vertex}`)}
+                          </Field>
+                        )}
+                        <Field label="진행률">
                           <span className="flex items-center gap-2">
                             <span className="h-1.5 w-16 overflow-hidden rounded-full bg-muted">
                               <span
-                                className={`block h-full rounded-full ${
-                                  r.battery < 20
-                                    ? "bg-rose-500"
-                                    : "bg-emerald-500"
-                                }`}
+                                className="block h-full rounded-full bg-primary"
                                 style={{
-                                  width: `${Math.max(0, Math.min(100, r.battery))}%`,
+                                  width: `${
+                                    order
+                                      ? order.leg_count
+                                        ? Math.round(
+                                            (order.leg_idx / order.leg_count) *
+                                              100,
+                                          )
+                                        : 0
+                                      : Math.round((r.progress ?? 0) * 100)
+                                  }%`,
                                 }}
                               />
                             </span>
-                            {r.battery}%
+                            {order
+                              ? `${order.leg_idx}/${order.leg_count}`
+                              : `${Math.round((r.progress ?? 0) * 100)}%`}
                           </span>
-                        )}
-                      </Field>
-                      <Field label="위치">
-                        {r.x === null
-                          ? "—"
-                          : `${r.x.toFixed(2)}, ${(r.y as number).toFixed(2)}`}
-                      </Field>
-                      <Field label={order ? "작업 종류" : "현재 작업"}>
-                        {order ? kindLabel : r.task_id || "—"}
-                      </Field>
-                      <Field label="작업 상태">
-                        {order ? (
-                          <span
-                            className="rounded px-1.5 py-0.5 text-[10px] font-bold"
-                            style={{
-                              background:
-                                order.status === "FAILED"
-                                  ? "var(--chart-status-critical)"
-                                  : order.status === "COMPLETED"
-                                    ? "var(--chart-status-good)"
-                                    : "var(--chart-status-warning)",
-                              color: "white",
-                            }}
-                          >
-                            {ORDER_STATUS_LABEL[order.status] ?? order.status}
-                          </span>
-                        ) : (
-                          r.task_state || "—"
-                        )}
-                      </Field>
-                      {order ? (
-                        <Field label="요청자">{order.requester || "—"}</Field>
-                      ) : (
-                        <Field label="목표 정점">
-                          {r.goal_vertex === null
-                            ? "—"
-                            : (WAYPOINTS[r.goal_vertex]?.label ??
-                              `v${r.goal_vertex}`)}
                         </Field>
-                      )}
-                      <Field label="진행률">
-                        <span className="flex items-center gap-2">
-                          <span className="h-1.5 w-16 overflow-hidden rounded-full bg-muted">
-                            <span
-                              className="block h-full rounded-full bg-primary"
-                              style={{
-                                width: `${
-                                  order
-                                    ? order.leg_count
-                                      ? Math.round(
-                                          (order.leg_idx / order.leg_count) *
-                                            100,
-                                        )
-                                      : 0
-                                    : Math.round((r.progress ?? 0) * 100)
-                                }%`,
-                              }}
-                            />
-                          </span>
-                          {order
-                            ? `${order.leg_idx}/${order.leg_count}`
-                            : `${Math.round((r.progress ?? 0) * 100)}%`}
-                        </span>
-                      </Field>
+                      </div>
                     </div>
-                  </div>
-                );
-              })
+                  );
+                })}
+              </div>
             )}
           </section>
         </div>

@@ -176,7 +176,11 @@ BOOKS = [
 
 def main() -> None:
     with engine.begin() as conn:
+        # cb_loans/cb_requests 등이 cb_books 를 FK 로 참조하므로, 행이 0개라도
+        # FK 제약 자체가 남아있으면 DROP TABLE 이 거부된다 — 재생성 동안만 잠깐 끈다.
+        conn.execute(text("SET FOREIGN_KEY_CHECKS=0"))
         conn.execute(text("DROP TABLE IF EXISTS cb_books"))
+        conn.execute(text("SET FOREIGN_KEY_CHECKS=1"))
     Book.__table__.create(bind=engine)
 
     db = SessionLocal()

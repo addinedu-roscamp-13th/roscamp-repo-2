@@ -6,11 +6,12 @@ import {
   useState,
   type FormEvent,
 } from "react";
-import { Pencil, Plus, Trash2 } from "lucide-react";
+import { Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { AdminShell } from "@/components/admin/AdminShell";
 import { ConfirmDeleteDialog } from "@/components/admin/ConfirmDeleteDialog";
+import { LoanQueuePanel } from "@/components/admin/circulation";
 import { StackedStatusBar } from "@/components/admin/charts";
 import {
   SortIcon,
@@ -28,7 +29,7 @@ import {
 } from "@/components/ui/dialog";
 
 export const Route = createFileRoute("/admin/_authed/members")({
-  head: () => ({ meta: [{ title: "LiBi Admin — 회원 · 대여/반납" }] }),
+  head: () => ({ meta: [{ title: "LiBi Admin — 회원 관리 및 대여/반납" }] }),
   component: MembersPage,
 });
 
@@ -60,13 +61,6 @@ interface LoanRow {
   due_at: string;
   returned_at: string | null;
   overdue: boolean;
-}
-
-interface BookOption {
-  id: number;
-  title: string;
-  author: string;
-  zone: string;
 }
 
 const TOKEN_KEY = "labi.adminToken";
@@ -109,10 +103,8 @@ const LOAN_STATUS_COLOR = {
 function MembersPage() {
   const [members, setMembers] = useState<MemberRow[]>([]);
   const [loans, setLoans] = useState<LoanRow[]>([]);
-  const [books, setBooks] = useState<BookOption[]>([]);
   const [selected, setSelected] = useState<number | null>(null);
-  const [bookQuery, setBookQuery] = useState("");
-  const [msg, setMsg] = useState<string | null>(null);
+  const [memberQuery, setMemberQuery] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -153,26 +145,13 @@ function MembersPage() {
     void load();
   }, [load]);
 
-  useEffect(() => {
-    const t = setTimeout(() => {
-      void api<BookOption[]>(
-        `/api/admin/circulation/available-books?q=${encodeURIComponent(bookQuery)}`,
-      )
-        .then(setBooks)
-        .catch(() => setBooks([]));
-    }, 250);
-    return () => clearTimeout(t);
-  }, [bookQuery]);
-
   const act = async (fn: () => Promise<unknown>, ok: string) => {
-    setErr(null);
-    setMsg(null);
     try {
       await fn();
-      setMsg(ok);
+      toast.success(ok);
       await load();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "처리하지 못했습니다");
+      toast.error(e instanceof Error ? e.message : "처리하지 못했습니다");
     }
   };
 
@@ -276,13 +255,24 @@ function MembersPage() {
   }, [members, overdueMemberIds]);
   const activeMemberCount = members.filter((m) => m.is_active).length;
 
+  // 회원 검색 — 아이디·이름 클라이언트 필터(회원 수가 적어 별도 API 없이 충분).
+  const filteredMembers = useMemo(() => {
+    const q = memberQuery.trim().toLowerCase();
+    if (!q) return members;
+    return members.filter(
+      (m) =>
+        m.username.toLowerCase().includes(q) ||
+        (m.full_name ?? "").toLowerCase().includes(q),
+    );
+  }, [members, memberQuery]);
+
   // 헤더클릭 정렬 — 관리(작업) 칼럼은 comparator 를 등록하지 않아 자연히 정렬 불가.
   const {
     sorted: sortedMembers,
     sortKey,
     direction,
     toggle,
-  } = useSortableTable<MemberRow>(members, {
+  } = useSortableTable<MemberRow>(filteredMembers, {
     username: (a, b) => a.username.localeCompare(b.username),
     full_name: (a, b) => (a.full_name ?? "").localeCompare(b.full_name ?? ""),
     is_active: (a, b) => Number(a.is_active) - Number(b.is_active),
@@ -303,7 +293,7 @@ function MembersPage() {
   );
 
   return (
-    <AdminShell title="회원 · 대여/반납">
+    <AdminShell title="회원 관리 및 대여/반납">
       <div className="flex h-full flex-col gap-4">
         {/* 상단 stat 차트 */}
         <div className="grid shrink-0 grid-cols-1 gap-3 sm:grid-cols-[1fr_1fr_auto]">
@@ -356,11 +346,6 @@ function MembersPage() {
           </div>
         </div>
 
-        {msg ? (
-          <p className="shrink-0 rounded-lg bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700">
-            {msg}
-          </p>
-        ) : null}
         {err ? (
           <p className="shrink-0 rounded-lg bg-rose-500/10 px-3 py-2 text-sm text-rose-700">
             {err}
@@ -370,8 +355,22 @@ function MembersPage() {
         <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
           {/* 회원 관리: 목록(정렬/수정/비활성화) */}
           <section className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg border p-4">
-            <div className="mb-3 flex shrink-0 items-center justify-between">
-              <h3 className="text-sm font-semibold">회원 관리</h3>
+            <div className="mb-3 flex shrink-0 flex-wrap items-center gap-2">
+              <h3 className="text-sm font-semibold">
+                회원 관리{" "}
+                <span className="text-xs font-normal text-muted-foreground">
+                  ({filteredMembers.length})
+                </span>
+              </h3>
+              <div className="relative ml-auto w-full sm:w-56">
+                <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={memberQuery}
+                  onChange={(e) => setMemberQuery(e.target.value)}
+                  placeholder="아이디·이름 검색"
+                  className="h-8 pl-9"
+                />
+              </div>
               <Button size="sm" onClick={() => setCreateOpen(true)}>
                 <Plus className="mr-1 size-3.5" /> 회원 추가
               </Button>
@@ -494,7 +493,7 @@ function MembersPage() {
                 왼쪽에서 회원을 선택하면 대출 이력과 대여 처리가 나옵니다.
               </p>
             ) : (
-              <>
+              <div className="flex h-full min-h-0 flex-col">
                 <h3 className="mb-3 shrink-0 text-sm font-semibold">
                   {members.find((m) => m.id === selected)?.full_name ??
                     members.find((m) => m.id === selected)?.username}{" "}
@@ -503,108 +502,61 @@ function MembersPage() {
                   </span>
                 </h3>
 
-                <div className="mb-4 max-h-40 space-y-1 overflow-y-auto">
+                {/* 대출이력 : 대여/반납처리 = 1 : 2 세로 비율 — 대여/반납 쪽 헤더·버튼이
+                    더 넉넉히 보이게, 이력은 스크롤로 충분 */}
+                <div className="mb-4 min-h-0 flex-1 overflow-y-auto">
                   {memberLoans.length === 0 ? (
                     <p className="rounded border border-dashed p-3 text-xs text-muted-foreground">
                       대출 이력이 없습니다
                     </p>
                   ) : (
-                    memberLoans.map((l) => (
-                      <div
-                        key={l.id}
-                        className="flex items-center gap-2 rounded border px-3 py-2 text-sm"
-                      >
-                        <span className="min-w-0 flex-1 truncate">
-                          {l.book_title}
-                        </span>
-                        <span
-                          className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold ${
-                            l.status === "returned"
-                              ? "bg-muted text-muted-foreground"
-                              : l.overdue
-                                ? "bg-rose-500/15 text-rose-700"
-                                : "bg-amber-500/15 text-amber-700"
-                          }`}
-                        >
-                          {l.status === "returned"
-                            ? `반납 ${fmt(l.returned_at ?? "")}`
-                            : l.overdue
-                              ? "연체"
-                              : `~${fmt(l.due_at)}`}
-                        </span>
-                        {l.status === "borrowed" ? (
-                          <button
-                            onClick={() =>
-                              act(
-                                () =>
-                                  api(
-                                    `/api/admin/circulation/loans/${l.id}/return`,
-                                    { method: "POST" },
-                                  ),
-                                `«${l.book_title}» 반납 처리했습니다`,
-                              )
-                            }
-                            className="shrink-0 rounded bg-secondary px-2 py-1 text-xs font-semibold"
-                          >
-                            반납
-                          </button>
-                        ) : null}
+                    <div className="divide-y rounded border">
+                      <div className="grid grid-cols-[2fr_1fr_auto] gap-2 bg-muted/40 px-3 py-1.5 text-[10px] font-semibold text-muted-foreground">
+                        <span>도서명</span>
+                        <span>날짜</span>
+                        <span>상태</span>
                       </div>
-                    ))
+                      {memberLoans.map((l) => (
+                        <div
+                          key={l.id}
+                          className="grid grid-cols-[2fr_1fr_auto] items-center gap-2 px-3 py-2 text-sm"
+                        >
+                          <span className="min-w-0 truncate">
+                            {l.book_title}
+                          </span>
+                          <span className="text-xs tabular-nums text-muted-foreground">
+                            {l.status === "returned"
+                              ? fmt(l.returned_at ?? "")
+                              : fmt(l.due_at)}
+                          </span>
+                          <span
+                            className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                              l.status === "returned"
+                                ? "bg-muted text-muted-foreground"
+                                : l.overdue
+                                  ? "bg-rose-500/15 text-rose-700"
+                                  : "bg-amber-500/15 text-amber-700"
+                            }`}
+                          >
+                            {l.status === "returned"
+                              ? "반납완료"
+                              : l.overdue
+                                ? "연체"
+                                : "대출중"}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
                   )}
                 </div>
 
-                {/* 대여 처리 */}
-                <div className="flex min-h-0 flex-1 flex-col border-t pt-3">
-                  <h4 className="mb-2 shrink-0 text-xs font-semibold">
-                    대여 처리
-                  </h4>
-                  <input
-                    value={bookQuery}
-                    onChange={(e) => setBookQuery(e.target.value)}
-                    placeholder="도서 제목 검색 (재고 있는 것만)"
-                    className="mb-2 h-9 w-full shrink-0 rounded-md border px-3 text-sm outline-none focus:ring-2 focus:ring-primary"
-                  />
-                  <div className="min-h-0 flex-1 space-y-1 overflow-y-auto">
-                    {books.map((b) => (
-                      <div
-                        key={b.id}
-                        className="flex items-center gap-2 rounded border px-3 py-2 text-sm"
-                      >
-                        <span className="min-w-0 flex-1 truncate">
-                          {b.title}
-                          <span className="ml-2 text-xs text-muted-foreground">
-                            {b.author} · {b.zone}
-                          </span>
-                        </span>
-                        <button
-                          onClick={() =>
-                            act(
-                              () =>
-                                api("/api/admin/circulation/borrow", {
-                                  method: "POST",
-                                  body: JSON.stringify({
-                                    member_id: selected,
-                                    book_id: b.id,
-                                  }),
-                                }),
-                              `«${b.title}» 대출 처리했습니다 (14일)`,
-                            )
-                          }
-                          className="shrink-0 rounded bg-primary px-2 py-1 text-xs font-semibold text-primary-foreground"
-                        >
-                          대출
-                        </button>
-                      </div>
-                    ))}
-                    {books.length === 0 ? (
-                      <p className="rounded border border-dashed p-3 text-xs text-muted-foreground">
-                        대출 가능한 도서가 없습니다
-                      </p>
-                    ) : null}
-                  </div>
+                {/* 대여/반납 처리 — 대시보드 회원관리 카드와 같은 부품 재사용.
+                    LoanQueuePanel 자체에 대여/반납 탭이 있어 별도 제목 없이도 명확하다
+                    (제목을 빼야 대출이력 2 : 대여반납처리 1 비율 안에서 버튼까지 다 보인다). */}
+                <div className="flex min-h-0 flex-1 flex-col overflow-y-auto border-t pt-3">
+                  <LoanQueuePanel memberId={selected} onDone={load} />
                 </div>
-              </>
+              </div>
             )}
           </section>
         </div>

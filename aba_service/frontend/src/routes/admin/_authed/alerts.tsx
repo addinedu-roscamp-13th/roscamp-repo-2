@@ -51,9 +51,17 @@ interface Alerts {
 }
 
 const TONE: Record<string, string> = {
+  ASSIGNED: "bg-sky-500/15 text-sky-700",
   COMPLETED: "bg-emerald-500/15 text-emerald-700",
   FAILED: "bg-rose-500/15 text-rose-700",
   CANCELLED: "bg-muted text-muted-foreground",
+};
+
+const STATUS_LABEL: Record<string, string> = {
+  ASSIGNED: "배정",
+  COMPLETED: "완료",
+  FAILED: "실패",
+  CANCELLED: "취소",
 };
 
 const fmtTime = (iso: string) => iso.slice(5, 16).replace("T", " ");
@@ -61,7 +69,9 @@ const fmtTime = (iso: string) => iso.slice(5, 16).replace("T", " ");
 function AlertsPage() {
   const [alerts, setAlerts] = useState<Alerts | null>(null);
   const [logs, setLogs] = useState<LogRow[]>([]);
-  const [filter, setFilter] = useState<"" | "COMPLETED" | "FAILED">("");
+  const [filter, setFilter] = useState<
+    "" | "ASSIGNED" | "COMPLETED" | "FAILED"
+  >("");
   const [err, setErr] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<LogRow | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -122,7 +132,7 @@ function AlertsPage() {
             <h3 className="mb-2 text-sm font-semibold text-rose-700">
               미확인 침입 알림 {alerts.intrusions.length}건
             </h3>
-            <div className="space-y-1">
+            <div className="max-h-48 space-y-1 overflow-y-auto">
               {alerts.intrusions.map((i) => (
                 <div
                   key={i.id}
@@ -152,55 +162,11 @@ function AlertsPage() {
           </section>
         ) : null}
 
-        {/* 최근 작업 알림 */}
-        <section className="shrink-0 rounded-lg border p-4">
-          <h3 className="mb-2 text-sm font-semibold">
-            최근 작업 알림{" "}
-            <span className="text-xs font-normal text-muted-foreground">
-              (최근 12시간)
-            </span>
-          </h3>
-          {!alerts || alerts.tasks.length === 0 ? (
-            <p className="text-xs text-muted-foreground">
-              최근 완료·실패한 작업이 없습니다
-            </p>
-          ) : (
-            <div className="space-y-1">
-              {alerts.tasks.map((t) => (
-                <div
-                  key={t.task_id}
-                  className="flex flex-wrap items-center gap-2 rounded border px-3 py-2 text-sm"
-                >
-                  <span
-                    className={`rounded px-1.5 py-0.5 text-xs font-bold ${TONE[t.status] ?? ""}`}
-                  >
-                    {t.status === "COMPLETED"
-                      ? "완료"
-                      : t.status === "FAILED"
-                        ? "실패"
-                        : "취소"}
-                  </span>
-                  <span className="font-mono text-xs">{t.task_id}</span>
-                  <span className="text-xs">{t.kind}</span>
-                  <span className="text-xs text-muted-foreground">
-                    {t.robot ?? "—"} · {fmtTime(t.at)}
-                  </span>
-                  {t.reason ? (
-                    <span className="min-w-0 flex-1 truncate text-xs text-rose-700">
-                      {t.reason}
-                    </span>
-                  ) : null}
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-
         {/* 로그 */}
         <section className="flex min-h-0 flex-1 flex-col rounded-lg border p-4">
           <div className="mb-3 flex items-center gap-2">
             <h3 className="text-sm font-semibold">작업 결과 로그</h3>
-            {(["", "COMPLETED", "FAILED"] as const).map((f) => (
+            {(["", "ASSIGNED", "COMPLETED", "FAILED"] as const).map((f) => (
               <button
                 key={f || "all"}
                 onClick={() => setFilter(f)}
@@ -210,7 +176,7 @@ function AlertsPage() {
                     : "bg-secondary text-secondary-foreground"
                 }`}
               >
-                {f === "" ? "전체" : f === "COMPLETED" ? "완료" : "실패"}
+                {f === "" ? "전체" : STATUS_LABEL[f]}
               </button>
             ))}
           </div>
@@ -242,7 +208,7 @@ function AlertsPage() {
                       <span
                         className={`rounded px-1.5 py-0.5 text-xs font-bold ${TONE[l.status] ?? ""}`}
                       >
-                        {l.status}
+                        {STATUS_LABEL[l.status] ?? l.status}
                       </span>
                     </td>
                     <td className="py-2 pr-3 text-xs tabular-nums">
@@ -283,8 +249,8 @@ function AlertsPage() {
         title="작업 로그 삭제"
         description={
           <>
-            {deleteTarget?.task_id} 로그를 삭제할까요? 삭제한 로그는 새로고침해도
-            다시 나타나지 않습니다.
+            {deleteTarget?.task_id} 로그를 삭제할까요? 삭제한 로그는
+            새로고침해도 다시 나타나지 않습니다.
           </>
         }
         onConfirm={() => void removeLog()}

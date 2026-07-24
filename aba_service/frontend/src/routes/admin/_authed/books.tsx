@@ -95,7 +95,7 @@ function BooksPage() {
   const [editForm, setEditForm] = useState<
     (BookFormValue & { id: number }) | null
   >(null);
-  const [msg, setMsg] = useState<string | null>(null);
+  const [formMode, setFormMode] = useState<"create" | "edit">("create");
   const [err, setErr] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<AdminBook | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -152,15 +152,13 @@ function BooksPage() {
     ok: string,
     after?: () => void,
   ) => {
-    setErr(null);
-    setMsg(null);
     try {
       await fn();
-      setMsg(ok);
+      toast.success(ok);
       after?.();
       await load();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "처리 실패");
+      toast.error(e instanceof Error ? e.message : "처리 실패");
     }
   };
 
@@ -180,24 +178,34 @@ function BooksPage() {
     );
   };
 
+  const toFormValue = (b: AdminBook): BookFormValue & { id: number } => ({
+    id: b.id,
+    title_kr: b.title_kr,
+    author: b.author,
+    category: b.category,
+    cover: CATEGORY_COVER[b.category] ?? b.cover,
+    zone: b.zone,
+    shelf: b.shelf,
+    in_stock: b.in_stock,
+    unavailable: b.unavailable,
+  });
+
   const openEdit = (b: AdminBook) => {
-    setEditForm({
-      id: b.id,
-      title_kr: b.title_kr,
-      author: b.author,
-      category: b.category,
-      cover: CATEGORY_COVER[b.category] ?? b.cover,
-      zone: b.zone,
-      shelf: b.shelf,
-      in_stock: b.in_stock,
-      unavailable: b.unavailable,
-    });
+    setEditForm(toFormValue(b));
+    setFormMode("edit");
     requestAnimationFrame(() =>
       editSectionRef.current?.scrollIntoView({
         behavior: "smooth",
         block: "start",
       }),
     );
+  };
+
+  // 수정 폼에 입력한 값을 지금 화면에 실려있는 원본 값으로 되돌린다(저장은 안 함).
+  const resetEdit = () => {
+    if (!editForm) return;
+    const original = books.find((b) => b.id === editForm.id);
+    if (original) setEditForm(toFormValue(original));
   };
 
   const removeBook = async () => {
@@ -218,20 +226,17 @@ function BooksPage() {
 
   return (
     <AdminShell title="도서 · 서가 관리">
-      <div className="space-y-6">
-        {msg ? (
-          <p className="rounded-lg bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700">
-            {msg}
-          </p>
-        ) : null}
+      <div className="flex h-full flex-col gap-4">
         {err ? (
-          <p className="rounded-lg bg-rose-500/10 px-3 py-2 text-sm text-rose-700">
+          <p className="shrink-0 rounded-lg bg-rose-500/10 px-3 py-2 text-sm text-rose-700">
             {err}
           </p>
         ) : null}
 
-        {/* 전체 재고 현황 — 서가별 상세 차트보다 위, 한눈에 보는 총계 */}
-        <section className="rounded-lg border bg-muted/30 p-4">
+        {/* 전체 재고 현황 — 서가별 상세 차트보다 위, 한눈에 보는 총계.
+            StackedStatusBar 자체가 카드 테두리를 그리므로 바깥에 또 테두리를 두르지 않는다
+            (겹치면 이중 테두리로 보이는 버그가 있었음). */}
+        <section className="shrink-0">
           <h3 className="mb-2 text-sm font-semibold text-muted-foreground">
             전체 재고 현황
           </h3>
@@ -270,226 +275,262 @@ function BooksPage() {
           />
         </section>
 
-        {/* 서가 배치 현황 — 참고용 현황 차트, 등록/목록보다 낮은 시각 무게 */}
-        <section className="rounded-lg border border-dashed bg-muted/30 p-4">
-          <h3 className="mb-1 text-sm font-semibold text-muted-foreground">
-            서가 배치 현황
-          </h3>
-          <p className="mb-3 text-xs text-muted-foreground">
-            서가 이름은 로봇 내비 정점과 같습니다. 도서의 위치를 바꾸면 로봇이
-            집으러 가는 곳도 함께 바뀝니다.
-          </p>
-          {shelfChartData.length === 0 ? (
-            <p className="text-xs text-muted-foreground">
-              등록된 서가가 없습니다
-            </p>
-          ) : (
-            <StackedStatusBar
-              rows={shelfChartData.map((s) => ({
-                label: s.zone,
-                values: {
-                  available: s.available,
-                  borrowed: s.borrowed,
-                  unavailable: s.unavailable,
-                },
-              }))}
-              segments={[
-                {
-                  key: "available",
-                  label: "대출가능",
-                  color: STATUS_COLOR.available,
-                },
-                {
-                  key: "borrowed",
-                  label: "대출중",
-                  color: STATUS_COLOR.borrowed,
-                },
-                {
-                  key: "unavailable",
-                  label: "대출불가능(훼손·분실)",
-                  color: STATUS_COLOR.unavailable,
-                },
-              ]}
-              unit="권"
-            />
-          )}
-        </section>
-
-        {/* 1) 도서 검색 — 목록 + 정렬/필터, 여기서 수정을 누르면 3번 섹션이 채워진다 */}
-        <section className="rounded-xl border bg-card p-4">
-          <div className="mb-3 flex flex-wrap items-center gap-2">
-            <h3 className="text-sm font-semibold">
-              1. 도서 검색{" "}
-              <span className="text-xs font-normal text-muted-foreground">
-                ({books.length})
-              </span>
-            </h3>
-            <div className="relative ml-auto w-full sm:w-56">
-              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-                placeholder="제목·저자 검색"
-                className="h-8 pl-9"
-              />
-            </div>
-            <select
-              value={cat}
-              onChange={(e) => setCat(e.target.value)}
-              className={`h-8 w-auto shrink-0 ${selectClass}`}
-            >
-              <option value="">전체 분야</option>
-              {CATEGORIES.map((c) => (
-                <option key={c} value={c}>
-                  {CATEGORY_LABEL[c]}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <Table>
-            <TableHeader>
-              <TableRow>
-                {(
-                  [
-                    { key: "title_kr", label: "제목" },
-                    { key: "author", label: "저자" },
-                    { key: "category", label: "분야" },
-                    { key: "zone", label: "서가" },
-                    { key: "status", label: "재고" },
-                  ] as const
-                ).map((col) => (
-                  <TableHead
-                    key={col.key}
-                    className="cursor-pointer select-none hover:text-foreground"
-                    onClick={() => toggleBooksSort(col.key)}
-                  >
-                    {col.label}
-                    <SortIcon
-                      active={booksSortKey === col.key}
-                      direction={booksDirection}
-                    />
-                  </TableHead>
-                ))}
-                <TableHead className="text-right">작업</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {sortedBooks.map((b) => (
-                <TableRow key={b.id}>
-                  <TableCell className="font-medium">
-                    {CATEGORY_COVER[b.category] ?? b.cover} {b.title_kr}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {b.author}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {CATEGORY_LABEL[b.category] ?? b.category}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {b.zone} {b.shelf}
-                  </TableCell>
-                  <TableCell>
-                    {b.unavailable ? (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-rose-500/25 px-2.5 py-1 text-xs font-bold text-rose-800">
-                        <AlertTriangle className="size-3.5" />
-                        대출불가능
-                      </span>
-                    ) : b.in_stock ? (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/25 px-2.5 py-1 text-xs font-bold text-emerald-800">
-                        <CheckCircle2 className="size-3.5" />
-                        가능
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/25 px-2.5 py-1 text-xs font-bold text-amber-800">
-                        <XCircle className="size-3.5" />
-                        대출중
-                      </span>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex justify-end gap-1">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label="수정"
-                        onClick={() => openEdit(b)}
-                      >
-                        <Pencil className="size-4" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label="삭제"
-                        onClick={() => setDeleteTarget(b)}
-                      >
-                        <Trash2 className="size-4 text-destructive" />
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-              {books.length === 0 ? (
-                <TableRow>
-                  <TableCell
-                    colSpan={6}
-                    className="py-6 text-center text-muted-foreground"
-                  >
-                    도서가 없습니다
-                  </TableCell>
-                </TableRow>
-              ) : null}
-            </TableBody>
-          </Table>
-        </section>
-
-        {/* 2) 도서 등록 — 항상 빈 폼, 등록 후에도 비워진 채 유지 */}
-        <section className="rounded-xl border border-l-4 border-l-primary bg-card p-5 shadow-card">
-          <div className="mb-4 flex items-center gap-2">
-            <Plus className="size-4 text-primary" />
-            <h3 className="text-sm font-semibold">2. 도서 등록</h3>
-          </div>
-          <BookFormFields value={createForm} onChange={setCreateForm} />
-          <div className="mt-4">
-            <Button
-              onClick={() => void submitCreate()}
-              disabled={!createForm.title_kr || !createForm.author}
-            >
-              등록
-            </Button>
-          </div>
-        </section>
-
-        {/* 3) 도서 수정 — 1번 목록에서 수정을 누르면 여기가 채워진다 */}
-        <section
-          ref={editSectionRef}
-          className="rounded-xl border border-l-4 border-l-amber-500 bg-card p-5 shadow-card"
-        >
-          <div className="mb-4 flex items-center gap-2">
-            <Pencil className="size-4 text-amber-600" />
-            <h3 className="text-sm font-semibold">
-              {editForm ? `3. 도서 수정 (#${editForm.id})` : "3. 도서 수정"}
-            </h3>
-          </div>
-          {editForm ? (
-            <>
-              <BookFormFields
-                value={editForm}
-                onChange={(v) => setEditForm({ ...v, id: editForm.id })}
-              />
-              <div className="mt-4 flex gap-2">
-                <Button onClick={() => void submitEdit()}>수정</Button>
-                <Button variant="outline" onClick={() => setEditForm(null)}>
-                  취소
-                </Button>
+        <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[1.3fr_1fr]">
+          {/* 1) 도서 검색 — 목록 + 정렬/필터, 여기서 수정을 누르면 3번 섹션이 채워진다. 카드 내부에서만 스크롤. */}
+          <section className="flex h-full min-h-0 flex-col overflow-hidden rounded-xl border bg-card p-4">
+            <div className="mb-3 flex shrink-0 flex-wrap items-center gap-2">
+              <h3 className="text-sm font-semibold">
+                1. 도서 검색{" "}
+                <span className="text-xs font-normal text-muted-foreground">
+                  ({books.length})
+                </span>
+              </h3>
+              <div className="relative ml-auto w-full sm:w-56">
+                <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                  placeholder="제목·저자 검색"
+                  className="h-8 pl-9"
+                />
               </div>
-            </>
-          ) : (
-            <p className="rounded border border-dashed p-4 text-center text-sm text-muted-foreground">
-              위 목록에서 «수정» 버튼을 누르면 여기에 채워집니다
-            </p>
-          )}
-        </section>
+              <select
+                value={cat}
+                onChange={(e) => setCat(e.target.value)}
+                className={`h-8 w-auto shrink-0 ${selectClass}`}
+              >
+                <option value="">전체 분야</option>
+                {CATEGORIES.map((c) => (
+                  <option key={c} value={c}>
+                    {CATEGORY_LABEL[c]}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    {(
+                      [
+                        { key: "title_kr", label: "제목" },
+                        { key: "author", label: "저자" },
+                        { key: "category", label: "분야" },
+                        { key: "zone", label: "서가" },
+                        { key: "status", label: "재고" },
+                      ] as const
+                    ).map((col) => (
+                      <TableHead
+                        key={col.key}
+                        className="cursor-pointer select-none hover:text-foreground"
+                        onClick={() => toggleBooksSort(col.key)}
+                      >
+                        {col.label}
+                        <SortIcon
+                          active={booksSortKey === col.key}
+                          direction={booksDirection}
+                        />
+                      </TableHead>
+                    ))}
+                    <TableHead className="text-right">작업</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {sortedBooks.map((b) => (
+                    <TableRow key={b.id}>
+                      <TableCell className="font-medium">
+                        {CATEGORY_COVER[b.category] ?? b.cover} {b.title_kr}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {b.author}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {CATEGORY_LABEL[b.category] ?? b.category}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {b.zone} {b.shelf}
+                      </TableCell>
+                      <TableCell>
+                        {b.unavailable ? (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-rose-500/25 px-2.5 py-1 text-xs font-bold text-rose-800">
+                            <AlertTriangle className="size-3.5" />
+                            대출불가능
+                          </span>
+                        ) : b.in_stock ? (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/25 px-2.5 py-1 text-xs font-bold text-emerald-800">
+                            <CheckCircle2 className="size-3.5" />
+                            가능
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/25 px-2.5 py-1 text-xs font-bold text-amber-800">
+                            <XCircle className="size-3.5" />
+                            대출중
+                          </span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex justify-end gap-1">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label="수정"
+                            onClick={() => openEdit(b)}
+                          >
+                            <Pencil className="size-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label="삭제"
+                            onClick={() => setDeleteTarget(b)}
+                          >
+                            <Trash2 className="size-4 text-destructive" />
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  {books.length === 0 ? (
+                    <TableRow>
+                      <TableCell
+                        colSpan={6}
+                        className="py-6 text-center text-muted-foreground"
+                      >
+                        도서가 없습니다
+                      </TableCell>
+                    </TableRow>
+                  ) : null}
+                </TableBody>
+              </Table>
+            </div>
+          </section>
+
+          {/* 우측 열: 서가 배치 현황(작은 참고 차트, 서가 많아지면 그 상자 안에서만
+              스크롤) + 도서 등록/수정 폼(항상 스크롤 없이 전부 보임 — shrink-0 고정 높이). */}
+          <section className="flex h-full min-h-0 flex-col gap-4 overflow-hidden rounded-xl border p-4">
+            {/* 서가 배치 현황 — 참고용 현황 차트. StackedStatusBar 자체가 테두리를 그리므로
+                바깥엔 테두리를 두르지 않는다(이중 테두리 방지). 차트 상자 높이를 고정해
+                (h-full 이 auto-height 부모에서 순환 참조로 부풀어 오르는 flexbug 회피) 폼을
+                절대 밀어내지 않게 하고, 서가가 많아지면 이 상자 안에서만 스크롤한다. */}
+            <div className="shrink-0">
+              <h3 className="mb-1 text-sm font-semibold text-muted-foreground">
+                서가 배치 현황
+              </h3>
+              <p className="mb-2 text-xs text-muted-foreground">
+                서가 이름 = 로봇 내비 정점
+              </p>
+              {shelfChartData.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  등록된 서가가 없습니다
+                </p>
+              ) : (
+                <StackedStatusBar
+                  rows={shelfChartData.map((s) => ({
+                    label: s.zone,
+                    values: {
+                      available: s.available,
+                      borrowed: s.borrowed,
+                      unavailable: s.unavailable,
+                    },
+                  }))}
+                  segments={[
+                    {
+                      key: "available",
+                      label: "대출가능",
+                      color: STATUS_COLOR.available,
+                    },
+                    {
+                      key: "borrowed",
+                      label: "대출중",
+                      color: STATUS_COLOR.borrowed,
+                    },
+                    {
+                      key: "unavailable",
+                      label: "대출불가능(훼손·분실)",
+                      color: STATUS_COLOR.unavailable,
+                    },
+                  ]}
+                  unit="권"
+                  rowHeight={30}
+                />
+              )}
+            </div>
+
+            {/* 2/3) 도서 등록·수정 — 대시보드 대여/반납 탭과 같은 토글로 한 카드 안에 묶는다.
+                목록에서 «수정» 누르면 자동으로 수정 탭으로 전환되고 그 도서가 채워진다. */}
+            <div
+              ref={editSectionRef}
+              className="shrink-0 rounded-xl border border-l-4 border-l-primary bg-card p-4 shadow-card"
+            >
+              <div className="mb-3 flex gap-1 text-xs font-semibold">
+                <button
+                  type="button"
+                  onClick={() => setFormMode("create")}
+                  className={`flex flex-1 items-center justify-center gap-1.5 rounded px-2 py-1.5 transition ${
+                    formMode === "create"
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-muted text-muted-foreground hover:bg-muted/70"
+                  }`}
+                >
+                  <Plus className="size-3.5" /> 도서 등록
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFormMode("edit")}
+                  className={`flex flex-1 items-center justify-center gap-1.5 rounded px-2 py-1.5 transition ${
+                    formMode === "edit"
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-muted text-muted-foreground hover:bg-muted/70"
+                  }`}
+                >
+                  <Pencil className="size-3.5" />
+                  도서 수정{editForm ? ` (#${editForm.id})` : ""}
+                </button>
+              </div>
+
+              {formMode === "create" ? (
+                <>
+                  <BookFormFields value={createForm} onChange={setCreateForm} />
+                  <div className="mt-4 flex gap-2">
+                    <Button
+                      onClick={() => void submitCreate()}
+                      disabled={!createForm.title_kr || !createForm.author}
+                    >
+                      등록
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={() => setCreateForm({ ...EMPTY })}
+                    >
+                      초기화
+                    </Button>
+                  </div>
+                </>
+              ) : editForm ? (
+                <>
+                  <BookFormFields
+                    value={editForm}
+                    onChange={(v) => setEditForm({ ...v, id: editForm.id })}
+                  />
+                  <div className="mt-4 flex gap-2">
+                    <Button onClick={() => void submitEdit()}>수정</Button>
+                    <Button variant="outline" onClick={resetEdit}>
+                      초기화
+                    </Button>
+                    <Button variant="outline" onClick={() => setEditForm(null)}>
+                      취소
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <p className="rounded border border-dashed p-4 text-center text-sm text-muted-foreground">
+                  위 목록에서 «수정» 버튼을 누르면 여기에 채워집니다
+                </p>
+              )}
+            </div>
+          </section>
+        </div>
       </div>
 
       <ConfirmDeleteDialog
@@ -514,7 +555,7 @@ function BookFormFields({
   onChange: (v: BookFormValue) => void;
 }) {
   return (
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    <div className="grid gap-3 sm:grid-cols-2">
       <Field label="제목">
         <Input
           value={value.title_kr}

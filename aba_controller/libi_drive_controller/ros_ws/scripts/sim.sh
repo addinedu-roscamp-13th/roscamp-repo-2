@@ -5,6 +5,7 @@
 #   ./sim.sh            → 헤드리스(뷰어 없이) + nav2 + rviz + domain_bridge + fleet_link + fsm
 #   ./sim.sh viewer     → 가제보 GUI(뷰어) 포함
 #   ./sim.sh --no-fsm   → fsm 창 없이 (FSM 은 ./fsm-bt.sh 로 따로 띄울 때)
+#   ./sim.sh --no-rviz  → rviz 창 없이
 #
 # BT 를 고치면서 반복할 땐 fsm 창만 재기동하면 된다 (gazebo·nav2 는 그대로 살아있다).
 # 창 안에서 Ctrl+C 후 **명령을 직접 타이핑**한다:
@@ -42,10 +43,12 @@ SIM_DOMAIN_ID="${ROS_DOMAIN_ID:-90}"
 
 USE_GUI=false
 WITH_FSM=true
+WITH_RVIZ=true
 for arg in "$@"; do
   case "$arg" in
     viewer) USE_GUI=true ;;
     --no-fsm) WITH_FSM=false ;;
+    --no-rviz) WITH_RVIZ=false ;;
   esac
 done
 
@@ -84,8 +87,10 @@ tmux new-session -d -s "$SESSION" -n gazebo \
 tmux new-window -t "$SESSION" -n nav2 \
   bash -c "$ROS_SETUP && echo '[nav2] 로봇 스폰 대기 중 (/scan 토픽 확인)...' && for i in \$(seq 1 30); do ros2 topic list 2>/dev/null | grep -q '/scan' && break; sleep 1; done && ros2 launch pinky_navigation gz_bringup_launch.xml map:='$MAP_PATH'; exec bash"
 
-tmux new-window -t "$SESSION" -n rviz \
-  bash -c "$ROS_SETUP && ros2 launch pinky_navigation gz_nav2_view.launch.xml; exec bash"
+if [ "$WITH_RVIZ" = true ]; then
+  tmux new-window -t "$SESSION" -n rviz \
+    bash -c "$ROS_SETUP && ros2 launch pinky_navigation gz_nav2_view.launch.xml; exec bash"
+fi
 
 tmux new-window -t "$SESSION" -n bridge \
   bash -c "$ROS_SETUP && echo '[bridge] domain $SIM_DOMAIN_ID <-> 86 연결 (FMS 서버)...' && ros2 run domain_bridge domain_bridge '$DOMAIN_BRIDGE_CONFIG'; exec bash"

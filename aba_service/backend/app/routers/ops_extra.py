@@ -25,29 +25,47 @@ NIGHT_START_KEY = "security_night_start"  # "HH:MM" — 야간 진입
 NIGHT_END_KEY = "security_night_end"  # "HH:MM" — 주간 복귀
 BOUNDARY_KEY = "security_last_boundary"  # 마지막으로 자동 적용한 경계 시각(ISO)
 TERMINAL = {"COMPLETED", "FAILED", "CANCELLED"}
+#: 로그에 남기는 상태 — 배정 시점 하나 + 결과 셋. EXECUTING 은 그 사이 상태라 굳이 안 남긴다.
+TRACKED = TERMINAL | {"ASSIGNED"}
 
 
 # ── 작업 로그 / 알림 ─────────────────────────────────────────────────────────
 
 
 def _sync_logs(db: Session) -> int:
-    """FMS 의 종료된 작업을 로그로 적재. 이미 있는 task_id 는 건너뛴다(멱등)."""
+    """FMS 작업을 로그로 적재 — 배정(ASSIGNED) 시점 한 번, 종료(COMPLETED/FAILED/CANCELLED)
+    시점에 그 행을 업데이트한다. 같은 task_id 로 두 번 적재하지 않는다(멱등)."""
     ok, orders = fms_client.list_orders()
     if not ok:
         return 0
-    known = {
-        r for (r,) in db.execute(select(TaskLog.task_id)).all()
+    existing = {
+        r.task_id: r for r in db.scalars(select(TaskLog)).all()
     }
     added = 0
     for o in orders:
-        if o.get("status") not in TERMINAL or o.get("id") in known:
+        status = o.get("status")
+        if status not in TRACKED:
+            continue
+        task_id = o.get("id", "")
+        row = existing.get(task_id)
+        if row is not None:
+            if row.status != status:
+                row.status = status
+                row.leg_idx = int(o.get("leg_idx") or 0)
+                row.leg_count = int(o.get("leg_count") or 0)
+                row.reason = (o.get("reason") or "")[:255] or None
+                if status in TERMINAL:
+                    # 배정 시점에 적재한 행을 종료 시점으로 갱신 — 최근 알림이 실제
+                    # 종료 시각 기준으로 뜨도록 기록 시각도 함께 옮긴다.
+                    row.recorded_at = datetime.now()
+                added += 1
             continue
         db.add(
             TaskLog(
-                task_id=o.get("id", ""),
+                task_id=task_id,
                 kind=(o.get("requester") or "").split(":")[-1] or o.get("task_type", ""),
                 robot=o.get("robot"),
-                status=o.get("status", ""),
+                status=status,
                 leg_idx=int(o.get("leg_idx") or 0),
                 leg_count=int(o.get("leg_count") or 0),
                 reason=(o.get("reason") or "")[:255] or None,
@@ -225,6 +243,43 @@ def _latest_boundary(
     return max(past, key=lambda c: c[0])
 
 
+def _drive_fleet(mode: str) -> list[dict]:
+    """운영모드 전환 시 로봇을 **실제로** 전이시킨다.
+
+    「순찰」버튼(ops.create_task, kind=patrol → fms_client.request_transition(robot, "PATROL"))과
+    **같은 경로**를 쓰되, target 이 SECURITY_PATROL 이고 대상이 전체 로봇이다.
+      - night: 스냅샷의 모든 로봇 → SECURITY_PATROL
+      - day  : 지금 SECURITY_PATROL 인 로봇만 → IDLE (그 외 상태는 건드리지 않는다)
+
+    force=False 라 로봇이 못 가는 전이는 로봇이 거부하고 그 사유가 결과에 담긴다 — 순찰
+    버튼과 **똑같은 제약**이다(전이표상 SECURITY_PATROL 진입은 IDLE→SECURITY_PATROL 하나뿐).
+    FMS 미연결이면 빈 목록으로 조용히 물러난다 — 화면의 모드 플래그는 그대로 바뀐다.
+    """
+    ok, snap = fms_client.fleet_snapshot()
+    if not ok:
+        return []
+    target = "SECURITY_PATROL" if mode == "night" else "IDLE"
+    results: list[dict] = []
+    for r in snap.get("robots", []):
+        name = r.get("name")
+        if not name:
+            continue
+        # 주간 복귀는 야간 순찰 중이던 로봇만 되돌린다(충전·작업 중인 로봇은 안 건드림).
+        if mode == "day" and r.get("state") != "SECURITY_PATROL":
+            continue
+        # 야간 진입은 force=True — 전이표상 SECURITY_PATROL 진입은 IDLE→SECURITY_PATROL 하나뿐인데
+        # 로봇은 낮에 PATROL 이라, IDLE 을 거치면 그 순간 auto-PATROL 이 낚아채 진입이 어긋난다.
+        # 그래서 PATROL→SECURITY_PATROL 을 강제로 넣고, 로봇 쪽 security_patrol 브랜치가 그 상태를
+        # 계속 물고 있게(반복 순찰) 바꿔 두었다. 주간 복귀(→IDLE)는 정규 간선이라 force 불필요.
+        called, res = fms_client.request_transition(name, target, force=(mode == "night"))
+        results.append({
+            "robot": name,
+            "accepted": bool(res.get("accepted")) if called else False,
+            "reason": res.get("reason", ""),
+        })
+    return results
+
+
 def _apply_schedule(db: Session, now: datetime | None = None) -> None:
     """설정된 시각이 있으면, 지나온 경계를 딱 한 번만 자동 반영한다.
 
@@ -250,6 +305,9 @@ def _apply_schedule(db: Session, now: datetime | None = None) -> None:
     _put_setting(db, SECURITY_KEY, desired_mode)
     _put_setting(db, BOUNDARY_KEY, fingerprint)
     db.commit()
+    # 경계를 새로 지날 때만(위 fingerprint 가드) 로봇을 전이시킨다 — 폴링마다가 아니다.
+    # 수동 버튼과 같은 _drive_fleet 를 태워, 자동/수동이 같은 결과를 내게 한다.
+    _drive_fleet(desired_mode)
 
 
 @router.get("/security")
@@ -287,7 +345,10 @@ def set_mode(
         raise HTTPException(status_code=400, detail="mode 는 day 또는 night")
     _put_setting(db, SECURITY_KEY, body.mode)
     db.commit()
-    return {"mode": body.mode}
+    # 순찰 버튼과 같은 경로로 로봇을 실제 전이시킨다(night→SECURITY_PATROL, day→IDLE).
+    # 로봇별 수락/거부 결과를 돌려주면 화면이 "N대 순찰 / M대 거부"로 요약해 보여준다.
+    results = _drive_fleet(body.mode)
+    return {"mode": body.mode, "results": results}
 
 
 @router.post("/security/schedule")

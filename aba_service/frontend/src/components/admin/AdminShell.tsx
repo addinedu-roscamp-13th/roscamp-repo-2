@@ -79,7 +79,11 @@ const NAV_GROUPS: NavGroup[] = [
     label: "회원관리",
     icon: BookMarked,
     items: [
-      { to: "/admin/members", label: "회원 · 대여/반납", icon: BookMarked },
+      {
+        to: "/admin/members",
+        label: "회원 관리 및 대여/반납",
+        icon: BookMarked,
+      },
     ],
   },
   {
@@ -203,7 +207,7 @@ export function AdminShell({
         </div>
       </SidebarInset>
 
-      <Toaster closeButton />
+      <Toaster position="top-right" closeButton />
     </SidebarProvider>
   );
 }

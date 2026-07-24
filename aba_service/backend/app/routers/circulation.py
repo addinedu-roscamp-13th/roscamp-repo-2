@@ -332,6 +332,7 @@ def return_loan(
 @router.get("/available-books")
 def available_books(
     q: str | None = None,
+    category: str | None = None,
     include_unavailable: bool = False,
     db: Session = Depends(get_db),
     _: AdminUser = Depends(get_current_admin),
@@ -346,14 +347,19 @@ def available_books(
     if not include_unavailable:
         stmt = stmt.where(Book.in_stock.is_(True), Book.unavailable.is_(False))
     if q and q.strip():
-        like = f"%{q.strip()}%"
-        stmt = stmt.where(Book.title_kr.like(like))
-    rows = db.scalars(stmt.order_by(Book.title_kr).limit(50)).all()
+        # 띄어쓰기 차이로 검색이 실패하지 않도록 제목·검색어 둘 다 공백을 지우고 비교한다
+        # (예: "어린왕자" 검색이 "어린 왕자" 도서를 못 찾던 문제).
+        like = f"%{q.strip().replace(' ', '')}%"
+        stmt = stmt.where(func.replace(Book.title_kr, " ", "").like(like))
+    if category:
+        stmt = stmt.where(Book.category == category)
+    rows = db.scalars(stmt.order_by(Book.title_kr).limit(300)).all()
     return [
         {
             "id": b.id,
             "title": b.title_kr,
             "author": b.author,
+            "category": b.category,
             "zone": b.zone,
             "in_stock": b.in_stock,
             "unavailable": b.unavailable,

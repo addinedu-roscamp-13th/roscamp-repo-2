@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { AdminShell } from "@/components/admin/AdminShell";
 import { TaskBookPickerDialog } from "@/components/admin/TaskBookPickerDialog";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { NAMED_WAYPOINTS } from "@/lib/map-waypoints";
 import {
   ops,
@@ -215,11 +216,13 @@ function TasksPage() {
             FMS 연결 없음 — 작업을 지시할 수 없습니다.
           </p>
         ) : null}
-        {msg ? (
-          <p className="rounded-lg bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700">
-            {msg}
-          </p>
-        ) : null}
+        <Dialog open={msg !== null} onOpenChange={(o) => !o && setMsg(null)}>
+          <DialogContent className="sm:max-w-md">
+            <p className="rounded-lg bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700">
+              {msg}
+            </p>
+          </DialogContent>
+        </Dialog>
         {err ? (
           <p className="rounded-lg bg-rose-500/10 px-3 py-2 text-sm text-rose-700">
             {err}

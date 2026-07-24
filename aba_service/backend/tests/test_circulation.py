@@ -39,6 +39,18 @@ def test_훼손분실_처리된_책은_대출할_수_없다(client, admin_auth, 
     assert db_session.query(Loan).count() == 0
 
 
+def test_도서명_검색은_띄어쓰기_차이를_무시한다(client, admin_auth, book):
+    """book fixture 제목은 "어린 왕자" — 띄어쓰기 뺀 "어린왕자"로 검색해도 찾아야 한다."""
+    res = client.get(
+        "/api/admin/circulation/available-books",
+        params={"q": "어린왕자"},
+        headers=admin_auth,
+    )
+    assert res.status_code == 200, res.text
+    titles = [b["title"] for b in res.json()]
+    assert book.title_kr in titles
+
+
 def test_이미_대출중인_책은_다시_대출할_수_없다(client, admin_auth, member, book, db_session):
     """mock 없이 — 첫 대출이 실제 UPDATE 로 in_stock 을 내린 뒤, 두 번째 UPDATE 가 rowcount 0 을 맞는지 본다."""
     first = client.post(

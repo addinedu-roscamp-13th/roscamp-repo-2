@@ -137,14 +137,14 @@ sudo apt install -y ros-jazzy-domain-bridge        # ros-domain-bridge.sh / sim.
 
 | 스크립트 | 하는 일 |
 |---|---|
-| `fms_service.sh` | FMS 백엔드(:9001, 데몬) + 도메인 브릿지(tmux 세션 `libi_fms`) |
+| `fms_service.sh` | 도메인 브릿지 + fleet_node + 상태 어댑터(tmux 세션 `libi_fms`). 관제 백엔드/프론트는 안 띄움 — `ui/fms.sh` 로 따로. |
 | `ai_follower_service.sh <pinky>` | 추종 인지 서버 기동 + `--drive-host` 를 그 로봇 IP 로. `--test-pattern` 등 위임. |
 | `libi_gui.sh <pinky>` | libi_gui 를 그 로봇 것으로. `PERCEPTION_URL`/`FMS_URL` 을 `LAPTOP_IP` 로 채움. |
-| `sim.sh [viewer\|--no-fsm]` | Gazebo 시뮬 전체(로봇 없이 검증). `./sim.sh viewer` = GUI 포함. |
-| `kill.sh` | `libi_fms` 세션 + sim·브릿지·ROS 고아 정리 (백엔드 데몬은 `backend/stop.sh` 로 따로) |
+| `sim.sh [viewer\|--no-fsm\|--no-rviz]` | Gazebo 시뮬 전체(로봇 없이 검증). `./sim.sh viewer` = GUI 포함. |
+| `kill.sh` | `libi_fms` 세션 + sim·브릿지·ROS 고아 정리. 관제 백엔드/프론트는 안 건드림 — `backend/stop.sh` 로 따로. |
 
 ```bash
-./fms_service.sh               # FMS + 브릿지
+./fms_service.sh               # 브릿지 + fleet_node + 어댑터 (관제 백엔드/프론트 제외)
 ./ai_follower_service.sh pinky3   # 추종 인지 서버 (cmd_vel -> pinky3)
 ./libi_gui.sh pinky3           # 터치패널 (테스트)
 ```
@@ -168,8 +168,9 @@ sudo apt install -y ros-jazzy-domain-bridge        # ros-domain-bridge.sh / sim.
 ./kill.sh library         # 도서관만
 ```
 
-**FMS 백엔드(:9001)는 `laptop/fms_service.sh` 와 공유**한다 — 이미 떠 있으면 재사용하므로
-둘을 같이 켜도 겹치지 않는다. 백엔드 데몬 중지는 `aba_fms_service/backend/stop.sh`.
+관제 백엔드/프론트(:9001/:9002)는 `laptop/fms_service.sh` 가 아니라 이 `fms.sh` 가 띄운다 —
+`laptop/fms_service.sh` 는 브릿지·fleet_node·어댑터만 담당한다. 백엔드 데몬 중지는
+`aba_fms_service/backend/stop.sh`.
 
 ## 추종 전체를 굴리는 순서
 

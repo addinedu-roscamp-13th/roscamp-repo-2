@@ -1,21 +1,18 @@
 #!/usr/bin/env bash
-# 노트북/서버에서 실행 — FMS 한 벌을 통째로 띄운다.
-#   - 백엔드(:9001)  : start.sh 가 데몬으로 (중지: aba_fms_service/backend/stop.sh)
+# 노트북/서버에서 실행 — 관제(aba_fms_service) 백엔드·프론트엔드는 빼고,
+# 로봇 운영에 필요한 ROS 쪽만 띄운다.
 #   - 도메인 브릿지  : 로봇 도메인 ↔ 86 (DB rc_robots 기준, 로봇마다 하나)
 #   - fleet_node     : 배차·교통 (도메인 86)
 #   - 상태 어댑터    : 로봇 위치 → fleet_node (DB 로봇 전부)
-#   - 관제 웹(:9002) : 배차·교통 화면
 #
-#   ./fms_service.sh              # 전부
-#   ./fms_service.sh --no-web     # 웹 없이 (로봇 운영만)
+# 관제 백엔드(:9001)/프론트(:9002)는 aba_fms_service/backend/start.sh · frontend
+# 쪽에서 따로 띄운다(이 스크립트는 관여하지 않는다).
 #
-# tmux 세션 'libi_fms' — 창: api / bridge / fleet-node / adapters / frontend
+#   ./fms_service.sh
+#
+# tmux 세션 'libi_fms' — 창: bridge / fleet-node / adapters
 # 분리: Ctrl+b d  ·  종료: ./kill.sh
 set -eo pipefail
-
-# --no-web 은 _common.sh 로드 전에 소비한다(뒤에서 NO_WEB 로 읽는다).
-NO_WEB=0
-for _a in "$@"; do [ "$_a" = "--no-web" ] && NO_WEB=1; done
 
 source "$(dirname "${BASH_SOURCE[0]}")/../_common.sh"
 
@@ -38,18 +35,8 @@ need_cmd tmux "sudo apt install -y tmux"
 tmux has-session -t "$SESSION" 2>/dev/null && \
   die "'$SESSION' 세션이 이미 떠 있습니다. 먼저 ./kill.sh 로 정리하세요."
 
-# 백엔드는 데몬(:9001, 단일 PID). ui/fms.sh 와 같은 백엔드를 공유하므로, 이미 떠 있으면
-# 재사용한다 — 무조건 start.sh 를 부르면 두 번째 기동이 포트 충돌로 죽는다.
-if port_open 9001; then
-  echo "[api] :9001 이미 떠 있음 — 재사용"
-else
-  "$FMS/backend/start.sh"
-fi
-
 cd "$REPO_ROOT"
-tmux new-session -d -s "$SESSION" -n api \
-  bash -c "echo '[api] 백엔드는 데몬입니다 (중지: aba_fms_service/backend/stop.sh). 로그:'; tail -n +1 -f /tmp/pinky_api.log; exec bash"
-tmux new-window -t "$SESSION" -n bridge \
+tmux new-session -d -s "$SESSION" -n bridge \
   bash -c "cd '$FMS' && echo '[bridge] 로봇 도메인 <-> 86 (DB rc_robots 기준)...' && ./scripts/ros-domain-bridge.sh; exec bash"
 
 # fleet_node(배차·교통) — 백엔드와 같은 도메인 86 에서 돈다(fleet_link 가 같은 도메인 전제).
@@ -72,25 +59,6 @@ fi
 if [ -f "$FLEET_WS/install/setup.bash" ]; then
   tmux new-window -t "$SESSION" -n adapters \
     bash -c "cd '$REPO_ROOT' && ./scripts/laptop/robot-link.sh --all --foreground; exec bash"
-fi
-
-# 관제 웹(:9002) — 백엔드/로봇만 띄우고 화면을 따로 켜는 게 번거로워 여기 함께 둔다.
-# ui/fms.sh 와 같은 프론트라 이미 :9002 가 떠 있으면 재사용한다(중복 기동 방지).
-#   끄고 싶으면: ./fms_service.sh --no-web
-if [ "${NO_WEB:-0}" != "1" ]; then
-  if port_open 9002; then
-    echo "[frontend] :9002 이미 떠 있음 — 재사용"
-  else
-    ensure_npm "$FMS/frontend"
-    # bun 이 있으면 bun 으로 — 이 저장소 프론트는 bun 기준이고 npm 은 느리다.
-    if command -v bun >/dev/null 2>&1; then
-      WEB_CMD="bun --bun run dev"
-    else
-      WEB_CMD="npm run dev"
-    fi
-    tmux new-window -t "$SESSION" -n frontend \
-      bash -c "cd '$FMS/frontend' && echo '[frontend] 관제 콘솔 http://localhost:9002/admin ...' && $WEB_CMD; exec bash"
-  fi
 fi
 
 tmux select-window -t "$SESSION:bridge"

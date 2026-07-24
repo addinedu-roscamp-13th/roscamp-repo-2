@@ -154,10 +154,16 @@ def test_patrol_stop_request_to_idle(seed, read, tick):
 
 # ── SECURITY_PATROL ───────────────────────────────────────────────────────────
 
-def test_security_patrol_one_lap_then_idle(seed, read, tick):
-    seed(**{Keys.CURRENT_MODE: "SECURITY_PATROL", Keys.BATTERY_PERCENT: 60.0})
-    assert tick(security_patrol.create(PARAMS, FakeDriver(["success"]))) == Status.SUCCESS
-    assert read(Keys.CURRENT_MODE) == "IDLE"
+def test_security_patrol_keeps_patrolling(seed, read, tick):
+    """야간 순찰은 1바퀴로 끝나지 않는다 — 한 노드에 도착해도 계속 순찰(RUNNING)하며
+    IDLE 로 스스로 나가지 않는다(PATROL 과 같은 지속 순찰). 그래서 야간 내내 상태를 문다."""
+    seed(**{Keys.CURRENT_MODE: "SECURITY_PATROL", Keys.BATTERY_PERCENT: 60.0,
+            Keys.ACTIVE_COMMAND: "navigate",
+            Keys.NAV_TARGET: {"x": 1.0, "y": 0.0, "yaw": 0.0},
+            Keys.ROBOT_POSE: {"x": 1.0, "y": 0.0}})       # 이미 목적지
+    assert tick(security_patrol.create(PARAMS, FakeDriver())) == Status.RUNNING
+    assert read(Keys.CURRENT_MODE) == "SECURITY_PATROL"
+    assert read(Keys.ACTIVE_COMMAND) is None, "다음 노드를 받으려면 슬롯을 비운다"
 
 
 def test_security_patrol_stop_request_to_idle(seed, read, tick):

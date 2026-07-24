@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
 # 노트북에서 실행 — Gazebo 시뮬레이션 스택(gazebo·nav2·rviz·bridge·fleet-link·fsm·path-driver)을
-# tmux 로 띄운다. 로봇 없이 전체 파이프라인을 검증할 때 쓴다.
+# tmux 로 띄우고, 이 로봇의 상태 어댑터(amcl_pose → /robot_state)도 함께 띄운다
+# (사서 GUI 가 로봇을 그리려면 필요 — 파일 하단 주석 참고). 로봇 없이 전체 파이프라인을 검증할 때 쓴다.
 #
-#   ./sim.sh              # 헤드리스 (로봇 이름·도메인은 DB 에서 자동)
-#   ./sim.sh viewer       # 가제보 GUI 포함
-#   ./sim.sh --no-fsm     # fsm 창 없이
-#   ./sim.sh --robot Pinky-3   # sim 으로 쓸 로봇을 지정
+#   ./sim.sh --robot Pinky-sim-1 --domain 90   # 기본
+#   ./sim.sh --robot Pinky-sim-1 --domain 90 viewer     # 가제보 GUI 포함
+#   ./sim.sh --robot Pinky-sim-1 --domain 90 --no-fsm   # fsm 창 없이
 #
-# ## 이름·도메인을 왜 자동으로 정하나
+# ## 이름·도메인을 왜 매번 직접 주나
 # sim 이 FMS 와 붙으려면 **로봇 이름과 도메인이 DB(rc_robots) 등록값과 같아야** 한다.
 #   - 이름이 다르면 → fleet_node 가 FSM 상태를 매칭 못 해 관제에 "상태 미상"
 #   - 도메인이 다르면 → 브릿지가 엉뚱한 도메인을 봐서 아무것도 안 넘어옴
-# 예전엔 `FSM_ROBOT_ID=... ROS_DOMAIN_ID=... ./sim.sh` 처럼 앞에 붙여 줘야 했는데,
-# 그냥 `./sim.sh` 로 켜면 조용히 어긋났다. 그래서 **DB 에서 읽어 자동으로 넣는다.**
-# (직접 준 값이 있으면 그게 이긴다 — `_common.sh` 가 .env 보다 셸 값을 우선한다)
+# 자동 추론은 하지 않는다 — 조용히 엉뚱한 로봇/도메인으로 뜨는 것보다 멈추고 묻는 편이 낫다.
+# DB(rc_robots)는 값을 정해주는 데 쓰지 않고, 등록 목록 안내와 대조 검증에만 쓴다.
 #
 # 정리: ./kill.sh (sim 세션 pinky_sim 까지 함께 지운다)
 set -eo pipefail
@@ -123,6 +122,15 @@ echo "[sim] 로봇=$FSM_ROBOT_ID  도메인=$ROS_DOMAIN_ID  세션=$SIM_SESSION"
 
 ensure_built "$REPO_ROOT/aba_controller/libi_drive_controller/ros_ws"
 ensure_built "$REPO_ROOT/aba_controller/libi_modes/ros_ws"
+
+# 사서(libi) GUI 에 이 로봇이 잡히게 상태 어댑터를 함께 띄운다.
+#   FMS 관제 모니터링은 /pinky{key}/amcl_pose 를 직접 읽어(fleet_telemetry) sim 이 뜨면 바로 보이지만,
+#   사서 GUI 는 /robot_state(fleet_link)를 본다 — 그건 amcl_pose 를 재발행하는 이 어댑터가
+#   내야 채워진다. 없으면 관제엔 뜨는데 사서 GUI 엔 안 잡힌다.
+# 이 로봇 하나만 띄운다(백그라운드, setsid). 정리는 ./kill.sh 가 robot_state_adapter 를 함께 쓸어담는다.
+# exec 로 넘어가면 이 셸이 사라지므로 반드시 그 전에 띄운다(어댑터는 amcl_pose 가 늦게 떠도 기다린다).
+"$REPO_ROOT/scripts/laptop/robot-link.sh" "$FSM_ROBOT_ID" \
+  || echo "[sim] ⚠️ 상태 어댑터 기동 실패 — 사서 GUI 에 로봇이 안 잡힐 수 있습니다(sim 은 계속 진행)"
 
 cd "$REPO_ROOT"
 exec "$REPO_ROOT/aba_controller/libi_drive_controller/ros_ws/scripts/sim.sh" "${ARGS[@]}"

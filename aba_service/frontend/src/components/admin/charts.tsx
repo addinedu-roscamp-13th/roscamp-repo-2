@@ -19,25 +19,32 @@ import {
 export function MiniDonut({
   title,
   data,
+  size = "md",
 }: {
   title: string;
   data: { label: string; value: number; color: string }[];
+  size?: "md" | "lg";
 }) {
   const total = data.reduce((sum, d) => sum + d.value, 0);
+  const lg = size === "lg";
   return (
-    <div className="flex h-full min-h-0 flex-1 flex-col rounded-lg border p-2">
-      <p className="mb-1 shrink-0 text-sm font-semibold whitespace-nowrap text-muted-foreground">
+    <div className="flex h-full min-h-0 flex-1 flex-col rounded-lg border p-1.5">
+      <p
+        className={`mb-0.5 shrink-0 font-semibold whitespace-nowrap text-muted-foreground ${lg ? "text-lg" : "text-sm"}`}
+      >
         {title}
       </p>
       {total === 0 ? (
         <p className="text-xs text-muted-foreground">데이터 없음</p>
       ) : (
         <div className="flex min-h-0 flex-1 items-center justify-center gap-12">
-          <ul className="grid shrink-0 grid-cols-[auto_auto_auto] items-center gap-x-2 gap-y-0.5 text-xs">
+          <ul
+            className={`grid shrink-0 grid-cols-[auto_auto_auto] items-center gap-x-2 gap-y-0.5 ${lg ? "text-base" : "text-xs"}`}
+          >
             {data.map((d) => (
               <li key={d.label} className="contents">
                 <span
-                  className="size-2.5 shrink-0 rounded-full"
+                  className={`shrink-0 rounded-full ${lg ? "size-4" : "size-2.5"}`}
                   style={{ background: d.color }}
                 />
                 <span className="text-muted-foreground">{d.label}</span>
@@ -175,10 +182,13 @@ export function StackedStatusBar({
   rows,
   segments,
   unit = "",
+  rowHeight = 44,
 }: {
   rows: { label: string; values: Record<string, number> }[];
   segments: { key: string; label: string; color: string }[];
   unit?: string;
+  /** 한 행의 높이(px) — 좁은 카드 안에 행이 많을 때 촘촘하게 보여주고 싶으면 줄인다. */
+  rowHeight?: number;
 }) {
   const data = rows.map((r) => ({
     label: r.label,
@@ -189,12 +199,12 @@ export function StackedStatusBar({
     <div className="flex h-full min-h-0 flex-col rounded-lg border p-2">
       <ResponsiveContainer
         width="100%"
-        height={Math.max(64, data.length * 44)}
+        height={Math.max(rowHeight, data.length * rowHeight)}
       >
         <BarChart
           data={data}
           layout="vertical"
-          margin={{ left: 8, right: 28, top: 4, bottom: 4 }}
+          margin={{ left: 8, right: 40, top: 4, bottom: 4 }}
         >
           <XAxis type="number" hide />
           <YAxis

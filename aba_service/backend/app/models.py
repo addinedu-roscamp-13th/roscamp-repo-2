@@ -403,7 +403,9 @@ class TaskLog(Base):
     )
     robot: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="수행 로봇")
     status: Mapped[str] = mapped_column(
-        String(20), nullable=False, comment="결과 (COMPLETED | FAILED | CANCELLED)"
+        String(20),
+        nullable=False,
+        comment="배정/결과 (ASSIGNED | COMPLETED | FAILED | CANCELLED)",
     )
     leg_idx: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="완료 다리 수")
     leg_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="전체 다리 수")

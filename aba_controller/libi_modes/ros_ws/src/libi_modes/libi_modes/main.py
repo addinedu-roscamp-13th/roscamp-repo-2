@@ -129,7 +129,12 @@ class FsmNode(Node):
             # 예약을 아예 안 거쳤다 — 순회가 두 벌 동시에 돌고 있었다.
             "patrol": FleetCmdDriver(self, "goal",
                                      args_fn=lambda: self._nav_args(home_location)).bind(cmd_pub),
-            "security_patrol": FleetCmdDriver(self, "mission_start").bind(cmd_pub),
+            # 야간 순찰도 순회(patrol)와 **같은 실행 경로**(goal, fleet_node 교통 경유)로 돈다.
+            # 예전엔 mission_start 라 로봇이 waypoint 를 혼자 한 바퀴 돌고 IDLE 로 나갔는데,
+            # 야간엔 계속 순찰해야 하므로 patrol 과 같은 goal 드라이버를 써서
+            # security_patrol 브랜치가 PatrolNavigation 으로 지속 순찰하게 한다(1회로 안 끝남).
+            "security_patrol": FleetCmdDriver(self, "goal",
+                                              args_fn=lambda: self._nav_args(home_location)).bind(cmd_pub),
             # 주행: FMS 가 /fleet_cmd{navigate, x,y,yaw} 로 준 목적지를 blackboard 에서 읽어
             # 실행 층(goal)으로 내려보낸다.
             #
