@@ -113,13 +113,12 @@ function MembersPage() {
   // 회원 수정(다이얼로그)
   const [editing, setEditing] = useState<MemberRow | null>(null);
   const [editFullName, setEditFullName] = useState("");
+  const [editPassword, setEditPassword] = useState("");
   const [saving, setSaving] = useState(false);
 
-  // 회원 비활성화(확인 다이얼로그)
-  const [deactivateTarget, setDeactivateTarget] = useState<MemberRow | null>(
-    null,
-  );
-  const [deactivating, setDeactivating] = useState(false);
+  // 회원 삭제(확인 다이얼로그)
+  const [deleteTarget, setDeleteTarget] = useState<MemberRow | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const load = useCallback(async () => {
     setErr(null);
@@ -191,6 +190,7 @@ function MembersPage() {
   const openEdit = (m: MemberRow) => {
     setEditing(m);
     setEditFullName(m.full_name ?? "");
+    setEditPassword("");
   };
 
   const saveEdit = async () => {
@@ -199,7 +199,10 @@ function MembersPage() {
     try {
       await api(`/api/admin/circulation/members/${editing.id}`, {
         method: "PATCH",
-        body: JSON.stringify({ full_name: editFullName.trim() || null }),
+        body: JSON.stringify({
+          full_name: editFullName.trim() || null,
+          ...(editPassword.trim() ? { password: editPassword.trim() } : {}),
+        }),
       });
       toast.success("회원 정보를 수정했습니다");
       setEditing(null);
@@ -211,22 +214,22 @@ function MembersPage() {
     }
   };
 
-  const confirmDeactivate = async () => {
-    if (!deactivateTarget) return;
-    setDeactivating(true);
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
     try {
-      await api(`/api/admin/circulation/members/${deactivateTarget.id}`, {
+      await api(`/api/admin/circulation/members/${deleteTarget.id}`, {
         method: "DELETE",
       });
       toast.success(
-        `«${deactivateTarget.full_name ?? deactivateTarget.username}» 회원을 비활성화했습니다`,
+        `«${deleteTarget.full_name ?? deleteTarget.username}» 회원을 삭제했습니다`,
       );
-      setDeactivateTarget(null);
+      setDeleteTarget(null);
       await load();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "비활성화에 실패했습니다");
+      toast.error(e instanceof Error ? e.message : "삭제에 실패했습니다");
     } finally {
-      setDeactivating(false);
+      setDeleting(false);
     }
   };
 
@@ -349,15 +352,39 @@ function MembersPage() {
                         </td>
                         <td className="py-2 pr-3">{m.full_name ?? "-"}</td>
                         <td className="py-2 pr-3">
-                          <span
-                            className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                          <button
+                            type="button"
+                            title={
                               m.is_active
-                                ? "bg-emerald-500/15 text-emerald-700"
-                                : "bg-muted text-muted-foreground"
+                                ? "클릭하면 비활성화"
+                                : "클릭하면 활성화"
+                            }
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void act(
+                                () =>
+                                  api(
+                                    `/api/admin/circulation/members/${m.id}`,
+                                    {
+                                      method: "PATCH",
+                                      body: JSON.stringify({
+                                        is_active: !m.is_active,
+                                      }),
+                                    },
+                                  ),
+                                m.is_active
+                                  ? `«${m.full_name ?? m.username}» 비활성화했습니다`
+                                  : `«${m.full_name ?? m.username}» 활성화했습니다`,
+                              );
+                            }}
+                            className={`rounded px-1.5 py-0.5 text-[10px] font-bold transition ${
+                              m.is_active
+                                ? "bg-emerald-500/15 text-emerald-700 hover:bg-emerald-500/25"
+                                : "bg-muted text-muted-foreground hover:bg-muted/70"
                             }`}
                           >
                             {m.is_active ? "활성" : "비활성"}
-                          </span>
+                          </button>
                         </td>
                         <td className="py-2 pr-3 tabular-nums">
                           {m.active_loans}
@@ -378,19 +405,17 @@ function MembersPage() {
                             >
                               <Pencil className="h-3.5 w-3.5" />
                             </button>
-                            {m.is_active ? (
-                              <button
-                                type="button"
-                                aria-label={`${m.full_name ?? m.username} 비활성화`}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setDeactivateTarget(m);
-                                }}
-                                className="rounded p-1 text-rose-700 transition hover:bg-rose-500/10"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </button>
-                            ) : null}
+                            <button
+                              type="button"
+                              aria-label={`${m.full_name ?? m.username} 삭제`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setDeleteTarget(m);
+                              }}
+                              className="rounded p-1 text-rose-700 transition hover:bg-rose-500/10"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -543,6 +568,16 @@ function MembersPage() {
               onChange={(e) => setEditFullName(e.target.value)}
             />
           </div>
+          <div className="space-y-2">
+            <Label htmlFor="edit-password">비밀번호 재설정 (선택)</Label>
+            <Input
+              id="edit-password"
+              type="password"
+              placeholder="비워두면 그대로 유지"
+              value={editPassword}
+              onChange={(e) => setEditPassword(e.target.value)}
+            />
+          </div>
           <DialogFooter>
             <Button
               variant="outline"
@@ -558,21 +593,21 @@ function MembersPage() {
         </DialogContent>
       </Dialog>
 
-      {/* 회원 비활성화 확인 */}
+      {/* 회원 삭제 확인 */}
       <ConfirmDeleteDialog
-        open={!!deactivateTarget}
-        onOpenChange={(o) => !o && setDeactivateTarget(null)}
-        title="회원 비활성화"
+        open={!!deleteTarget}
+        onOpenChange={(o) => !o && setDeleteTarget(null)}
+        title="회원 삭제"
         description={
           <>
-            «{deactivateTarget?.full_name ?? deactivateTarget?.username}»
-            회원을 비활성화할까요? 처리 중인 대출/요청/예약이 있으면
-            실패합니다.
+            «{deleteTarget?.full_name ?? deleteTarget?.username}» 회원을
+            삭제할까요? 대출/요청/예약 이력이 함께 영구 삭제되며 되돌릴 수
+            없습니다. 처리 중인 대출/요청/예약이 있으면 실패합니다.
           </>
         }
-        confirmLabel="비활성화"
-        onConfirm={() => void confirmDeactivate()}
-        busy={deactivating}
+        confirmLabel="삭제"
+        onConfirm={() => void confirmDelete()}
+        busy={deleting}
       />
     </AdminShell>
   );

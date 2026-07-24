@@ -127,6 +127,12 @@ def approve(
         # 위에서 이미 approval=APPROVED 로 찜해 뒀다 — 여기서 실패하면 그 찜을 되돌린다.
         db.rollback()
         raise HTTPException(status_code=409, detail="도서가 삭제되어 승인할 수 없습니다")
+    if book.unavailable:
+        # 신청 이후에 훼손/분실로 확인된 경우 — 로봇이 그 책을 찾으러 가면 안 된다.
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail="그 사이 훼손/분실 처리된 도서입니다. 반려하세요."
+        )
     if not book.in_stock:
         # 신청 이후에 누가 빌려간 경우 — 로봇이 없는 책을 찾으러 가면 안 된다.
         db.rollback()
@@ -174,17 +180,19 @@ def reject(
 def _fms_task_terminated(task_id: str) -> bool:
     """FMS 작업이 종료 상태(`ops_extra.TERMINAL`)인지 본다.
 
-    조회 자체가 실패하거나(FMS 다운) 목록에서 못 찾으면 안전하게 "아직 진행 중"으로
-    본다(fail-closed) — 로봇이 계속 도는데 이력만 지워지는 상황보다는 삭제를 한 번 더
-    거부하는 쪽이 낫다.
+    조회 자체가 실패하면(FMS 다운) 안전하게 "아직 진행 중"으로 본다(fail-closed) —
+    로봇이 계속 도는데 이력만 지워지는 상황보다는 삭제를 한 번 더 거부하는 쪽이 낫다.
+
+    FMS 조회는 성공했는데 목록에 그 task_id가 없으면(FMS는 활성 큐만 들고 있어
+    지난 작업은 원래 안 보인다) 이미 끝났다는 뜻이라 종료로 본다.
     """
     ok, orders = fms_client.list_orders()
     if not ok:
         return False
-    return any(
-        o.get("id") == task_id and o.get("status") in _FMS_TERMINAL_STATUSES
-        for o in orders
-    )
+    matching = [o for o in orders if o.get("id") == task_id]
+    if not matching:
+        return True
+    return all(o.get("status") in _FMS_TERMINAL_STATUSES for o in matching)
 
 
 @router.delete("/approvals/{req_id}", status_code=status.HTTP_204_NO_CONTENT)

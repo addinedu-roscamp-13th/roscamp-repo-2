@@ -91,6 +91,10 @@ def _get_requestable_book(db: Session, book_id: int) -> Book:
     book = db.get(Book, book_id)
     if book is None:
         raise HTTPException(status_code=404, detail="도서를 찾을 수 없습니다")
+    if book.unavailable:
+        raise HTTPException(
+            status_code=409, detail="훼손/분실 처리되어 대출할 수 없는 도서입니다"
+        )
     if not book.in_stock:
         raise HTTPException(
             status_code=409,

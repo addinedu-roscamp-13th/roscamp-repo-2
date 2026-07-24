@@ -40,6 +40,8 @@ export interface Dashboard {
   library: {
     books: number;
     books_out: number;
+    available_books: number;
+    unavailable_books: number;
     members: number;
     active_loans: number;
     overdue: number;
@@ -50,9 +52,10 @@ export interface Dashboard {
   fleet: {
     linked: boolean;
     robots: number;
-    idle: number;
-    patrol: number;
     working: number;
+    charging: number;
+    error: number;
+    available: number;
     stale: number;
   };
   tasks: {
@@ -143,12 +146,14 @@ export interface AdminBook {
   zone: string;
   shelf: string;
   in_stock: boolean;
+  unavailable: boolean;
 }
 
 export interface ShelfRow {
   zone: string;
   total: number;
   categories: Record<string, number>;
+  status: { available: number; borrowed: number; unavailable: number };
 }
 
 export const CATEGORY_LABEL: Record<string, string> = {
@@ -157,6 +162,15 @@ export const CATEGORY_LABEL: Record<string, string> = {
   science: "과학",
   humanities: "인문학",
   kids: "유아",
+};
+
+/** 표지를 책마다 따로 고르지 않는다 — 분야만 보고 바로 알아보게 분야당 아이콘 하나. */
+export const CATEGORY_COVER: Record<string, string> = {
+  literature: "📖",
+  art: "🎨",
+  science: "🔬",
+  humanities: "📚",
+  kids: "🧸",
 };
 
 export const ops = {
@@ -217,12 +231,6 @@ export const ops = {
   deleteBook: (id: number) =>
     opsApi<void>(`/api/admin/ops/books/${id}`, { method: "DELETE" }),
   shelves: () => opsApi<ShelfRow[]>("/api/admin/ops/shelves"),
-  search: (q: string) =>
-    opsApi<{
-      books: AdminBook[];
-      members: { id: number; username: string; full_name: string | null }[];
-      zones: string[];
-    }>(`/api/admin/ops/search?q=${encodeURIComponent(q)}`),
   /** 대여 승인 — 대기 목록 + 최근 처리 내역. */
   approvals: () =>
     opsApi<{ pending: ApprovalRow[]; recent: ApprovalRow[] }>(
@@ -241,10 +249,13 @@ export const ops = {
   stats: () =>
     opsApi<{
       loans_by_category: { category: string; count: number }[];
+      books_by_category: { category: string; count: number }[];
       top_books: { title: string; count: number }[];
       top_members: { username: string; count: number }[];
       requests_by_kind: { kind: string; count: number }[];
+      due_tomorrow: { member_name: string; book_title: string; due_at: string }[];
       tasks_by_status: { status: string; count: number }[];
+      tasks_last_7_days: { date: string; completed: number; failed: number }[];
       fleet_linked: boolean;
     }>("/api/admin/ops/stats"),
   /** 작업로그 삭제 — soft delete(hidden=True). 서버가 재수입 안 되게 보장한다. */
@@ -256,4 +267,10 @@ export const ops = {
   /** 대여승인 이력 삭제 — REJECTED 또는 종료된 APPROVED만 가능(그 외 409). */
   deleteApprovalHistory: (id: number) =>
     opsApi<void>(`/api/admin/ops/approvals/${id}`, { method: "DELETE" }),
+  /** 야간 자동 전환 시각 저장. 둘 다 null 이면 스케줄을 끈다. */
+  setSecuritySchedule: (night_start: string | null, night_end: string | null) =>
+    opsApi<{ night_start: string | null; night_end: string | null }>(
+      "/api/admin/ops/security/schedule",
+      { method: "POST", body: JSON.stringify({ night_start, night_end }) },
+    ),
 };

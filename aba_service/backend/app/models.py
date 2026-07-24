@@ -96,6 +96,12 @@ class Book(Base):
     in_stock: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, comment="대출 가능 여부 (0=대출 중, 1=대출가능)"
     )
+    unavailable: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        comment="훼손/분실 등으로 사서가 대출 불가 처리했는지 (in_stock 과 별개)",
+    )
     summary_kr: Mapped[str | None] = mapped_column(String(1000), nullable=True, comment="도서 요약 (한국어)")
     summary_en: Mapped[str | None] = mapped_column(String(1000), nullable=True, comment="도서 요약 (영어)")
     summary_zh: Mapped[str | None] = mapped_column(String(1000), nullable=True, comment="도서 요약 (중국어)")
@@ -396,6 +402,33 @@ class TaskLog(Base):
     )
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False, comment="기록 시각"
+    )
+
+
+class DemoRobotState(Base):
+    """로봇 실시간 상태의 데모/개발용 대체값.
+
+    실제 로봇 상태는 FMS(aba_fms_service)의 실시간 텔레메트리에서만 온다 — 여기엔 저장되지
+    않는다. 로컬 개발 환경처럼 FMS/로봇이 하나도 안 붙어있으면 대시보드 로봇 상태 도넛이
+    항상 빈값이라, 데모 시연용으로만 이 테이블을 채워 넣는다. `ops.py`의 `/dashboard` 는
+    실제 FMS 스냅샷이 비어있을 때만(FMS 미연결 또는 로봇 0대) 이 테이블로 대체한다 —
+    진짜 텔레메트리가 있으면 절대 덮어쓰지 않는다.
+    """
+
+    __tablename__ = "cb_demo_robot_states"
+    __table_args__ = {"comment": "로봇 상태 데모/폴백 데이터 (실제 텔레메트리 없을 때만 사용)"}
+
+    id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True, comment="기본키"
+    )
+    robot: Mapped[str] = mapped_column(String(64), nullable=False, comment="로봇 이름")
+    state: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        comment="FSM 상태 (IDLE|PATROL|SECURITY_PATROL|INTERACTING|WORKING|CHARGING|RETURNING|ERROR)",
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False, comment="갱신 시각"
     )
 
 

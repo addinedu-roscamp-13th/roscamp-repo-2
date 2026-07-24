@@ -20,6 +20,8 @@ export const Route = createFileRoute("/admin/_authed/security")({
 
 interface SecurityState {
   mode: string;
+  night_start: string | null;
+  night_end: string | null;
   events: {
     id: number;
     detected_at: string;
@@ -38,10 +40,23 @@ function SecurityPage() {
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [deleteId, setDeleteId] = useState<number | null>(null);
+  // 스케줄 입력칸 — 서버 값으로 딱 한 번만 채운다(폴링마다 덮어쓰면 입력 중에 지워진다).
+  const [scheduleSeeded, setScheduleSeeded] = useState(false);
+  const [nightStart, setNightStart] = useState("");
+  const [nightEnd, setNightEnd] = useState("");
+  const [savingSchedule, setSavingSchedule] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      setState(await opsApi<SecurityState>("/api/admin/ops/security"));
+      const s = await opsApi<SecurityState>("/api/admin/ops/security");
+      setState(s);
+      setScheduleSeeded((seeded) => {
+        if (!seeded) {
+          setNightStart(s.night_start ?? "");
+          setNightEnd(s.night_end ?? "");
+        }
+        return true;
+      });
     } catch (e) {
       setErr(e instanceof Error ? e.message : "불러오기 실패");
     }
@@ -52,6 +67,27 @@ function SecurityPage() {
     const t = setInterval(() => void load(), 5000);
     return () => clearInterval(t);
   }, [load]);
+
+  const saveSchedule = async (start = nightStart, end = nightEnd) => {
+    setSavingSchedule(true);
+    try {
+      await ops.setSecuritySchedule(start || null, end || null);
+      toast.success(
+        start && end
+          ? `자동 전환 시각을 저장했습니다 (${start} → ${end})`
+          : "자동 전환 스케줄을 껐습니다",
+      );
+      setNightStart(start);
+      setNightEnd(end);
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "저장 실패");
+    } finally {
+      setSavingSchedule(false);
+    }
+  };
+
+  const clearSchedule = () => void saveSchedule("", "");
 
   const setMode = (mode: string) =>
     void opsApi<{ mode: string }>("/api/admin/ops/security/mode", {
@@ -143,6 +179,50 @@ function SecurityPage() {
             >
               현재: {night ? "야간 보안 가동" : "주간 정상 운영"}
             </span>
+          </div>
+
+          {/* 자동 전환 시각 — 설정하면 그 시각에 위 모드를 자동으로 바꾼다 */}
+          <div className="mt-4 border-t pt-3">
+            <p className="mb-2 text-xs font-semibold text-muted-foreground">
+              야간 자동 전환 시각
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                type="time"
+                value={nightStart}
+                onChange={(e) => setNightStart(e.target.value)}
+                className="rounded border px-2 py-1 text-sm"
+              />
+              <span className="text-xs text-muted-foreground">부터</span>
+              <input
+                type="time"
+                value={nightEnd}
+                onChange={(e) => setNightEnd(e.target.value)}
+                className="rounded border px-2 py-1 text-sm"
+              />
+              <span className="text-xs text-muted-foreground">까지 야간</span>
+              <button
+                onClick={() => void saveSchedule()}
+                disabled={savingSchedule || !nightStart || !nightEnd}
+                className="rounded bg-secondary px-3 py-1.5 text-xs font-semibold disabled:opacity-50"
+              >
+                저장
+              </button>
+              {state?.night_start && state?.night_end ? (
+                <button
+                  onClick={clearSchedule}
+                  disabled={savingSchedule}
+                  className="rounded bg-rose-500/10 px-3 py-1.5 text-xs font-semibold text-rose-700 disabled:opacity-50"
+                >
+                  스케줄 끄기
+                </button>
+              ) : null}
+            </div>
+            <p className="mt-1.5 text-[11px] text-muted-foreground">
+              {state?.night_start && state?.night_end
+                ? `매일 ${state.night_start}에 야간, ${state.night_end}에 주간으로 자동 전환됩니다. 그 사이 위 버튼으로 수동 전환도 가능합니다.`
+                : "비워두면 위 버튼으로만 수동 전환합니다."}
+            </p>
           </div>
         </section>
 

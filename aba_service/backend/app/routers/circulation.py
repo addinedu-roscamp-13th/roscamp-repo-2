@@ -61,6 +61,8 @@ class CreateMemberRequest(BaseModel):
 
 class UpdateMemberRequest(BaseModel):
     full_name: str | None = None
+    password: str | None = None
+    is_active: bool | None = None
 
 
 @router.get("/members", response_model=list[MemberRow])
@@ -146,66 +148,75 @@ def update_member(
     db: Session = Depends(get_db),
     _: AdminUser = Depends(get_current_admin),
 ):
-    """회원 정보 수정 — 이름만. 비활성화는 `DELETE`(가드 있음) 전용, 재활성/비번리셋은 범위 밖."""
+    """회원 정보 수정 — 이름, (선택) 비밀번호 재설정, (선택) 활성/비활성 전환.
+
+    비활성 회원은 로그인만 막힌다(`member_auth.py`) — 대출/이력은 그대로 남고,
+    삭제(`DELETE`, hard delete)와 달리 언제든 다시 활성화할 수 있다.
+    """
     member = db.get(Member, member_id)
     if member is None:
         raise HTTPException(status_code=404, detail="회원을 찾을 수 없습니다")
 
     if body.full_name is not None:
         member.full_name = body.full_name
+    if body.password:
+        member.hashed_password = hash_password(body.password)
+    if body.is_active is not None:
+        member.is_active = body.is_active
     db.commit()
     db.refresh(member)
     return _member_row(db, member)
 
 
-@router.delete("/members/{member_id}", response_model=MemberRow)
-def deactivate_member(
+@router.delete("/members/{member_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_member(
     member_id: int,
     db: Session = Depends(get_db),
     _: AdminUser = Depends(get_current_admin),
 ):
-    """회원 비활성화(soft delete) — 행은 지우지 않는다. 처리 중인 대출/요청/예약이 있으면 막는다."""
+    """회원 삭제(hard delete). 처리 중인 대출/요청/예약이 있으면 막는다.
+
+    ⚠️ Loan/Reservation/Wishlist/DeliveryRequest 가 전부 `ondelete="CASCADE"`로
+    이 회원을 물고 있어, 삭제하면 과거 대출·요청 이력까지 함께 지워지고 복구할 수 없다.
+    """
     member = db.get(Member, member_id)
     if member is None:
         raise HTTPException(status_code=404, detail="회원을 찾을 수 없습니다")
 
-    if member.is_active:
-        has_open_loan = (
-            db.scalar(
-                select(Loan.id).where(
-                    Loan.member_id == member.id, Loan.status == "borrowed"
-                )
+    has_open_loan = (
+        db.scalar(
+            select(Loan.id).where(
+                Loan.member_id == member.id, Loan.status == "borrowed"
             )
-            is not None
         )
-        has_pending_request = (
-            db.scalar(
-                select(DeliveryRequest.id).where(
-                    DeliveryRequest.member_id == member.id,
-                    DeliveryRequest.approval == "PENDING_APPROVAL",
-                )
+        is not None
+    )
+    has_pending_request = (
+        db.scalar(
+            select(DeliveryRequest.id).where(
+                DeliveryRequest.member_id == member.id,
+                DeliveryRequest.approval == "PENDING_APPROVAL",
             )
-            is not None
         )
-        has_waiting_reservation = (
-            db.scalar(
-                select(Reservation.id).where(
-                    Reservation.member_id == member.id,
-                    Reservation.status == "waiting",
-                )
+        is not None
+    )
+    has_waiting_reservation = (
+        db.scalar(
+            select(Reservation.id).where(
+                Reservation.member_id == member.id,
+                Reservation.status == "waiting",
             )
-            is not None
         )
-        if has_open_loan or has_pending_request or has_waiting_reservation:
-            raise HTTPException(
-                status_code=409,
-                detail="처리 중인 대출/요청/예약이 있어 비활성화할 수 없습니다",
-            )
-        member.is_active = False
-        db.commit()
-        db.refresh(member)
+        is not None
+    )
+    if has_open_loan or has_pending_request or has_waiting_reservation:
+        raise HTTPException(
+            status_code=409,
+            detail="처리 중인 대출/요청/예약이 있어 삭제할 수 없습니다",
+        )
 
-    return _member_row(db, member)
+    db.delete(member)
+    db.commit()
 
 
 def _loan_row(loan: Loan, member: Member | None, book: Book | None) -> LoanRow:
@@ -257,6 +268,10 @@ def borrow(
     book = db.get(Book, body.book_id)
     if book is None:
         raise HTTPException(status_code=404, detail="도서를 찾을 수 없습니다")
+    if book.unavailable:
+        raise HTTPException(
+            status_code=409, detail="훼손/분실 처리되어 대출할 수 없는 도서입니다"
+        )
 
     # 체크와 반영을 한 UPDATE로 묶는다 — read-then-write 로 두면 동시에 같은 책을
     # 대출하는 두 세션이 둘 다 통과할 수 있다. rowcount == 0 이면 그 사이 누가 먼저
@@ -317,16 +332,31 @@ def return_loan(
 @router.get("/available-books")
 def available_books(
     q: str | None = None,
+    include_unavailable: bool = False,
     db: Session = Depends(get_db),
     _: AdminUser = Depends(get_current_admin),
 ):
-    """대출 처리 화면에서 고를 수 있는 도서(재고 있는 것)."""
-    stmt = select(Book).where(Book.in_stock.is_(True))
+    """대출 처리 화면에서 고를 수 있는 도서(재고 있고 훼손/분실 아닌 것).
+
+    `include_unavailable=true` 면 대출중/훼손·분실 도서도 같이 보여준다(선택은 못 하게
+    프론트에서 막고, 상태 표시용). 기본값은 그대로 재고 있는 것만 — 기존 화면들이
+    이 응답을 바로 "고를 수 있는 도서"로 쓰기 때문에 기본 동작은 바꾸지 않는다.
+    """
+    stmt = select(Book)
+    if not include_unavailable:
+        stmt = stmt.where(Book.in_stock.is_(True), Book.unavailable.is_(False))
     if q and q.strip():
         like = f"%{q.strip()}%"
         stmt = stmt.where(Book.title_kr.like(like))
     rows = db.scalars(stmt.order_by(Book.title_kr).limit(50)).all()
     return [
-        {"id": b.id, "title": b.title_kr, "author": b.author, "zone": b.zone}
+        {
+            "id": b.id,
+            "title": b.title_kr,
+            "author": b.author,
+            "zone": b.zone,
+            "in_stock": b.in_stock,
+            "unavailable": b.unavailable,
+        }
         for b in rows
     ]

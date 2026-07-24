@@ -161,7 +161,9 @@ def admin_auth(admin) -> dict[str, str]:
     return {"Authorization": f"Bearer {create_access_token(str(admin.id))}"}
 
 
-def make_book(db_session, *, title="어린 왕자", zone="문학-1", in_stock=True) -> Book:
+def make_book(
+    db_session, *, title="어린 왕자", zone="문학-1", in_stock=True, unavailable=False
+) -> Book:
     row = Book(
         title_kr=title,
         title_en=title,
@@ -174,6 +176,7 @@ def make_book(db_session, *, title="어린 왕자", zone="문학-1", in_stock=Tr
         zone=zone,
         shelf="1단",
         in_stock=in_stock,
+        unavailable=unavailable,
     )
     db_session.add(row)
     db_session.commit()

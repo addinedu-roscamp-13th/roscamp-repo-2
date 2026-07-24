@@ -18,7 +18,16 @@ from sqlalchemy.orm import Session
 
 from .. import fms_client
 from ..database import get_db
-from ..models import AdminUser, Book, DeliveryRequest, Loan, Member, Reservation
+from ..models import (
+    AdminUser,
+    Book,
+    DemoRobotState,
+    DeliveryRequest,
+    Loan,
+    Member,
+    Reservation,
+    TaskLog,
+)
 from ..security import get_current_admin
 
 router = APIRouter(prefix="/api/admin/ops", tags=["ops"])
@@ -131,6 +140,17 @@ def dashboard(db: Session = Depends(get_db), _: AdminUser = Depends(get_current_
     now = datetime.now()
     total_books = db.scalar(select(func.count(Book.id))) or 0
     out_books = db.scalar(select(func.count(Book.id)).where(Book.in_stock.is_(False))) or 0
+    unavailable_books = (
+        db.scalar(select(func.count(Book.id)).where(Book.unavailable.is_(True))) or 0
+    )
+    available_books = (
+        db.scalar(
+            select(func.count(Book.id)).where(
+                Book.unavailable.is_(False), Book.in_stock.is_(True)
+            )
+        )
+        or 0
+    )
     members = db.scalar(select(func.count(Member.id))) or 0
     active_loans = (
         db.scalar(select(func.count(Loan.id)).where(Loan.status == "borrowed")) or 0
@@ -173,10 +193,39 @@ def dashboard(db: Session = Depends(get_db), _: AdminUser = Depends(get_current_
     def count(status: str) -> int:
         return sum(1 for o in orders if o.get("status") == status)
 
+    def fleet_buckets(states: list[str]) -> dict:
+        return {
+            "robots": len(states),
+            "working": sum(1 for s in states if s == "WORKING"),
+            # 복귀중(RETURNING)은 충전소로 향하는 중이라 사실상 충전 준비 단계 — 충전중에 합친다.
+            "charging": sum(1 for s in states if s in ("CHARGING", "RETURNING")),
+            "error": sum(1 for s in states if s == "ERROR"),
+            # 가동 가능/대기 계열 — 고장도 충전도 작업중도 아닌 나머지 전부(패널 조작 중 포함).
+            "available": sum(
+                1 for s in states if s in ("IDLE", "PATROL", "SECURITY_PATROL", "INTERACTING")
+            ),
+        }
+
+    if robots:
+        fleet = fleet_buckets([r.get("state") for r in robots])
+        fleet["stale"] = sum(1 for r in robots if r.get("stale"))
+    else:
+        # FMS 미연결이거나 로봇이 하나도 없을 때만 데모 데이터로 대체한다(진짜 텔레메트리는
+        # 절대 덮어쓰지 않음). `linked` 는 그대로 실제 FMS 연결 여부를 보고해 "FMS 연결
+        # 끊김" 경고는 계속 정확하게 뜬다 — 도넛만 비어 보이지 않게 채워주는 것뿐이다.
+        demo_states = [
+            s for (s,) in db.execute(select(DemoRobotState.state)).all()
+        ]
+        fleet = fleet_buckets(demo_states)
+        fleet["stale"] = 0
+    fleet["linked"] = ok
+
     return {
         "library": {
             "books": total_books,
             "books_out": out_books,
+            "available_books": available_books,
+            "unavailable_books": unavailable_books,
             "members": members,
             "active_loans": active_loans,
             "overdue": overdue,
@@ -184,14 +233,7 @@ def dashboard(db: Session = Depends(get_db), _: AdminUser = Depends(get_current_
             "reservations_waiting": waiting_res,
             "reservations_ready": ready_res,
         },
-        "fleet": {
-            "linked": ok,
-            "robots": len(robots),
-            "idle": sum(1 for r in robots if r.get("state") == "IDLE"),
-            "patrol": sum(1 for r in robots if r.get("state") == "PATROL"),
-            "working": sum(1 for r in robots if r.get("state") == "WORKING"),
-            "stale": sum(1 for r in robots if r.get("stale")),
-        },
+        "fleet": fleet,
         "tasks": {
             "linked": ok_orders,
             "pending": count("PENDING"),
@@ -373,6 +415,7 @@ class BookIn(BaseModel):
     zone: str
     shelf: str = ""
     in_stock: bool = True
+    unavailable: bool = False
     summary_kr: str = ""
 
 
@@ -386,6 +429,7 @@ def _book_out(b: Book) -> dict:
         "zone": b.zone,
         "shelf": b.shelf,
         "in_stock": bool(b.in_stock),
+        "unavailable": bool(b.unavailable),
     }
 
 
@@ -421,6 +465,7 @@ def create_book(
         zone=body.zone,
         shelf=body.shelf,
         in_stock=body.in_stock,
+        unavailable=body.unavailable,
         summary_kr=body.summary_kr,
     )
     db.add(b)
@@ -439,7 +484,16 @@ def update_book(
     b = db.get(Book, book_id)
     if b is None:
         raise HTTPException(status_code=404, detail="도서를 찾을 수 없습니다")
-    for field in ("title_kr", "author", "category", "cover", "zone", "shelf", "in_stock"):
+    for field in (
+        "title_kr",
+        "author",
+        "category",
+        "cover",
+        "zone",
+        "shelf",
+        "in_stock",
+        "unavailable",
+    ):
         setattr(b, field, getattr(body, field))
     db.commit()
     db.refresh(b)
@@ -468,17 +522,32 @@ def delete_book(
 
 @router.get("/shelves")
 def shelves(db: Session = Depends(get_db), _: AdminUser = Depends(get_current_admin)):
-    """서가(zone)별 보유 도서 수 + 분야 구성. 배치 지도는 프론트가 waypoint 로 그린다."""
+    """서가(zone)별 보유 도서 수 + 분야 구성 + 대출가능/대출중/대출불가능 상태 구성.
+
+    배치 지도는 프론트가 waypoint 로 그린다.
+    """
     rows = db.execute(
-        select(Book.zone, Book.category, func.count(Book.id)).group_by(
-            Book.zone, Book.category
-        )
+        select(Book.zone, Book.category, Book.in_stock, Book.unavailable)
     ).all()
     by_zone: dict[str, dict] = {}
-    for zone, category, n in rows:
-        z = by_zone.setdefault(zone, {"zone": zone, "total": 0, "categories": {}})
-        z["total"] += n
-        z["categories"][category] = n
+    for zone, category, in_stock, unavailable in rows:
+        z = by_zone.setdefault(
+            zone,
+            {
+                "zone": zone,
+                "total": 0,
+                "categories": {},
+                "status": {"available": 0, "borrowed": 0, "unavailable": 0},
+            },
+        )
+        z["total"] += 1
+        z["categories"][category] = z["categories"].get(category, 0) + 1
+        if unavailable:
+            z["status"]["unavailable"] += 1
+        elif in_stock:
+            z["status"]["available"] += 1
+        else:
+            z["status"]["borrowed"] += 1
     return sorted(by_zone.values(), key=lambda z: z["zone"])
 
 
@@ -525,18 +594,21 @@ def stats(db: Session = Depends(get_db), _: AdminUser = Depends(get_current_admi
         .join(Loan, Loan.book_id == Book.id)
         .group_by(Book.category)
     ).all()
+    books_by_cat = db.execute(
+        select(Book.category, func.count(Book.id)).group_by(Book.category)
+    ).all()
     top_books = db.execute(
         select(Book.title_kr, func.count(Loan.id).label("n"))
         .join(Loan, Loan.book_id == Book.id)
         .group_by(Book.id)
-        .order_by(func.count(Loan.id).desc())
-        .limit(10)
+        .order_by(func.count(Loan.id).desc(), Book.id)
+        .limit(15)
     ).all()
     top_members = db.execute(
         select(Member.username, func.count(Loan.id).label("n"))
         .join(Loan, Loan.member_id == Member.id)
         .group_by(Member.id)
-        .order_by(func.count(Loan.id).desc())
+        .order_by(func.count(Loan.id).desc(), Member.id)
         .limit(10)
     ).all()
     req_by_kind = db.execute(
@@ -545,16 +617,67 @@ def stats(db: Session = Depends(get_db), _: AdminUser = Depends(get_current_admi
         )
     ).all()
 
+    now = datetime.now()
+    due_tomorrow = db.execute(
+        select(Member.username, Member.full_name, Book.title_kr, Loan.due_at)
+        .join(Member, Loan.member_id == Member.id)
+        .join(Book, Loan.book_id == Book.id)
+        .where(
+            Loan.status == "borrowed",
+            Loan.due_at >= now,
+            Loan.due_at <= now + timedelta(days=1),
+        )
+        .order_by(Loan.due_at)
+        .limit(10)
+    ).all()
+
     ok, orders = fms_client.list_orders()
     task_stats: dict[str, int] = {}
     for o in orders if ok else []:
         task_stats[o.get("status", "?")] = task_stats.get(o.get("status", "?"), 0) + 1
 
+    # 최근 7일 성공/실패 — cb_task_logs(TaskLog) 는 FMS 재시작에도 남는 영구 기록이라
+    # 여기서 집계한다(fms_client 의 실시간 큐는 끝난 작업이 사라져서 못 씀).
+    today0 = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start = today0 - timedelta(days=6)
+    day_buckets = {
+        (week_start + timedelta(days=i)).strftime("%m-%d"): {
+            "completed": 0,
+            "failed": 0,
+        }
+        for i in range(7)
+    }
+    log_rows = db.execute(
+        select(TaskLog.recorded_at, TaskLog.status).where(
+            TaskLog.recorded_at >= week_start,
+            TaskLog.status.in_(["COMPLETED", "FAILED"]),
+        )
+    ).all()
+    for recorded_at, log_status in log_rows:
+        key = recorded_at.strftime("%m-%d")
+        if key in day_buckets:
+            day_buckets[key]["completed" if log_status == "COMPLETED" else "failed"] += 1
+
     return {
         "loans_by_category": [{"category": c, "count": n} for c, n in by_cat],
+        "books_by_category": [
+            {"category": c, "count": n} for c, n in books_by_cat
+        ],
         "top_books": [{"title": t, "count": n} for t, n in top_books],
         "top_members": [{"username": u, "count": n} for u, n in top_members],
         "requests_by_kind": [{"kind": k, "count": n} for k, n in req_by_kind],
+        "due_tomorrow": [
+            {
+                "member_name": full_name or username,
+                "book_title": title,
+                "due_at": due_at.isoformat(),
+            }
+            for username, full_name, title, due_at in due_tomorrow
+        ],
         "tasks_by_status": [{"status": k, "count": v} for k, v in task_stats.items()],
+        "tasks_last_7_days": [
+            {"date": k, "completed": v["completed"], "failed": v["failed"]}
+            for k, v in day_buckets.items()
+        ],
         "fleet_linked": ok,
     }

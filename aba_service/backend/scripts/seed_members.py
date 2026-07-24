@@ -1,4 +1,4 @@
-"""회원 계정 시드 — member1 ~ member10 (비밀번호 공통 `member1234`).
+"""회원 계정 시드 — member1 ~ member5 (비밀번호 공통 `member1234`).
 
 멱등하다: 이미 있는 아이디는 건너뛰고 없는 것만 만든다. 표를 지우지 않는다.
 
@@ -22,8 +22,15 @@ from app.models import (  # noqa: E402,F401  (import 만으로 테이블이 등�
 )
 from app.security import hash_password  # noqa: E402
 
-COUNT = 10
 PASSWORD = "member1234"
+
+MEMBERS = [
+    ("member1", "이강택"),
+    ("member2", "인경일"),
+    ("member3", "이세형"),
+    ("member4", "정호재"),
+    ("member5", "이형주"),
+]
 
 
 def main() -> None:
@@ -31,8 +38,7 @@ def main() -> None:
     db = SessionLocal()
     try:
         created, skipped = 0, 0
-        for i in range(1, COUNT + 1):
-            username = f"member{i}"
+        for username, full_name in MEMBERS:
             exists = db.query(Member).filter(Member.username == username).first()
             if exists is not None:
                 skipped += 1
@@ -40,7 +46,7 @@ def main() -> None:
             db.add(
                 Member(
                     username=username,
-                    full_name=f"회원{i}",
+                    full_name=full_name,
                     hashed_password=hash_password(PASSWORD),
                     is_active=True,
                 )

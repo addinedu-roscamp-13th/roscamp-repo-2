@@ -6,11 +6,11 @@ FMS orchestrator 는 **진행 중인 큐**만 들고 있고, 끝난 작업을 �
 `/sync` 를 부르면 FMS 의 현재 종료 작업들을 가져와 없는 것만 적재한다(멱등).
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import fms_client
@@ -21,6 +21,9 @@ from ..security import get_current_admin
 router = APIRouter(prefix="/api/admin/ops", tags=["ops-extra"])
 
 SECURITY_KEY = "security_mode"
+NIGHT_START_KEY = "security_night_start"  # "HH:MM" — 야간 진입
+NIGHT_END_KEY = "security_night_end"  # "HH:MM" — 주간 복귀
+BOUNDARY_KEY = "security_last_boundary"  # 마지막으로 자동 적용한 경계 시각(ISO)
 TERMINAL = {"COMPLETED", "FAILED", "CANCELLED"}
 
 
@@ -155,73 +158,16 @@ def alerts(db: Session = Depends(get_db), _: AdminUser = Depends(get_current_adm
 # ── 정리 · 분류 리포트 ───────────────────────────────────────────────────────
 
 
-@router.get("/reports")
-def reports(
-    days: int = Query(default=7, ge=1, le=90),
-    db: Session = Depends(get_db),
-    _: AdminUser = Depends(get_current_admin),
-):
-    """작업 종류별 수행 결과 — 잘 수행했는지(성공률), 분류/정리 결과."""
-    _sync_logs(db)
-    since = datetime.now() - timedelta(days=days)
-    rows = db.execute(
-        select(TaskLog.kind, TaskLog.status, func.count(TaskLog.id))
-        .where(TaskLog.recorded_at >= since, TaskLog.hidden.is_(False))
-        .group_by(TaskLog.kind, TaskLog.status)
-    ).all()
-
-    by_kind: dict[str, dict] = {}
-    for kind, st, n in rows:
-        k = by_kind.setdefault(
-            kind or "?", {"kind": kind or "?", "completed": 0, "failed": 0, "cancelled": 0}
-        )
-        if st == "COMPLETED":
-            k["completed"] += n
-        elif st == "FAILED":
-            k["failed"] += n
-        else:
-            k["cancelled"] += n
-
-    out = []
-    for k in by_kind.values():
-        done = k["completed"] + k["failed"]
-        k["total"] = k["completed"] + k["failed"] + k["cancelled"]
-        # 성공률은 취소를 빼고 계산한다 — 사서가 취소한 것을 실패로 치면 로봇을 억울하게 만든다.
-        k["success_rate"] = round(k["completed"] / done * 100) if done else None
-        out.append(k)
-
-    failures = db.scalars(
-        select(TaskLog)
-        .where(
-            TaskLog.recorded_at >= since,
-            TaskLog.status == "FAILED",
-            TaskLog.hidden.is_(False),
-        )
-        .order_by(TaskLog.recorded_at.desc())
-        .limit(20)
-    ).all()
-
-    return {
-        "days": days,
-        "by_kind": sorted(out, key=lambda x: -x["total"]),
-        "recent_failures": [
-            {
-                "task_id": f.task_id,
-                "kind": f.kind,
-                "robot": f.robot,
-                "reason": f.reason,
-                "at": f.recorded_at,
-            }
-            for f in failures
-        ],
-    }
-
-
 # ── 야간 보안 ────────────────────────────────────────────────────────────────
 
 
 class ModeRequest(BaseModel):
     mode: str  # day | night
+
+
+class ScheduleRequest(BaseModel):
+    night_start: str | None = None  # "HH:MM" — 야간 진입 시각
+    night_end: str | None = None  # "HH:MM" — 주간 복귀 시각. 끄려면 둘 다 None.
 
 
 class IntrusionReport(BaseModel):
@@ -236,13 +182,86 @@ def _get_mode(db: Session) -> str:
     return row.value if row else "day"
 
 
+def _get_setting(db: Session, key: str) -> str | None:
+    row = db.get(OpsSetting, key)
+    return row.value if row else None
+
+
+def _put_setting(db: Session, key: str, value: str | None) -> None:
+    """value 가 None/빈문자열이면 삭제, 아니면 upsert."""
+    row = db.get(OpsSetting, key)
+    if value:
+        if row is None:
+            db.add(OpsSetting(key=key, value=value))
+        else:
+            row.value = value
+    elif row is not None:
+        db.delete(row)
+
+
+def _parse_hhmm(s: str) -> time:
+    h, m = s.split(":")
+    return time(int(h), int(m))
+
+
+def _latest_boundary(
+    now: datetime, night_start: time, night_end: time
+) -> tuple[datetime, str]:
+    """night_start/night_end 로 매일 반복되는 두 경계 중 now 이전(포함) 가장 최근 것.
+
+    night_end 가 night_start 보다 이르면(예: 22:00~06:00) 자정을 넘는 야간으로 보고
+    다음날로 넘겨 계산한다.
+    """
+    candidates: list[tuple[datetime, str]] = []
+    for day_offset in (-1, 0):
+        anchor = (now + timedelta(days=day_offset)).date()
+        ns = datetime.combine(anchor, night_start)
+        ne = datetime.combine(anchor, night_end)
+        if ne <= ns:
+            ne += timedelta(days=1)
+        candidates.append((ns, "night"))
+        candidates.append((ne, "day"))
+    past = [c for c in candidates if c[0] <= now]
+    return max(past, key=lambda c: c[0])
+
+
+def _apply_schedule(db: Session, now: datetime | None = None) -> None:
+    """설정된 시각이 있으면, 지나온 경계를 딱 한 번만 자동 반영한다.
+
+    ponytail: 백그라운드 스케줄러 없이 이 화면이 조회(폴링)될 때 계산한다 — 관리자 화면이
+    한동안 열려 있지 않으면 실제 전환은 다음 조회 때 반영된다(도서관 운영엔 충분, 화면과
+    무관하게 정시에 돌아야 하면 APScheduler/systemd timer로 승격). 같은 경계 안에서는
+    사서의 수동 전환을 덮어쓰지 않는다 — 경계를 새로 지날 때만 자동 적용.
+    """
+    start = _get_setting(db, NIGHT_START_KEY)
+    end = _get_setting(db, NIGHT_END_KEY)
+    if not start or not end:
+        return  # 스케줄 미설정 — 수동 토글만 사용
+    try:
+        night_start, night_end = _parse_hhmm(start), _parse_hhmm(end)
+    except ValueError:
+        return
+
+    boundary_at, desired_mode = _latest_boundary(now or datetime.now(), night_start, night_end)
+    fingerprint = boundary_at.isoformat()
+    if _get_setting(db, BOUNDARY_KEY) == fingerprint:
+        return  # 이 경계는 이미 적용함
+
+    _put_setting(db, SECURITY_KEY, desired_mode)
+    _put_setting(db, BOUNDARY_KEY, fingerprint)
+    db.commit()
+
+
 @router.get("/security")
 def security(db: Session = Depends(get_db), _: AdminUser = Depends(get_current_admin)):
+    _apply_schedule(db)
     events = db.scalars(
         select(IntrusionEvent).order_by(IntrusionEvent.detected_at.desc()).limit(50)
     ).all()
     return {
         "mode": _get_mode(db),
+        "night_start": _get_setting(db, NIGHT_START_KEY),
+        "night_end": _get_setting(db, NIGHT_END_KEY),
         "events": [
             {
                 "id": e.id,
@@ -266,13 +285,39 @@ def set_mode(
 ):
     if body.mode not in ("day", "night"):
         raise HTTPException(status_code=400, detail="mode 는 day 또는 night")
-    row = db.get(OpsSetting, SECURITY_KEY)
-    if row is None:
-        db.add(OpsSetting(key=SECURITY_KEY, value=body.mode))
-    else:
-        row.value = body.mode
+    _put_setting(db, SECURITY_KEY, body.mode)
     db.commit()
     return {"mode": body.mode}
+
+
+@router.post("/security/schedule")
+def set_schedule(
+    body: ScheduleRequest,
+    db: Session = Depends(get_db),
+    _: AdminUser = Depends(get_current_admin),
+):
+    """야간 자동 전환 시각 저장. 둘 다 비우면 스케줄을 끄고 수동 토글만 남는다."""
+    if bool(body.night_start) != bool(body.night_end):
+        raise HTTPException(
+            status_code=400, detail="시작·종료 시각을 둘 다 입력하거나 둘 다 비워주세요"
+        )
+    for v in (body.night_start, body.night_end):
+        if v:
+            try:
+                _parse_hhmm(v)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="시각은 HH:MM 형식이어야 합니다")
+    if body.night_start and body.night_start == body.night_end:
+        # 같으면 _latest_boundary 의 두 경계가 같은 시각으로 겹쳐 지문(fingerprint)이 서로를
+        # 덮어써 자동 전환이 먹통이 된다 — 애초에 저장을 막는다.
+        raise HTTPException(status_code=400, detail="시작·종료 시각은 달라야 합니다")
+
+    _put_setting(db, NIGHT_START_KEY, body.night_start)
+    _put_setting(db, NIGHT_END_KEY, body.night_end)
+    # 스케줄이 바뀌면 예전 경계 기록은 무의미하다 — 다음 조회에서 즉시 재계산되게 지운다.
+    _put_setting(db, BOUNDARY_KEY, None)
+    db.commit()
+    return {"night_start": body.night_start, "night_end": body.night_end}
 
 
 @router.post("/security/events", status_code=status.HTTP_201_CREATED)

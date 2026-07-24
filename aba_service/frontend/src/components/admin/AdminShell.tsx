@@ -1,13 +1,12 @@
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import {
-  BarChart3,
   Bell,
   BookMarked,
   BookOpen,
-  ClipboardCheck,
   Library,
   ListChecks,
+  Radar,
   ShieldAlert,
   Bot,
   ChevronDown,
@@ -62,32 +61,44 @@ type NavGroup = {
 
 const NAV_GROUPS: NavGroup[] = [
   {
-    key: "ops",
-    label: "운영",
-    icon: ListChecks,
+    key: "dashboard",
+    label: "대시보드",
+    icon: LayoutDashboard,
     items: [
-      { to: "/admin/ops", label: "운영 대시보드", icon: LayoutDashboard },
-      { to: "/admin/robots", label: "실시간 모니터링", icon: Bot },
-      { to: "/admin/tasks", label: "작업 지시", icon: ListChecks },
-      { to: "/admin/approvals", label: "대여 승인", icon: Stamp },
-      { to: "/admin/alerts", label: "작업 알림 · 로그", icon: Bell },
-      {
-        to: "/admin/reports",
-        label: "정리 · 분류 리포트",
-        icon: ClipboardCheck,
-      },
+      { to: "/admin", label: "대시보드", icon: LayoutDashboard, exact: true },
+    ],
+  },
+  {
+    key: "books",
+    label: "도서관리",
+    icon: Library,
+    items: [{ to: "/admin/books", label: "도서 · 서가 관리", icon: Library }],
+  },
+  {
+    key: "members",
+    label: "회원관리",
+    icon: BookMarked,
+    items: [
       { to: "/admin/members", label: "회원 · 대여/반납", icon: BookMarked },
-      { to: "/admin/books", label: "도서 · 서가 관리", icon: Library },
-      { to: "/admin/insight", label: "통합 검색 · 통계", icon: BarChart3 },
+    ],
+  },
+  {
+    key: "monitor",
+    label: "실시간 모니터링",
+    icon: Radar,
+    items: [
+      { to: "/admin/robots", label: "실시간 모니터링", icon: Bot },
+      { to: "/admin/alerts", label: "작업 알림 · 로그", icon: Bell },
       { to: "/admin/security", label: "야간 보안", icon: ShieldAlert },
     ],
   },
   {
-    key: "manage",
-    label: "관리",
-    icon: LayoutDashboard,
+    key: "ops",
+    label: "운영",
+    icon: ListChecks,
     items: [
-      { to: "/admin", label: "대시보드", icon: LayoutDashboard, exact: true },
+      { to: "/admin/tasks", label: "작업 지시", icon: ListChecks },
+      { to: "/admin/approvals", label: "대여 승인", icon: Stamp },
       { to: "/admin/users", label: "관리자 목록", icon: Users },
     ],
   },
@@ -133,7 +144,8 @@ export function AdminShell({
   const breadcrumb = useMemo(() => {
     for (const g of NAV_GROUPS) {
       const it = g.items.find((i) => isItemActive(pathname, i));
-      if (it) return `${g.label} / ${it.label}`;
+      if (it)
+        return g.items.length === 1 ? g.label : `${g.label} / ${it.label}`;
     }
     return title;
   }, [pathname, title]);
@@ -191,7 +203,7 @@ export function AdminShell({
         </div>
       </SidebarInset>
 
-      <Toaster />
+      <Toaster closeButton />
     </SidebarProvider>
   );
 }
@@ -209,6 +221,34 @@ function NavGroupBlock({
 
   function handleNavigate() {
     if (isMobile) setOpenMobile(false);
+  }
+
+  // 항목이 하나뿐인 그룹(대시보드/도서관리/회원관리)은 접었다 펼 게 없으니
+  // 그룹 라벨을 곧 그 항목 링크로 — 클릭 한 번에 바로 이동.
+  if (group.items.length === 1) {
+    const [only] = group.items;
+    const active = isItemActive(pathname, only);
+    return (
+      <SidebarGroup>
+        <SidebarGroupContent>
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                asChild
+                isActive={active}
+                tooltip={group.label}
+                className="data-[active=true]:border-l-2 data-[active=true]:border-accent data-[active=true]:pl-[calc(0.5rem-2px)] data-[active=true]:font-semibold"
+              >
+                <Link to={only.to} onClick={handleNavigate}>
+                  <GroupIcon className="h-4 w-4 shrink-0" />
+                  <span>{group.label}</span>
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarGroupContent>
+      </SidebarGroup>
+    );
   }
 
   return (

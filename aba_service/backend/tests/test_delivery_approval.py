@@ -85,6 +85,14 @@ def test_대여중_도서는_신청_단계에서_막힌다(client, member_auth, 
     assert fms.submit_count == 0
 
 
+def test_훼손분실_도서는_신청_단계에서_막힌다(client, member_auth, db_session, fms):
+    broken = make_book(db_session, title="찢어진 책", unavailable=True)
+    res = client.post(BORROW, json={"book_id": broken.id}, headers=member_auth)
+    assert res.status_code == 409
+    assert "훼손" in res.json()["detail"]
+    assert fms.submit_count == 0
+
+
 def test_서가위치_없는_도서는_요청할_수_없다(client, member_auth, db_session, fms):
     nowhere = make_book(db_session, title="위치 미상", zone="")
     res = client.post(BORROW, json={"book_id": nowhere.id}, headers=member_auth)
@@ -240,6 +248,19 @@ def test_신청_뒤_대여된_책은_승인할_수_없다(
     assert fms.submit_count == 0
 
 
+def test_신청_뒤_훼손분실_처리된_책은_승인할_수_없다(
+    client, member_auth, admin_auth, book, fms, db_session
+):
+    req_id = _pending_id(client, member_auth, book)
+    book.unavailable = True
+    db_session.commit()
+
+    res = client.post(f"{APPROVALS}/{req_id}/approve", headers=admin_auth)
+    assert res.status_code == 409
+    assert "훼손" in res.json()["detail"]
+    assert fms.submit_count == 0
+
+
 def test_승인_전_다른_경로로_대출되면_승인이_막힌다(
     client, member_auth, admin_auth, member, book, fms, db_session
 ):
@@ -324,6 +345,26 @@ def test_승인되고_FMS_작업이_종료됐으면_삭제할_수_있다(
         approvals.fms_client,
         "list_orders",
         lambda: (True, [{"id": "t-1", "status": "COMPLETED"}]),
+    )
+    res = client.delete(f"{APPROVALS}/{req_id}", headers=admin_auth)
+    assert res.status_code == 204, res.text
+    db_session.expire_all()
+    assert db_session.get(DeliveryRequest, req_id) is None
+
+
+def test_승인됐는데_FMS_목록에_그_작업이_없으면_삭제할_수_있다(
+    client, member_auth, admin_auth, book, fms, db_session, monkeypatch
+):
+    """FMS는 활성 큐만 들고 있다 — 지난 작업(seed 데이터 등)은 원래 목록에 없다.
+    조회는 됐는데(ok=True) 그 task_id가 안 보이면 이미 끝난 걸로 보고 삭제 허용한다."""
+    req_id = _approved_id(client, member_auth, admin_auth, book)
+
+    from app.routers import approvals
+
+    monkeypatch.setattr(
+        approvals.fms_client,
+        "list_orders",
+        lambda: (True, [{"id": "다른-작업", "status": "EXECUTING"}]),
     )
     res = client.delete(f"{APPROVALS}/{req_id}", headers=admin_auth)
     assert res.status_code == 204, res.text

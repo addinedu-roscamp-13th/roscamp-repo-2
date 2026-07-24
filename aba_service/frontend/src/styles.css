@@ -99,6 +99,19 @@
   --sidebar-accent-foreground: var(--primary);
   --sidebar-border: var(--border);
   --sidebar-ring: var(--ring);
+
+  /* 대시보드 차트 — categorical: 고정 순서 8색 중 앞 5슬롯(blue/orange/aqua/yellow/magenta).
+     status: good/warning/serious/critical, 고정 의미(상태色은 절대 재사용 안 함). */
+  --chart-1: #2a78d6;
+  --chart-2: #eb6834;
+  --chart-3: #1baf7a;
+  --chart-4: #eda100;
+  --chart-5: #e87ba4;
+  --chart-status-good: #0ca30c;
+  --chart-status-warning: #fab219;
+  --chart-status-serious: #ec835a;
+  --chart-status-critical: #d03b3b;
+  --chart-neutral: #898781;
 }
 
 @layer base {

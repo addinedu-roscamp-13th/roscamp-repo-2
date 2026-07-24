@@ -28,10 +28,7 @@ import { Route as AdminAuthedUsersRouteImport } from './routes/admin/_authed/use
 import { Route as AdminAuthedTasksRouteImport } from './routes/admin/_authed/tasks'
 import { Route as AdminAuthedSecurityRouteImport } from './routes/admin/_authed/security'
 import { Route as AdminAuthedRobotsRouteImport } from './routes/admin/_authed/robots'
-import { Route as AdminAuthedReportsRouteImport } from './routes/admin/_authed/reports'
-import { Route as AdminAuthedOpsRouteImport } from './routes/admin/_authed/ops'
 import { Route as AdminAuthedMembersRouteImport } from './routes/admin/_authed/members'
-import { Route as AdminAuthedInsightRouteImport } from './routes/admin/_authed/insight'
 import { Route as AdminAuthedBooksRouteImport } from './routes/admin/_authed/books'
 import { Route as AdminAuthedApprovalsRouteImport } from './routes/admin/_authed/approvals'
 import { Route as AdminAuthedAlertsRouteImport } from './routes/admin/_authed/alerts'
@@ -136,24 +133,9 @@ const AdminAuthedRobotsRoute = AdminAuthedRobotsRouteImport.update({
   path: '/robots',
   getParentRoute: () => AdminAuthedRoute,
 } as any)
-const AdminAuthedReportsRoute = AdminAuthedReportsRouteImport.update({
-  id: '/reports',
-  path: '/reports',
-  getParentRoute: () => AdminAuthedRoute,
-} as any)
-const AdminAuthedOpsRoute = AdminAuthedOpsRouteImport.update({
-  id: '/ops',
-  path: '/ops',
-  getParentRoute: () => AdminAuthedRoute,
-} as any)
 const AdminAuthedMembersRoute = AdminAuthedMembersRouteImport.update({
   id: '/members',
   path: '/members',
-  getParentRoute: () => AdminAuthedRoute,
-} as any)
-const AdminAuthedInsightRoute = AdminAuthedInsightRouteImport.update({
-  id: '/insight',
-  path: '/insight',
   getParentRoute: () => AdminAuthedRoute,
 } as any)
 const AdminAuthedBooksRoute = AdminAuthedBooksRouteImport.update({
@@ -216,10 +198,7 @@ export interface FileRoutesByFullPath {
   '/admin/alerts': typeof AdminAuthedAlertsRoute
   '/admin/approvals': typeof AdminAuthedApprovalsRoute
   '/admin/books': typeof AdminAuthedBooksRoute
-  '/admin/insight': typeof AdminAuthedInsightRoute
   '/admin/members': typeof AdminAuthedMembersRoute
-  '/admin/ops': typeof AdminAuthedOpsRoute
-  '/admin/reports': typeof AdminAuthedReportsRoute
   '/admin/robots': typeof AdminAuthedRobotsRoute
   '/admin/security': typeof AdminAuthedSecurityRoute
   '/admin/tasks': typeof AdminAuthedTasksRoute
@@ -248,10 +227,7 @@ export interface FileRoutesByTo {
   '/admin/alerts': typeof AdminAuthedAlertsRoute
   '/admin/approvals': typeof AdminAuthedApprovalsRoute
   '/admin/books': typeof AdminAuthedBooksRoute
-  '/admin/insight': typeof AdminAuthedInsightRoute
   '/admin/members': typeof AdminAuthedMembersRoute
-  '/admin/ops': typeof AdminAuthedOpsRoute
-  '/admin/reports': typeof AdminAuthedReportsRoute
   '/admin/robots': typeof AdminAuthedRobotsRoute
   '/admin/security': typeof AdminAuthedSecurityRoute
   '/admin/tasks': typeof AdminAuthedTasksRoute
@@ -282,10 +258,7 @@ export interface FileRoutesById {
   '/admin/_authed/alerts': typeof AdminAuthedAlertsRoute
   '/admin/_authed/approvals': typeof AdminAuthedApprovalsRoute
   '/admin/_authed/books': typeof AdminAuthedBooksRoute
-  '/admin/_authed/insight': typeof AdminAuthedInsightRoute
   '/admin/_authed/members': typeof AdminAuthedMembersRoute
-  '/admin/_authed/ops': typeof AdminAuthedOpsRoute
-  '/admin/_authed/reports': typeof AdminAuthedReportsRoute
   '/admin/_authed/robots': typeof AdminAuthedRobotsRoute
   '/admin/_authed/security': typeof AdminAuthedSecurityRoute
   '/admin/_authed/tasks': typeof AdminAuthedTasksRoute
@@ -317,10 +290,7 @@ export interface FileRouteTypes {
     | '/admin/alerts'
     | '/admin/approvals'
     | '/admin/books'
-    | '/admin/insight'
     | '/admin/members'
-    | '/admin/ops'
-    | '/admin/reports'
     | '/admin/robots'
     | '/admin/security'
     | '/admin/tasks'
@@ -349,10 +319,7 @@ export interface FileRouteTypes {
     | '/admin/alerts'
     | '/admin/approvals'
     | '/admin/books'
-    | '/admin/insight'
     | '/admin/members'
-    | '/admin/ops'
-    | '/admin/reports'
     | '/admin/robots'
     | '/admin/security'
     | '/admin/tasks'
@@ -382,10 +349,7 @@ export interface FileRouteTypes {
     | '/admin/_authed/alerts'
     | '/admin/_authed/approvals'
     | '/admin/_authed/books'
-    | '/admin/_authed/insight'
     | '/admin/_authed/members'
-    | '/admin/_authed/ops'
-    | '/admin/_authed/reports'
     | '/admin/_authed/robots'
     | '/admin/_authed/security'
     | '/admin/_authed/tasks'
@@ -550,32 +514,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminAuthedRobotsRouteImport
       parentRoute: typeof AdminAuthedRoute
     }
-    '/admin/_authed/reports': {
-      id: '/admin/_authed/reports'
-      path: '/reports'
-      fullPath: '/admin/reports'
-      preLoaderRoute: typeof AdminAuthedReportsRouteImport
-      parentRoute: typeof AdminAuthedRoute
-    }
-    '/admin/_authed/ops': {
-      id: '/admin/_authed/ops'
-      path: '/ops'
-      fullPath: '/admin/ops'
-      preLoaderRoute: typeof AdminAuthedOpsRouteImport
-      parentRoute: typeof AdminAuthedRoute
-    }
     '/admin/_authed/members': {
       id: '/admin/_authed/members'
       path: '/members'
       fullPath: '/admin/members'
       preLoaderRoute: typeof AdminAuthedMembersRouteImport
-      parentRoute: typeof AdminAuthedRoute
-    }
-    '/admin/_authed/insight': {
-      id: '/admin/_authed/insight'
-      path: '/insight'
-      fullPath: '/admin/insight'
-      preLoaderRoute: typeof AdminAuthedInsightRouteImport
       parentRoute: typeof AdminAuthedRoute
     }
     '/admin/_authed/books': {
@@ -641,10 +584,7 @@ interface AdminAuthedRouteChildren {
   AdminAuthedAlertsRoute: typeof AdminAuthedAlertsRoute
   AdminAuthedApprovalsRoute: typeof AdminAuthedApprovalsRoute
   AdminAuthedBooksRoute: typeof AdminAuthedBooksRoute
-  AdminAuthedInsightRoute: typeof AdminAuthedInsightRoute
   AdminAuthedMembersRoute: typeof AdminAuthedMembersRoute
-  AdminAuthedOpsRoute: typeof AdminAuthedOpsRoute
-  AdminAuthedReportsRoute: typeof AdminAuthedReportsRoute
   AdminAuthedRobotsRoute: typeof AdminAuthedRobotsRoute
   AdminAuthedSecurityRoute: typeof AdminAuthedSecurityRoute
   AdminAuthedTasksRoute: typeof AdminAuthedTasksRoute
@@ -661,10 +601,7 @@ const AdminAuthedRouteChildren: AdminAuthedRouteChildren = {
   AdminAuthedAlertsRoute: AdminAuthedAlertsRoute,
   AdminAuthedApprovalsRoute: AdminAuthedApprovalsRoute,
   AdminAuthedBooksRoute: AdminAuthedBooksRoute,
-  AdminAuthedInsightRoute: AdminAuthedInsightRoute,
   AdminAuthedMembersRoute: AdminAuthedMembersRoute,
-  AdminAuthedOpsRoute: AdminAuthedOpsRoute,
-  AdminAuthedReportsRoute: AdminAuthedReportsRoute,
   AdminAuthedRobotsRoute: AdminAuthedRobotsRoute,
   AdminAuthedSecurityRoute: AdminAuthedSecurityRoute,
   AdminAuthedTasksRoute: AdminAuthedTasksRoute,
