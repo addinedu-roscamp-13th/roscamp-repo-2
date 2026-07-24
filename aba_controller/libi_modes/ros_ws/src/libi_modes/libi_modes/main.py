@@ -1,0 +1,292 @@
+"""libi_modes 실행 노드 — 미션 FSM 트리를 로봇 도메인에서 tick 한다.
+
+    ros2 run libi_modes fsm_node --ros-args -p robot_id:=pinkySim
+
+`ROS_DOMAIN_ID` 는 건드리지 않는다 — `sim.sh` / `laptop.sh` 가 이미 로봇과 같은 도메인으로
+export 해준다(sim=90, 실기는 로봇별 88/89/…). 중앙(86)으로는 domain_bridge 가 올려준다.
+
+## 로봇 1대 = 프로세스 1개
+
+py_trees 의 blackboard 는 프로세스 전역이라 한 프로세스가 두 로봇의 트리를 굴릴 수 없다
+(테스트가 매 케이스마다 blackboard 를 비우는 이유도 같다). 로봇이 여러 대면 프로세스를
+여러 개 띄운다 — 어차피 각 로봇이 자기 도메인에 있으므로 자연스럽다.
+
+## tick 한 번의 순서
+
+    1. 대기 중인 수동 전이 적용 (서비스로 들어온 것)
+    2. 트리 tick — Topics2BB 가 구독값을 blackboard 에 넣고, 브랜치가 판단·행동
+    3. blackboard 를 되읽어 provider 와 대조 (leaf 가 소비한 명령을 provider 도 비움)
+    4. 상태·스냅샷 발행
+
+3번이 빠지면 Topics2BB 가 다음 tick 에 소비된 명령을 되살려 같은 전이가 반복된다.
+"""
+import json
+import os
+
+import py_trees
+import rclpy
+import yaml
+from ament_index_python.packages import get_package_share_directory
+from py_trees.common import Access
+from rcl_interfaces.msg import ParameterDescriptor
+from rclpy.node import Node
+from std_msgs.msg import String
+
+from libi_modes import blackboard as bb
+from libi_modes import tree as tree_mod
+from libi_modes.blackboard import Keys
+from libi_modes.registry import BRANCH_ORDER
+from libi_modes.ros.fleet_cmd_driver import ArmHomeDriver, FleetCmdDriver
+from libi_modes.ros.providers import RosProviders
+from libi_modes.ros.state_io import StateIO
+
+#: 부팅 상태. 전이 박스의 `[*] -> IDLE`.
+#
+# ## 왜 RETURNING 이 아닌가 (2026-07-22 변경)
+#
+# 원래는 `RETURNING` 이었다. 이유는 "켜진 순간 로봇은 자기 위치도 팔 자세도 모르니
+# 일단 팔을 접고 충전소로 가서 도킹부터 하라"였다. 팔 자세 걱정은 맞는데, 상태를
+# `RETURNING` 으로 두는 건 그 문제를 푸는 방법이 아니었다:
+#
+#   - **켜자마자 주행을 시작한다.** `ReturnNavigation` 이 부팅 1초 안에 도킹 명령을
+#     내는데, AMCL 은 아직 수렴 전이다. 위치를 모르는 채로 목표를 찍는 셈이다.
+#   - **이미 충전소에 있어도 왕복한다.** 로봇은 보통 충전 중에 켜지므로, 제자리에서
+#     "복귀"를 하는 헛수고가 매번 일어난다.
+#   - **모든 시험이 이 구간을 먼저 지나야 했다.** 배차도 순회도 `RETURNING` 을
+#     빠져나온 뒤에야 볼 수 있어서, 여기가 막히면 그 위의 모든 것이 안 보였다.
+#
+# `IDLE` 은 아무 데도 가지 않고 기다린다. 팔 자세 문제는 **부팅 시 팔 홈 복귀를 한 번
+# 보내는 것**으로 그대로 해결한다(아래 `_boot_arm_home`) — 상태를 바꿔서 우회하는 것보다
+# 직접적이다.
+#
+# ⚠️ 바꿀 때 `libi_modes/registry.py` 와 FMS 의 `app/fsm_model.py` 를 **함께** 고쳐야 한다.
+#    둘이 어긋나면 `test_fsm_registry_drift.py` 가 잡는다.
+BOOT_STATE = "IDLE"
+
+
+class _CmdPublisher:
+    """드라이버들이 공유하는 /fleet_cmd 발행자."""
+
+    def __init__(self, node, topic):
+        self._pub = node.create_publisher(String, topic, 10)
+
+    def publish_json(self, payload):
+        msg = String()
+        msg.data = json.dumps(payload, ensure_ascii=False)
+        self._pub.publish(msg)
+
+
+class FsmNode(Node):
+    def __init__(self):
+        super().__init__("libi_modes")
+
+        robot_id = self.declare_parameter("robot_id", "libi").value
+        # dynamic_typing — 안 주면 `-p tick_hz:=4` 가 INTEGER 로 파싱돼 DOUBLE 기대와
+        # 충돌하며 노드가 뜨지 않는다. 정수로 주는 게 자연스러운 값이라 둘 다 받는다.
+        tick_hz = float(self.declare_parameter(
+            "tick_hz", 10.0, ParameterDescriptor(dynamic_typing=True)).value)
+        params_file = self.declare_parameter("params_file", "").value
+        cmd_topic = self.declare_parameter("cmd_topic", "fleet_cmd").value
+        result_topic = self.declare_parameter("result_topic", "fleet_cmd_result").value
+        home_location = self.declare_parameter("home_location", "charger").value
+
+        # 복귀 목적지 — **주차장 정점의 좌표와 자세**.
+        #
+        # 예전엔 `home` 액션을 보냈고, 그건 robot_agent 의 `mission.go_home()` 으로 가서
+        # "로봇에 HOME 이 등록돼 있으면 거기, 없으면 맵 원점(0,0,0)" 이었다. 로봇마다
+        # 등록 상태가 다르면 **같은 명령이 로봇마다 다른 곳으로 간다.** 그래서 좌표를
+        # 여기서 명시한다 — 주행 명령과 똑같이 `goal` 로 나간다.
+        #
+        # yaw 0 = +x 방향 = 입구·안내데스크 쪽(관제 화면에서 위쪽). waypoint.yaml 의
+        # `주차장` 자세와 같은 값이다.
+        #
+        # ⚠️ 주차는 원래 네 단계다. 지금은 그중 둘이 빠져 **goal 하나로 압축**돼 있다:
+        #
+        #   ① 특정 위치(입구) 이동   nav2 주행           → 지금은 주차장 정점으로 직접
+        #   ② 각도 틀기              주차장 방향 180°     → **없음**
+        #   ③ 이동 로직              테이프 추종 미세조정 → **그냥 주행** (nav2 가 데려다 준다)
+        #   ④ 도착 후 yaw 회전       주차 자세            → nav2 의 goal yaw 로 대신
+        #
+        #    ②③을 붙이려면 park_dock 을 불러야 하는데 그 경로가 아직 배선돼 있지 않다.
+        #    누가 무엇을 부르는지와 미결 네 가지: scripts/drive-pi/dock/README.md
+        return_x = float(self.declare_parameter("return_x", -0.001).value)
+        return_y = float(self.declare_parameter("return_y", -0.033).value)
+        return_yaw = float(self.declare_parameter("return_yaw", 0.0).value)
+
+        # [디버그] 잠글 상태 브랜치 — 콤마구분. ROS param `disabled_branches` 또는
+        # env `LIBI_DISABLED_BRANCHES` (fsm-bt.sh --disable 가 env 로 넘긴다). 기본 빈 값.
+        disabled_branches = self._resolve_disabled_branches()
+
+        params = self._load_params(params_file)
+
+        cmd_pub = _CmdPublisher(self, cmd_topic)
+        self._providers = RosProviders(self, cmd_topic=cmd_topic)
+
+        # 액션별 드라이버. 전부 같은 /fleet_cmd 통로를 쓰고 결과는 id 로 갈린다.
+        self._drivers = {
+            # 순회도 배달과 **같은 실행 층 액션**을 쓴다. 예전엔 mission_start 라
+            # 로봇이 자기 waypoint 목록을 혼자 돌았고, 그 경로는 fleet_node 의 교통
+            # 예약을 아예 안 거쳤다 — 순회가 두 벌 동시에 돌고 있었다.
+            "patrol": FleetCmdDriver(self, "goal",
+                                     args_fn=lambda: self._nav_args(home_location)).bind(cmd_pub),
+            # 야간 순찰도 순회(patrol)와 **같은 실행 경로**(goal, fleet_node 교통 경유)로 돈다.
+            # 예전엔 mission_start 라 로봇이 waypoint 를 혼자 한 바퀴 돌고 IDLE 로 나갔는데,
+            # 야간엔 계속 순찰해야 하므로 patrol 과 같은 goal 드라이버를 써서
+            # security_patrol 브랜치가 PatrolNavigation 으로 지속 순찰하게 한다(1회로 안 끝남).
+            "security_patrol": FleetCmdDriver(self, "goal",
+                                              args_fn=lambda: self._nav_args(home_location)).bind(cmd_pub),
+            # 주행: FMS 가 /fleet_cmd{navigate, x,y,yaw} 로 준 목적지를 blackboard 에서 읽어
+            # 실행 층(goal)으로 내려보낸다.
+            #
+            # ⚠️ 예전엔 `args_fn=lambda: {"name": home_location}` 으로 **하드코딩**돼 있었다.
+            # 목적지를 받을 통로가 아예 없어서 NavigationExec 은 항상 home 으로만 갈 수 있었고,
+            # 그래서 이 브랜치는 사실상 죽은 코드였다. FMS 는 그동안 BT 를 우회해
+            # fleet_node → path_request_driver → nav2 로 직접 몰았다.
+            #
+            # 목적지가 아직 없으면(주행 명령 없이 tick 이 돈 경우) home 으로 폴백한다 —
+            # 좌표 없는 goal 을 보내면 fleet_link 가 KeyError 로 죽는다.
+            "nav": FleetCmdDriver(self, "goal",
+                                  args_fn=lambda: self._nav_args(home_location)).bind(cmd_pub),
+            "arm": FleetCmdDriver(self, "perform_action").bind(cmd_pub),
+            # 주차장으로 goto. `home` 이 아니라 `goal` 인 이유는 위 return_x 주석 참고.
+            "return_dock": FleetCmdDriver(
+                self, "goal",
+                args_fn=lambda: {"x": return_x, "y": return_y, "yaw": return_yaw},
+            ).bind(cmd_pub),
+        }
+        self._drivers["return_arm"] = ArmHomeDriver(
+            FleetCmdDriver(self, "arm_home").bind(cmd_pub))
+
+        self.create_subscription(String, result_topic, self._on_result, 10)
+
+        root = tree_mod.build_root(params, self._drivers, self._providers.as_dict())
+        self._tree = py_trees.trees.BehaviourTree(root=root)
+        self._tree.setup(timeout=15)
+        self._root = root
+
+        self._bb = py_trees.blackboard.Client(name="fsm_node")
+        for key in (Keys.CURRENT_MODE, Keys.LAST_COMMAND, Keys.ACTIVE_COMMAND,
+                    Keys.DISABLED_BRANCHES):
+            self._bb.register_key(key=key, access=Access.WRITE)
+        # 주행 목적지는 Topics2BB 가 쓰고 여기선 읽기만 한다 (_nav_args).
+        self._bb.register_key(key=Keys.NAV_TARGET, access=Access.READ)
+        self._bb.set(Keys.CURRENT_MODE, BOOT_STATE)
+        self._bb.set(Keys.DISABLED_BRANCHES, disabled_branches)
+
+        # 패널 전이를 이 시간만큼은 붙잡는다 — 안 그러면 BT 가 다음 tick 에 되돌려서
+        # 관제 화면·LED 에 아무 일도 안 일어난 것처럼 보인다 (state_io.apply_pending 참고).
+        self._io = StateIO(self, robot_id,
+                           manual_hold_sec=float(params.get("manual_hold_sec", 0.0)))
+        self._boot_arm_home()
+        self.create_timer(1.0 / tick_hz, self._tick)
+        self.get_logger().info(
+            f"libi_modes up — robot_id={robot_id} tick={tick_hz}Hz boot={BOOT_STATE}")
+
+    def _boot_arm_home(self) -> None:
+        """부팅 시 팔을 홈 자세로 한 번 보낸다.
+
+        기동 직후에는 팔이 어떤 자세인지 알 수 없다. 편 채로 주행하면 책장을 친다.
+        예전엔 부팅 상태가 `RETURNING` 이라 `ReturnNavigation.initialise()` 가 이걸
+        대신 해 줬는데, 부팅을 `IDLE` 로 바꾸면서 그 자리가 없어졌다. **그 안전 장치까지
+        같이 없애면 안 되므로** 여기서 명시적으로 한 번 보낸다.
+
+        결과를 기다리지 않는다 — 기다리면 노드 기동이 막힌다. 팔이 없으면(지금이 그렇다)
+        실행기가 400 을 돌려주고 끝이며, 그건 정상이다.
+        """
+        driver = self._drivers.get("return_arm")
+        if driver is None:
+            return
+        try:
+            driver.go_home()
+        except Exception:  # noqa: BLE001 — 팔 때문에 노드가 안 뜨면 안 된다
+            self.get_logger().warning("부팅 팔 홈 복귀 명령 전송 실패 — 계속 진행합니다")
+
+    def _nav_args(self, home_location):
+        """주행 드라이버가 실행 층(goal)으로 내려보낼 인자.
+
+        FMS 가 `/fleet_cmd{navigate, x,y,yaw}` 로 준 목적지를 blackboard(`nav_target`)에서
+        읽는다. 아직 없으면 home 으로 폴백한다 — 좌표 없이 goal 을 보내면 로봇 쪽
+        `fleet_link._dispatch` 가 `args["x"]` 에서 KeyError 로 죽는다.
+        """
+        target = bb.get(self._bb, Keys.NAV_TARGET) if getattr(self, "_bb", None) else None
+        if not target:
+            self.get_logger().warn(
+                f"주행 목적지가 없어 home({home_location}) 으로 폴백합니다")
+            return {"name": home_location}
+        return {"x": target["x"], "y": target["y"], "yaw": target.get("yaw", 0.0)}
+
+    def _load_params(self, path):
+        if not path:
+            path = f"{get_package_share_directory('libi_modes')}/config/params.yaml"
+        with open(path) as f:
+            return yaml.safe_load(f)["libi_modes"]
+
+    def _resolve_disabled_branches(self) -> frozenset:
+        """param(disabled_branches) + env(LIBI_DISABLED_BRANCHES) 합집합. 콤마구분.
+
+        모르는 상태 이름은 경고 후 무시. 안전 브랜치(ERROR/RETURNING) 잠금은 경고만 하고
+        허용한다 — 디버그 전용 기능이며, 막으면 오히려 그 브랜치를 디버깅할 수 없다.
+        """
+        raw = str(self.declare_parameter("disabled_branches", "").value or "")
+        raw += "," + os.environ.get("LIBI_DISABLED_BRANCHES", "")
+        disabled = {s.strip() for s in raw.split(",") if s.strip()}
+
+        unknown = disabled - set(BRANCH_ORDER)
+        if unknown:
+            self.get_logger().warning(f"disabled_branches 에 모르는 상태(무시): {sorted(unknown)}")
+            disabled -= unknown
+        if disabled:
+            safety = disabled & {"ERROR", "RETURNING"}
+            self.get_logger().warning(
+                f"[디버그] 잠긴 브랜치: {sorted(disabled)}"
+                + (f"  ⚠️ 안전 브랜치 포함: {sorted(safety)}" if safety else ""))
+        return frozenset(disabled)
+
+    def _on_result(self, msg):
+        try:
+            payload = json.loads(msg.data)
+        except (ValueError, TypeError):
+            return
+        for driver in self._drivers.values():
+            handler = getattr(driver, "on_result", None)
+            if handler:
+                handler(payload)
+
+    def _read(self, key):
+        try:
+            return self._bb.get(key)
+        except KeyError:
+            return None
+
+    def _tick(self):
+        if self._io.apply_pending():
+            self.get_logger().info(f"수동 전이 적용 → {self._read(Keys.CURRENT_MODE)}")
+
+        before = self._read(Keys.CURRENT_MODE)
+        self._tree.tick()
+        after = self._read(Keys.CURRENT_MODE)
+        if after != before:
+            self.get_logger().info(f"{before} -> {after}")
+
+        # leaf 가 소비한 명령을 provider 쪽에도 반영 (안 하면 다음 tick 에 되살아난다)
+        self._providers.sync_consumed(
+            self._read(Keys.LAST_COMMAND), self._read(Keys.ACTIVE_COMMAND))
+
+        self._io.publish(self._root)
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = FsmNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

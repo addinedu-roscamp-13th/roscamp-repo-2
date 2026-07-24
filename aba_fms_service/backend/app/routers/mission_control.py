@@ -5,6 +5,7 @@ import json
 import socket
 import urllib.error
 import urllib.request
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
@@ -29,6 +30,7 @@ router = APIRouter(prefix="/api/control", tags=["mission-control"])
 NAV2_DEFAULT_PORT = 9001
 TIMEOUT_SEC = 3.0
 SLAM_TIMEOUT_SEC = 10.0  # slam reset/save 는 서비스 대기가 있어 넉넉히
+WAYPOINT_GOTO_TIMEOUT_SEC = 180.0  # 간선 다중 홉 이동은 오래 걸릴 수 있어 넉넉히
 
 # 마커 액션(rc_marker_actions)과 동일한 액션 타입 집합을 재사용한다.
 VALID_ACTIONS = {"none", "dock", "rotate", "move", "lcd_emotion", "lcd_text", "lcd_image"}
@@ -58,6 +60,16 @@ class LocationNameRequest(BaseModel):
 class MissionRequest(BaseModel):
     names: list[str] = Field(default_factory=list)
     loop: bool = False
+
+
+class RelativeMoveRequest(BaseModel):
+    direction: str = "forward"
+    distance_m: float = Field(..., gt=0.0, le=1.0)
+    speed_mps: float = Field(0.08, gt=0.02, le=0.25)
+    # 진행 방향 라이다 여유거리가 이 값(라이다 중심 기준, m) 밑으로 떨어지면 즉시 정지.
+    # 맵이 2.14×1.32m 로 매우 좁아 작게 잡는다. 0.12m ≈ 전방 범퍼-벽 여유 ~4cm
+    # (라이다 오프셋 -0.017 + 로봇 반경 0.06). 더 붙이려면 낮추면 됨(하한 0.05).
+    min_clearance_m: float = Field(0.12, ge=0.05, le=1.0)
 
 
 class ScheduleRequest(MissionRequest):
@@ -383,6 +395,102 @@ async def goto(body: LocationNameRequest, robot_id: int = Query(...), nav_port: 
         return res
     await _sync_location_to_robot(robot_id, nav_port, db, name)
     return await _proxy(robot_id, nav_port, db, "/api/goto", "POST", {"name": name})
+
+
+@router.get("/waypoints")
+async def get_waypoints(robot_id: int = Query(...), nav_port: int = Query(NAV2_DEFAULT_PORT, ge=1, le=65535), db: AsyncSession = Depends(get_admin_db), _admin: Admin = Depends(get_current_admin)):
+    """내비 그래프(vertices+lanes) 조회 — fleet_link.waypoint_get (ROS2 전용, HTTP 폴백 없음)."""
+    res = await _ros_command(robot_id, nav_port, db, "waypoint_get", {})
+    if res is None:
+        raise HTTPException(status_code=503, detail="로봇과 ROS 링크가 연결되지 않았습니다")
+    return res
+
+
+class WaypointSaveRequest(BaseModel):
+    vertices: dict[str, dict[str, float]]
+    lanes: list[dict[str, Any]]
+
+
+@router.put("/waypoints")
+async def save_waypoints(body: WaypointSaveRequest, robot_id: int = Query(...), nav_port: int = Query(NAV2_DEFAULT_PORT, ge=1, le=65535), db: AsyncSession = Depends(get_admin_db), _admin: Admin = Depends(get_current_admin)):
+    """내비 그래프 저장 — fleet_link.waypoint_save."""
+    res = await _ros_command(robot_id, nav_port, db, "waypoint_save", body.model_dump())
+    if res is None:
+        raise HTTPException(status_code=503, detail="로봇과 ROS 링크가 연결되지 않았습니다")
+    return res
+
+
+@router.post("/waypoints/{name}/goto")
+async def waypoint_goto(name: str, robot_id: int = Query(...), nav_port: int = Query(NAV2_DEFAULT_PORT, ge=1, le=65535), db: AsyncSession = Depends(get_admin_db), _admin: Admin = Depends(get_current_admin)):
+    """간선(lane)을 따라 지정 노드까지 순차 이동 — fleet_link.waypoint_goto."""
+    pinky_greeting_monitor.mark_active(f"id:{robot_id}", ttl=120.0)
+    res = await _ros_command(robot_id, nav_port, db, "waypoint_goto", {"name": name}, timeout=WAYPOINT_GOTO_TIMEOUT_SEC)
+    if res is None:
+        raise HTTPException(status_code=503, detail="로봇과 ROS 링크가 연결되지 않았습니다")
+    return res
+
+
+@router.post("/relative-move")
+async def relative_move(body: RelativeMoveRequest, robot_id: int = Query(...), nav_port: int = Query(NAV2_DEFAULT_PORT, ge=1, le=65535), db: AsyncSession = Depends(get_admin_db), _admin: Admin = Depends(get_current_admin)):
+    base = await _target_url(robot_id, nav_port, db)
+    ip = base.split("//", 1)[-1].rsplit(":", 1)[0]
+    dir_str = "backward" if body.direction == "backward" else "forward"
+    direction = -1.0 if dir_str == "backward" else 1.0
+    linear = float(body.speed_mps) * direction
+    duration = min(30.0, max(0.1, float(body.distance_m) / max(abs(linear), 0.01)))
+    stop_gap = float(body.min_clearance_m)
+    per_iter = 0.1  # 루프 주기(초)
+
+    # relative_move 는 nav2 를 우회하는 저수준 조그다 — 스스로 장애물을 피하지 못하므로
+    # 라이다 전방(후진 시 후방) 여유거리로 안전정지를 건다.
+    # fail-safe: 여유거리를 확인할 수 없으면(스캔 없음/오래됨) 아예 움직이지 않는다.
+    c0 = fleet_telemetry.clearance(ip, dir_str)
+    if c0 is None:
+        raise HTTPException(
+            status_code=503,
+            detail=f"{'후방' if dir_str == 'backward' else '전방'} 라이다 스캔을 받지 못해 "
+                   f"안전상 이동을 취소했습니다 (스캔 브릿지/센서 확인 필요)",
+        )
+    if c0 < stop_gap:
+        return {"success": False, "mode": "ros2_cmd_vel", "stopped_reason": "obstacle",
+                "clearance_m": c0, "min_clearance_m": stop_gap, "published": 0,
+                "message": f"진행 방향 {c0:.2f}m 앞에 장애물이 있어 이동하지 않았습니다 (임계 {stop_gap:.2f}m)"}
+
+    started = time.time()
+    sent = 0
+    stopped_reason: str | None = None
+    try:
+        while time.time() - started < duration:
+            c = fleet_telemetry.clearance(ip, dir_str)
+            if c is None:
+                stopped_reason = "scan_lost"
+                break
+            if c < stop_gap:
+                stopped_reason = "obstacle"
+                break
+            if not fleet_telemetry.publish_cmd_vel(ip, linear, 0.0):
+                raise HTTPException(status_code=503, detail="로봇 cmd_vel 토픽 링크가 연결되지 않았습니다")
+            sent += 1
+            await asyncio.sleep(per_iter)
+    finally:
+        for _ in range(3):
+            fleet_telemetry.publish_cmd_vel(ip, 0.0, 0.0)
+            await asyncio.sleep(0.03)
+
+    traveled = round(min(float(body.distance_m), sent * per_iter * abs(linear)), 3)
+    if stopped_reason == "obstacle":
+        last_c = fleet_telemetry.clearance(ip, dir_str)
+        return {"success": True, "mode": "ros2_cmd_vel", "stopped_reason": "obstacle",
+                "clearance_m": last_c, "min_clearance_m": stop_gap,
+                "distance_m": body.distance_m, "traveled_m": traveled, "published": sent,
+                "message": f"장애물 감지로 {traveled:.2f}m 이동 후 정지했습니다 (앞 여유 임계 {stop_gap:.2f}m)"}
+    if stopped_reason == "scan_lost":
+        return {"success": True, "mode": "ros2_cmd_vel", "stopped_reason": "scan_lost",
+                "distance_m": body.distance_m, "traveled_m": traveled, "published": sent,
+                "message": f"라이다 신호가 끊겨 안전상 {traveled:.2f}m 이동 후 정지했습니다"}
+    return {"success": True, "mode": "ros2_cmd_vel", "distance_m": body.distance_m,
+            "speed_mps": abs(linear), "duration_s": round(duration, 2),
+            "published": sent, "traveled_m": traveled}
 
 
 @router.post("/mission/start")

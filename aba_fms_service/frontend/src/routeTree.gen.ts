@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AdminLoginRouteImport } from './routes/admin/login'
 import { Route as AdminAuthedRouteImport } from './routes/admin/_authed'
 import { Route as AdminAuthedIndexRouteImport } from './routes/admin/_authed/index'
+import { Route as AdminAuthedWaypointRouteImport } from './routes/admin/_authed/waypoint'
 import { Route as AdminAuthedUsersRouteImport } from './routes/admin/_authed/users'
 import { Route as AdminAuthedRobotsRouteImport } from './routes/admin/_authed/robots'
 import { Route as AdminAuthedRobotLearningRouteImport } from './routes/admin/_authed/robot-learning'
@@ -21,8 +22,10 @@ import { Route as AdminAuthedPinkyDetectRouteImport } from './routes/admin/_auth
 import { Route as AdminAuthedParkingRouteImport } from './routes/admin/_authed/parking'
 import { Route as AdminAuthedJoystickRouteImport } from './routes/admin/_authed/joystick'
 import { Route as AdminAuthedHumanFollowRouteImport } from './routes/admin/_authed/human-follow'
+import { Route as AdminAuthedFsmRouteImport } from './routes/admin/_authed/fsm'
 import { Route as AdminAuthedFmsRouteImport } from './routes/admin/_authed/fms'
 import { Route as AdminAuthedFleetRouteImport } from './routes/admin/_authed/fleet'
+import { Route as AdminAuthedDispatchRouteImport } from './routes/admin/_authed/dispatch'
 import { Route as AdminAuthedControlRouteImport } from './routes/admin/_authed/control'
 import { Route as AdminAuthedChatRouteImport } from './routes/admin/_authed/chat'
 import { Route as AdminAuthedCameraRouteImport } from './routes/admin/_authed/camera'
@@ -59,6 +62,11 @@ const AdminAuthedRoute = AdminAuthedRouteImport.update({
 const AdminAuthedIndexRoute = AdminAuthedIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => AdminAuthedRoute,
+} as any)
+const AdminAuthedWaypointRoute = AdminAuthedWaypointRouteImport.update({
+  id: '/waypoint',
+  path: '/waypoint',
   getParentRoute: () => AdminAuthedRoute,
 } as any)
 const AdminAuthedUsersRoute = AdminAuthedUsersRouteImport.update({
@@ -102,6 +110,11 @@ const AdminAuthedHumanFollowRoute = AdminAuthedHumanFollowRouteImport.update({
   path: '/human-follow',
   getParentRoute: () => AdminAuthedRoute,
 } as any)
+const AdminAuthedFsmRoute = AdminAuthedFsmRouteImport.update({
+  id: '/fsm',
+  path: '/fsm',
+  getParentRoute: () => AdminAuthedRoute,
+} as any)
 const AdminAuthedFmsRoute = AdminAuthedFmsRouteImport.update({
   id: '/fms',
   path: '/fms',
@@ -110,6 +123,11 @@ const AdminAuthedFmsRoute = AdminAuthedFmsRouteImport.update({
 const AdminAuthedFleetRoute = AdminAuthedFleetRouteImport.update({
   id: '/fleet',
   path: '/fleet',
+  getParentRoute: () => AdminAuthedRoute,
+} as any)
+const AdminAuthedDispatchRoute = AdminAuthedDispatchRouteImport.update({
+  id: '/dispatch',
+  path: '/dispatch',
   getParentRoute: () => AdminAuthedRoute,
 } as any)
 const AdminAuthedControlRoute = AdminAuthedControlRouteImport.update({
@@ -209,8 +227,10 @@ export interface FileRoutesByFullPath {
   '/admin/camera': typeof AdminAuthedCameraRoute
   '/admin/chat': typeof AdminAuthedChatRoute
   '/admin/control': typeof AdminAuthedControlRoute
+  '/admin/dispatch': typeof AdminAuthedDispatchRoute
   '/admin/fleet': typeof AdminAuthedFleetRoute
   '/admin/fms': typeof AdminAuthedFmsRoute
+  '/admin/fsm': typeof AdminAuthedFsmRoute
   '/admin/human-follow': typeof AdminAuthedHumanFollowRoute
   '/admin/joystick': typeof AdminAuthedJoystickRoute
   '/admin/parking': typeof AdminAuthedParkingRoute
@@ -219,6 +239,7 @@ export interface FileRoutesByFullPath {
   '/admin/robot-learning': typeof AdminAuthedRobotLearningRoute
   '/admin/robots': typeof AdminAuthedRobotsRoute
   '/admin/users': typeof AdminAuthedUsersRoute
+  '/admin/waypoint': typeof AdminAuthedWaypointRoute
   '/admin/': typeof AdminAuthedIndexRoute
   '/admin/arm/color-pick': typeof AdminAuthedArmColorPickRoute
   '/admin/arm/face-track': typeof AdminAuthedArmFaceTrackRoute
@@ -241,8 +262,10 @@ export interface FileRoutesByTo {
   '/admin/camera': typeof AdminAuthedCameraRoute
   '/admin/chat': typeof AdminAuthedChatRoute
   '/admin/control': typeof AdminAuthedControlRoute
+  '/admin/dispatch': typeof AdminAuthedDispatchRoute
   '/admin/fleet': typeof AdminAuthedFleetRoute
   '/admin/fms': typeof AdminAuthedFmsRoute
+  '/admin/fsm': typeof AdminAuthedFsmRoute
   '/admin/human-follow': typeof AdminAuthedHumanFollowRoute
   '/admin/joystick': typeof AdminAuthedJoystickRoute
   '/admin/parking': typeof AdminAuthedParkingRoute
@@ -251,6 +274,7 @@ export interface FileRoutesByTo {
   '/admin/robot-learning': typeof AdminAuthedRobotLearningRoute
   '/admin/robots': typeof AdminAuthedRobotsRoute
   '/admin/users': typeof AdminAuthedUsersRoute
+  '/admin/waypoint': typeof AdminAuthedWaypointRoute
   '/admin': typeof AdminAuthedIndexRoute
   '/admin/arm/color-pick': typeof AdminAuthedArmColorPickRoute
   '/admin/arm/face-track': typeof AdminAuthedArmFaceTrackRoute
@@ -275,8 +299,10 @@ export interface FileRoutesById {
   '/admin/_authed/camera': typeof AdminAuthedCameraRoute
   '/admin/_authed/chat': typeof AdminAuthedChatRoute
   '/admin/_authed/control': typeof AdminAuthedControlRoute
+  '/admin/_authed/dispatch': typeof AdminAuthedDispatchRoute
   '/admin/_authed/fleet': typeof AdminAuthedFleetRoute
   '/admin/_authed/fms': typeof AdminAuthedFmsRoute
+  '/admin/_authed/fsm': typeof AdminAuthedFsmRoute
   '/admin/_authed/human-follow': typeof AdminAuthedHumanFollowRoute
   '/admin/_authed/joystick': typeof AdminAuthedJoystickRoute
   '/admin/_authed/parking': typeof AdminAuthedParkingRoute
@@ -285,6 +311,7 @@ export interface FileRoutesById {
   '/admin/_authed/robot-learning': typeof AdminAuthedRobotLearningRoute
   '/admin/_authed/robots': typeof AdminAuthedRobotsRoute
   '/admin/_authed/users': typeof AdminAuthedUsersRoute
+  '/admin/_authed/waypoint': typeof AdminAuthedWaypointRoute
   '/admin/_authed/': typeof AdminAuthedIndexRoute
   '/admin/_authed/arm/color-pick': typeof AdminAuthedArmColorPickRoute
   '/admin/_authed/arm/face-track': typeof AdminAuthedArmFaceTrackRoute
@@ -310,8 +337,10 @@ export interface FileRouteTypes {
     | '/admin/camera'
     | '/admin/chat'
     | '/admin/control'
+    | '/admin/dispatch'
     | '/admin/fleet'
     | '/admin/fms'
+    | '/admin/fsm'
     | '/admin/human-follow'
     | '/admin/joystick'
     | '/admin/parking'
@@ -320,6 +349,7 @@ export interface FileRouteTypes {
     | '/admin/robot-learning'
     | '/admin/robots'
     | '/admin/users'
+    | '/admin/waypoint'
     | '/admin/'
     | '/admin/arm/color-pick'
     | '/admin/arm/face-track'
@@ -342,8 +372,10 @@ export interface FileRouteTypes {
     | '/admin/camera'
     | '/admin/chat'
     | '/admin/control'
+    | '/admin/dispatch'
     | '/admin/fleet'
     | '/admin/fms'
+    | '/admin/fsm'
     | '/admin/human-follow'
     | '/admin/joystick'
     | '/admin/parking'
@@ -352,6 +384,7 @@ export interface FileRouteTypes {
     | '/admin/robot-learning'
     | '/admin/robots'
     | '/admin/users'
+    | '/admin/waypoint'
     | '/admin'
     | '/admin/arm/color-pick'
     | '/admin/arm/face-track'
@@ -375,8 +408,10 @@ export interface FileRouteTypes {
     | '/admin/_authed/camera'
     | '/admin/_authed/chat'
     | '/admin/_authed/control'
+    | '/admin/_authed/dispatch'
     | '/admin/_authed/fleet'
     | '/admin/_authed/fms'
+    | '/admin/_authed/fsm'
     | '/admin/_authed/human-follow'
     | '/admin/_authed/joystick'
     | '/admin/_authed/parking'
@@ -385,6 +420,7 @@ export interface FileRouteTypes {
     | '/admin/_authed/robot-learning'
     | '/admin/_authed/robots'
     | '/admin/_authed/users'
+    | '/admin/_authed/waypoint'
     | '/admin/_authed/'
     | '/admin/_authed/arm/color-pick'
     | '/admin/_authed/arm/face-track'
@@ -434,6 +470,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/admin/'
       preLoaderRoute: typeof AdminAuthedIndexRouteImport
+      parentRoute: typeof AdminAuthedRoute
+    }
+    '/admin/_authed/waypoint': {
+      id: '/admin/_authed/waypoint'
+      path: '/waypoint'
+      fullPath: '/admin/waypoint'
+      preLoaderRoute: typeof AdminAuthedWaypointRouteImport
       parentRoute: typeof AdminAuthedRoute
     }
     '/admin/_authed/users': {
@@ -492,6 +535,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminAuthedHumanFollowRouteImport
       parentRoute: typeof AdminAuthedRoute
     }
+    '/admin/_authed/fsm': {
+      id: '/admin/_authed/fsm'
+      path: '/fsm'
+      fullPath: '/admin/fsm'
+      preLoaderRoute: typeof AdminAuthedFsmRouteImport
+      parentRoute: typeof AdminAuthedRoute
+    }
     '/admin/_authed/fms': {
       id: '/admin/_authed/fms'
       path: '/fms'
@@ -504,6 +554,13 @@ declare module '@tanstack/react-router' {
       path: '/fleet'
       fullPath: '/admin/fleet'
       preLoaderRoute: typeof AdminAuthedFleetRouteImport
+      parentRoute: typeof AdminAuthedRoute
+    }
+    '/admin/_authed/dispatch': {
+      id: '/admin/_authed/dispatch'
+      path: '/dispatch'
+      fullPath: '/admin/dispatch'
+      preLoaderRoute: typeof AdminAuthedDispatchRouteImport
       parentRoute: typeof AdminAuthedRoute
     }
     '/admin/_authed/control': {
@@ -634,8 +691,10 @@ interface AdminAuthedRouteChildren {
   AdminAuthedCameraRoute: typeof AdminAuthedCameraRoute
   AdminAuthedChatRoute: typeof AdminAuthedChatRoute
   AdminAuthedControlRoute: typeof AdminAuthedControlRoute
+  AdminAuthedDispatchRoute: typeof AdminAuthedDispatchRoute
   AdminAuthedFleetRoute: typeof AdminAuthedFleetRoute
   AdminAuthedFmsRoute: typeof AdminAuthedFmsRoute
+  AdminAuthedFsmRoute: typeof AdminAuthedFsmRoute
   AdminAuthedHumanFollowRoute: typeof AdminAuthedHumanFollowRoute
   AdminAuthedJoystickRoute: typeof AdminAuthedJoystickRoute
   AdminAuthedParkingRoute: typeof AdminAuthedParkingRoute
@@ -644,6 +703,7 @@ interface AdminAuthedRouteChildren {
   AdminAuthedRobotLearningRoute: typeof AdminAuthedRobotLearningRoute
   AdminAuthedRobotsRoute: typeof AdminAuthedRobotsRoute
   AdminAuthedUsersRoute: typeof AdminAuthedUsersRoute
+  AdminAuthedWaypointRoute: typeof AdminAuthedWaypointRoute
   AdminAuthedIndexRoute: typeof AdminAuthedIndexRoute
   AdminAuthedArmColorPickRoute: typeof AdminAuthedArmColorPickRoute
   AdminAuthedArmFaceTrackRoute: typeof AdminAuthedArmFaceTrackRoute
@@ -665,8 +725,10 @@ const AdminAuthedRouteChildren: AdminAuthedRouteChildren = {
   AdminAuthedCameraRoute: AdminAuthedCameraRoute,
   AdminAuthedChatRoute: AdminAuthedChatRoute,
   AdminAuthedControlRoute: AdminAuthedControlRoute,
+  AdminAuthedDispatchRoute: AdminAuthedDispatchRoute,
   AdminAuthedFleetRoute: AdminAuthedFleetRoute,
   AdminAuthedFmsRoute: AdminAuthedFmsRoute,
+  AdminAuthedFsmRoute: AdminAuthedFsmRoute,
   AdminAuthedHumanFollowRoute: AdminAuthedHumanFollowRoute,
   AdminAuthedJoystickRoute: AdminAuthedJoystickRoute,
   AdminAuthedParkingRoute: AdminAuthedParkingRoute,
@@ -675,6 +737,7 @@ const AdminAuthedRouteChildren: AdminAuthedRouteChildren = {
   AdminAuthedRobotLearningRoute: AdminAuthedRobotLearningRoute,
   AdminAuthedRobotsRoute: AdminAuthedRobotsRoute,
   AdminAuthedUsersRoute: AdminAuthedUsersRoute,
+  AdminAuthedWaypointRoute: AdminAuthedWaypointRoute,
   AdminAuthedIndexRoute: AdminAuthedIndexRoute,
   AdminAuthedArmColorPickRoute: AdminAuthedArmColorPickRoute,
   AdminAuthedArmFaceTrackRoute: AdminAuthedArmFaceTrackRoute,

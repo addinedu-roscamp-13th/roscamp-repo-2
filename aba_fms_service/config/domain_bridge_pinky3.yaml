@@ -1,3 +1,11 @@
+# ⚠️ 더 이상 직접 관리하지 않는다 (2026-07-20).
+#    도메인이 손으로 박혀 있어 관제 패널에서 domain_id 를 바꿔도 반영되지 않았고,
+#    실제로 Pinky-3 이 DB 119 / 이 파일 87 로 어긋난 채 방치돼 있었다.
+#    이제 DB(rc_robots)가 유일한 출처다:
+#        python3 scripts/gen_domain_bridges.py --check   # DB 값 확인
+#        python3 scripts/gen_domain_bridges.py --run     # 생성 + 기동
+#    생성물은 config/generated/ 에 나오며 이 파일은 참고용으로만 남긴다.
+#
 # 로봇3(Pinky-3, 192.168.0.2, ROS_DOMAIN_ID=87) ↔ 서버 도메인 86 중계.
 # [2026-07-08] 종전에는 서버도 87이라 브릿지가 없었지만, 서버 도메인을 86으로
 # 옮기면서 로봇 3대를 동일 구조(/pinky{N}/* 접두)로 통일했다.
@@ -36,3 +44,27 @@ topics:
     type: std_msgs/msg/String
     reversed: True
     remap: /fleet_cmd
+  # 역방향 속도 명령: 86의 /pinky3/cmd_vel 발행 → 로봇 도메인의 /cmd_vel
+  pinky3/cmd_vel:
+    type: geometry_msgs/msg/Twist
+    reversed: True
+    remap: /cmd_vel
+
+  # ── libi_modes 미션 FSM (2026-07-20) ─────────────────────────────────────────
+  # 상태·BT 스냅샷은 payload 안에 robot_id 가 들어 있어 서버에서 토픽을 나누지 않는다
+  # (fsm_link 가 robot_id 로 캐시를 가른다) — 로봇이 여러 대여도 같은 토픽에 모인다.
+  libi/fsm_state:
+    type: std_msgs/msg/String
+    remap: /libi/fsm_state
+  libi/bt_snapshot:
+    type: std_msgs/msg/String
+    remap: /libi/bt_snapshot
+  libi/fsm_transition_result:
+    type: std_msgs/msg/String
+    remap: /libi/fsm_transition_result
+  # 역방향: 서버(86)의 전이 요청을 로봇 도메인으로. domain_bridge 는 서비스를 중계하지
+  # 못하므로(YAML 에 services 키 없음) 상관 id 를 실은 요청/결과 토픽 쌍을 쓴다.
+  libi/fsm_transition_request:
+    type: std_msgs/msg/String
+    reversed: True
+    remap: /libi/fsm_transition_request

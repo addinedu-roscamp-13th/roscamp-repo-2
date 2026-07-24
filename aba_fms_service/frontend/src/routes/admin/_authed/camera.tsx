@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AdminShell } from "@/components/admin/AdminShell";
 import { Button } from "@/components/ui/button";
-import { adminApi, type CameraAnalysis, getToken } from "@/lib/admin-api";
+import { adminApi, type CameraAnalysis } from "@/lib/admin-api";
 import { getRobotBase } from "@/lib/active-robot";
 import { cn } from "@/lib/utils";
 
@@ -13,12 +13,11 @@ export const Route = createFileRoute("/admin/_authed/camera")({
 });
 
 const RECONNECT_DELAY = 3000;
-const FRAME_REFRESH_MS = 1000;
 
 type StreamState = "connecting" | "live" | "reconnecting";
 
-function buildFrameUrl() {
-  return `${getRobotBase()}/api/robot/camera/snapshot?token=${getToken() ?? ""}&t=${Date.now()}`;
+function buildStreamUrl() {
+  return `${getRobotBase()}/api/robot/camera/stream?fps=15&t=${Date.now()}`;
 }
 
 function Clock() {
@@ -39,25 +38,16 @@ function Clock() {
 function CameraPage() {
   const imgRef = useRef<HTMLImageElement>(null);
   const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const frameTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [streamUrl, setStreamUrl] = useState<string>(() => buildFrameUrl());
+  const [streamUrl, setStreamUrl] = useState<string>(() => buildStreamUrl());
   const [state, setState] = useState<StreamState>("connecting");
   const [analysis, setAnalysis] = useState<CameraAnalysis | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
 
-  const scheduleNextFrame = useCallback((delay = FRAME_REFRESH_MS) => {
-    if (frameTimerRef.current) clearTimeout(frameTimerRef.current);
-    frameTimerRef.current = setTimeout(() => {
-      setStreamUrl(buildFrameUrl());
-    }, delay);
-  }, []);
-
   const reconnect = useCallback(() => {
     setState("reconnecting");
     if (retryRef.current) clearTimeout(retryRef.current);
-    if (frameTimerRef.current) clearTimeout(frameTimerRef.current);
     retryRef.current = setTimeout(() => {
-      setStreamUrl(buildFrameUrl());
+      setStreamUrl(buildStreamUrl());
       setState("connecting");
     }, RECONNECT_DELAY);
   }, []);
@@ -90,12 +80,10 @@ function CameraPage() {
   // 언마운트 시 타이머 정리
   useEffect(() => () => {
     if (retryRef.current) clearTimeout(retryRef.current);
-    if (frameTimerRef.current) clearTimeout(frameTimerRef.current);
   }, []);
 
   function handleLoad() {
     setState("live");
-    scheduleNextFrame();
   }
 
   function handleError() {
@@ -104,8 +92,7 @@ function CameraPage() {
 
   function handleManualReconnect() {
     if (retryRef.current) clearTimeout(retryRef.current);
-    if (frameTimerRef.current) clearTimeout(frameTimerRef.current);
-    setStreamUrl(buildFrameUrl());
+    setStreamUrl(buildStreamUrl());
     setState("connecting");
   }
 

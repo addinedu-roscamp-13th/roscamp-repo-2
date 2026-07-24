@@ -14,8 +14,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+/lib/
+/lib64/
 parts/
 sdist/
 var/
@@ -148,7 +148,6 @@ activemq-data/
 *.sage.py
 
 # Environments
-.env
 .envrc
 .venv
 env/
@@ -231,6 +230,9 @@ node_modules/
 # AI 모델 가중치 (용량 큼 — Git LFS 또는 별도 관리)
 *.pt
 *.onnx
+# 예외: 관리자 추종용 사람 검출 가중치(5.3MB). 이게 없으면 추종 파이프라인이 아예 안 돌아
+# 클론만으로는 재현이 안 된다. 크기가 작아 LFS 없이 그대로 넣는다.
+!aba_ai_service/follower_perception/weights/best.pt
 
 # Docker 로컬 볼륨 / DB 데이터
 mariadb_data/
@@ -248,6 +250,21 @@ Thumbs.db
 # Claude Code (로컬 전용 — 커밋하지 않음)
 # ──────────────────────────────────────────────────────────────
 CLAUDE.md
+
+# superpowers 스킬이 만드는 설계/계획 문서 — 작업 과정 산출물이라 저장소에 두지 않는다.
+docs/superpowers/
+.superpowers/
+
+# ──────────────────────────────────────────────────────────────
+# 비밀값 — 절대 커밋하지 않는다
+# ──────────────────────────────────────────────────────────────
+# .env 에는 DB 비밀번호·JWT SECRET_KEY 가 그대로 들어 있다. 한 번 커밋되면
+# 히스토리에 영구히 남고, push 하면 되돌릴 수 없다.
+# 서비스마다 `.env.example` 을 복사해서 쓰고, 예시 파일만 커밋한다.
+.env
+**/.env
+!.env.example
+!**/.env.example
 
 # --- migration excludes (ollama runtime / ML datasets) ---
 **/ollama-local/

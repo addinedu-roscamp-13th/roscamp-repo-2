@@ -9,7 +9,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import RobotControlLog
+from ..models import AdminUser, RobotControlLog
+from ..security import get_current_admin
 
 router = APIRouter(prefix="/api/robot", tags=["robot-control"])
 
@@ -177,3 +178,18 @@ def get_history(limit: int = 50, db: Session = Depends(get_db)):
             "created_at": r.created_at.isoformat() if r.created_at else None
         })
     return result
+
+@router.delete("/history/{log_id}")
+def delete_history(
+    log_id: int, db: Session = Depends(get_db), _: AdminUser = Depends(get_current_admin)
+):
+    """로봇제어로그 하드 삭제. FMS 재동기화 대상이 아닌 순수 로그라 soft-delete 불필요.
+
+    UI 연결 없음 — 이 로그를 보여주는 admin 화면이 없다(회원 화면 chat.tsx 만 참조).
+    """
+    log_entry = db.get(RobotControlLog, log_id)
+    if log_entry is None:
+        raise HTTPException(status_code=404, detail="로그를 찾을 수 없습니다")
+    db.delete(log_entry)
+    db.commit()
+    return {"ok": True}

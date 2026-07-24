@@ -1,0 +1,18 @@
+# 로봇 상태 설정. 어휘는 libi_modes 미션 FSM 8종을 그대로 쓴다.
+#
+#   IDLE            대기 — 배차 가능
+#   PATROL          순회 — 배차 가능(중단하고 받는다, 배차 1순위)
+#   WORKING         작업 중
+#   INTERACTING     이용자 응대 중
+#   SECURITY_PATROL 야간 침입 감지 순찰
+#   RETURNING       충전소 복귀 중 (교통 우선순위 상승, 진행 중 task 유지)
+#   CHARGING        충전 중
+#   ERROR           고장 — 스스로 움직이지 않음(다른 로봇이 우회할 장애물로 표시)
+#
+# ⚠️ 상태의 소유자는 libi_modes 다. 이 서비스로 직접 바꾸면 로봇의 실제 FSM 과 어긋난다.
+#    운영 중에는 FSM 패널의 RequestTransition 경로를 쓰고, 이 서비스는 sim·디버그용으로만.
+string robot        # 대상 로봇
+string mode         # 위 8종 중 하나
+---
+bool ok
+string reason

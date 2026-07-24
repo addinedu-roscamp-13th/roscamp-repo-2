@@ -6,8 +6,8 @@ import { Mic, Keyboard, BookOpen, Check } from "lucide-react";
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Labi Bot — 시작하기" },
-      { name: "description", content: "음성과 텍스트로 책을 찾아주는 서점 AI 가이드, Labi Bot에 오신 것을 환영합니다." },
+      { title: "LiBi — 시작하기" },
+      { name: "description", content: "음성과 텍스트로 책을 찾아주는 도서관 AI 가이드, LiBi에 오신 것을 환영합니다." },
     ],
   }),
   component: Onboarding,
@@ -39,7 +39,7 @@ function Onboarding() {
           </div>
           <div>
             <h1 className="font-serif text-2xl font-bold tracking-tight text-primary">
-              Labi <span className="text-accent">Bot</span>
+              Li<span className="text-accent">Bi</span>
             </h1>
             <p className="text-xs text-muted-foreground">{tr("tagline")}</p>
           </div>

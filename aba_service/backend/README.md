@@ -6,7 +6,7 @@ CRUD, and dashboard stats over the existing `labi` MariaDB.
 ## Setup
 
 ```bash
-cd chatbot/backend
+cd aba_service/backend
 python -m venv .venv && source .venv/bin/activate    # optional
 pip install -r requirements.txt
 

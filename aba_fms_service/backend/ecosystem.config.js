@@ -4,7 +4,7 @@
 // [2026-07-07] 브릿지 추가: 로봇 텔레메트리를 서버 도메인으로 개명 중계(/pinky{N}/*).
 // [2026-07-08] 서버 도메인을 87→86 으로 옮기고 로봇3(87)도 브릿지에 편입해 3대 통일.
 //   각 브릿지는 fleet link 토픽(fleet_status/costmaps/cmd_result + 역방향 fleet_cmd)도 중계한다.
-// 공유기 멀티캐스트 차단 → 로봇 쪽 ROS_STATIC_PEERS=192.168.0.19 로 유니캐스트 디스커버리.
+// 공유기 멀티캐스트 차단 → 로봇 쪽 ROS_STATIC_PEERS=192.168.1.4 로 유니캐스트 디스커버리.
 const rosEnv = {
   ROS_AUTOMATIC_DISCOVERY_RANGE: "SUBNET",
   PYTHONUNBUFFERED: "1",

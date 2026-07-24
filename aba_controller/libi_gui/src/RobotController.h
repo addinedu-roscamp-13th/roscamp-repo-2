@@ -6,6 +6,9 @@
 #include <QVariantList>
 #include <QTimer>
 
+class QNetworkAccessManager;
+class QNetworkReply;
+
 // RobotController
 // -----------------------------------------------------------------------------
 // libi_gui 의 단일 백엔드 파사드. QML 에 'controller' 컨텍스트 프로퍼티로 노출된다.
@@ -21,6 +24,9 @@ class RobotController : public QObject {
     // 화면(모드) 네비게이션
     Q_PROPERTY(QString mode READ mode WRITE setMode NOTIFY modeChanged)
 
+    // 이 패널이 어느 로봇의 것인지 (환경변수 ROBOT_ID, 기동 시 1회 결정 → 변경 시그널 없음)
+    Q_PROPERTY(QString robotId READ robotId CONSTANT)
+
     // 권한 / 안전
     Q_PROPERTY(bool isAdmin READ isAdmin NOTIFY isAdminChanged)
     Q_PROPERTY(bool emergencyStopped READ emergencyStopped NOTIFY emergencyStoppedChanged)
@@ -30,6 +36,7 @@ class RobotController : public QObject {
     Q_PROPERTY(bool charging READ charging NOTIFY chargingChanged)
     Q_PROPERTY(QString robotState READ robotState NOTIFY robotStateChanged)   // 대기/순찰/안내중/작업중/에러/충전중
     Q_PROPERTY(bool patrolActive READ patrolActive NOTIFY patrolActiveChanged)
+    Q_PROPERTY(bool following READ following NOTIFY followingChanged)   // 관리자 추종 중
     Q_PROPERTY(QString emotion READ emotion WRITE setEmotion NOTIFY emotionChanged)
     Q_PROPERTY(QString taskStatus READ taskStatus NOTIFY taskStatusChanged)   // SR-14 작업 알림 문구
 
@@ -51,12 +58,14 @@ public:
     explicit RobotController(QObject *parent = nullptr);
 
     QString mode() const { return m_mode; }
+    QString robotId() const { return m_robotId; }
     bool isAdmin() const { return m_isAdmin; }
     bool emergencyStopped() const { return m_estop; }
     int battery() const { return m_battery; }
     bool charging() const { return m_charging; }
     QString robotState() const { return m_robotState; }
     bool patrolActive() const { return m_patrol; }
+    bool following() const { return m_following; }
     QString emotion() const { return m_emotion; }
     QString taskStatus() const { return m_taskStatus; }
     QString guidePhase() const { return m_guidePhase; }
@@ -82,6 +91,9 @@ public:
     Q_INVOKABLE void clearError();                   // 에러 상태 해제 → 대기(idle)
     Q_INVOKABLE void resetToIdle();                  // 진행 작업 취소 후 대기(idle) 복귀
     Q_INVOKABLE void startPatrol();                  // 대기(idle) → 순찰 시작
+    Q_INVOKABLE void startAdminFollow();             // 관리자 추종 시작 (FMS 승인 후)
+    Q_INVOKABLE void stopAdminFollow();              // 관리자 추종 종료 (FMS 에 해제 보고)
+    void releaseFollowOnExit();                      // 종료 직전 해제 (main.cpp 의 aboutToQuit)
 
     // 길잡이
     Q_INVOKABLE void startGuide(const QString &destination);
@@ -115,6 +127,7 @@ signals:
     void chargingChanged();
     void robotStateChanged();
     void patrolActiveChanged();
+    void followingChanged();
     void emotionChanged();
     void taskStatusChanged();
     void guidePhaseChanged();
@@ -133,6 +146,11 @@ signals:
 
 private:
     void log(const QString &line);
+    // FMS 추종 승인/해제 HTTP. 응답 처리는 콜백에서 하므로 UI 스레드를 막지 않는다.
+    void requestFollowGrant();
+    void reportFollowRelease();
+    void onFollowGrantReply(QNetworkReply *reply);
+    void beginFollowing();
     void setRobotState(const QString &s);
     void setTaskStatus(const QString &s);
     void setGuidePhase(const QString &p);
@@ -146,6 +164,7 @@ private:
     bool m_charging = false;
     QString m_robotState = QStringLiteral("순찰");
     bool m_patrol = true;
+    bool m_following = false;
     QString m_emotion = QStringLiteral("happy");
     QString m_taskStatus = QStringLiteral("명령 대기");
     QString m_guidePhase = "idle";
@@ -155,6 +174,13 @@ private:
     double m_joint1 = 0.0, m_joint2 = 0.0, m_gripper = 50.0;
     bool m_led = false;
     QStringList m_logs;
+
+    // 로봇 식별 + FMS 접속 (환경변수, 기동 시 1회 — gui.sh 참조)
+    QString m_robotId;
+    QString m_fmsUrl;
+    bool m_followPending = false;   // 승인 요청 왕복 중 (연타로 중복 요청되는 것 방지)
+
+    QNetworkAccessManager *m_net = nullptr;
 
     // 목 시뮬레이션 타이머
     QTimer m_batteryTimer;   // 배터리 서서히 변동

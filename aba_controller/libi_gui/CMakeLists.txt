@@ -11,12 +11,15 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
-find_package(Qt5 5.15 COMPONENTS Core Gui Qml Quick QuickControls2 REQUIRED)
+# Network — 관리자 추종의 FMS 승인 요청(HTTP)에 사용
+find_package(Qt5 5.15 COMPONENTS Core Gui Qml Quick QuickControls2 Network REQUIRED)
 
 add_executable(libi_gui
     src/main.cpp
     src/RobotController.cpp
     src/RobotController.h
+    src/PerceptionClient.cpp
+    src/PerceptionClient.h
     resources.qrc
 )
 
@@ -26,4 +29,25 @@ target_link_libraries(libi_gui PRIVATE
     Qt5::Qml
     Qt5::Quick
     Qt5::QuickControls2
+    Qt5::Network
 )
+
+# 기본 OFF — 로봇에 올리는 빌드는 이 옵션 없이 돌리므로 산출물이 달라지지 않는다.
+# 켜면 FMS 추종 승인 클라이언트 테스트가 같이 빌드된다 (tests/ 주석의 실행법 참조).
+option(LIBI_GUI_TESTS "Build libi_gui test executables" OFF)
+if(LIBI_GUI_TESTS)
+    add_executable(test_admin_follow_client
+        tests/test_admin_follow_client.cpp
+        src/RobotController.cpp
+        src/RobotController.h
+    )
+    target_link_libraries(test_admin_follow_client PRIVATE Qt5::Core Qt5::Network)
+
+    # Gui — QImage 디코딩에 필요 (QCoreApplication 으로 돌지만 이미지 타입은 QtGui 소속)
+    add_executable(test_perception_client
+        tests/test_perception_client.cpp
+        src/PerceptionClient.cpp
+        src/PerceptionClient.h
+    )
+    target_link_libraries(test_perception_client PRIVATE Qt5::Core Qt5::Gui Qt5::Network Qt5::Quick)
+endif()

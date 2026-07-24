@@ -1,0 +1,14 @@
+# 전이 요청 — INSTRUCTION.md 2단계 인터페이스 절의 요청 필드 그대로.
+#
+# 도메인을 넘는 FMS -> 미션 PC 구간은 domain_bridge 가 서비스를 중계하지 못해
+# 같은 필드를 JSON 토픽으로 실어 보낸다. 근거와 대안 비교는
+# aba_fms_service/docs/fsm-transport-decision.md 참고.
+# 같은 도메인 안에서는 이 서비스가 그대로 쓰인다.
+string robot_id
+string target_state
+bool force
+---
+# 응답 — INSTRUCTION.md 2단계 인터페이스 절의 응답 필드 그대로.
+bool accepted
+string current_state
+string reason

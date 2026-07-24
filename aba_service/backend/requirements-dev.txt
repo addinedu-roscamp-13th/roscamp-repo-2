@@ -1,0 +1,8 @@
+# 테스트 전용 의존성. 운영 배포에는 넣지 않는다.
+#
+# 실행 (⚠️ ROS 를 source 한 셸에서 돌리지 말 것 — ROS 의 PYTHONPATH 가 venv 를 가려
+#       엉뚱한 `ModuleNotFoundError: No module named 'lark'` 가 난다):
+#   env -u PYTHONPATH -u AMENT_PREFIX_PATH .venv/bin/python -m pytest tests/ -q
+-r requirements.txt
+pytest>=8.0
+httpx>=0.27

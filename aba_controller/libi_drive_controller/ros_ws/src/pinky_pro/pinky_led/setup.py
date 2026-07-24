@@ -10,6 +10,8 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        ('share/' + package_name + '/config', ['config/led_state_map.yaml']),
+        ('share/' + package_name + '/launch', ['launch/state_led.launch.xml']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -20,7 +22,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'led_server=pinky_led.led_server:main'
+            'led_server=pinky_led.led_server:main',
+            'state_led=pinky_led.state_led_node:main',
         ],
     },
 )

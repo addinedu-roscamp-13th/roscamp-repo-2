@@ -21,7 +21,7 @@
 
 - **모바일 매니퓰레이터** = 주행 AMR(`libi_drive`) + 로봇팔(`libi_handy`)
 - **제어** = `libi_service`(ROS2 브리지)가 주행(nav2)·팔 작업을 지휘
-- **AI** = 비전 인식 + 도서관 안내 챗봇(`Labi Bot`) 서브시스템
+- **AI** = 비전 인식 + 도서관 안내 챗봇(`LiBi AI`) 서브시스템
 
 ### 🛠 기술 스택 (Tech Stack)
 
@@ -84,7 +84,7 @@ ABA/                                       # monorepo 루트 (pingdergarten 컨�
 │
 ├── aba_server/                            # [Server] 웹 백엔드 + 웹 프론트 (함께 서빙, 클라이언트 정문)
 ├── aba_fms_service/                       # [Server] Fleet 관제 (Fleet Management Service)
-├── aba_ai_service/                        # [Server] 비전 AI + Labi Bot 챗봇
+├── aba_ai_service/                        # [Server] 비전 AI + LiBi AI 챗봇
 │
 ├── tests/                                 # 테스트
 │
@@ -136,7 +136,7 @@ ABA/                                       # monorepo 루트 (pingdergarten 컨�
 
 ## 🗄 ERD
 
-> `Labi Bot` 은 **books + robot_logs** 두 테이블을 같은 DB(MariaDB)에 둡니다. 전체 ABA DB 스키마는 `db/` 참고.
+> `LiBi AI` 는 **books + robot_logs** 두 테이블을 같은 DB(MariaDB)에 둡니다. 전체 ABA DB 스키마는 `db/` 참고.
 
 <!-- <img src="docs/img/erd.png" alt="ERD" width="700"/> -->
 
@@ -189,7 +189,7 @@ ABA/                                       # monorepo 루트 (pingdergarten 컨�
 
 ---
 
-## 🤖 Labi Bot — AI 챗봇 서브시스템
+## 🤖 LiBi AI — AI 챗봇 서브시스템
 
 > 도서관 AI 가이드 챗봇. **경량 RAG**(정규식 의도 판별 + MariaDB LIKE 검색 + 로컬 LLM 프롬프트 주입)로,
 > 임베딩/벡터DB/Elasticsearch 없이 구현합니다. ROS 로봇과 분리된 `aba_ai_service` 서브시스템.

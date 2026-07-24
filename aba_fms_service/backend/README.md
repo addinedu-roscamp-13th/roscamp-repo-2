@@ -1,4 +1,4 @@
-# Labi Bot Backend
+# LiBi Backend (로봇제어 관리자 · FMS)
 
 FastAPI 기반 중앙 관리자 API 서버입니다. MariaDB와 SQLAlchemy async를 사용하며, 주행 로봇 상태/명령은 ROS2 fleet link를 기본 경로로 처리합니다. 로봇 온보드 FastAPI는 주변장치와 HTTP 폴백 역할로 남아 있습니다.
 
@@ -52,8 +52,8 @@ python3 -m venv .venv
 | 항목 | 값 |
 |------|----|
 | 기본 계정 | `admin` / `admin1234` |
-| API 베이스 | `http://192.168.0.19:9001` |
-| API 문서 | `http://192.168.0.19:9001/docs` |
+| API 베이스 | `http://192.168.1.4:9001` |
+| API 문서 | `http://192.168.1.4:9001/docs` |
 
 ## 주요 API
 
@@ -109,12 +109,12 @@ python3 -m venv .venv
 
 ```bash
 # 1) 로그인해서 JWT 발급
-TOKEN=$(curl -s -X POST http://192.168.0.19:9001/api/auth/login \
+TOKEN=$(curl -s -X POST http://192.168.1.4:9001/api/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"username":"<관리자ID>","password":"<PW>"}' | jq -r '.access_token')
 
 # 2) 주행로봇 1(robot_id=3) → C 구역으로 이동
-curl -X POST 'http://192.168.0.19:9001/api/control/goto?robot_id=3' \
+curl -X POST 'http://192.168.1.4:9001/api/control/goto?robot_id=3' \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"name":"C"}'
@@ -143,7 +143,7 @@ OLLAMA_URL=http://127.0.0.1:11434
 
 ```ini
 [Unit]
-Description=Labi Bot Admin API
+Description=LiBi Admin API
 After=network.target
 
 [Service]

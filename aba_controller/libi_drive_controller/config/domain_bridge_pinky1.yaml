@@ -9,6 +9,10 @@ topics:
   amcl_pose:
     type: geometry_msgs/msg/PoseWithCovarianceStamped
     remap: /pinky1/amcl_pose
+  # 라이다 스캔(relative_move 안전정지용). sensor QoS(BEST_EFFORT) 자동 매칭.
+  scan:
+    type: sensor_msgs/msg/LaserScan
+    remap: /pinky1/scan
   map:
     type: nav_msgs/msg/OccupancyGrid
     remap: /pinky1/map
@@ -36,3 +40,8 @@ topics:
     type: std_msgs/msg/String
     reversed: True
     remap: /fleet_cmd
+  # 역방향 속도 명령: 86의 /pinky1/cmd_vel 발행 → 로봇 도메인의 /cmd_vel
+  pinky1/cmd_vel:
+    type: geometry_msgs/msg/Twist
+    reversed: True
+    remap: /cmd_vel

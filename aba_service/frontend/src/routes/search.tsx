@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { AppShell } from "@/components/AppShell";
+import { fetchCatalog, type CatalogBook } from "@/lib/books-api";
 import { LANGS, useI18n } from "@/lib/i18n";
-import { BOOKS } from "@/lib/mock-data";
 import { useSpeechRecognition } from "@/lib/use-speech";
 import { Mic, Search as SearchIcon, MapPin, X } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -12,30 +12,43 @@ const searchSchema = z.object({ q: z.string().optional() });
 
 export const Route = createFileRoute("/search")({
   validateSearch: searchSchema,
-  head: () => ({ meta: [{ title: "Labi Bot — 도서 검색" }] }),
+  head: () => ({ meta: [{ title: "LiBi — 도서 검색" }] }),
   component: SearchPage,
 });
 
+/**
+ * 도서 검색 — **찾기만 한다.**
+ *
+ * 예전에는 이 화면이 검색·로그인 유도·요청·자리 선택·예약을 다 했다. 목적이 흐려서
+ * 요청은 「도서 요청」 화면(`/request`)으로 전부 옮겼다. 여기 남는 것은
+ * "무슨 책이 어디 있고 지금 빌릴 수 있는가" 뿐이다.
+ */
 function SearchPage() {
   const { lang, tr } = useI18n();
   const { q } = Route.useSearch();
   const navigate = useNavigate();
   const [query, setQuery] = useState(q ?? "");
   const speechLang = LANGS.find((l) => l.code === lang)?.speech ?? "ko-KR";
-  const { listening, transcript, start, stop } = useSpeechRecognition(speechLang);
-  const [selected, setSelected] = useState<string | null>(null);
+  const { listening, transcript, start, stop } =
+    useSpeechRecognition(speechLang);
 
   useEffect(() => setQuery(q ?? ""), [q]);
   useEffect(() => {
     if (transcript) setQuery(transcript);
   }, [transcript]);
 
-  const results = query.trim()
-    ? BOOKS.filter((b) => {
-        const blob = `${b.title[lang]} ${b.title.KR} ${b.title.EN} ${b.author} ${b.category}`.toLowerCase();
-        return blob.includes(query.toLowerCase());
-      })
-    : BOOKS;
+  // 도서는 DB(cb_books)에서 온다 — 서가 위치와 재고를 그대로 보여준다.
+  const [results, setResults] = useState<CatalogBook[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchCatalog({ q: query.trim() || null }).then((rows) => {
+      if (!cancelled) setResults(rows);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [query]);
 
   return (
     <AppShell>
@@ -50,14 +63,19 @@ function SearchPage() {
             className="flex-1 bg-transparent py-2 text-sm outline-none placeholder:text-muted-foreground"
           />
           {query && (
-            <button onClick={() => setQuery("")} className="text-muted-foreground">
+            <button
+              onClick={() => setQuery("")}
+              className="text-muted-foreground"
+            >
               <X className="size-4" />
             </button>
           )}
           <button
             onClick={() => (listening ? stop() : start())}
             className={`flex size-10 items-center justify-center rounded-xl transition-colors ${
-              listening ? "bg-accent text-accent-foreground" : "bg-primary text-primary-foreground"
+              listening
+                ? "bg-accent text-accent-foreground"
+                : "bg-primary text-primary-foreground"
             }`}
             aria-label="voice search"
           >
@@ -73,7 +91,9 @@ function SearchPage() {
 
         <div className="mt-5 space-y-3">
           {results.length === 0 && (
-            <p className="py-8 text-center text-sm text-muted-foreground">검색 결과가 없습니다.</p>
+            <p className="py-8 text-center text-sm text-muted-foreground">
+              검색 결과가 없습니다.
+            </p>
           )}
           {results.map((b) => (
             <article
@@ -87,7 +107,9 @@ function SearchPage() {
                   {b.cover}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <h3 className="line-clamp-1 text-sm font-bold text-foreground">{b.title[lang]}</h3>
+                  <h3 className="line-clamp-1 text-sm font-bold text-foreground">
+                    {b.title[lang]}
+                  </h3>
                   <p className="text-xs text-muted-foreground">{b.author}</p>
                   <div className="mt-2 flex items-center gap-2">
                     <span
@@ -106,24 +128,30 @@ function SearchPage() {
                   </div>
                 </div>
               </div>
-              {b.inStock && (
-                <button
-                  onClick={() => setSelected(selected === b.id ? null : b.id)}
-                  className="block w-full border-t border-border bg-primary-soft py-2.5 text-xs font-bold text-primary"
-                >
-                  {tr("showOnMap")}
-                </button>
-              )}
-              {selected === b.id && <MiniMap zoneId={b.zone.split("-")[0]} />}
             </article>
           ))}
         </div>
 
+        {/* 요청은 이 화면의 일이 아니다 — 별도 화면으로 보낸다 */}
+        <Link
+          to="/request"
+          className="mt-6 block rounded-2xl border-2 border-dashed border-primary/40 bg-primary-soft/40 p-4 text-center"
+        >
+          <p className="text-sm font-semibold text-primary">
+            책을 받아보고 싶으세요? 도서 요청하기 →
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            자리로 받기 · 대여 신청 · 예약을 한 곳에서
+          </p>
+        </Link>
+
         <Link
           to="/chat"
-          className="mt-6 block rounded-2xl border-2 border-dashed border-primary/30 bg-primary-soft/40 p-4 text-center"
+          className="mt-3 block rounded-2xl border-2 border-dashed border-primary/30 bg-primary-soft/40 p-4 text-center"
         >
-          <p className="text-sm font-semibold text-primary">못 찾으셨나요? Labi Bot에게 물어보세요</p>
+          <p className="text-sm font-semibold text-primary">
+            못 찾으셨나요? LiBi에게 물어보세요
+          </p>
           <p className="mt-1 text-xs text-muted-foreground">{tr("chatPh")}</p>
         </Link>
       </div>

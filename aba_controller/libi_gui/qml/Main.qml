@@ -35,6 +35,7 @@ ApplicationWindow {
                 case "recommend":    return recommendC;
                 case "adminLogin":   return adminLoginC;
                 case "adminControl": return adminControlC;
+                case "follow":       return followC;
                 default:             return homeC;
                 }
             }
@@ -47,6 +48,17 @@ ApplicationWindow {
     Component { id: recommendC;   RecommendScreen {} }
     Component { id: adminLoginC;  AdminLoginScreen {} }
     Component { id: adminControlC;AdminControlScreen {} }
+    Component { id: followC;      FollowScreen {} }
+
+    // 추종이 시작되면 영상 화면으로, 끝나면 관리자 화면으로 돌아온다. 화면 전환을 QML 이
+    // 맡으므로 RobotController 와 PerceptionClient 는 서로를 몰라도 된다.
+    Connections {
+        target: controller
+        function onFollowingChanged() {
+            if (controller.following) controller.setMode("follow");
+            else if (controller.mode === "follow") controller.setMode("adminControl");
+        }
+    }
 
     // 비상정지 오버레이 (관리자 로그인/조작 화면에서는 숨겨 해제 흐름 허용)
     Rectangle {

@@ -12,13 +12,13 @@ amcl:
     do_beamskip: false
     global_frame_id: "map"
     lambda_short: 0.1
-    laser_likelihood_max_dist: 2.0
-    laser_max_range: 100.0
-    laser_min_range: -1.0
+    laser_likelihood_max_dist: 1.0   # [2026-07-15] 2.0→1.0  1x2m 방: likelihood field 계산거리 축소(연산↓)
+    laser_max_range: 3.0             # [2026-07-15] 100.0→3.0  방 대각선~2.2m, 밖의 잡음/max-range 무시(매칭 정확도↑, 연산↓)
+    laser_min_range: 0.05            # [2026-07-15] -1.0→0.05  로봇 몸체/근접 잡음 무시
     laser_model_type: "likelihood_field"
-    max_beams: 60
-    max_particles: 2000
-    min_particles: 500
+    max_beams: 45                    # [2026-07-15] 60→45  좁은 방은 빔 적게 써도 충분(연산↓)
+    max_particles: 800               # [2026-07-15] 2000→800  좁은 공간은 입자 적어도 수렴(연산↓)
+    min_particles: 100               # [2026-07-15] 500→100
     odom_frame_id: "odom"
     pf_err: 0.05
     pf_z: 0.99
@@ -30,8 +30,18 @@ amcl:
     sigma_hit: 0.2
     tf_broadcast: true
     transform_tolerance: 1.0
-    update_min_a: 0.1
-    update_min_d: 0.15
+    update_min_a: 0.02
+    # ⚠️ [2026-07-21] 도착 판정과 물려 있는 값이다. 반드시 이 부등식이 성립해야 한다:
+    #      update_min_d  <  fleet_node arrive_radius(0.05)  <  최소 레인 길이(0.062)
+    #   위: 도착 반경이 최소 레인보다 크면 안 움직이고 다음 노드를 통과해 버린다.
+    #   아래: 위치 갱신이 도착 반경보다 성기면 **도착을 영영 못 본다.**
+    #
+    #   실측(실물 Pinky-3): 0.10 이었을 때 v13→v14(0.248m) 구간에서
+    #     마지막 AMCL 갱신 0.189m 지점 → 남은 0.059m 는 10cm 미만이라 갱신이 안 옴
+    #     → 로봇은 v14 에 실제로 도착했는데 보고 위치는 6cm 뒤 → 주문이 영구 정지
+    #   AMCL 은 **움직일 때만** 갱신하므로 정지 중 추가 부하는 없다.
+    #   0.07m/s 기준 0.29초마다 1회(≈3.5Hz), 파티클 800·빔 45 — Pi 에서 감당 가능.
+    update_min_d: 0.02
     z_hit: 0.5
     z_max: 0.05
     z_rand: 0.5
@@ -76,7 +86,7 @@ bt_navigator:
 
 controller_server:
   ros__parameters:
-    controller_frequency: 20.0
+    controller_frequency: 10.0        # [2026-07-20] 20.0 → 10.0  실내 저속 로봇엔 10Hz면 충분, 제어루프 연산 절반(CPU↓)
     costmap_update_timeout: 0.30
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.5
@@ -98,9 +108,25 @@ controller_server:
 
     # Goal checker
     general_goal_checker:
-      stateful: True
+      # [2026-07-22] True -> False. stateful 은 XY 허용오차를 한 번 만족하면 그 사실을
+      #   **기억해** 이후로는 yaw 만 본다(제자리 회전 중 위치가 조금 흔들려도 목표를
+      #   놓치지 않게 하려는 장치). 그런데 우리는 노드마다 목표를 **선점(preempt)** 한다 —
+      #   fleet_node 는 도착 판정 반경 0.05m 에서 다음 노드를 허가하는데 nav2 는 0.03m
+      #   까지 가려 하므로, 매 홉의 마지막 몇 cm 구간에서 반드시 선점이 겹친다.
+      #   그 순간 직전 목표의 완료가 **새 목표의 완료로 보고**됐다:
+      #     "Begin navigating from (0.34,-1.01) to (0.38,-1.36)" → 40ms 뒤 "Reached the goal!"
+      #   로봇은 0.35m 떨어진 채로 주행이 끝나고, 아무도 다시 몰지 않아 그대로 섰다
+      #   (실측 2회, 두 번 다 직전 목표에서 0.036~0.037m 지점).
+      #   stateful 을 끄면 목표 판정이 매 주기 XY 부터 다시 확인한다.
+      stateful: False
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.05
+      # ⚠️ [2026-07-21] fleet_node 의 도착 판정(arrive_radius=0.05)보다 **작아야** 한다.
+      #   둘이 같으면(0.05=0.05) 여유가 0 이라, nav2 가 5.0cm 지점에서 멈추면
+      #   fleet_node 는 "아직 5.0cm" 로 보고 도착을 인정하지 않아 교착에 빠진다
+      #   (실측: v13→v4 구간에서 5.27cm 에 선 채 다음 노드로 못 넘어감).
+      #   전체 부등식: update_min_d(0.02) < xy_goal_tolerance < arrive_radius(0.05)
+      #                                                        < 최소 레인(0.062)
+      xy_goal_tolerance: 0.03
       yaw_goal_tolerance: 0.15
 
     # ★ 여기부터: Regulated Pure Pursuit 컨트롤러 설정
@@ -108,10 +134,10 @@ controller_server:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
 
       # 기본 속도들 (Pinky 상황 맞게 나중에 조정 가능)
-      desired_linear_vel: 0.10      # [m/s]
+      desired_linear_vel: 0.07      # [2026-07-15] 0.09→0.07  더 천천히 주행(좁은 방 정밀·드리프트↓)
       max_linear_accel: 0.3         # [m/s^2]
       max_linear_decel: 0.5         # [m/s^2]
-      max_angular_vel: 0.7          # [rad/s]
+      max_angular_vel: 0.15         # [2026-07-15] 0.7→0.15  회전 느리게(좁은 방 정밀·드리프트↓)
 
       # 경로 추종 관련
       # [2026-06-30] 1m×2m 작은 맵 + 6cm 로봇에 맞춰 lookahead 축소
@@ -136,7 +162,7 @@ controller_server:
       rotate_to_heading_min_angle: 0.35
 
       # 3) 회전 속도 (in-place 회전일 때 angular vel)
-      rotate_to_heading_angular_vel: 0.7
+      rotate_to_heading_angular_vel: 0.15   # [2026-07-15] 0.7→0.15  제자리 회전도 느리게(각속도 통일)
 
       # 4) 회전할 때는 전진 속도 0에 가깝게 (거의 제자리 회전)
       max_angular_accel: 3.2
@@ -151,7 +177,19 @@ controller_server:
       # ========= 안전 관련 =========
       # 장애물과 너무 가까워지면 속도 줄이거나 정지하는 옵션들
       use_approach_velocity_scaling: true
-      min_approach_linear_velocity: 0.05
+      # [2026-07-22] 목표 근처 감속이 **설정만 되어 있고 실제로는 안 걸리고 있었다.**
+      #   approach_velocity_scaling_dist 를 안 적어 RPP 기본값 0.6m 가 쓰였는데,
+      #   이 맵은 **최장 레인이 0.581m** 라 모든 주행이 통째로 감속 구간 안에 들어간다.
+      #   그러면 scaling 이 늘 작아져 하한(min_approach_linear_velocity)에 걸리고,
+      #   결과적으로 속도가 **평평하다가 목표점에서 뚝 끊긴다** — 감속이 아니라 상시 저속이었다.
+      #     중앙 레인 0.196m : 0.07 × (0.196/0.6) = 0.023 → 하한 0.05 로 올라붙음
+      #   nav2 자신도 이 상황을 경고한다("larger than forward costmap extent → permanent slowdown").
+      #
+      #   그래서 ① 감속 구간을 맵 축척에 맞춰 좁히고 ② 하한을 실제로 내려간 값으로 낮춘다.
+      #   0.12m 는 최단 레인(0.062m)의 두 배쯤 — 짧은 레인은 전 구간 감속, 나머지는
+      #   desired_linear_vel 로 달리다 마지막 0.12m 에서 부드럽게 줄어든다.
+      approach_velocity_scaling_dist: 0.12
+      min_approach_linear_velocity: 0.02   # 0.05 → 0.02  하한이 높으면 감속 자체가 안 보인다
       inflation_cost_scaling_factor: 10.0
       regulated_linear_scaling_min_radius: 0.20   # [2026-06-30] 0.5 → 0.20
       regulated_linear_scaling_min_speed: 0.08
@@ -163,33 +201,30 @@ controller_server:
 local_costmap:
   local_costmap:
     ros__parameters:
-      update_frequency: 5.0
-      publish_frequency: 2.0
+      update_frequency: 2.0             # [2026-07-20] 5.0 → 2.0  idle 상시 costmap 재계산 부하↓ (실내 저속 로봇엔 충분)
+      publish_frequency: 1.0            # [2026-07-20] 2.0 → 1.0
       global_frame: odom
       robot_base_frame: base_footprint
       rolling_window: true
       width: 3
       height: 3
       resolution: 0.02
-      robot_radius: 0.06
+      robot_radius: 0.06        # [2026-07-15] 0.11 → 0.06 되돌림 — 실물 바퀴간격 0.0961m 기준. inflation(0.08)보다 크면 감쇠구간이 사라져 8cm 띠 전체가 253(통행불가)이 된다
       #footprint: '[[0.06, 0.06], [0.06, -0.06], [-0.06, -0.06], [-0.06, 0.06]]'
-      plugins: ["voxel_layer", "inflation_layer"]
+      plugins: ["obstacle_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 5.0      # [2026-06-30] 10.0 → 5.0
-        inflation_radius: 0.08        # [2026-06-30] 0.05 → 0.08 (벽 밀착 경로 방지)
-      voxel_layer:
-        plugin: "nav2_costmap_2d::VoxelLayer"
+        inflation_radius: 0.08        # [2026-07-15] 0.20 → 0.08 되돌림 — 맵 여유(0.04~0.18m)보다 커서 자유공간이 전부 덮였음
+      # [2026-07-20] voxel_layer(3D VoxelLayer) → obstacle_layer(2D) 교체.
+      # 관측원이 2D 라이다(/scan_filtered) 하나뿐이라 3D 복셀·복셀맵 발행이 불필요한 CPU 낭비였음.
+      # global_costmap 의 obstacle_layer 와 동일 설정. 장애물 표시/회피 동작은 그대로.
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
-        publish_voxel_map: True
-        origin_z: 0.0
-        z_resolution: 0.05
-        z_voxels: 16
-        max_obstacle_height: 2.0
-        mark_threshold: 0
         observation_sources: scan
         scan:
-          topic: /scan
+          topic: /scan_filtered
           max_obstacle_height: 2.0
           clearing: True
           marking: True
@@ -211,7 +246,7 @@ global_costmap:
       publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_footprint
-      robot_radius: 0.06
+      robot_radius: 0.06        # [2026-07-15] 0.11 → 0.06 되돌림 — 실물 바퀴간격 0.0961m 기준. inflation(0.08)보다 크면 감쇠구간이 사라져 8cm 띠 전체가 253(통행불가)이 된다
       #footprint: '[[0.06, 0.06], [0.06, -0.06], [-0.06, -0.06], [-0.06, 0.06]]'
       resolution: 0.02
       track_unknown_space: true
@@ -221,7 +256,7 @@ global_costmap:
         enabled: True
         observation_sources: scan
         scan:
-          topic: /scan
+          topic: /scan_filtered
           max_obstacle_height: 2.0
           clearing: True
           marking: True
@@ -236,7 +271,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 5.0      # [2026-06-30] 10.0 → 5.0
-        inflation_radius: 0.08        # [2026-06-30] 0.05 → 0.08 (벽 밀착 경로 방지)
+        inflation_radius: 0.08        # [2026-07-15] 0.20 → 0.08 되돌림 — 맵 여유(0.04~0.18m)보다 커서 자유공간이 전부 덮였음
       always_send_full_costmap: True
 
 # The yaml_filename does not need to be specified since it going to be set by defaults in launch.
@@ -260,7 +295,7 @@ planner_server:
     costmap_update_timeout: 1.0
     GridBased:
       plugin: "nav2_navfn_planner::NavfnPlanner"
-      tolerance: 0.5
+      tolerance: 0.1      # [2026-07-15] 0.5→0.1  1x2m 좁은 방: 목표 정밀 도달
       use_astar: false
       allow_unknown: true
 
@@ -314,7 +349,7 @@ waypoint_follower:
 
 velocity_smoother:
   ros__parameters:
-    smoothing_frequency: 20.0
+    smoothing_frequency: 10.0         # [2026-07-20] 20.0 → 10.0  cmd_vel 스무딩 루프 절반(CPU↓)
     scale_velocities: False
     feedback: "OPEN_LOOP"
     max_velocity: [0.25, 0.0, 1.5]
@@ -325,4 +360,56 @@ velocity_smoother:
     odom_duration: 0.1
     deadband_velocity: [0.0, 0.0, 0.0]
     velocity_timeout: 1.0
+
+collision_monitor:
+  ros__parameters:
+    base_frame_id: "base_link"
+    odom_frame_id: "odom"
+    cmd_vel_in_topic: "cmd_vel_smoothed"   # velocity_smoother 출력을 받아서
+    cmd_vel_out_topic: "cmd_vel"           # 걸러 로봇으로 내보냄
+    state_topic: "collision_monitor_state"
+    transform_tolerance: 0.2
+    source_timeout: 1.0
+    base_shift_correction: True
+    stop_pub_timeout: 2.0
+    polygons: ["SlowDown", "Stop"]
+
+    # ⚠️⚠️ 2026-07-21: 배차·교통 알고리즘 시험을 위해 **실물에서도** 두 zone 을 비활성했다.
+    # 좁은 통로 + 라이다 노이즈로 Stop zone 이 계속 걸려 로봇이 제자리에 서는 것을 막기 위함.
+    #
+    # 🚨 이건 **원시 스캔 기반 비상정지(마지막 방어선)를 끈 것**이다. 실물 로봇이 사람이
+    #    있는 공간에서 도는 운영 상황으로 돌아갈 때는 **반드시 enabled: True 로 되돌린다.**
+    #
+    # ⚠️ 노드 자체는 끄면 안 된다 — collision_monitor 는 cmd_vel_smoothed → cmd_vel 경로
+    # 한가운데 있어서, 노드를 빼면 cmd_vel 이 아예 발행되지 않아 로봇이 전혀 못 움직인다.
+    # 그래서 폴리곤만 enabled: False 로 둔다(통과만 시킴).
+    #
+    # 남아 있는 보호: nav2 local costmap + controller 장애물 회피,
+    # FMS fleet_coordinator 근접 안전, fleet_node 교통 예약, libi_gui 비상정지.
+    SlowDown:
+      type: "polygon"
+      points: "[[0.15, 0.12], [0.15, -0.12], [-0.10, -0.12], [-0.10, 0.12]]"
+      action_type: "slowdown"
+      min_points: 4
+      slowdown_ratio: 0.7
+      visualize: True
+      polygon_pub_topic: "slowdown_polygon"
+      enabled: False
+
+    Stop:
+      type: "polygon"
+      points: "[[0.08, 0.08], [0.08, -0.08], [-0.06, -0.08], [-0.06, 0.08]]"
+      action_type: "stop"
+      min_points: 4
+      visualize: True
+      polygon_pub_topic: "stop_polygon"
+      enabled: False
+
+    observation_sources: ["scan"]
+    scan:
+      type: "scan"
+      topic: "/scan_filtered"    # costmap과 동일 소스 (안전 더 원하면 /scan)
+      min_height: 0.05
+      max_height: 0.5
+      enabled: True
     enable_stamped_cmd_vel: false

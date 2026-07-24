@@ -1,0 +1,78 @@
+# ⚠️ 자동 생성 템플릿 — 이 파일을 직접 실행하지 않는다.
+#    scripts/gen_domain_bridges.py 가 rc_robots(DB)의 name·ip_address·domain_id 를 읽어
+#    로봇마다 config/generated/domain_bridge_<key>.yaml 을 만든다.
+#    도메인을 바꾸려면 이 파일이 아니라 관제 패널의 로봇 등록에서 domain_id 를 고친다.
+#
+# {NAME}({IP}, ROS_DOMAIN_ID={FROM_DOMAIN}) ↔ 서버 도메인 86 중계.
+# 텔레메트리/상태({FROM_DOMAIN}→86, /{KEY}/* 개명)와 명령(86→{FROM_DOMAIN}, reversed)을 함께 담당한다.
+# 로봇은 무수정 — 서버에서만 실행: ros2 run domain_bridge domain_bridge <이 파일>
+# QoS 는 publisher 자동 매칭(기본값)을 사용한다 (amcl_pose·map·fleet_status 는 TRANSIENT_LOCAL).
+name: bridge_{KEY}
+from_domain: {FROM_DOMAIN}
+to_domain: 86
+topics:
+  amcl_pose:
+    type: geometry_msgs/msg/PoseWithCovarianceStamped
+    remap: /{KEY}/amcl_pose
+  map:
+    type: nav_msgs/msg/OccupancyGrid
+    remap: /{KEY}/map
+  plan:
+    type: nav_msgs/msg/Path
+    remap: /{KEY}/plan
+  battery/percent:
+    type: std_msgs/msg/Float32
+    remap: /{KEY}/battery/percent
+  battery/voltage:
+    type: std_msgs/msg/Float32
+    remap: /{KEY}/battery/voltage
+  # ── fleet link (robot_agent app/core/fleet_link.py, 2026-07-08) ──
+  fleet_status:
+    type: std_msgs/msg/String
+    remap: /{KEY}/fleet_status
+  fleet_costmaps:
+    type: std_msgs/msg/String
+    remap: /{KEY}/fleet_costmaps
+  fleet_cmd_result:
+    type: std_msgs/msg/String
+    remap: /{KEY}/fleet_cmd_result
+  # 역방향 명령: 86의 /{KEY}/fleet_cmd 구독 → 88에 /fleet_cmd 발행
+  {KEY}/fleet_cmd:
+    type: std_msgs/msg/String
+    reversed: True
+    remap: /fleet_cmd
+  # 역방향 속도 명령: 86의 /{KEY}/cmd_vel 발행 → 로봇 도메인의 /cmd_vel
+  {KEY}/cmd_vel:
+    type: geometry_msgs/msg/Twist
+    reversed: True
+    remap: /cmd_vel
+
+  # ── fleet_node 주행 명령 (2026-07-21) ────────────────────────────────────────
+  # fleet_node 가 교통(예약)까지 풀어 정한 경로를 로봇으로 내린다. 로봇 쪽에서
+  # scripts/path_request_driver.py 가 이걸 받아 nav2 NavigateToPose 로 옮긴다.
+  # 이게 없으면 배차는 되는데 로봇이 안 움직여 fleet_node 가 "무진행 → task 취소" 한다.
+  # ⚠️ 토픽 이름에 로봇 접두사가 없다(fleet_node 가 한 토픽에 모두 발행하고 payload 의
+  #    robot_name 으로 대상을 가린다) — 드라이버가 robot_name 으로 필터링한다.
+  robot_path_requests:
+    type: rmf_fleet_msgs/msg/PathRequest
+    reversed: True
+    remap: /robot_path_requests
+
+  # ── libi_modes 미션 FSM (2026-07-20) ─────────────────────────────────────────
+  # 상태·BT 스냅샷은 payload 안에 robot_id 가 들어 있어 서버에서 토픽을 나누지 않는다
+  # (fsm_link 가 robot_id 로 캐시를 가른다) — 로봇이 여러 대여도 같은 토픽에 모인다.
+  libi/fsm_state:
+    type: std_msgs/msg/String
+    remap: /libi/fsm_state
+  libi/bt_snapshot:
+    type: std_msgs/msg/String
+    remap: /libi/bt_snapshot
+  libi/fsm_transition_result:
+    type: std_msgs/msg/String
+    remap: /libi/fsm_transition_result
+  # 역방향: 서버(86)의 전이 요청을 로봇 도메인으로. domain_bridge 는 서비스를 중계하지
+  # 못하므로(YAML 에 services 키 없음) 상관 id 를 실은 요청/결과 토픽 쌍을 쓴다.
+  libi/fsm_transition_request:
+    type: std_msgs/msg/String
+    reversed: True
+    remap: /libi/fsm_transition_request

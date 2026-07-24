@@ -6,11 +6,11 @@ import { fetchBooks } from "@/lib/books-api";
 import { useEffect, useState } from "react";
 import { ChevronDown } from "lucide-react";
 
-const CATS = ["all", "literature", "art", "science"] as const;
+const CATS = ["all", "literature", "art", "science", "humanities", "kids"] as const;
 type Cat = (typeof CATS)[number];
 
 export const Route = createFileRoute("/recommend")({
-  head: () => ({ meta: [{ title: "Labi Bot — 추천 랭킹" }] }),
+  head: () => ({ meta: [{ title: "LiBi — 추천 랭킹" }] }),
   component: Recommend,
 });
 
@@ -38,6 +38,8 @@ function Recommend() {
     literature: tr("catLiterature"),
     art: tr("catArt"),
     science: tr("catScience"),
+    humanities: tr("catHumanities"),
+    kids: tr("catKids"),
   };
 
   return (

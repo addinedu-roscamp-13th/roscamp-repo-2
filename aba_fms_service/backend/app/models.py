@@ -272,3 +272,25 @@ class MarkerAction(RobotBase):
     )
 
 
+
+
+class FsmTransitionLog(AdminBase):
+    """FSM 상태 전이 감사 로그 — 누가 언제 어떤 전이를 (강제로) 요청했는지.
+
+    거부된 시도도 기록한다. 강제 전이 추적이 목적이므로 실패 이력이 오히려 중요하다.
+    """
+
+    __tablename__ = "rc_fsm_transition_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    robot_id: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    from_state: Mapped[str] = mapped_column(String(24), nullable=False)
+    to_state: Mapped[str] = mapped_column(String(24), nullable=False)
+    forced: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    accepted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    reason: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    admin_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    admin_username: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )

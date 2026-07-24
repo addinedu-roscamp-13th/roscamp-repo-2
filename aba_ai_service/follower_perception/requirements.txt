@@ -1,0 +1,6 @@
+numpy
+opencv-python
+ultralytics
+torch
+# optional, improves ReID quality; falls back to torchvision/colour if absent:
+# torchreid

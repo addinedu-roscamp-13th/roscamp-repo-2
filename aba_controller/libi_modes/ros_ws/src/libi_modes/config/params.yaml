@@ -1,0 +1,45 @@
+libi_modes:
+  # 관제 패널이 시킨 전이를 이 시간(초)만큼 붙잡는다. 그 동안 BT 는 스스로 상태를 못 바꾼다.
+  #
+  # 없으면 패널에서 눌러도 같은 tick 에 되돌아가 화면상 아무 일도 안 일어난다:
+  #   CHARGING         이미 충전돼 있으면 BatteryCheck(>=40) 이 즉시 통과 → IDLE
+  #   SECURITY_PATROL  랩 드라이버가 곧바로 success → SetNextMode(IDLE) → IDLE
+  #
+  # ⚠️ 로봇이 스스로 못 나가는 것이지 조작이 잠기는 게 아니다 — 사람은 유지 중에도
+  #    다른 상태로 바꿀 수 있다(패널 전이는 이 관문을 안 거친다).
+  # ⚠️ ERROR 는 막지 않는다. 고장은 유지 시간과 무관하게 즉시 반영된다.
+  # 0 이면 기능이 꺼진다(예전 동작).
+  manual_hold_sec: 2.0
+  battery:
+    ready: 40         # CHARGING -> IDLE
+    charged: 80       # IDLE -> PATROL (auto, docked only)
+    low: 15           # -> RETURNING
+  interacting:
+    ui_idle_timeout_sec: 20
+  working:
+    command_timeout_sec: 120
+    # NavigationExec 의 도착 판정 반경(m). **fleet_node 의 arrive_radius 와 같은 값을 쓴다.**
+    #   같은 뜻("도착했다")을 두 곳이 판단하는데 값이 다르면 반드시 어긋난다.
+    #   BT 가 더 관대하면(값이 크면) 관제는 아직 주행 중인데 BT 는 명령을 놓아 버리고,
+    #   BT 가 더 엄격하면 관제가 다음 노드를 줬는데 BT 는 이전 목적지를 붙들고 있다.
+    #   또 이 값은 **최소 레인(0.062m)보다 작아야** 옆 노드와 구분이 된다.
+    #   전체 부등식:
+    #     update_min_d(0.02) < xy_goal_tolerance(0.03) < arrive_tolerance_m = arrive_radius(0.05)
+    #                                                                       < 최소 레인(0.062)
+    arrive_tolerance_m: 0.05
+    # 도착하지 않은 채 이 시간이 지나면 같은 목적지로 goal 을 **다시** 낸다.
+    #   nav2 주행은 도착 없이 끝날 수 있다(ABORTED, 또는 선점 순간 직전 목표의 완료가
+    #   새 목표의 완료로 보고되는 경우). 그때 다시 몰아 줄 주체가 필요하다.
+    #   재전송은 **BT 가 해야 한다** — 도착 여부를 아는 건 BT 뿐이라, FMS 가 시간만 보고
+    #   보내면 정상 주행 중에도 끼어들어 불필요한 선점을 만든다.
+    #   실측 정상 홉은 2~17초다. 그보다 넉넉히 잡는다.
+    arrive_resend_sec: 10
+    # 목적지가 바뀐 뒤 이 시간 안에 도착 못 하면 그 주행을 실패로 본다.
+    #   없으면 "아직 가는 중"과 "영영 못 감"이 구별되지 않아 로봇이 조용히 선다.
+    arrive_timeout_sec: 60
+  returning:
+    dock_retry_max: 3
+  security_patrol:
+    # 15분 야간 루프 — Topics2BB/외부 스케줄러가 security_patrol_request 를 넣어주는 주기.
+    # 이 패키지가 타이머 자체를 소유하지 않는다 (IdleBranch 에 타이머 leaf 없음).
+    idle_interval_sec: 900

@@ -22,7 +22,7 @@ async def lifespan(app: FastAPI):
     bridge.set_driver(driver)
 
     # [2026-07-08] fleet link — 중앙서버와 ROS2 토픽 통신 (HTTP 폴링 대체).
-    # 배포/원본: bot_ai_server/backend/app/fleet_link_robot.py (deploy_fleet_link.py)
+    # 배포 원본: aba_controller/.../robot_agent/app/core/fleet_link.py (deploy_fleet_link.py)
     if settings.robot_type is RobotType.driving:
         from app.core import fleet_link
         fleet_link.start()
@@ -77,6 +77,8 @@ def create_app() -> FastAPI:
         # 정식 /api/robot + 구버전 호환 /api/admin/robot
         api.include_router(driving.router, prefix="/robot", tags=["driving"])
         api.include_router(driving.router, prefix="/admin/robot", tags=["driving-legacy"], include_in_schema=False)
+        # nav_router(Nav2 대시보드)는 로봇 온보드에서 제거됨(FastAPI/ROS2 역할 분리, main).
+        # driving.py 에 더 이상 nav_router 가 없어 마운트하지 않는다.
         from app.routers import aruco_dock
         api.include_router(aruco_dock.router, prefix="/robot", tags=["aruco-dock"])
         api.include_router(aruco_dock.router, prefix="/admin/robot", tags=["aruco-dock-legacy"], include_in_schema=False)

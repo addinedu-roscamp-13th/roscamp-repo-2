@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 import { AdminShell } from "@/components/admin/AdminShell";
 
 export const Route = createFileRoute("/admin/_authed/dev/server-ops")({
-  head: () => ({ meta: [{ title: "Labi Admin — 서버 운영 가이드" }] }),
+  head: () => ({ meta: [{ title: "LiBi Admin — 서버 운영 가이드" }] }),
   component: ServerOpsPage,
 });
 
@@ -134,7 +134,7 @@ function ServerOpsPage() {
               부팅 시 자동 시작이 필요하다면 systemd 서비스로 등록합니다.
             </div>
             <div className="flex flex-col gap-2">
-              <CodeBlock code={`# /etc/systemd/system/labi-admin-api.service\n[Unit]\nDescription=Labi Bot Admin API\nAfter=network.target\n\n[Service]\nUser=pinky\nWorkingDirectory=/home/pinky/bot_ai_server/backend\nExecStart=/home/pinky/bot_ai_server/backend/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 9001\nRestart=always\n\n[Install]\nWantedBy=multi-user.target`} />
+              <CodeBlock code={`# /etc/systemd/system/labi-admin-api.service\n[Unit]\nDescription=LiBi Admin API\nAfter=network.target\n\n[Service]\nUser=pinky\nWorkingDirectory=/home/pinky/bot_ai_server/backend\nExecStart=/home/pinky/bot_ai_server/backend/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 9001\nRestart=always\n\n[Install]\nWantedBy=multi-user.target`} />
             </div>
             <div className="flex flex-col gap-2">
               <div className="flex items-center gap-2 text-[13px] font-semibold text-slate-700">

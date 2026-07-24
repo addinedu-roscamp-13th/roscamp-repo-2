@@ -1,0 +1,313 @@
+# waypoint.yaml — 내비 그래프 (vertices + lanes)
+# lanes 는 gen_lanes.py 로 격자식(축정렬, 대각선 금지) 자동 생성됨.
+
+vertices:
+  안네데스크:
+    x: 0.7718
+    y: -0.0333
+    yaw: 0
+  입구:
+    x: 0.5805
+    y: -0.0333
+    yaw: 1.5708
+  주차장:
+    x: -0.0007
+    y: -0.0333
+    yaw: 0
+  화장실:
+    x: 0.0263
+    y: -1.1789
+    yaw: 3.1415
+  유아:
+    x: -0.0328
+    y: -0.3789
+    yaw: -1.5708
+  미술작품:
+    x: 0.7718
+    y: -0.3615
+    yaw: 0
+  미술작품-2:
+    x: 0.7718
+    y: -0.5746
+    yaw: 0
+  미술작품-3:
+    x: 0.7718
+    y: -0.7877
+    yaw: 0
+  미술작품-4:
+    x: 0.7718
+    y: -1.001
+    yaw: 0
+  복도-1:
+    x: 0.5805
+    y: -0.3615
+  복도-2:
+    x: 0.4603
+    y: -0.3615
+  복도-3:
+    x: 0.2507
+    y: -0.3615
+  복도-4:
+    x: 0.2507
+    y: -0.6099
+  복도-5:
+    x: 0.0263
+    y: -0.3615
+  복도-6:
+    x: 0.0263
+    y: -0.6099
+  복도-7:
+    x: 0.0263
+    y: -0.8482
+  복도-8:
+    x: 0.0263
+    y: -1.0018
+  복도-9:
+    x: 0.2324
+    y: -1.0018
+  복도-10:
+    x: 0.3757
+    y: -1.0018
+  복도-11:
+    x: 0.5805
+    y: -1.0018
+  복도-12:
+    x: 0.5805
+    y: -0.7877
+  복도-13:
+    x: 0.5805
+    y: -0.5746
+  예술-1:
+    x: 0.3566
+    y: -0.301
+    yaw: 3.1415
+  예술-2:
+    x: 0.2241
+    y: -0.301
+    yaw: 3.1415
+  문학-1:
+    x: 0.0988
+    y: -0.331
+    yaw: 3.1415
+  문학-2:
+    x: -0.0288
+    y: -0.301
+    yaw: 3.1415
+  과학-1:
+    x: 0.3492
+    y: -0.6224
+    yaw: -1.5708
+  과학-2:
+    x: 0.3492
+    y: -0.7343
+    yaw: -1.5708
+  인문학-1:
+    x: 0.3492
+    y: -0.7343
+    yaw: 3.1415
+  인문학-2:
+    x: 0.2538
+    y: -0.7343
+    yaw: 3.1415
+  테이블-1번-상:
+    x: 0.7205
+    y: -1.5547
+    yaw: 1.5708
+  테이블-1번-좌:
+    x: 0.5191
+    y: -1.356
+    yaw: 3.1415
+  테이블-1번-우:
+    x: 0.5191
+    y: -1.748
+    yaw: 0
+  테이블-2번-하:
+    x: 0.0263
+    y: -1.5547
+    yaw: -1.5708
+  테이블-2번-좌:
+    x: 0.2324
+    y: -1.356
+    yaw: 3.1415
+  테이블-2번-우:
+    x: 0.2324
+    y: -1.748
+    yaw: 0
+  테이블-복도-1:
+    x: 0.7205
+    y: -1.356
+  테이블-복도-2:
+    x: 0.3757
+    y: -1.356
+  테이블-복도-3:
+    x: 0.0263
+    y: -1.356
+  테이블-복도-4:
+    x: 0.0263
+    y: -1.748
+  테이블-복도-5:
+    x: 0.7205
+    y: -1.748
+lanes:
+- from: 안네데스크
+  to: 입구
+  bidirectional: true
+- from: 입구
+  to: 주차장
+  bidirectional: true
+- from: 복도-5
+  to: 유아
+  bidirectional: true
+- from: 미술작품
+  to: 복도-1
+  bidirectional: true
+- from: 복도-1
+  to: 복도-2
+  bidirectional: true
+- from: 복도-2
+  to: 복도-3
+  bidirectional: true
+- from: 과학-1
+  to: 복도-4
+  bidirectional: true
+- from: 복도-3
+  to: 복도-5
+  bidirectional: true
+- from: 복도-4
+  to: 복도-6
+  bidirectional: true
+- from: 복도-8
+  to: 복도-9
+  bidirectional: true
+- from: 복도-10
+  to: 복도-9
+  bidirectional: true
+- from: 복도-10
+  to: 복도-11
+  bidirectional: true
+- from: 미술작품-4
+  to: 복도-11
+  bidirectional: true
+- from: 미술작품-3
+  to: 복도-12
+  bidirectional: true
+- from: 미술작품-2
+  to: 복도-13
+  bidirectional: true
+- from: 예술-1
+  to: 예술-2
+  bidirectional: true
+- from: 문학-1
+  to: 복도-3
+  bidirectional: true
+- from: 문학-1
+  to: 복도-5
+  bidirectional: true
+- from: 문학-1
+  to: 예술-2
+  bidirectional: true
+- from: 문학-1
+  to: 문학-2
+  bidirectional: true
+- from: 과학-2
+  to: 인문학-2
+  bidirectional: true
+- from: 테이블-1번-좌
+  to: 테이블-복도-1
+  bidirectional: true
+- from: 테이블-1번-우
+  to: 테이블-복도-5
+  bidirectional: true
+- from: 테이블-2번-좌
+  to: 테이블-복도-2
+  bidirectional: true
+- from: 테이블-1번-우
+  to: 테이블-2번-우
+  bidirectional: true
+- from: 테이블-1번-좌
+  to: 테이블-복도-2
+  bidirectional: true
+- from: 테이블-2번-좌
+  to: 테이블-복도-3
+  bidirectional: true
+- from: 테이블-2번-우
+  to: 테이블-복도-4
+  bidirectional: true
+- from: 인문학-1
+  to: 인문학-2
+  bidirectional: true
+- from: 복도-8
+  to: 화장실
+  bidirectional: true
+- from: 문학-2
+  to: 유아
+  bidirectional: true
+- from: 미술작품
+  to: 안네데스크
+  bidirectional: true
+- from: 미술작품
+  to: 미술작품-2
+  bidirectional: true
+- from: 미술작품-2
+  to: 미술작품-3
+  bidirectional: true
+- from: 미술작품-3
+  to: 미술작품-4
+  bidirectional: true
+- from: 복도-1
+  to: 입구
+  bidirectional: true
+- from: 복도-3
+  to: 복도-4
+  bidirectional: true
+- from: 복도-5
+  to: 복도-6
+  bidirectional: true
+- from: 복도-6
+  to: 복도-7
+  bidirectional: true
+- from: 복도-7
+  to: 복도-8
+  bidirectional: true
+- from: 복도-11
+  to: 복도-12
+  bidirectional: true
+- from: 복도-12
+  to: 복도-13
+  bidirectional: true
+- from: 복도-1
+  to: 복도-13
+  bidirectional: true
+- from: 과학-1
+  to: 예술-1
+  bidirectional: true
+- from: 과학-1
+  to: 과학-2
+  bidirectional: true
+- from: 과학-1
+  to: 인문학-1
+  bidirectional: true
+- from: 복도-4
+  to: 인문학-2
+  bidirectional: true
+- from: 테이블-1번-상
+  to: 테이블-복도-1
+  bidirectional: true
+- from: 테이블-2번-하
+  to: 테이블-복도-3
+  bidirectional: true
+- from: 복도-9
+  to: 테이블-2번-좌
+  bidirectional: true
+- from: 복도-10
+  to: 테이블-복도-2
+  bidirectional: true
+- from: 테이블-복도-3
+  to: 화장실
+  bidirectional: true
+- from: 테이블-2번-하
+  to: 테이블-복도-4
+  bidirectional: true
+- from: 테이블-1번-상
+  to: 테이블-복도-5
+  bidirectional: true

@@ -1,0 +1,14 @@
+# 개발/테스트 전용 의존성. 런타임에는 필요 없으므로 requirements.txt 와 분리한다.
+#
+#   .venv/bin/pip install -r requirements-dev.txt
+#   .venv/bin/python -m pytest tests/ -q
+#
+# 테스트는 .venv 에서 돌려야 전부 실행된다. 시스템 파이썬에는 sqlalchemy 가 없어
+# 라우터 테스트가 통째로 skip 된다 (조용히 통과한 것처럼 보이므로 주의).
+-r requirements.txt
+pytest
+
+# fastapi.testclient (starlette) 가 요구한다. 없으면 TestClient 를 쓰는 파일에서
+# ImportError 가 나고 pytest 가 tests/ 전체 수집을 중단해 버린다 — 그 한 파일만
+# 실패하는 게 아니라 나머지 테스트도 아예 실행되지 않는다.
+httpx

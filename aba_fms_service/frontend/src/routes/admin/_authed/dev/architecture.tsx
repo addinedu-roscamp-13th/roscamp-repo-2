@@ -11,7 +11,7 @@ import type { ComponentType } from "react";
 import { AdminShell } from "@/components/admin/AdminShell";
 
 export const Route = createFileRoute("/admin/_authed/dev/architecture")({
-  head: () => ({ meta: [{ title: "Labi Admin — 아키텍처" }] }),
+  head: () => ({ meta: [{ title: "LiBi Admin — 아키텍처" }] }),
   component: ArchitecturePage,
 });
 
@@ -83,7 +83,7 @@ function ArchitecturePage() {
         <div>
           <h1 className="text-[20px] font-bold text-slate-900">아키텍처</h1>
           <p className="mt-1 text-[13px] text-slate-500">
-            Labi Bot 서비스 구성 — 요청 흐름과 각 계층의 기술 스택입니다.
+            LiBi 서비스 구성 — 요청 흐름과 각 계층의 기술 스택입니다.
           </p>
         </div>
 

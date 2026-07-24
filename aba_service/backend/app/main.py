@@ -2,7 +2,22 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import get_settings
-from .routers import auth, books, dashboard, dev, ocr, robot_control, users
+from .routers import (
+    approvals,
+    auth,
+    books,
+    circulation,
+    dashboard,
+    delivery,
+    dev,
+    loans,
+    member_auth,
+    ocr,
+    ops,
+    ops_extra,
+    robot_control,
+    users,
+)
 
 settings = get_settings()
 
@@ -31,13 +46,35 @@ app.include_router(dev.router)
 app.include_router(books.router)
 app.include_router(robot_control.router)
 app.include_router(ocr.router)
+app.include_router(member_auth.router)
+app.include_router(loans.router)
+app.include_router(delivery.router)
+app.include_router(circulation.router)
+app.include_router(ops.router)
+app.include_router(ops_extra.router)
+app.include_router(approvals.router)
 
 
 @app.on_event("startup")
 def startup_event():
     from .database import Base, engine
-    from .models import RobotControlLog
+    # 모델을 import 해야 metadata 에 등록되어 create_all 이 표를 만든다.
+    from .models import (  # noqa: F401
+        DeliveryRequest,
+        IntrusionEvent,
+        Loan,
+        Member,
+        OpsSetting,
+        Reservation,
+        RobotControlLog,
+        TaskLog,
+        Wishlist,
+    )
     Base.metadata.create_all(bind=engine)
+
+    from .migrations import run_migrations
+
+    run_migrations(engine)
 
     # Warm up the EasyOCR model in the background so it doesn't block boot and
     # the first /api/ocr request doesn't pay the model load/download cost.

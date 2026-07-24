@@ -13,6 +13,7 @@ import {
   Code2,
   Cpu,
   Crosshair,
+  GitBranch,
   GitFork,
   Hand,
   Layers,
@@ -26,6 +27,7 @@ import {
   Network,
   RefreshCw,
   ScanEye,
+  Share2,
   Sliders,
   ServerCog,
   Table2,
@@ -34,6 +36,7 @@ import {
   UserRound,
   Users,
   Volume2,
+  Waypoints,
   Wifi,
   X,
 } from "lucide-react";
@@ -111,6 +114,9 @@ const NAV_GROUPS: NavGroup[] = [
       { to: "/admin/pinky-detect",   label: "핑키프로 인식",  icon: ScanEye },
       { to: "/admin/human-follow",   label: "사람 추종",      icon: UserRound },
       { to: "/admin/aruco",          label: "아르코 도킹",    icon: Crosshair },
+      { to: "/admin/waypoint", label: "Waypoint",       icon: Waypoints },
+      { to: "/admin/fsm",      label: "FSM + BT",       icon: GitBranch },
+      { to: "/admin/dispatch", label: "FMS 배차·교통", icon: Share2 },
     ],
   },
   {

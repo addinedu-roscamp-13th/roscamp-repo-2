@@ -1,0 +1,55 @@
+# 시뮬레이션 로봇(Gazebo, ROS_DOMAIN_ID=90) ↔ 서버 도메인 86 중계.
+# 실물 로봇(domain_bridge_pinky{1,2,3}.yaml)과 동일한 패턴 — /pinkySim/* 접두.
+# 서버에서만 실행: ros2 run domain_bridge domain_bridge <이 파일>
+name: bridge_sim
+from_domain: 90
+to_domain: 86
+topics:
+  amcl_pose:
+    type: geometry_msgs/msg/PoseWithCovarianceStamped
+    remap: /pinkySim/amcl_pose
+  map:
+    type: nav_msgs/msg/OccupancyGrid
+    remap: /pinkySim/map
+  plan:
+    type: nav_msgs/msg/Path
+    remap: /pinkySim/plan
+  battery/percent:
+    type: std_msgs/msg/Float32
+    remap: /pinkySim/battery/percent
+  battery/voltage:
+    type: std_msgs/msg/Float32
+    remap: /pinkySim/battery/voltage
+  fleet_status:
+    type: std_msgs/msg/String
+    remap: /pinkySim/fleet_status
+  fleet_costmaps:
+    type: std_msgs/msg/String
+    remap: /pinkySim/fleet_costmaps
+  fleet_cmd_result:
+    type: std_msgs/msg/String
+    remap: /pinkySim/fleet_cmd_result
+  # 역방향 명령: 86의 /pinkySim/fleet_cmd 구독 → 90에 /fleet_cmd 발행
+  pinkySim/fleet_cmd:
+    type: std_msgs/msg/String
+    reversed: True
+    remap: /fleet_cmd
+
+  # ── libi_modes 미션 FSM (2026-07-20) ─────────────────────────────────────────
+  # 상태·BT 스냅샷은 payload 안에 robot_id 가 들어 있어 서버에서 토픽을 나누지 않는다
+  # (fsm_link 가 robot_id 로 캐시를 가른다) — 로봇이 여러 대여도 같은 토픽에 모인다.
+  libi/fsm_state:
+    type: std_msgs/msg/String
+    remap: /libi/fsm_state
+  libi/bt_snapshot:
+    type: std_msgs/msg/String
+    remap: /libi/bt_snapshot
+  libi/fsm_transition_result:
+    type: std_msgs/msg/String
+    remap: /libi/fsm_transition_result
+  # 역방향: 서버(86)의 전이 요청을 로봇 도메인으로. domain_bridge 는 서비스를 중계하지
+  # 못하므로(YAML 에 services 키 없음) 상관 id 를 실은 요청/결과 토픽 쌍을 쓴다.
+  libi/fsm_transition_request:
+    type: std_msgs/msg/String
+    reversed: True
+    remap: /libi/fsm_transition_request

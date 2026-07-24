@@ -5,6 +5,15 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# 루트 .env 를 실어 준다. 이걸 안 하면 **기능이 조용히 꺼진 채로 뜬다** —
+# 특히 LIBI_REAL_DISPATCH 가 없으면 orchestrator 가 fleet_node 로 배차를 넘기지 않아
+# 주문은 EXECUTING 인데 로봇이 안 움직인다(로그에도 아무것도 안 남는다).
+# scripts/laptop/fms_service.sh 로 띄우면 _common.sh 가 해 주지만, 이 스크립트를
+# 직접 실행하는 경우(재기동·디버깅)가 잦아서 여기서도 챙긴다. 규칙은 한 파일에만 있다.
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# shellcheck disable=SC1091
+. "$REPO_ROOT/scripts/_load_env.sh"
+
 VENV="$SCRIPT_DIR/.venv"
 LOG="/tmp/pinky_api.log"
 PID_FILE="/tmp/pinky_api.pid"
@@ -36,6 +45,15 @@ fi
 echo "[start] PinkyPro 백엔드 서버 시작 (포트: $PORT)..."
 if [ -f /opt/ros/jazzy/setup.bash ]; then
     source /opt/ros/jazzy/setup.bash
+fi
+# fleet_ws overlay — 없으면 app/fleet_link.py 가 `libi_fleet_msgs` 를 import 못 해
+# "fleet_link 비활성" 으로 떨어지고, 그러면 로봇 관측도 submit_task 도 전부 죽는다
+# (/api/fleet/snapshot 이 linked=false, robots=[] 로 보인다).
+FLEET_WS_SETUP="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/fleet_ws/install/setup.bash"
+if [ -f "$FLEET_WS_SETUP" ]; then
+    source "$FLEET_WS_SETUP"
+else
+    echo "[start] ⚠️ fleet_ws 미빌드 — fleet 링크 없이 뜹니다: $FLEET_WS_SETUP"
 fi
 nohup "$VENV/bin/uvicorn" main:app --host 0.0.0.0 --port "$PORT" > "$LOG" 2>&1 &
 PID=$!

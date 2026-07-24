@@ -13,7 +13,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 
 export const Route = createFileRoute("/ocr")({
-  head: () => ({ meta: [{ title: "Labi Bot — OCR 텍스트 인식" }] }),
+  head: () => ({ meta: [{ title: "LiBi — OCR 텍스트 인식" }] }),
   component: OcrPage,
 });
 
