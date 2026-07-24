@@ -36,12 +36,12 @@ def test_idle_docked_and_charged_to_patrol(seed, read, tick):
     assert read(Keys.CURRENT_MODE) == "PATROL"
 
 
-def test_idle_undocked_high_battery_stays(seed, read, tick):
-    """A robot stopped by an operator is undocked; without the dock guard a stale-high
-    reading would silently restart patrol."""
+def test_idle_undocked_high_battery_auto_patrols(seed, read, tick):
+    """Dock gate on the >=charged check is dropped until docking is defined, so an undocked
+    robot at high battery now auto-patrols (see IdleBranch docstring)."""
     seed(**{Keys.CURRENT_MODE: "IDLE", Keys.BATTERY_PERCENT: 95.0, Keys.IS_DOCKED: False})
-    assert tick(idle.create(PARAMS)) == Status.FAILURE
-    assert read(Keys.CURRENT_MODE) == "IDLE"
+    assert tick(idle.create(PARAMS)) == Status.SUCCESS
+    assert read(Keys.CURRENT_MODE) == "PATROL"
 
 
 def test_idle_undocked_low_battery_returns(seed, read, tick):

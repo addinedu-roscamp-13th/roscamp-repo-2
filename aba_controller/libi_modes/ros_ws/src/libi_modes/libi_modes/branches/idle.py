@@ -16,13 +16,17 @@ _COMMAND_MAP = {
 def create(params: dict) -> py_trees.behaviour.Behaviour:
     """IdleBranch — waiting, either docked after charging or stopped by an operator.
 
-    Both dock guards are load-bearing, because IDLE is reached two different ways:
+    IDLE is reached two different ways:
       - from CHARGING: docked, battery rising  -> the >=charged check may fire
       - from stop_request: undocked, battery falling -> only resume_request gets it out
 
-    Without require_docked=True on the charged check, a stopped robot could never reach
-    80% and would sit in IDLE forever. Without require_docked=False on the low check, a
-    docked robot would try to "return" to the charger it is already sitting on.
+    The low check keeps require_docked=False so a docked robot won't try to "return" to the
+    charger it is already sitting on.
+
+    The charged (>=80% -> PATROL) check is NOT dock-gated for now. Docking isn't defined yet
+    (no reliable is_docked signal), so gating on it would leave the robot stuck in IDLE and
+    never auto-patrol. Trade-off: an operator-stopped, undocked robot at >=80% will now
+    auto-patrol on its own.
     """
     low = params["battery"]["low"]
     charged = params["battery"]["charged"]
@@ -38,7 +42,9 @@ def create(params: dict) -> py_trees.behaviour.Behaviour:
                     FaultDetected(),
                     BatteryCheck("<=", low, "RETURNING", require_docked=False),
                     CommandListener(_COMMAND_MAP),
-                    BatteryCheck(">=", charged, "PATROL", require_docked=True),
+                    # ponytail: dock gate dropped until docking is defined — re-add
+                    # require_docked=True when a reliable is_docked signal exists.
+                    BatteryCheck(">=", charged, "PATROL"),
                 ],
             ),
             RequestTransition(),

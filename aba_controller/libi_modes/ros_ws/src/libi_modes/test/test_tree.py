@@ -240,13 +240,28 @@ def test_fault_preempts_a_lower_priority_branch(seed, read):
     assert read(Keys.CURRENT_MODE) == "ERROR"
 
 
-def test_stopped_robot_stays_idle_then_leaves_on_resume(seed, read):
-    """The documented deadlock guard, end to end: an undocked IDLE robot at 95% must not
-    auto-patrol, and resume_request is its only way out."""
+def test_idle_robot_auto_patrols_at_charged_regardless_of_dock(seed, read):
+    """Dock gate on the >=charged check is dropped until docking is defined: an undocked
+    IDLE robot at 95% now auto-patrols on its own (see IdleBranch docstring)."""
+    root = tree.build_root(
+        PARAMS, all_drivers(),
+        all_providers(battery_percent=lambda: 95.0, is_docked=lambda: False),
+    )
+    bt = py_trees.trees.BehaviourTree(root=root)
+    bt.setup(timeout=15)
+    seed(**{Keys.CURRENT_MODE: "IDLE"})
+
+    for _ in range(5):
+        bt.tick()
+    assert read(Keys.CURRENT_MODE) == "PATROL", "auto-patrol at >=80%, no dock needed"
+
+
+def test_idle_robot_below_charged_leaves_on_resume(seed, read):
+    """Below the charged threshold there's no auto-patrol, so resume_request is the way out."""
     command = {"value": None}
     root = tree.build_root(
         PARAMS, all_drivers(),
-        all_providers(battery_percent=lambda: 95.0, is_docked=lambda: False,
+        all_providers(battery_percent=lambda: 50.0, is_docked=lambda: False,
                       last_command=lambda: command["value"]),
     )
     bt = py_trees.trees.BehaviourTree(root=root)
@@ -255,7 +270,7 @@ def test_stopped_robot_stays_idle_then_leaves_on_resume(seed, read):
 
     for _ in range(5):
         bt.tick()
-    assert read(Keys.CURRENT_MODE) == "IDLE", "no dock, no auto-patrol"
+    assert read(Keys.CURRENT_MODE) == "IDLE", "below charged, no auto-patrol"
 
     command["value"] = "resume_request"
     bt.tick()
