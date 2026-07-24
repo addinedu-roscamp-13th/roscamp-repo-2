@@ -2,9 +2,9 @@
 
 ## 이 파일이 지키는 규칙 셋
 
-    ① 색   = 무엇을 하는 중인가   색상 4개 + 오류 빨강 (Okabe-Ito, 색각 이상 대비)
-    ② 깜빡 = 주의                 없음 → 1.5s → 0.5s. **깜빡이는 상태는 최대 2개**
-    ③ 휘도 = 활성도               약함 = 쉬는 중 / 밝음 = 사람이 관여 중
+    ① 색   = 가용성   파랑 = 가용 / 초록 = 이용 불가 / 빨강 = 위험 (Okabe-Ito, 색각 이상 대비)
+    ② 깜빡 = 주의     없음 → 1.5s → 0.5s. **깜빡이는 상태는 최대 2개**
+    ③ 휘도 = 활성도   약함 = 쉬는 중 / 밝음 = 사람이 관여 중
 
 ②를 코드로 막아 두는 이유: 저배터리 경고·부팅 표시 같은 걸 넣을 때 깜빡임에 손대고
 싶어진다. 세 개가 깜빡이는 순간 "깜빡임 = 주의"라는 뜻이 흐려지는데, **그걸 아무도
@@ -72,19 +72,20 @@ def test_error_blinks_fastest():
     assert all(cfg.styles["ERROR"].period_sec < p for p in others)
 
 
-def test_error_colour_is_not_reused_by_a_normal_state():
-    """빨강을 평상 상태에 쓰면 '빨강 = 문제'라는 학습이 무너진다.
+def test_danger_colour_is_only_used_by_danger_states():
+    """빨강 = 위험·접근 주의. 충전/고장/두절만 쓴다 — 가용(파랑)이나 이용 불가(초록)
+    상태가 빨강을 쓰면 '빨강 = 위험'이라는 학습이 무너진다.
 
-    "붉은 계열인가"로는 못 가른다 — 주홍(#D55E00, WORKING)과 빨강(#D50000, ERROR)은
-    RGB 로 보면 이웃이다. Okabe-Ito 팔레트가 둘을 구분되게 고른 것이므로,
-    지켜야 할 건 색조가 아니라 **ERROR 의 색을 다른 데 쓰지 않는 것**이다.
+    충전과 고장은 같은 빨강을 공유하되 패턴(solid vs blink)으로 갈린다 — 색은 가용성을,
+    패턴은 급함을 나타낸다는 새 설계에 맞춘 것이다.
     """
     cfg = _cfg()
-    error_color = cfg.styles["ERROR"].color
+    danger_color = cfg.styles["ERROR"].color
+    danger_states = {"CHARGING", "ERROR", NO_SIGNAL}
     for name, style in cfg.styles.items():
-        if name in ("ERROR", NO_SIGNAL):
+        if name in danger_states:
             continue
-        assert style.color != error_color, f"{name} 가 ERROR 색을 쓴다: {style.color}"
+        assert style.color != danger_color, f"{name} 가 위험색(빨강)을 쓴다: {style.color}"
 
 
 def test_solid_states_have_no_period():
