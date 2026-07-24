@@ -4,6 +4,7 @@ import { toast } from "sonner";
 
 import { AdminShell } from "@/components/admin/AdminShell";
 import { ConfirmDeleteDialog } from "@/components/admin/ConfirmDeleteDialog";
+import { MiniDonut } from "@/components/admin/charts";
 import { ops, opsApi } from "@/lib/ops-api";
 
 export const Route = createFileRoute("/admin/_authed/security")({
@@ -130,7 +131,7 @@ function SecurityPage() {
 
   return (
     <AdminShell title="야간 보안">
-      <div className="space-y-4">
+      <div className="flex h-full flex-col gap-4">
         {msg ? (
           <p className="rounded-lg bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700">
             {msg}
@@ -143,7 +144,7 @@ function SecurityPage() {
         ) : null}
 
         {/* 운영모드 */}
-        <section className="rounded-lg border p-4">
+        <section className="shrink-0 rounded-lg border p-4">
           <h3 className="mb-1 text-sm font-semibold">운영 모드</h3>
           <p className="mb-3 text-xs text-muted-foreground">
             야간 모드에서는 로봇이 순찰하며 이동체를 감지해 보고합니다. 감지
@@ -227,7 +228,7 @@ function SecurityPage() {
         </section>
 
         {/* 침입 이벤트 */}
-        <section className="rounded-lg border p-4">
+        <section className="flex min-h-0 flex-1 flex-col rounded-lg border p-4">
           <h3 className="mb-3 text-sm font-semibold">
             침입 감지 기록{" "}
             {unacked.length > 0 ? (
@@ -237,12 +238,28 @@ function SecurityPage() {
             ) : null}
           </h3>
 
+          {state && state.events.length > 0 ? (
+            <div className="mb-3 shrink-0">
+              <MiniDonut
+                title="확인 상태"
+                data={[
+                  {
+                    label: "확인됨",
+                    value: state.events.length - unacked.length,
+                    color: "#10b981",
+                  },
+                  { label: "미확인", value: unacked.length, color: "#f43f5e" },
+                ]}
+              />
+            </div>
+          ) : null}
+
           {!state || state.events.length === 0 ? (
             <p className="rounded border border-dashed p-6 text-center text-xs text-muted-foreground">
               감지 기록이 없습니다
             </p>
           ) : (
-            <div className="space-y-2">
+            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto">
               {sortedEvents.map((e) => (
                 <div
                   key={e.id}
