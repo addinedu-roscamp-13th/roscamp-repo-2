@@ -261,6 +261,10 @@ export const ops = {
   /** 작업로그 삭제 — soft delete(hidden=True). 서버가 재수입 안 되게 보장한다. */
   deleteTaskLog: (id: number) =>
     opsApi<void>(`/api/admin/ops/logs/${id}`, { method: "DELETE" }),
+  resetTaskLogs: () =>
+    opsApi<{ ok: boolean; hidden: number }>("/api/admin/ops/logs/reset", {
+      method: "POST",
+    }),
   /** 침입이벤트 삭제 — hard delete. */
   deleteIntrusionEvent: (id: number) =>
     opsApi<void>(`/api/admin/ops/security/events/${id}`, { method: "DELETE" }),

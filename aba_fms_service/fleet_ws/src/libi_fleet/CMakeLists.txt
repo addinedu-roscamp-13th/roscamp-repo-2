@@ -25,7 +25,8 @@ ament_target_dependencies(libi_fleet_core rclcpp)
 # --- pluginlib 플러그인 (dispatcher/traffic) ---
 add_library(libi_fleet_plugins SHARED
   plugins/auction.cpp
-  plugins/reservation_deadlock.cpp)
+  plugins/reservation_deadlock.cpp
+  plugins/grant_all_traffic.cpp)
 target_include_directories(libi_fleet_plugins PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)

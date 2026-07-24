@@ -823,6 +823,19 @@ export const adminApi = {
     request<WaypointGraph>(
       `/api/control/waypoints?robot_id=${robotId}&nav_port=${navPort}`,
     ),
+  // 단일 공유 내비 그래프 — 로봇 선택과 무관한 정본 waypoint.yaml. 저장하면 fleet_node
+  // navgraph 도 재생성된다(반영은 각자 재기동 시).
+  waypointsSharedGet: () =>
+    request<WaypointGraph>(`/api/control/waypoints/shared`),
+  waypointsSharedSave: (data: WaypointGraph) =>
+    request<{
+      ok: boolean;
+      vertices: number;
+      navgraph_regenerated: { ok: boolean; detail: string };
+    }>(`/api/control/waypoints/shared`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
   waypointsSave: (robotId: number, data: WaypointGraph, navPort = 9001) =>
     request<WaypointGraph>(
       `/api/control/waypoints?robot_id=${robotId}&nav_port=${navPort}`,
@@ -1066,6 +1079,21 @@ export const adminApi = {
     request<{ ok: boolean; items: FsmHistoryItem[] }>(
       `/api/fsm/history?robot_id=${encodeURIComponent(robotId)}&limit=${limit}`,
     ),
+  // [sim 전용] 로봇 도메인의 sim 배터리 소스에 잔량을 강제 설정. 실물은 delivered=false.
+  fsmSetSimBattery: (input: {
+    robot_id: string;
+    domain_id: number;
+    value: number;
+  }) =>
+    request<{
+      ok: boolean;
+      delivered: boolean;
+      value?: number;
+      reason?: string;
+    }>("/api/fsm/sim_battery", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
   // robotId 를 생략하면 **모든 로봇**의 이력을 지운다 — 호출부에서 반드시 확인받을 것.
   fsmClearHistory: (robotId?: string) =>
     request<{ ok: boolean; removed: number; robot_id: string | null }>(

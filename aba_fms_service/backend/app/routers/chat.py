@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_admin_db, get_robot_db
 from app.deps import get_current_admin
-from app.models import Admin, Conversation, Message, Robot, RobotLocation
+from app.models import Admin, Conversation, Message, Robot, RobotLocation, iso_utc
 from app.robot_dispatch import call_local_api as _call_local_api
 from app.routers.robot_learning import (
     InterpretIn,
@@ -371,7 +371,7 @@ async def get_chat_history(
             "id": r.id,
             "role": r.role,
             "content": r.content,
-            "created_at": r.created_at.isoformat() if r.created_at else None
+            "created_at": iso_utc(r.created_at)
         }
         for r in rows
     ]

@@ -9,6 +9,9 @@ class Keys:
     IS_DOCKED = "is_docked"
     LAST_COMMAND = "last_command"
     UI_LAST_TOUCH_AT = "ui_last_touch_at"
+    # INTERACTING 남은초(초, float). UiSessionTimer 가 매 tick 쓴다. state_io 가 읽어
+    # /libi/fsm_state JSON 의 remaining_sec 으로 내보낸다(패널 카운트다운용). 비-INTERACTING 시 0.0.
+    INTERACTING_REMAINING = "interacting_remaining"
     DRIVE_LOCK = "drive_lock"
     ARM_LOCK = "arm_lock"
     ACTIVE_COMMAND = "active_command"

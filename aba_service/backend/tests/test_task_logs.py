@@ -15,13 +15,17 @@ LOGS = "/api/admin/ops/logs"
 
 
 class FakeOpsExtra:
-    """`ops_extra` 가 보는 FMS 대역 — 종료된 주문 목록만 필요하다."""
+    """`ops_extra` 가 보는 FMS 대역 — 종료 주문(list_orders) + 배정 사건(list_events)."""
 
     def __init__(self) -> None:
         self.orders: list[dict] = []
+        self.events: list[dict] = []
 
     def list_orders(self) -> tuple[bool, list[dict]]:
         return True, self.orders
+
+    def list_events(self, since: int = 0, limit: int = 50) -> tuple[bool, list[dict], int]:
+        return True, self.events, since
 
 
 def make_terminal_order(task_id="t-1", status="COMPLETED") -> dict:
@@ -39,6 +43,7 @@ def make_terminal_order(task_id="t-1", status="COMPLETED") -> dict:
 def fake_ops(monkeypatch) -> FakeOpsExtra:
     fake = FakeOpsExtra()
     monkeypatch.setattr(ops_extra.fms_client, "list_orders", fake.list_orders)
+    monkeypatch.setattr(ops_extra.fms_client, "list_events", fake.list_events)
     return fake
 
 
@@ -83,6 +88,21 @@ def test_삭제한_로그는_다시_조회해도_부활하지_않는다(client, 
 def test_없는_로그를_삭제하면_404(client, admin_auth):
     res = client.delete(f"{LOGS}/999999", headers=admin_auth)
     assert res.status_code == 404
+
+
+def test_초기화하면_전부_숨겨지고_부활하지_않는다(client, admin_auth, monkeypatch):
+    fake = fake_ops(monkeypatch)
+    fake.orders.append(make_terminal_order("t-a"))
+    fake.orders.append(make_terminal_order("t-b"))
+
+    assert len(client.get(LOGS, headers=admin_auth).json()) == 2
+
+    res = client.post(f"{LOGS}/reset", headers=admin_auth)
+    assert res.status_code == 200, res.text
+    assert res.json()["hidden"] == 2
+
+    # FMS 는 여전히 같은 종료 task 를 돌려주지만 목록엔 안 뜬다(hidden).
+    assert client.get(LOGS, headers=admin_auth).json() == []
 
 
 ALERTS = "/api/admin/ops/alerts"

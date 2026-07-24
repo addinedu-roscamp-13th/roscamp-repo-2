@@ -32,6 +32,7 @@ provider 값을 다시 써넣으므로, provider 가 계속 같은 값을 돌려
 현재 상태에서 조용히 사라진다.
 """
 import json
+import time
 
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
@@ -93,7 +94,10 @@ class RosProviders:
         self._fault = bool(msg.data)
 
     def _on_ui_touch(self, msg):
-        self._ui_last_touch_at = float(msg.data)
+        # payload 값은 신뢰하지 않는다 — libi_gui 가 다른 머신(노트북/sim)이면 monotonic 시계가
+        # 서로 다르다. 수신 시점에 로봇 자기 monotonic 으로 찍어야 UiSessionTimer(time.monotonic)와
+        # 같은 기준으로 비교된다. 메시지가 오는 것 자체가 "방금 터치" 신호다.
+        self._ui_last_touch_at = time.monotonic()
 
     def _on_cmd(self, msg):
         """FMS 명령을 전이 트리거와 실행 커맨드 둘로 가른다.

@@ -34,6 +34,54 @@ const BADGE_TONE: Record<string, string> = {
   ERROR: "bg-rose-100 text-rose-700",
 };
 
+// [sim 전용] 로봇 도메인의 sim_battery.py 에 잔량을 밀어 넣는다. 실물엔 렌더되지 않는다.
+function SimBatteryControl({
+  robotName,
+  domainId,
+}: {
+  robotName: string;
+  domainId: number;
+}) {
+  const [value, setValue] = useState("");
+  const setBattery = useMutation({
+    mutationFn: () =>
+      adminApi.fsmSetSimBattery({
+        robot_id: robotName,
+        domain_id: domainId,
+        value: Number(value),
+      }),
+    onSuccess: (r) => {
+      if (r.delivered) toast.success(`sim 배터리 ${r.value}% 설정`);
+      else toast.warning(r.reason ?? "sim 배터리 구독자를 찾지 못했습니다.");
+    },
+    onError: () => toast.error("sim 배터리 설정에 실패했습니다."),
+  });
+  const num = Number(value);
+  const valid = value !== "" && Number.isFinite(num) && num >= 0 && num <= 100;
+  return (
+    <span className="flex items-center gap-1">
+      <input
+        type="number"
+        min={0}
+        max={100}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        placeholder="배터리%"
+        className="h-6 w-[4.5rem] rounded border bg-background px-1.5 text-xs"
+      />
+      <Button
+        size="sm"
+        variant="outline"
+        className="h-6 px-2 text-xs"
+        disabled={!valid || setBattery.isPending}
+        onClick={() => setBattery.mutate()}
+      >
+        설정
+      </Button>
+    </span>
+  );
+}
+
 function Pill({
   children,
   tone,
@@ -110,6 +158,8 @@ export function FsmRobotCard({
     null;
   const current = snapshot?.current_state ?? null;
   const robot = robots.find((r) => r.name === robotName) ?? null;
+  // sim 로봇 판별 — 이름 규약(Pinky-sim-*)을 따른다. 실물엔 배터리 강제 설정을 노출하지 않는다.
+  const isSim = (robotName ?? "").toLowerCase().includes("sim");
 
   // 이력은 수동 전이 성공 시에만 갱신했다 — BT 가 스스로 전이할 때는(배터리 임계값,
   // 커맨드 완료 등) 로그가 안 따라왔다. 스냅샷의 current_state 가 바뀔 때마다
@@ -266,6 +316,13 @@ export function FsmRobotCard({
           </Pill>
           <Pill>도킹 {snapshot?.is_docked ? "○" : "✕"}</Pill>
           {robot?.domain_id != null && <Pill>d{robot.domain_id}</Pill>}
+          {/* sim 로봇만: 배터리를 강제 설정해 전이 임계값(≤15%/≥80%)을 실제로 밟아 본다. */}
+          {isSim && robotName && robot?.domain_id != null && (
+            <SimBatteryControl
+              robotName={robotName}
+              domainId={robot.domain_id}
+            />
+          )}
         </div>
       </div>
 

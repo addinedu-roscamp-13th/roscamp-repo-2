@@ -139,14 +139,12 @@ sudo apt install -y ros-jazzy-domain-bridge        # ros-domain-bridge.sh / sim.
 |---|---|
 | `fms_service.sh` | 도메인 브릿지 + fleet_node + 상태 어댑터(tmux 세션 `libi_fms`). 관제 백엔드/프론트는 안 띄움 — `ui/fms.sh` 로 따로. |
 | `ai_follower_service.sh <pinky>` | 추종 인지 서버 기동 + `--drive-host` 를 그 로봇 IP 로. `--test-pattern` 등 위임. |
-| `libi_gui.sh <pinky>` | libi_gui 를 그 로봇 것으로. `PERCEPTION_URL`/`FMS_URL` 을 `LAPTOP_IP` 로 채움. |
 | `sim.sh [viewer\|--no-fsm\|--no-rviz]` | Gazebo 시뮬 전체(로봇 없이 검증). `./sim.sh viewer` = GUI 포함. |
 | `kill.sh` | `libi_fms` 세션 + sim·브릿지·ROS 고아 정리. 관제 백엔드/프론트는 안 건드림 — `backend/stop.sh` 로 따로. |
 
 ```bash
 ./fms_service.sh               # 브릿지 + fleet_node + 어댑터 (관제 백엔드/프론트 제외)
 ./ai_follower_service.sh pinky3   # 추종 인지 서버 (cmd_vel -> pinky3)
-./libi_gui.sh pinky3           # 터치패널 (테스트)
 ```
 
 ## ui/ — 웹 UI (노트북/서버에서 실행)
@@ -159,11 +157,13 @@ sudo apt install -y ros-jazzy-domain-bridge        # ros-domain-bridge.sh / sim.
 |---|---|
 | `fms.sh` | 관제(FMS) 백엔드(:9001) + 프론트(:9002). 콘솔 `http://<ip>:9002/` (로그인 후 `/admin/…`). |
 | `library.sh` | 도서관 웹 백엔드(:8000) + 프론트(:3000). **회원 `/`, 사서 `/admin`**. |
+| `libi_gui.sh <pinky>` | libi_gui 를 그 로봇 것으로. `PERCEPTION_URL`/`FMS_URL` 을 `LAPTOP_IP` 로 채움. |
 | `kill.sh [fms\|library]` | 인자 없으면 둘 다, 주면 그것만. (FMS 백엔드 데몬은 공유라 안 건드림) |
 
 ```bash
 ./fms.sh                  # 관제 UI
 ./library.sh              # 도서관 웹 (회원/사서)
+./libi_gui.sh pinky3      # 터치패널 (테스트)
 ./kill.sh                 # 둘 다 정리
 ./kill.sh library         # 도서관만
 ```
@@ -179,7 +179,7 @@ sudo apt install -y ros-jazzy-domain-bridge        # ros-domain-bridge.sh / sim.
 [노트북]  ./laptop/ai_follower_service.sh pinky3
 [로봇]    ./drive-pi/image-sender.sh    # 영상
 [로봇]    ./drive-pi/follow-drive.sh    # 주행 브릿지
-[패널]    ./laptop/libi_gui.sh pinky3   → 관리자 로그인 → 「관리자 추종」 → 「등록」
+[패널]    ./ui/libi_gui.sh pinky3   → 관리자 로그인 → 「관리자 추종」 → 「등록」
 ```
 
 `pi.sh`(주행) 와 추종용 `image-sender.sh`/`follow-drive.sh` 는 같은 bringup 을 놓고 다투므로

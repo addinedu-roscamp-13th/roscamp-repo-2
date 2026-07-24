@@ -13,8 +13,8 @@ type Viewport = { scale: number; ox: number; oy: number; zoom: number; pan: { x:
 type MapMeta = { width: number; height: number; resolution: number; origin: { x: number; y: number; yaw: number } };
 
 export interface WaypointEditorProps {
+  /** goto 대상 로봇의 초기 기본값. 편집·저장은 로봇과 무관(단일 공유 정본). */
   robotId: number | null;
-  canControl: boolean;
   navPort?: number;
 }
 
@@ -66,7 +66,7 @@ function canvasHeading(map: MapMeta, vp: Viewport, wx: number, wy: number, yaw: 
   return Math.atan2(y1 - y0, x1 - x0);
 }
 
-export function WaypointEditor({ robotId, canControl, navPort = 9001 }: WaypointEditorProps) {
+export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps) {
   const queryClient = useQueryClient();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [wsState, setWsState] = useState<Nav2State | null>(null);
@@ -82,6 +82,11 @@ export function WaypointEditor({ robotId, canControl, navPort = 9001 }: Waypoint
   const panDrag = useRef<{ startCanvas: { x: number; y: number }; startPan: { x: number; y: number } } | null>(null);
   const mapImageRef = useRef<HTMLImageElement | null>(null);
   const [mapImageReady, setMapImageReady] = useState(false);
+  // Phase B — 전 로봇 실시간 위치(fleet 피드) + goto 대상은 패널에서 고른다(전역 선택 무시).
+  const [fleetRobots, setFleetRobots] = useState<
+    { name: string; x: number; y: number; state: string | null }[]
+  >([]);
+  const [gotoRobotId, setGotoRobotId] = useState<number | null>(robotId);
 
   useEffect(() => {
     const img = new Image();
@@ -90,15 +95,16 @@ export function WaypointEditor({ robotId, canControl, navPort = 9001 }: Waypoint
     mapImageRef.current = img;
   }, []);
 
+  // 단일 공유 정본 waypoint.yaml — 로봇 선택과 무관하다. 저장하면 이 파일에 쓰고
+  // fleet_node navgraph 도 재생성된다(반영은 각자 재기동 시). 예전엔 로봇별 ROS
+  // waypoint_get/save 였다 — 로봇마다 그래프가 갈라져 관제·배차와 어긋났다.
   const graphQuery = useQuery({
-    queryKey: ["waypoints", robotId, navPort],
-    queryFn: () => adminApi.waypointsGet(robotId!, navPort),
-    enabled: robotId != null,
+    queryKey: ["waypoints-shared"],
+    queryFn: () => adminApi.waypointsSharedGet(),
     staleTime: Infinity,
   });
-  // 로봇 미연결 시에도 편집 가능하도록 waypoint.yaml을 그대로 복사해둔 정적
-  // 폴백(public/maps/waypoint.json)을 쓴다. 로봇이 연결되면 fleet_link에서 받은
-  // 실시간 그래프가 우선한다.
+  // 서버 미응답 시에도 편집 가능하도록 waypoint.yaml을 그대로 복사해둔 정적
+  // 폴백(public/maps/waypoint.json)을 쓴다.
   const staticGraphQuery = useQuery({
     queryKey: ["waypoints-static"],
     queryFn: () => fetch("/maps/waypoint.json").then((r) => r.json() as Promise<WaypointGraph>),
@@ -106,12 +112,22 @@ export function WaypointEditor({ robotId, canControl, navPort = 9001 }: Waypoint
   });
   const graph: WaypointGraph = graphQuery.data ?? staticGraphQuery.data ?? { vertices: {}, lanes: [] };
 
+  // goto 대상 선택기 후보 — 주행 로봇. 전역 상단 드롭다운과 무관하게 여기서 고른다.
+  const robotsQuery = useQuery({
+    queryKey: ["robots-driving"],
+    queryFn: () => adminApi.listRobots({ robot_type: "pinky", limit: 50 }),
+    staleTime: 60_000,
+  });
+  const driveRobots = robotsQuery.data?.items ?? [];
+  const gotoRobot = driveRobots.find((r) => r.id === gotoRobotId) ?? null;
+
+  // 선택한 goto 로봇의 정밀 nav2 pose (초록 강조). 전역 robotId 가 아니라 패널 선택을 따른다.
   useEffect(() => {
-    if (!canControl || !robotId) {
+    if (gotoRobotId == null) {
       setWsState(null);
       return;
     }
-    const ws = new WebSocket(adminApi.controlStateWsUrl(robotId, navPort));
+    const ws = new WebSocket(adminApi.controlStateWsUrl(gotoRobotId, navPort));
     ws.onmessage = (event) => {
       try {
         const payload = JSON.parse(event.data);
@@ -121,22 +137,47 @@ export function WaypointEditor({ robotId, canControl, navPort = 9001 }: Waypoint
       }
     };
     return () => ws.close();
-  }, [canControl, robotId, navPort]);
+  }, [gotoRobotId, navPort]);
+
+  // 전 로봇 실시간 위치 — fleet 피드(관제 스냅샷). 한 페이지에서 모든 로봇을 지도에 찍는다.
+  useEffect(() => {
+    const ws = new WebSocket(adminApi.fleetFeedWsUrl());
+    ws.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        const rows = payload?.snapshot?.robots;
+        if (Array.isArray(rows)) {
+          setFleetRobots(
+            rows
+              .filter((r) => r.x != null && r.y != null)
+              .map((r) => ({ name: r.name, x: r.x, y: r.y, state: r.state ?? null })),
+          );
+        }
+      } catch {
+        // 무시
+      }
+    };
+    return () => ws.close();
+  }, []);
 
   const [dirty, setDirty] = useState(false);
 
   const saveMutation = useMutation({
-    mutationFn: (g: WaypointGraph) => adminApi.waypointsSave(robotId!, g, navPort),
-    onSuccess: (g) => {
-      queryClient.setQueryData(["waypoints", robotId, navPort], g);
+    mutationFn: (g: WaypointGraph) => adminApi.waypointsSharedSave(g),
+    onSuccess: (res, g) => {
+      queryClient.setQueryData(["waypoints-shared"], g);
       setDirty(false);
-      setMessage("저장됨 (waypoint.yaml 반영)");
+      setMessage(
+        res.navgraph_regenerated.ok
+          ? "저장됨 — 공유 waypoint.yaml + fleet_node navgraph 재생성 (재기동 시 반영)"
+          : "저장됨 — waypoint.yaml (navgraph 재생성 실패, 로그 확인)",
+      );
     },
     onError: (err: Error) => setMessage(`저장 실패: ${err.message}`),
   });
 
   const gotoMutation = useMutation({
-    mutationFn: (name: string) => adminApi.waypointGoto(robotId!, name, navPort),
+    mutationFn: (name: string) => adminApi.waypointGoto(gotoRobotId!, name, navPort),
     onMutate: (name) => setGoingTo(name),
     onSettled: () => setGoingTo(null),
     onSuccess: (res) => setMessage(res.success ? `'${res.name}' 도착 (경로: ${res.path.join(" → ")})` : `실패: ${res.msg ?? ""}`),
@@ -146,20 +187,19 @@ export function WaypointEditor({ robotId, canControl, navPort = 9001 }: Waypoint
   // 편집은 로컬 상태만 바꾼다 — "저장" 버튼을 눌러야 waypoint_save 액션으로
   // fleet_link에 반영되고 로봇의 waypoint.yaml이 실제로 바뀐다.
   const persist = useCallback((next: WaypointGraph) => {
-    queryClient.setQueryData(["waypoints", robotId, navPort], next);
+    queryClient.setQueryData(["waypoints-shared"], next);
     setDirty(true);
-  }, [queryClient, robotId, navPort]);
+  }, [queryClient]);
 
   const handleSave = () => {
-    if (!robotId) { setMessage("로봇이 연결돼야 저장할 수 있습니다"); return; }
     saveMutation.mutate(graph);
   };
 
   // 저장 안 한 로컬 편집을 버리고 마지막 저장 상태(로봇 연결 시 서버, 아니면 기본
   // waypoint.yaml)로 되돌린다.
   const handleRevert = () => {
-    queryClient.setQueryData(["waypoints", robotId, navPort], undefined);
-    if (robotId != null) graphQuery.refetch();
+    queryClient.setQueryData(["waypoints-shared"], undefined);
+    graphQuery.refetch();
     setDirty(false);
     setSelected(null);
     setSelectedLane(null);
@@ -326,6 +366,27 @@ export function WaypointEditor({ robotId, canControl, navPort = 9001 }: Waypoint
       ctx.fillText(name, x + r + 4, y - r - 2);
     });
 
+    // 전 로봇 — fleet 피드 위치. goto 선택 로봇은 아래 wsState(초록 정밀 pose)로 덮인다.
+    fleetRobots.forEach((r) => {
+      if (r.name === gotoRobot?.name) return; // 선택 로봇은 wsState 로 그린다
+      const [x, y] = worldToCanvas(map, vp, r.x, r.y);
+      ctx.fillStyle = "#38bdf8";
+      ctx.strokeStyle = "#0f172a";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(x, y, 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.font = "bold 10px system-ui";
+      ctx.lineJoin = "round";
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "rgba(2,6,23,0.85)";
+      ctx.strokeText(r.name, x + 8, y + 3);
+      ctx.fillStyle = "#e0f2fe";
+      ctx.fillText(r.name, x + 8, y + 3);
+    });
+
+    // goto 선택 로봇 — 정밀 nav2 pose (초록 + 방향).
     if (wsState?.pose) {
       const [x, y] = worldToCanvas(map, vp, wsState.pose.x, wsState.pose.y);
       ctx.fillStyle = "#22c55e";
@@ -340,8 +401,17 @@ export function WaypointEditor({ robotId, canControl, navPort = 9001 }: Waypoint
       ctx.moveTo(x, y);
       ctx.lineTo(x + len * Math.cos(ang), y + len * Math.sin(ang));
       ctx.stroke();
+      if (gotoRobot) {
+        ctx.font = "bold 10px system-ui";
+        ctx.lineJoin = "round";
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = "rgba(2,6,23,0.85)";
+        ctx.strokeText(gotoRobot.name, x + 9, y + 3);
+        ctx.fillStyle = "#bbf7d0";
+        ctx.fillText(gotoRobot.name, x + 9, y + 3);
+      }
     }
-  }, [map, wsState, graph, zoom, pan, selected, linkFirst, selectedLane, mapImageReady]);
+  }, [map, wsState, graph, zoom, pan, selected, linkFirst, selectedLane, mapImageReady, fleetRobots, gotoRobot]);
 
   useEffect(() => { draw(); }, [draw]);
 
@@ -544,7 +614,22 @@ export function WaypointEditor({ robotId, canControl, navPort = 9001 }: Waypoint
                 onBlur={(e) => setYaw(selected!, Number(e.target.value))} />
             </div>
 
-            <Button className="w-full gap-1.5" disabled={!canControl || goingTo != null} onClick={() => gotoMutation.mutate(selected!)}>
+            {/* goto 대상 로봇 — 패널에서 고른다(상단 전역 선택 무시). */}
+            <div>
+              <Label className="text-[11px] text-slate-400">이동 로봇</Label>
+              <select
+                className="mt-1 h-8 w-full rounded border border-white/10 bg-slate-950/70 px-2 text-sm text-slate-100"
+                value={gotoRobotId ?? ""}
+                onChange={(e) => setGotoRobotId(e.target.value ? Number(e.target.value) : null)}
+              >
+                <option value="">로봇 선택</option>
+                {driveRobots.map((r) => (
+                  <option key={r.id} value={r.id}>{r.name}</option>
+                ))}
+              </select>
+            </div>
+
+            <Button className="w-full gap-1.5" disabled={gotoRobotId == null || goingTo != null} onClick={() => gotoMutation.mutate(selected!)}>
               {goingTo === selected ? <Loader2 className="h-4 w-4 animate-spin" /> : <Navigation className="h-4 w-4" />}
               이 노드로 이동
             </Button>

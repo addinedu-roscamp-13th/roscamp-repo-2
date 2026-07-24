@@ -28,7 +28,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from app.database import get_robot_db
-from app.models import MotionSequence
+from app.models import MotionSequence, iso_utc
 from app.hardware.camera_stream import camera as camera_hw
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1282,8 +1282,8 @@ async def get_sequences(db: AsyncSession = Depends(get_robot_db)) -> list[dict]:
             "name": s.name,
             "description": s.description,
             "waypoints": wps,
-            "created_at": s.created_at.isoformat() if s.created_at else None,
-            "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+            "created_at": iso_utc(s.created_at),
+            "updated_at": iso_utc(s.updated_at),
         })
     return out
 

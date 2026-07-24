@@ -47,6 +47,8 @@ const STATE_TONE: Record<string, string> = {
   ERROR: "bg-rose-500/15 text-rose-700",
   CHARGING: "bg-sky-500/15 text-sky-700",
   RETURNING: "bg-violet-500/15 text-violet-700",
+  INTERACTING: "bg-fuchsia-500/15 text-fuchsia-700",
+  SECURITY_PATROL: "bg-teal-500/15 text-teal-700",
 };
 
 const ORDER_STATUS_LABEL: Record<string, string> = {
@@ -63,7 +65,21 @@ const FLEET_STATE_COLOR = {
   working: "#f59e0b",
   charging: "#0ea5e9",
   error: "#f43f5e",
+  stale: "#94a3b8",
 } as const;
+
+// 로봇 한 대가 정확히 한 버킷에만 들어가도록 우선순위로 가른다(끊김 최우선).
+// 카드 배지와 **같은 `state`** 만 본다 — `busy`(작업 배정 여부)는 안 본다. 그걸 섞으면
+// 같은 PATROL 로봇이 배정 유무로 가용/작업중으로 갈려 상태화면(FMS)과 어긋난다.
+// PATROL·SECURITY_PATROL 은 대기 가능 용량이라 가용, 실제 배달(WORKING)만 작업중.
+// stale 은 별도 버킷으로 세어 도넛 합계 == 로봇 수.
+function fleetBucket(r: RobotRow): keyof typeof FLEET_STATE_COLOR {
+  if (r.stale) return "stale";
+  if (r.state === "ERROR") return "error";
+  if (r.state === "CHARGING" || r.state === "RETURNING") return "charging";
+  if (r.state === "WORKING") return "working";
+  return "available";
+}
 
 function RobotsPage() {
   const [robots, setRobots] = useState<RobotRow[]>([]);
@@ -90,36 +106,19 @@ function RobotsPage() {
     return () => clearInterval(t);
   }, []);
 
+  const fleetCounts = robots.reduce(
+    (acc, r) => {
+      acc[fleetBucket(r)] += 1;
+      return acc;
+    },
+    { available: 0, working: 0, charging: 0, error: 0, stale: 0 },
+  );
   const fleetChart = [
-    {
-      label: "가용",
-      value: robots.filter(
-        (r) =>
-          !r.busy &&
-          !r.stale &&
-          r.state !== "ERROR" &&
-          r.state !== "CHARGING" &&
-          r.state !== "RETURNING",
-      ).length,
-      color: FLEET_STATE_COLOR.available,
-    },
-    {
-      label: "작업중",
-      value: robots.filter((r) => r.busy).length,
-      color: FLEET_STATE_COLOR.working,
-    },
-    {
-      label: "충전중",
-      value: robots.filter(
-        (r) => r.state === "CHARGING" || r.state === "RETURNING",
-      ).length,
-      color: FLEET_STATE_COLOR.charging,
-    },
-    {
-      label: "오류",
-      value: robots.filter((r) => r.state === "ERROR").length,
-      color: FLEET_STATE_COLOR.error,
-    },
+    { label: "가용", value: fleetCounts.available, color: FLEET_STATE_COLOR.available },
+    { label: "작업중", value: fleetCounts.working, color: FLEET_STATE_COLOR.working },
+    { label: "충전중", value: fleetCounts.charging, color: FLEET_STATE_COLOR.charging },
+    { label: "오류", value: fleetCounts.error, color: FLEET_STATE_COLOR.error },
+    { label: "끊김", value: fleetCounts.stale, color: FLEET_STATE_COLOR.stale },
   ];
 
   const orderFor = (robotName: string) =>

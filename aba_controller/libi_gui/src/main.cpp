@@ -10,6 +10,7 @@
 
 #include "PerceptionClient.h"
 #include "RobotController.h"
+#include "RosLink.h"
 
 // 검증용: 각 화면을 순회하며 PNG 로 캡처 (live 디스플레이에서 grabWindow)
 // 사용:  libi_gui --shots [출력디렉토리]
@@ -59,6 +60,9 @@ int main(int argc, char *argv[]) {
 
     RobotController controller;
     PerceptionClient perception;
+
+    RosLink ros;
+    controller.attachRos(&ros);
 
     // 추종 중에 GUI 가 꺼지면 FMS 에 승인 기록이 남아, 다음 기동 때 "이미 추종 중" 으로
     // 거부당한다. 종료 직전에 해제를 보내 그 상태를 만들지 않는다.

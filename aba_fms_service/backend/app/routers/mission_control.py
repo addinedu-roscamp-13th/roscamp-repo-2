@@ -3,10 +3,15 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+import subprocess
+import sys
 import urllib.error
 import urllib.request
 import time
+from pathlib import Path
 from typing import Any
+
+import yaml
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel, Field
@@ -418,6 +423,61 @@ async def save_waypoints(body: WaypointSaveRequest, robot_id: int = Query(...), 
     if res is None:
         raise HTTPException(status_code=503, detail="로봇과 ROS 링크가 연결되지 않았습니다")
     return res
+
+
+# ── 단일 공유 내비 그래프 ────────────────────────────────────────────────────
+#
+# 로봇별(위 waypoint_get/save)이 아니라 **정본 waypoint.yaml 하나**를 편집한다.
+# 정본 = 로봇 nav 패키지의 waypoint.yaml (fleet_node navgraph 의 원본). 저장하면 그 파일에
+# 쓰고 fleet_node navgraph 를 재생성한다. 반영은 **재기동 시**(런타임 push/reload 없음 — 의도):
+# fleet_node 는 재생성된 navgraph 를, 로봇은 이 waypoint.yaml 을 다음 기동에 읽는다.
+# (로봇이 install/ 사본을 읽으면 colcon 빌드/배포로 동기화 필요 — 실물 배포 시 유의.)
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+_SHARED_WAYPOINT = (
+    _REPO_ROOT
+    / "aba_controller/libi_drive_controller/ros_ws/src/pinky_pro"
+    / "pinky_navigation/params/waypoint.yaml"
+)
+_GEN_NAVGRAPH = _REPO_ROOT / "scripts/gen_arte2_navgraph.py"
+
+
+@router.get("/waypoints/shared")
+async def get_shared_waypoints(_admin: Admin = Depends(get_current_admin)):
+    """단일 공유 내비 그래프 조회 — 정본 waypoint.yaml. 로봇 선택과 무관."""
+    if not _SHARED_WAYPOINT.exists():
+        raise HTTPException(status_code=404, detail="공유 waypoint.yaml 을 찾을 수 없습니다")
+    data = yaml.safe_load(_SHARED_WAYPOINT.read_text()) or {}
+    return {"vertices": data.get("vertices", {}), "lanes": data.get("lanes", [])}
+
+
+@router.put("/waypoints/shared")
+async def save_shared_waypoints(
+    body: WaypointSaveRequest, _admin: Admin = Depends(get_current_admin)
+):
+    """단일 공유 내비 그래프 저장 — 정본 waypoint.yaml 에 쓰고 fleet_node navgraph 재생성.
+
+    반영은 **재기동 시**: fleet_node 는 재생성된 navgraph 를, 로봇은 이 waypoint.yaml 을
+    다음 기동에 읽는다. 런타임 push/reload 는 하지 않는다(의도).
+    """
+    doc = {"vertices": body.vertices, "lanes": body.lanes}
+    header = (
+        "# waypoint.yaml — 내비 그래프 (vertices + lanes)\n"
+        "# 관제 웨이포인트 에디터가 쓰는 단일 공유 정본. 고치면 fleet_node navgraph 도\n"
+        "# 재생성된다(scripts/gen_arte2_navgraph.py). 반영은 각자 재기동 시.\n\n"
+    )
+    _SHARED_WAYPOINT.write_text(
+        header + yaml.safe_dump(doc, allow_unicode=True, sort_keys=False)
+    )
+
+    try:
+        r = subprocess.run(
+            [sys.executable, str(_GEN_NAVGRAPH)],
+            cwd=str(_REPO_ROOT), capture_output=True, text=True, timeout=30,
+        )
+        regen = {"ok": r.returncode == 0, "detail": (r.stdout or r.stderr).strip()[-300:]}
+    except Exception as e:  # noqa: BLE001 — 저장 자체는 성공했으므로 재생성 실패만 알린다
+        regen = {"ok": False, "detail": str(e)}
+    return {"ok": True, "vertices": len(body.vertices), "navgraph_regenerated": regen}
 
 
 @router.post("/waypoints/{name}/goto")

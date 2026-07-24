@@ -125,7 +125,7 @@ class StateIO:
         self._bb = py_trees.blackboard.Client(name="state_io")
         for key in (Keys.CURRENT_MODE, Keys.ERROR_CODE, Keys.HOLD_UNTIL):
             self._bb.register_key(key=key, access=Access.WRITE)
-        for key in (Keys.BATTERY_PERCENT, Keys.IS_DOCKED):
+        for key in (Keys.BATTERY_PERCENT, Keys.IS_DOCKED, Keys.INTERACTING_REMAINING):
             self._bb.register_key(key=key, access=Access.READ)
 
     def _read(self, key, default=None):
@@ -159,7 +159,11 @@ class StateIO:
         except (ValueError, TypeError):
             return
         # 이 노드는 로봇 한 대만 담당한다 — 남의 요청은 무시.
-        if payload.get("robot_id") not in (self._robot_id, None, ""):
+        # 공유 토픽(/libi/fsm_transition_request)이 모든 로봇 도메인에 뿌려지므로,
+        # robot_id 가 내 것과 **정확히** 같을 때만 받는다. 빈/None 이면 거부한다 —
+        # 예전엔 그걸 통과시켜, robot_id 없는 요청 한 건이 전 로봇을 동시에 전이시켰다.
+        # 서버(fsm_link.request_transition)는 항상 특정 robot_id 를 실어 보낸다.
+        if payload.get("robot_id") != self._robot_id:
             return
         cmd_id = payload.get("id")
         if not cmd_id:
@@ -206,6 +210,10 @@ class StateIO:
         led = String(); led.data = current                       # LED 는 이름 원문만 본다
         self._led_pub.publish(led)
 
+        # remaining_sec 은 INTERACTING 일 때만 의미가 있다(UiSessionTimer 가 그 브랜치에서만
+        # 쓴다). 다른 상태에선 0.0 으로 내보내 패널이 남은 카운트다운을 오인하지 않게 한다.
+        remaining = self._read(Keys.INTERACTING_REMAINING) if current == "INTERACTING" else 0.0
+
         state = String()
         state.data = json.dumps({
             "robot_id": self._robot_id,
@@ -214,6 +222,7 @@ class StateIO:
             "error_code": error_code,
             "battery_percent": battery,
             "is_docked": docked,
+            "remaining_sec": round(float(remaining or 0.0), 1),
         }, ensure_ascii=False)
         self._state_pub.publish(state)
 

@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import fsm_audit, fsm_link, fsm_model
 from app.database import get_admin_db
 from app.deps import get_current_admin
-from app.models import Admin
+from app.models import Admin, iso_utc
 from app.security import decode_token
 
 router = APIRouter(prefix="/api/fsm", tags=["fsm"])
@@ -53,6 +53,12 @@ class TransitionRequest(BaseModel):
     robot_id: str = Field(..., min_length=1, max_length=40)
     target_state: str = Field(..., min_length=1, max_length=24)
     force: bool = False
+
+
+class SetSimBatteryRequest(BaseModel):
+    robot_id: str = Field(..., min_length=1, max_length=40, description="로그용")
+    domain_id: int = Field(..., ge=0, le=232, description="대상 sim 로봇의 ROS_DOMAIN_ID")
+    value: float = Field(..., ge=0.0, le=100.0)
 
 
 @dataclass
@@ -135,7 +141,7 @@ async def get_history(
                 "accepted": r.accepted,
                 "reason": r.reason,
                 "admin_username": r.admin_username,
-                "created_at": r.created_at.isoformat(),
+                "created_at": iso_utc(r.created_at),
             }
             for r in rows
         ],
@@ -227,6 +233,28 @@ async def post_transition(
     )
 
     return {"accepted": outcome.accepted, "current_state": result_state, "reason": reason}
+
+
+@router.post("/sim_battery")
+async def set_sim_battery(
+    body: SetSimBatteryRequest,
+    admin: Admin = Depends(get_current_admin),
+):
+    """[sim 전용] 로봇 도메인의 sim 배터리 소스에 잔량을 강제 설정한다.
+
+    FSM 배터리는 로봇이 발행하는 값이라 서버가 직접 못 바꾼다 — sim_battery.py 의
+    `/sim_battery/set` 에 값을 밀어 넣어 전이 임계값(≤15% / ≥80%)을 실제로 밟아 본다.
+    실물 로봇엔 구독자가 없어 delivered=False 로 돌아온다.
+    """
+    result = await asyncio.to_thread(
+        fsm_link.set_sim_battery, body.domain_id, body.value
+    )
+    log.info(
+        "sim 배터리 설정 — 관리자=%s 로봇=%s 도메인=%d 값=%.0f%% delivered=%s",
+        admin.username, body.robot_id, body.domain_id, body.value,
+        result.get("delivered"),
+    )
+    return {"ok": result.get("ok", False), **result}
 
 
 @router.websocket("/ws/state")

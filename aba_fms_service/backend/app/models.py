@@ -20,6 +20,21 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def iso_utc(dt: datetime | None) -> str | None:
+    """UTC 표식을 붙여 ISO 로 직렬화한다. None 은 그대로 None.
+
+    시각은 `_now` 로 **UTC 저장**되는데 MariaDB 가 tz 를 버려 naive 로 돌아온다. 그대로
+    `isoformat()` 하면 표식이 없어 프론트가 로컬로 오해해 KST(+9h) 어긋난다(오후 6시가
+    오전 9시로). naive 면 UTC 로 못박아 프론트(`new Date().toLocaleTimeString()`)가 로컬로
+    제대로 변환하게 한다.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
+
 class Admin(AdminBase):
     __tablename__ = "rc_admins"
 
