@@ -248,12 +248,38 @@ def dashboard(db: Session = Depends(get_db), _: AdminUser = Depends(get_current_
 
 
 @router.get("/robots")
-def robots(_: AdminUser = Depends(get_current_admin)):
-    """로봇별 상태·배터리·현재 작업·위치. FMS 가 죽어도 linked:false 로 응답한다."""
+def robots(
+    db: Session = Depends(get_db), _: AdminUser = Depends(get_current_admin)
+):
+    """로봇별 상태·배터리·현재 작업·위치. FMS 가 죽어도 linked:false 로 응답한다.
+
+    로봇이 하나도 안 잡히면(FMS 미연결 포함) `/dashboard` 와 같은 이유로 DemoRobotState 로
+    대체한다 — 실제 텔레메트리가 하나라도 있으면 이 분기는 절대 타지 않는다.
+    """
     ok, snap = fms_client.fleet_snapshot()
+    robots = snap.get("robots", []) if ok else []
+    if not robots:
+        robots = [
+            {
+                "name": name,
+                "x": None,
+                "y": None,
+                "state": state,
+                "battery": None,
+                "busy": state == "WORKING",
+                "stale": False,
+                "task_id": "",
+                "task_state": "",
+                "progress": 0,
+                "goal_vertex": None,
+            }
+            for name, state in db.execute(
+                select(DemoRobotState.robot, DemoRobotState.state)
+            ).all()
+        ]
     return {
         "linked": ok,
-        "robots": snap.get("robots", []) if ok else [],
+        "robots": robots,
         "plugins": snap.get("plugins", {}) if ok else {},
     }
 
