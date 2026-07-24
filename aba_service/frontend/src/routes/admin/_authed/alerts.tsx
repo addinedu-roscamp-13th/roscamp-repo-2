@@ -109,7 +109,7 @@ function AlertsPage() {
 
   return (
     <AdminShell title="작업 알림 · 로그">
-      <div className="space-y-4">
+      <div className="flex h-full flex-col gap-4">
         {err ? (
           <p className="rounded-lg bg-rose-500/10 px-3 py-2 text-sm text-rose-700">
             {err}
@@ -118,7 +118,7 @@ function AlertsPage() {
 
         {/* 미확인 침입 — 가장 위 */}
         {alerts && alerts.intrusions.length > 0 ? (
-          <section className="rounded-lg border border-rose-300 bg-rose-500/5 p-4">
+          <section className="shrink-0 rounded-lg border border-rose-300 bg-rose-500/5 p-4">
             <h3 className="mb-2 text-sm font-semibold text-rose-700">
               미확인 침입 알림 {alerts.intrusions.length}건
             </h3>
@@ -153,7 +153,7 @@ function AlertsPage() {
         ) : null}
 
         {/* 최근 작업 알림 */}
-        <section className="rounded-lg border p-4">
+        <section className="shrink-0 rounded-lg border p-4">
           <h3 className="mb-2 text-sm font-semibold">
             최근 작업 알림{" "}
             <span className="text-xs font-normal text-muted-foreground">
@@ -197,7 +197,7 @@ function AlertsPage() {
         </section>
 
         {/* 로그 */}
-        <section className="rounded-lg border p-4">
+        <section className="flex min-h-0 flex-1 flex-col rounded-lg border p-4">
           <div className="mb-3 flex items-center gap-2">
             <h3 className="text-sm font-semibold">작업 결과 로그</h3>
             {(["", "COMPLETED", "FAILED"] as const).map((f) => (
@@ -214,7 +214,7 @@ function AlertsPage() {
               </button>
             ))}
           </div>
-          <div className="overflow-x-auto">
+          <div className="min-h-0 flex-1 overflow-auto">
             <table className="w-full text-sm">
               <thead className="text-left text-xs text-muted-foreground">
                 <tr>

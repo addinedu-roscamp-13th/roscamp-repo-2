@@ -92,7 +92,7 @@ function ApprovalsPage() {
 
   return (
     <AdminShell title="대여 승인">
-      <div className="space-y-4">
+      <div className="flex h-full flex-col gap-4">
         {msg ? (
           <p className="rounded-lg bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700">
             {msg}
@@ -104,7 +104,7 @@ function ApprovalsPage() {
           </p>
         ) : null}
 
-        <section className="rounded-lg border p-4">
+        <section className="flex min-h-0 flex-[2] flex-col rounded-lg border p-4">
           <h3 className="text-sm font-semibold">
             승인 대기{" "}
             <span className="text-xs font-normal text-muted-foreground">
@@ -116,7 +116,7 @@ function ApprovalsPage() {
             아무 일도 일어나지 않습니다.
           </p>
 
-          <div className="mt-3 space-y-2">
+          <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto">
             {pending.length === 0 ? (
               <p className="rounded-md border border-dashed px-3 py-6 text-center text-sm text-muted-foreground">
                 대기 중인 대여 신청이 없습니다
@@ -175,14 +175,14 @@ function ApprovalsPage() {
           </div>
         </section>
 
-        <section className="rounded-lg border p-4">
+        <section className="flex min-h-0 flex-1 flex-col rounded-lg border p-4">
           <h3 className="mb-3 text-sm font-semibold">
             최근 처리{" "}
             <span className="text-xs font-normal text-muted-foreground">
               ({recent.length}건)
             </span>
           </h3>
-          <div className="overflow-x-auto">
+          <div className="min-h-0 flex-1 overflow-auto">
             <table className="w-full text-sm">
               <thead className="text-left text-xs text-muted-foreground">
                 <tr>

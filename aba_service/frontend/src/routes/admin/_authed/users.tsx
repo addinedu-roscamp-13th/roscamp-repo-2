@@ -174,8 +174,8 @@ function UsersPage() {
 
   return (
     <AdminShell title="관리자 목록">
-      <div className="space-y-4">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex h-full flex-col gap-4">
+        <div className="shrink-0 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -197,7 +197,7 @@ function UsersPage() {
           </Button>
         </div>
 
-        <div className="rounded-xl border border-border bg-card">
+        <div className="min-h-0 flex-1 overflow-y-auto rounded-xl border border-border bg-card">
           <Table>
             <TableHeader>
               <TableRow>
