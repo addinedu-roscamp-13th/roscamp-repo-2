@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 
 import { AdminShell } from "@/components/admin/AdminShell";
+import { TaskBookPickerDialog } from "@/components/admin/TaskBookPickerDialog";
 import { NAMED_WAYPOINTS } from "@/lib/map-waypoints";
 import {
   ops,
@@ -38,6 +39,15 @@ const STATUS_TONE: Record<string, string> = {
   COMPLETED: "bg-emerald-500/15 text-emerald-700",
   FAILED: "bg-rose-500/15 text-rose-700",
   CANCELLED: "bg-muted text-muted-foreground",
+};
+
+const STATUS_LABEL: Record<string, string> = {
+  PENDING: "대기",
+  ASSIGNED: "배차됨",
+  EXECUTING: "수행중",
+  COMPLETED: "완료",
+  FAILED: "실패",
+  CANCELLED: "취소",
 };
 
 /** 진행 중인 작업이 먼저 보이도록 — 현장에서 지금 뭘 봐야 하는지가 목록 위에 온다. */
@@ -80,6 +90,10 @@ function TasksPage() {
   const [dropoff, setDropoff] = useState(DESTS[0]?.name ?? "");
   const [robot, setRobot] = useState("");
 
+  // 짐꾼(porter)은 libi_gui 쪽 전용 기능이라 사서 admin 화면에서는 선택지에서 뺀다.
+  // 백엔드 TASK_KINDS 는 그대로 둔다(다른 경로에서 여전히 유효한 종류).
+  const visibleKinds = kinds.filter((k) => k.key !== "porter");
+
   // 고른 종류의 정의 — 어떤 칸을 보여줄지, 주문인지 모드 변경인지가 여기서 나온다.
   const spec = kinds.find((k) => k.key === kind);
   const shows = (field: string) => spec?.fields.includes(field) ?? false;
@@ -89,6 +103,7 @@ function TasksPage() {
   // 사서가 "이 책 어느 서가더라"를 외우지 않아도 되고, 오타로 엉뚱한 정점에 보내는 일도 없다.
   const [books, setBooks] = useState<AdminBook[]>([]);
   const [pickupAuto, setPickupAuto] = useState<string | null>(null);
+  const [bookPickerOpen, setBookPickerOpen] = useState(false);
 
   // 상태 우선 정렬 — 지금 뛰고 있는 작업이 큐 맨 위로 온다.
   const sortedOrders = [...orders].sort(
@@ -137,6 +152,7 @@ function TasksPage() {
   const ready = (() => {
     if (!spec || !linked) return false;
     if (spec.mode === "state") return !!robot; // 복귀·순찰은 대상 로봇이 필수
+    if (kind === "sort") return true; // 분류는 로봇 배정만 하면 된다(위치 고정)
     if (shows("book") && !book.trim()) return false;
     if (shows("cargo") && !cargo.trim()) return false;
     if (shows("pickup") && !pickup) return false;
@@ -144,18 +160,26 @@ function TasksPage() {
     return true;
   })();
 
+  const SORT_FIXED_WAYPOINT = "테이블-1번-좌";
+
   const submit = async () => {
     setErr(null);
     setMsg(null);
     if (!spec) return;
     try {
       // 안 쓰는 칸은 아예 보내지 않는다 — 「정리」에 책 이름이 실리면 로봇이 집으러 간다.
+      // 「분류」는 출발지/목적지가 항상 같은 고정 지점이라(진짜 반납함/분류대
+      // waypoint 가 아직 없어 임시로 재사용) 화면에서 고르지 않고 여기서 채운다.
       const res = await ops.createTask({
         kind,
         ...(shows("book") ? { book } : {}),
         ...(shows("cargo") ? { cargo } : {}),
-        ...(shows("pickup") ? { pickup } : {}),
-        ...(shows("dropoff") ? { dropoff } : {}),
+        ...(kind === "sort"
+          ? { pickup: SORT_FIXED_WAYPOINT, dropoff: SORT_FIXED_WAYPOINT }
+          : {
+              ...(shows("pickup") ? { pickup } : {}),
+              ...(shows("dropoff") ? { dropoff } : {}),
+            }),
         robot,
       });
 
@@ -210,7 +234,7 @@ function TasksPage() {
           </p>
 
           <div className="mt-3 flex flex-wrap gap-1.5">
-            {kinds.map((k) => (
+            {visibleKinds.map((k) => (
               <button
                 key={k.key}
                 onClick={() => setKind(k.key)}
@@ -234,22 +258,17 @@ function TasksPage() {
           <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             {shows("book") ? (
               <Labeled label="대상 도서">
-                <input
-                  value={book}
-                  onChange={(e) => onBookChange(e.target.value)}
-                  list="ops-book-list"
-                  placeholder="도서 제목 (고르면 서가 자동)"
-                  className="h-9 w-full rounded-md border px-3 text-sm outline-none focus:ring-2 focus:ring-primary"
-                />
-                {/* 도서 목록을 datalist 로 — 고르면 위 onBookChange 가 출발지를 채운다 */}
-                <datalist id="ops-book-list">
-                  {books.map((b) => (
-                    <option key={b.id} value={b.title_kr}>
-                      {b.author} · {b.zone}
-                      {b.in_stock ? "" : " (대출 중)"}
-                    </option>
-                  ))}
-                </datalist>
+                <button
+                  type="button"
+                  onClick={() => setBookPickerOpen(true)}
+                  className="flex h-9 w-full items-center rounded-md border px-3 text-left text-sm outline-none hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-primary"
+                >
+                  {book || (
+                    <span className="text-muted-foreground">
+                      클릭해서 도서 선택 (고르면 출발지 자동)
+                    </span>
+                  )}
+                </button>
               </Labeled>
             ) : null}
 
@@ -264,7 +283,7 @@ function TasksPage() {
               </Labeled>
             ) : null}
 
-            {shows("pickup") ? (
+            {shows("pickup") && kind !== "sort" ? (
               <Labeled label="출발지 — 집을 곳">
                 <select
                   value={pickup}
@@ -288,7 +307,7 @@ function TasksPage() {
               </Labeled>
             ) : null}
 
-            {shows("dropoff") ? (
+            {shows("dropoff") && kind !== "sort" ? (
               <Labeled label={DROPOFF_LABEL[kind] ?? "목적지"}>
                 <select
                   value={dropoff}
@@ -301,6 +320,14 @@ function TasksPage() {
                     </option>
                   ))}
                 </select>
+              </Labeled>
+            ) : null}
+
+            {kind === "sort" ? (
+              <Labeled label="위치 (자동)">
+                <p className="flex h-9 items-center rounded-md border bg-muted px-3 text-sm text-muted-foreground">
+                  {SORT_FIXED_WAYPOINT} (반납함 ↔ 분류대 고정)
+                </p>
               </Labeled>
             ) : null}
 
@@ -324,11 +351,20 @@ function TasksPage() {
                 <option value="">
                   {isModeChange ? "— 로봇을 고르세요 —" : "— 자동 배차 —"}
                 </option>
-                {robots.map((r) => (
-                  <option key={r.name} value={r.name}>
-                    {r.name} ({r.state ?? "상태미상"})
-                  </option>
-                ))}
+                {robots.map((r) => {
+                  const available = !r.busy && !r.stale && r.state !== "ERROR";
+                  return (
+                    <option
+                      key={r.name}
+                      value={r.name}
+                      disabled={!available}
+                      style={{ fontWeight: available ? 700 : 400 }}
+                    >
+                      {r.name} ({r.state ?? "상태미상"})
+                      {available ? "" : " — 배차 불가"}
+                    </option>
+                  );
+                })}
               </select>
             </Labeled>
           </div>
@@ -340,6 +376,13 @@ function TasksPage() {
           >
             {isModeChange ? `${spec?.label} 지시 (모드 변경)` : "작업 지시"}
           </button>
+
+          <TaskBookPickerDialog
+            open={bookPickerOpen}
+            books={books}
+            onClose={() => setBookPickerOpen(false)}
+            onPick={(b) => onBookChange(b.title_kr)}
+          />
         </section>
 
         {/* 큐 · 이력 */}
@@ -380,12 +423,17 @@ function TasksPage() {
                     );
                     return (
                       <tr key={o.id} className="border-t align-top">
-                        <td className="py-2 pr-3 font-mono text-xs">{o.id}</td>
+                        <td
+                          className="py-2 pr-3 font-mono text-xs"
+                          title={o.id}
+                        >
+                          {o.id.slice(0, 8)}
+                        </td>
                         <td className="py-2 pr-3">
                           <span
                             className={`rounded px-1.5 py-0.5 text-xs font-bold ${STATUS_TONE[o.status] ?? ""}`}
                           >
-                            {o.status}
+                            {STATUS_LABEL[o.status] ?? o.status}
                           </span>
                         </td>
                         <td className="py-2 pr-3 text-xs">{o.robot ?? "—"}</td>
