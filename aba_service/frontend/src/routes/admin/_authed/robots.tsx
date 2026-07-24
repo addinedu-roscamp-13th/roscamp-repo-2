@@ -95,7 +95,11 @@ function RobotsPage() {
       label: "가용",
       value: robots.filter(
         (r) =>
-          !r.busy && !r.stale && r.state !== "ERROR" && r.state !== "CHARGING",
+          !r.busy &&
+          !r.stale &&
+          r.state !== "ERROR" &&
+          r.state !== "CHARGING" &&
+          r.state !== "RETURNING",
       ).length,
       color: FLEET_STATE_COLOR.available,
     },
@@ -139,7 +143,7 @@ function RobotsPage() {
           </p>
         ) : null}
 
-        <div className="shrink-0">
+        <div className="h-40 shrink-0">
           <MiniDonut title="로봇 상태" data={fleetChart} />
         </div>
 
