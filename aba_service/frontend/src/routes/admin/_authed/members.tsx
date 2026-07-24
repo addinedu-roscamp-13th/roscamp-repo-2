@@ -6,11 +6,16 @@ import {
   useState,
   type FormEvent,
 } from "react";
-import { Pencil, Trash2 } from "lucide-react";
+import { Pencil, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { AdminShell } from "@/components/admin/AdminShell";
 import { ConfirmDeleteDialog } from "@/components/admin/ConfirmDeleteDialog";
+import { StackedStatusBar } from "@/components/admin/charts";
+import {
+  SortIcon,
+  useSortableTable,
+} from "@/components/admin/useSortableTable";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -94,6 +99,13 @@ async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 const fmt = (iso: string) => iso.slice(0, 10);
 
+const MEMBER_STATUS_COLOR = { active: "#10b981", inactive: "#94a3b8" } as const;
+const LOAN_STATUS_COLOR = {
+  normal: "#f59e0b",
+  overdue: "#f43f5e",
+  none: "#94a3b8",
+} as const;
+
 function MembersPage() {
   const [members, setMembers] = useState<MemberRow[]>([]);
   const [loans, setLoans] = useState<LoanRow[]>([]);
@@ -104,7 +116,8 @@ function MembersPage() {
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // 회원 등록
+  // 회원 등록 (다이얼로그)
+  const [createOpen, setCreateOpen] = useState(false);
   const [newUsername, setNewUsername] = useState("");
   const [newFullName, setNewFullName] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -179,6 +192,7 @@ function MembersPage() {
       setNewUsername("");
       setNewFullName("");
       setNewPassword("");
+      setCreateOpen(false);
       await load();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "회원 등록에 실패했습니다");
@@ -244,102 +258,142 @@ function MembersPage() {
   );
   const overdue = activeLoans.filter((l) => l.overdue);
 
+  // 상단 stat 차트 — 회원 활성/비활성, 대출 상태(정상/연체/미대출)는 회원 단위로 집계.
+  const overdueMemberIds = useMemo(
+    () => new Set(overdue.map((l) => l.member_id)),
+    [overdue],
+  );
+  const loanStatusCounts = useMemo(() => {
+    let normal = 0;
+    let lateCount = 0;
+    let none = 0;
+    for (const m of members) {
+      if (overdueMemberIds.has(m.id)) lateCount++;
+      else if (m.active_loans > 0) normal++;
+      else none++;
+    }
+    return { normal, overdue: lateCount, none };
+  }, [members, overdueMemberIds]);
+  const activeMemberCount = members.filter((m) => m.is_active).length;
+
+  // 헤더클릭 정렬 — 관리(작업) 칼럼은 comparator 를 등록하지 않아 자연히 정렬 불가.
+  const {
+    sorted: sortedMembers,
+    sortKey,
+    direction,
+    toggle,
+  } = useSortableTable<MemberRow>(members, {
+    username: (a, b) => a.username.localeCompare(b.username),
+    full_name: (a, b) => (a.full_name ?? "").localeCompare(b.full_name ?? ""),
+    is_active: (a, b) => Number(a.is_active) - Number(b.is_active),
+    active_loans: (a, b) => a.active_loans - b.active_loans,
+    total_loans: (a, b) => a.total_loans - b.total_loans,
+  });
+
+  const Th = ({ label, sortk }: { label: string; sortk?: string }) => (
+    <th
+      className={`pb-2 pr-3 ${sortk ? "cursor-pointer select-none hover:text-foreground" : ""}`}
+      onClick={sortk ? () => toggle(sortk) : undefined}
+    >
+      {label}
+      {sortk ? (
+        <SortIcon active={sortKey === sortk} direction={direction} />
+      ) : null}
+    </th>
+  );
+
   return (
     <AdminShell title="회원 · 대여/반납">
-      <div className="space-y-4">
-        {/* 요약 */}
-        <div className="flex flex-wrap gap-6 rounded-lg border bg-muted/30 p-4">
-          <Stat label="회원" value={members.length} />
-          <Stat label="대출 중" value={activeLoans.length} />
-          <Stat
-            label="연체"
-            value={overdue.length}
-            tone={overdue.length ? "bad" : undefined}
+      <div className="flex h-full flex-col gap-4">
+        {/* 상단 stat 차트 */}
+        <div className="grid shrink-0 grid-cols-1 gap-3 sm:grid-cols-[1fr_1fr_auto]">
+          <StackedStatusBar
+            rows={[
+              {
+                label: "회원 상태",
+                values: {
+                  active: activeMemberCount,
+                  inactive: members.length - activeMemberCount,
+                },
+              },
+            ]}
+            segments={[
+              {
+                key: "active",
+                label: "활성",
+                color: MEMBER_STATUS_COLOR.active,
+              },
+              {
+                key: "inactive",
+                label: "비활성",
+                color: MEMBER_STATUS_COLOR.inactive,
+              },
+            ]}
+            unit="명"
           />
-          <Stat label="누적 대출" value={loans.length} />
+          <StackedStatusBar
+            rows={[{ label: "대출 상태", values: loanStatusCounts }]}
+            segments={[
+              {
+                key: "normal",
+                label: "정상대출",
+                color: LOAN_STATUS_COLOR.normal,
+              },
+              {
+                key: "overdue",
+                label: "연체",
+                color: LOAN_STATUS_COLOR.overdue,
+              },
+              { key: "none", label: "미대출", color: LOAN_STATUS_COLOR.none },
+            ]}
+            unit="명"
+          />
+          <div className="flex flex-col justify-center rounded-lg border bg-muted/30 px-4 py-2">
+            <span className="text-xl font-semibold tabular-nums">
+              {loans.length}
+            </span>
+            <span className="text-xs text-muted-foreground">누적 대출</span>
+          </div>
         </div>
 
         {msg ? (
-          <p className="rounded-lg bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700">
+          <p className="shrink-0 rounded-lg bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700">
             {msg}
           </p>
         ) : null}
         {err ? (
-          <p className="rounded-lg bg-rose-500/10 px-3 py-2 text-sm text-rose-700">
+          <p className="shrink-0 rounded-lg bg-rose-500/10 px-3 py-2 text-sm text-rose-700">
             {err}
           </p>
         ) : null}
 
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
-          {/* 회원 관리: 등록 + 목록(수정/비활성화) */}
-          <section className="rounded-lg border p-4">
-            <h3 className="mb-3 text-sm font-semibold">회원 관리</h3>
-
-            {/* 회원 등록 */}
-            <form
-              onSubmit={createMember}
-              className="mb-4 grid gap-2 rounded-md border border-dashed p-3 sm:grid-cols-3"
-            >
-              <div className="sm:col-span-1">
-                <Label htmlFor="new-username" className="text-xs">
-                  아이디
-                </Label>
-                <Input
-                  id="new-username"
-                  value={newUsername}
-                  onChange={(e) => setNewUsername(e.target.value)}
-                  required
-                  className="mt-1 h-8 text-sm"
-                />
-              </div>
-              <div className="sm:col-span-1">
-                <Label htmlFor="new-fullname" className="text-xs">
-                  이름 (선택)
-                </Label>
-                <Input
-                  id="new-fullname"
-                  value={newFullName}
-                  onChange={(e) => setNewFullName(e.target.value)}
-                  className="mt-1 h-8 text-sm"
-                />
-              </div>
-              <div className="sm:col-span-1">
-                <Label htmlFor="new-password" className="text-xs">
-                  비밀번호
-                </Label>
-                <Input
-                  id="new-password"
-                  type="password"
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  required
-                  className="mt-1 h-8 text-sm"
-                />
-              </div>
-              <div className="sm:col-span-3">
-                <Button type="submit" size="sm" disabled={creating}>
-                  {creating ? "등록 중..." : "회원 등록"}
-                </Button>
-              </div>
-            </form>
+        <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
+          {/* 회원 관리: 목록(정렬/수정/비활성화) */}
+          <section className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg border p-4">
+            <div className="mb-3 flex shrink-0 items-center justify-between">
+              <h3 className="text-sm font-semibold">회원 관리</h3>
+              <Button size="sm" onClick={() => setCreateOpen(true)}>
+                <Plus className="mr-1 size-3.5" /> 회원 추가
+              </Button>
+            </div>
 
             {loading ? (
               <p className="text-sm text-muted-foreground">불러오는 중...</p>
             ) : (
-              <div className="overflow-x-auto">
+              <div className="min-h-0 flex-1 overflow-y-auto">
                 <table className="w-full text-sm">
-                  <thead className="text-left text-xs text-muted-foreground">
+                  <thead className="sticky top-0 bg-background text-left text-xs text-muted-foreground">
                     <tr>
-                      <th className="pb-2 pr-3">아이디</th>
-                      <th className="pb-2 pr-3">이름</th>
-                      <th className="pb-2 pr-3">상태</th>
-                      <th className="pb-2 pr-3">대출중</th>
-                      <th className="pb-2 pr-3">누적</th>
+                      <Th label="아이디" sortk="username" />
+                      <Th label="이름" sortk="full_name" />
+                      <Th label="상태" sortk="is_active" />
+                      <Th label="대출중" sortk="active_loans" />
+                      <Th label="누적" sortk="total_loans" />
                       <th className="pb-2 pr-3">관리</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {members.map((m) => (
+                    {sortedMembers.map((m) => (
                       <tr
                         key={m.id}
                         onClick={() => setSelected(m.id)}
@@ -434,14 +488,14 @@ function MembersPage() {
           </section>
 
           {/* 선택 회원 상세 + 대여 처리 */}
-          <section className="rounded-lg border p-4">
+          <section className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg border p-4">
             {selected === null ? (
               <p className="py-10 text-center text-sm text-muted-foreground">
                 왼쪽에서 회원을 선택하면 대출 이력과 대여 처리가 나옵니다.
               </p>
             ) : (
               <>
-                <h3 className="mb-3 text-sm font-semibold">
+                <h3 className="mb-3 shrink-0 text-sm font-semibold">
                   {members.find((m) => m.id === selected)?.full_name ??
                     members.find((m) => m.id === selected)?.username}{" "}
                   <span className="text-xs font-normal text-muted-foreground">
@@ -449,7 +503,7 @@ function MembersPage() {
                   </span>
                 </h3>
 
-                <div className="mb-4 space-y-1">
+                <div className="mb-4 max-h-40 space-y-1 overflow-y-auto">
                   {memberLoans.length === 0 ? (
                     <p className="rounded border border-dashed p-3 text-xs text-muted-foreground">
                       대출 이력이 없습니다
@@ -501,15 +555,17 @@ function MembersPage() {
                 </div>
 
                 {/* 대여 처리 */}
-                <div className="border-t pt-3">
-                  <h4 className="mb-2 text-xs font-semibold">대여 처리</h4>
+                <div className="flex min-h-0 flex-1 flex-col border-t pt-3">
+                  <h4 className="mb-2 shrink-0 text-xs font-semibold">
+                    대여 처리
+                  </h4>
                   <input
                     value={bookQuery}
                     onChange={(e) => setBookQuery(e.target.value)}
                     placeholder="도서 제목 검색 (재고 있는 것만)"
-                    className="mb-2 h-9 w-full rounded-md border px-3 text-sm outline-none focus:ring-2 focus:ring-primary"
+                    className="mb-2 h-9 w-full shrink-0 rounded-md border px-3 text-sm outline-none focus:ring-2 focus:ring-primary"
                   />
-                  <div className="max-h-56 space-y-1 overflow-y-auto">
+                  <div className="min-h-0 flex-1 space-y-1 overflow-y-auto">
                     {books.map((b) => (
                       <div
                         key={b.id}
@@ -553,6 +609,66 @@ function MembersPage() {
           </section>
         </div>
       </div>
+
+      {/* 회원 등록 다이얼로그 */}
+      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>회원 추가</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={createMember} className="space-y-3">
+            <div>
+              <Label htmlFor="new-username" className="text-xs">
+                아이디
+              </Label>
+              <Input
+                id="new-username"
+                value={newUsername}
+                onChange={(e) => setNewUsername(e.target.value)}
+                required
+                className="mt-1"
+              />
+            </div>
+            <div>
+              <Label htmlFor="new-fullname" className="text-xs">
+                이름 (선택)
+              </Label>
+              <Input
+                id="new-fullname"
+                value={newFullName}
+                onChange={(e) => setNewFullName(e.target.value)}
+                className="mt-1"
+              />
+            </div>
+            <div>
+              <Label htmlFor="new-password" className="text-xs">
+                비밀번호
+              </Label>
+              <Input
+                id="new-password"
+                type="password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                required
+                className="mt-1"
+              />
+            </div>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setCreateOpen(false)}
+                disabled={creating}
+              >
+                취소
+              </Button>
+              <Button type="submit" disabled={creating}>
+                {creating ? "등록 중..." : "등록"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       {/* 회원 수정 다이얼로그 */}
       <Dialog open={!!editing} onOpenChange={(o) => !o && setEditing(null)}>
@@ -610,26 +726,5 @@ function MembersPage() {
         busy={deleting}
       />
     </AdminShell>
-  );
-}
-
-function Stat({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: number;
-  tone?: "bad";
-}) {
-  return (
-    <div className="flex flex-col">
-      <span
-        className={`text-xl font-semibold tabular-nums ${tone === "bad" ? "text-rose-600" : ""}`}
-      >
-        {value}
-      </span>
-      <span className="text-xs text-muted-foreground">{label}</span>
-    </div>
   );
 }
