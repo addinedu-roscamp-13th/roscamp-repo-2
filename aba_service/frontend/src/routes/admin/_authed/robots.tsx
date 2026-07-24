@@ -2,8 +2,14 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 
 import { AdminShell } from "@/components/admin/AdminShell";
+import { MiniDonut } from "@/components/admin/charts";
 import { MAP_IMAGE, WAYPOINTS } from "@/lib/map-waypoints";
-import { ops, type RobotRow } from "@/lib/ops-api";
+import {
+  ops,
+  type OrderRow,
+  type RobotRow,
+  type TaskKind,
+} from "@/lib/ops-api";
 
 export const Route = createFileRoute("/admin/_authed/robots")({
   head: () => ({ meta: [{ title: "LiBi Admin — 실시간 모니터링" }] }),
@@ -14,10 +20,11 @@ export const Route = createFileRoute("/admin/_authed/robots")({
  * 실시간 모니터링 — 로봇 상태·배터리·현재 작업 + 지도 위 위치.
  *
  * 지도 좌표는 `waypoint.yaml` 과 같은 계이므로, 로봇의 (x, y) 를 정규화해 그대로 찍으면
- * 실제 위치와 일치한다.
+ * 실제 위치와 일치한다. 화면 표시는 `LibraryMap.tsx` 와 같은 90°(+180°) 회전 규칙을
+ * 그대로 따른다 — 새로 유도하면 로봇 점이 벽 안쪽에 찍히는 사고가 난다.
  */
 
-/** 월드 좌표 → 지도 이미지 안의 정규화 좌표. `map-waypoints.ts` 생성 규칙과 같아야 한다. */
+/** 월드 좌표 → 지도 이미지 안의 정규화 좌표(세로 원본 기준, 0~1). */
 const ORIGIN_X = -0.184;
 const ORIGIN_Y = -1.949;
 const RES = 0.02;
@@ -26,6 +33,11 @@ const H = 108;
 
 function toNorm(x: number, y: number): { nx: number; ny: number } {
   return { nx: (x - ORIGIN_X) / (W * RES), ny: 1 - (y - ORIGIN_Y) / (H * RES) };
+}
+
+/** `LibraryMap.tsx` 와 동일한 회전 — (x, y) → (y, 1 − x). 세로 정규화 좌표를 가로 화면 좌표로. */
+function rotate(x: number, y: number): [number, number] {
+  return [y, 1 - x];
 }
 
 const STATE_TONE: Record<string, string> = {
@@ -37,20 +49,39 @@ const STATE_TONE: Record<string, string> = {
   RETURNING: "bg-violet-500/15 text-violet-700",
 };
 
+const ORDER_STATUS_LABEL: Record<string, string> = {
+  PENDING: "대기",
+  ASSIGNED: "배차됨",
+  EXECUTING: "수행중",
+  COMPLETED: "완료",
+  FAILED: "실패",
+  CANCELLED: "취소",
+};
+
+const FLEET_STATE_COLOR = {
+  available: "#10b981",
+  working: "#f59e0b",
+  charging: "#0ea5e9",
+  error: "#f43f5e",
+} as const;
+
 function RobotsPage() {
   const [robots, setRobots] = useState<RobotRow[]>([]);
   const [linked, setLinked] = useState(true);
   const [plugins, setPlugins] = useState<Record<string, string>>({});
+  const [orders, setOrders] = useState<OrderRow[]>([]);
+  const [kinds, setKinds] = useState<TaskKind[]>([]);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     const load = () =>
-      ops
-        .robots()
-        .then((d) => {
-          setRobots(d.robots);
-          setLinked(d.linked);
-          setPlugins(d.plugins);
+      Promise.all([ops.robots(), ops.tasks()])
+        .then(([r, t]) => {
+          setRobots(r.robots);
+          setLinked(r.linked);
+          setPlugins(r.plugins);
+          setOrders(t.orders);
+          setKinds(t.kinds);
           setErr(null);
         })
         .catch((e) => setErr(e instanceof Error ? e.message : "불러오기 실패"));
@@ -59,51 +90,97 @@ function RobotsPage() {
     return () => clearInterval(t);
   }, []);
 
+  const fleetChart = [
+    {
+      label: "가용",
+      value: robots.filter(
+        (r) =>
+          !r.busy && !r.stale && r.state !== "ERROR" && r.state !== "CHARGING",
+      ).length,
+      color: FLEET_STATE_COLOR.available,
+    },
+    {
+      label: "작업중",
+      value: robots.filter((r) => r.busy).length,
+      color: FLEET_STATE_COLOR.working,
+    },
+    {
+      label: "충전중",
+      value: robots.filter(
+        (r) => r.state === "CHARGING" || r.state === "RETURNING",
+      ).length,
+      color: FLEET_STATE_COLOR.charging,
+    },
+    {
+      label: "오류",
+      value: robots.filter((r) => r.state === "ERROR").length,
+      color: FLEET_STATE_COLOR.error,
+    },
+  ];
+
+  const orderFor = (robotName: string) =>
+    orders.find(
+      (o) =>
+        o.robot === robotName &&
+        !["COMPLETED", "FAILED", "CANCELLED"].includes(o.status),
+    );
+
   return (
     <AdminShell title="실시간 모니터링">
-      <div className="space-y-4">
+      <div className="flex h-full flex-col gap-4">
         {!linked ? (
-          <p className="rounded-lg bg-amber-500/10 px-3 py-2 text-sm text-amber-700">
+          <p className="shrink-0 rounded-lg bg-amber-500/10 px-3 py-2 text-sm text-amber-700">
             FMS 연결 없음 — 로봇 정보를 읽지 못합니다.
           </p>
         ) : null}
         {err ? (
-          <p className="rounded-lg bg-rose-500/10 px-3 py-2 text-sm text-rose-700">
+          <p className="shrink-0 rounded-lg bg-rose-500/10 px-3 py-2 text-sm text-rose-700">
             {err}
           </p>
         ) : null}
 
-        <div className="grid gap-4 lg:grid-cols-2">
-          {/* 지도 위 로봇 위치 */}
-          <section className="rounded-lg border p-4">
-            <h3 className="mb-3 text-sm font-semibold">지도 위 로봇 위치</h3>
+        <div className="shrink-0">
+          <MiniDonut title="로봇 상태" data={fleetChart} />
+        </div>
+
+        <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-2">
+          {/* 지도 위 로봇 위치 — 가로(108:63)로 회전, LibraryMap.tsx 와 동일 규칙 */}
+          <section className="flex h-full min-h-0 flex-col rounded-lg border p-4">
+            <h3 className="mb-3 shrink-0 text-sm font-semibold">
+              지도 위 로봇 위치
+            </h3>
             <div
-              className="relative mx-auto w-full max-w-xs overflow-hidden rounded-lg bg-white ring-1 ring-border"
-              style={{ aspectRatio: `${W} / ${H}` }}
+              className="relative mx-auto w-full max-w-2xl overflow-hidden rounded-lg bg-white ring-1 ring-border"
+              style={{ aspectRatio: "108 / 63" }}
             >
               <img
                 src={MAP_IMAGE}
                 alt="도서관 지도"
-                className="absolute inset-0 size-full object-contain opacity-60 [image-rendering:pixelated]"
+                aria-hidden
+                className="pointer-events-none absolute left-1/2 top-1/2 h-auto w-[58%] -translate-x-1/2 -translate-y-1/2 -rotate-90 opacity-60 [image-rendering:pixelated]"
               />
-              {/* 서가·시설 정점 (옅게) */}
-              {WAYPOINTS.filter((w) => w.kind !== "corridor").map((w) => (
-                <span
-                  key={w.name}
-                  title={w.label}
-                  style={{ left: `${w.x * 100}%`, top: `${w.y * 100}%` }}
-                  className="absolute size-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-slate-400"
-                />
-              ))}
-              {/* 로봇 */}
+              {/* 서가·시설 정점 (옅게) — WAYPOINTS 는 이미 0~1 정규화 좌표라 rotate() 만 적용 */}
+              {WAYPOINTS.filter((w) => w.kind !== "corridor").map((w) => {
+                const [rx, ry] = rotate(w.x, w.y);
+                return (
+                  <span
+                    key={w.name}
+                    title={w.label}
+                    style={{ left: `${rx * 100}%`, top: `${ry * 100}%` }}
+                    className="absolute size-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-slate-400"
+                  />
+                );
+              })}
+              {/* 로봇 — 월드좌표 → toNorm(0~1) → rotate() 순서로 같은 화면 좌표계에 맞춘다 */}
               {robots
                 .filter((r) => r.x !== null && r.y !== null)
                 .map((r) => {
                   const { nx, ny } = toNorm(r.x as number, r.y as number);
+                  const [rx, ry] = rotate(nx, ny);
                   return (
                     <span
                       key={r.name}
-                      style={{ left: `${nx * 100}%`, top: `${ny * 100}%` }}
+                      style={{ left: `${rx * 100}%`, top: `${ry * 100}%` }}
                       className="absolute -translate-x-1/2 -translate-y-1/2"
                     >
                       <span className="block size-3 rounded-full border-2 border-white bg-primary shadow ring-2 ring-primary/40" />
@@ -115,79 +192,132 @@ function RobotsPage() {
                 })}
             </div>
             {plugins.dispatcher ? (
-              <p className="mt-3 text-center font-mono text-[11px] text-muted-foreground">
+              <p className="mt-3 shrink-0 text-center font-mono text-[11px] text-muted-foreground">
                 배차 {plugins.dispatcher} · 교통 {plugins.traffic}
               </p>
             ) : null}
           </section>
 
           {/* 로봇 카드 */}
-          <section className="space-y-2">
+          <section className="min-h-0 space-y-2 overflow-y-auto">
             {robots.length === 0 ? (
               <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
                 관측된 로봇이 없습니다
               </p>
             ) : (
-              robots.map((r) => (
-                <div key={r.name} className="rounded-lg border p-4">
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold">{r.name}</span>
-                    <span
-                      className={`rounded px-1.5 py-0.5 text-xs font-bold ${
-                        STATE_TONE[r.state ?? ""] ??
-                        "bg-muted text-muted-foreground"
-                      }`}
-                    >
-                      {r.state ?? "상태 미상"}
-                    </span>
-                    {r.stale ? (
-                      <span className="rounded bg-rose-500/15 px-1.5 py-0.5 text-xs font-bold text-rose-700">
-                        텔레메트리 끊김
+              robots.map((r) => {
+                const order = orderFor(r.name);
+                const kindLabel = order
+                  ? (kinds.find((k) => k.key === order.task_type)?.label ??
+                    order.task_type)
+                  : null;
+                return (
+                  <div key={r.name} className="rounded-lg border p-4">
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold">{r.name}</span>
+                      <span
+                        className={`rounded px-1.5 py-0.5 text-xs font-bold ${
+                          STATE_TONE[r.state ?? ""] ??
+                          "bg-muted text-muted-foreground"
+                        }`}
+                      >
+                        {r.state ?? "상태 미상"}
                       </span>
-                    ) : null}
-                  </div>
+                      {r.stale ? (
+                        <span className="rounded bg-rose-500/15 px-1.5 py-0.5 text-xs font-bold text-rose-700">
+                          텔레메트리 끊김
+                        </span>
+                      ) : null}
+                    </div>
 
-                  <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                    <Field label="배터리">
-                      {r.battery === null ? (
-                        "—"
+                    <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                      <Field label="배터리">
+                        {r.battery === null ? (
+                          "—"
+                        ) : (
+                          <span className="flex items-center gap-2">
+                            <span className="h-1.5 w-16 overflow-hidden rounded-full bg-muted">
+                              <span
+                                className={`block h-full rounded-full ${
+                                  r.battery < 20
+                                    ? "bg-rose-500"
+                                    : "bg-emerald-500"
+                                }`}
+                                style={{
+                                  width: `${Math.max(0, Math.min(100, r.battery))}%`,
+                                }}
+                              />
+                            </span>
+                            {r.battery}%
+                          </span>
+                        )}
+                      </Field>
+                      <Field label="위치">
+                        {r.x === null
+                          ? "—"
+                          : `${r.x.toFixed(2)}, ${(r.y as number).toFixed(2)}`}
+                      </Field>
+                      <Field label={order ? "작업 종류" : "현재 작업"}>
+                        {order ? kindLabel : r.task_id || "—"}
+                      </Field>
+                      <Field label="작업 상태">
+                        {order ? (
+                          <span
+                            className="rounded px-1.5 py-0.5 text-[10px] font-bold"
+                            style={{
+                              background:
+                                order.status === "FAILED"
+                                  ? "var(--chart-status-critical)"
+                                  : order.status === "COMPLETED"
+                                    ? "var(--chart-status-good)"
+                                    : "var(--chart-status-warning)",
+                              color: "white",
+                            }}
+                          >
+                            {ORDER_STATUS_LABEL[order.status] ?? order.status}
+                          </span>
+                        ) : (
+                          r.task_state || "—"
+                        )}
+                      </Field>
+                      {order ? (
+                        <Field label="요청자">{order.requester || "—"}</Field>
                       ) : (
+                        <Field label="목표 정점">
+                          {r.goal_vertex === null
+                            ? "—"
+                            : (WAYPOINTS[r.goal_vertex]?.label ??
+                              `v${r.goal_vertex}`)}
+                        </Field>
+                      )}
+                      <Field label="진행률">
                         <span className="flex items-center gap-2">
                           <span className="h-1.5 w-16 overflow-hidden rounded-full bg-muted">
                             <span
-                              className={`block h-full rounded-full ${
-                                r.battery < 20
-                                  ? "bg-rose-500"
-                                  : "bg-emerald-500"
-                              }`}
+                              className="block h-full rounded-full bg-primary"
                               style={{
-                                width: `${Math.max(0, Math.min(100, r.battery))}%`,
+                                width: `${
+                                  order
+                                    ? order.leg_count
+                                      ? Math.round(
+                                          (order.leg_idx / order.leg_count) *
+                                            100,
+                                        )
+                                      : 0
+                                    : Math.round((r.progress ?? 0) * 100)
+                                }%`,
                               }}
                             />
                           </span>
-                          {r.battery}%
+                          {order
+                            ? `${order.leg_idx}/${order.leg_count}`
+                            : `${Math.round((r.progress ?? 0) * 100)}%`}
                         </span>
-                      )}
-                    </Field>
-                    <Field label="위치">
-                      {r.x === null
-                        ? "—"
-                        : `${r.x.toFixed(2)}, ${(r.y as number).toFixed(2)}`}
-                    </Field>
-                    <Field label="현재 작업">{r.task_id || "—"}</Field>
-                    <Field label="작업 상태">{r.task_state || "—"}</Field>
-                    <Field label="목표 정점">
-                      {r.goal_vertex === null
-                        ? "—"
-                        : (WAYPOINTS[r.goal_vertex]?.label ??
-                          `v${r.goal_vertex}`)}
-                    </Field>
-                    <Field label="진행률">
-                      {Math.round((r.progress ?? 0) * 100)}%
-                    </Field>
+                      </Field>
+                    </div>
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
           </section>
         </div>
