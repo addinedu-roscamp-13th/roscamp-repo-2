@@ -9,17 +9,13 @@ import {
   XCircle,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  Bar,
-  BarChart,
-  LabelList,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 import { toast } from "sonner";
 
+import { StackedStatusBar } from "@/components/admin/charts";
+import {
+  SortIcon,
+  useSortableTable,
+} from "@/components/admin/useSortableTable";
 import { AdminShell } from "@/components/admin/AdminShell";
 import { ConfirmDeleteDialog } from "@/components/admin/ConfirmDeleteDialog";
 import { Button } from "@/components/ui/button";
@@ -90,32 +86,11 @@ const STATUS_COLOR = {
   unavailable: "#f43f5e", // rose-500
 } as const;
 
-type SortKey = "default" | "category" | "title" | "status";
-
-function sortBooks(books: AdminBook[], sortBy: SortKey): AdminBook[] {
-  if (sortBy === "default") return books;
-  const arr = [...books];
-  if (sortBy === "category") {
-    arr.sort((a, b) =>
-      (CATEGORY_LABEL[a.category] ?? a.category).localeCompare(
-        CATEGORY_LABEL[b.category] ?? b.category,
-      ),
-    );
-  } else if (sortBy === "title") {
-    arr.sort((a, b) => a.title_kr.localeCompare(b.title_kr));
-  } else if (sortBy === "status") {
-    const rank = (b: AdminBook) => (b.unavailable ? 2 : b.in_stock ? 0 : 1);
-    arr.sort((a, b) => rank(a) - rank(b));
-  }
-  return arr;
-}
-
 function BooksPage() {
   const [books, setBooks] = useState<AdminBook[]>([]);
   const [shelves, setShelves] = useState<ShelfRow[]>([]);
   const [q, setQ] = useState("");
   const [cat, setCat] = useState("");
-  const [sortBy, setSortBy] = useState<SortKey>("default");
   const [createForm, setCreateForm] = useState<BookFormValue>({ ...EMPTY });
   const [editForm, setEditForm] = useState<
     (BookFormValue & { id: number }) | null
@@ -141,7 +116,24 @@ function BooksPage() {
     return () => clearTimeout(t);
   }, [load]);
 
-  const sortedBooks = useMemo(() => sortBooks(books, sortBy), [books, sortBy]);
+  const {
+    sorted: sortedBooks,
+    sortKey: booksSortKey,
+    direction: booksDirection,
+    toggle: toggleBooksSort,
+  } = useSortableTable<AdminBook>(books, {
+    title_kr: (a, b) => a.title_kr.localeCompare(b.title_kr),
+    author: (a, b) => a.author.localeCompare(b.author),
+    category: (a, b) =>
+      (CATEGORY_LABEL[a.category] ?? a.category).localeCompare(
+        CATEGORY_LABEL[b.category] ?? b.category,
+      ),
+    zone: (a, b) => a.zone.localeCompare(b.zone),
+    status: (a, b) => {
+      const rank = (x: AdminBook) => (x.unavailable ? 2 : x.in_stock ? 0 : 1);
+      return rank(a) - rank(b);
+    },
+  });
 
   const shelfChartData = useMemo(
     () =>
@@ -238,6 +230,46 @@ function BooksPage() {
           </p>
         ) : null}
 
+        {/* 전체 재고 현황 — 서가별 상세 차트보다 위, 한눈에 보는 총계 */}
+        <section className="rounded-lg border bg-muted/30 p-4">
+          <h3 className="mb-2 text-sm font-semibold text-muted-foreground">
+            전체 재고 현황
+          </h3>
+          <StackedStatusBar
+            rows={[
+              {
+                label: "전체",
+                values: shelfChartData.reduce(
+                  (acc, s) => ({
+                    available: acc.available + s.available,
+                    borrowed: acc.borrowed + s.borrowed,
+                    unavailable: acc.unavailable + s.unavailable,
+                  }),
+                  { available: 0, borrowed: 0, unavailable: 0 },
+                ),
+              },
+            ]}
+            segments={[
+              {
+                key: "available",
+                label: "대출가능",
+                color: STATUS_COLOR.available,
+              },
+              {
+                key: "borrowed",
+                label: "대출중",
+                color: STATUS_COLOR.borrowed,
+              },
+              {
+                key: "unavailable",
+                label: "대출불가능",
+                color: STATUS_COLOR.unavailable,
+              },
+            ]}
+            unit="권"
+          />
+        </section>
+
         {/* 서가 배치 현황 — 참고용 현황 차트, 등록/목록보다 낮은 시각 무게 */}
         <section className="rounded-lg border border-dashed bg-muted/30 p-4">
           <h3 className="mb-1 text-sm font-semibold text-muted-foreground">
@@ -252,98 +284,34 @@ function BooksPage() {
               등록된 서가가 없습니다
             </p>
           ) : (
-            <>
-              <ResponsiveContainer
-                width="100%"
-                height={Math.max(120, shelfChartData.length * 44)}
-              >
-                <BarChart
-                  data={shelfChartData}
-                  layout="vertical"
-                  margin={{ left: 8, right: 28, top: 4, bottom: 4 }}
-                >
-                  <XAxis type="number" hide />
-                  <YAxis
-                    type="category"
-                    dataKey="zone"
-                    width={72}
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{
-                      fontSize: 12,
-                      fill: "var(--color-muted-foreground)",
-                    }}
-                  />
-                  <Tooltip
-                    cursor={{ fill: "var(--color-muted)" }}
-                    contentStyle={{
-                      background: "var(--color-card)",
-                      border: "1px solid var(--color-border)",
-                      borderRadius: 8,
-                      fontSize: 12,
-                    }}
-                    formatter={(value: number, name: string) => [
-                      `${value}권`,
-                      name === "available"
-                        ? "대출가능"
-                        : name === "borrowed"
-                          ? "대출중"
-                          : "대출불가능",
-                    ]}
-                  />
-                  <Bar
-                    dataKey="available"
-                    stackId="s"
-                    fill={STATUS_COLOR.available}
-                    radius={[4, 0, 0, 4]}
-                    maxBarSize={18}
-                  />
-                  <Bar
-                    dataKey="borrowed"
-                    stackId="s"
-                    fill={STATUS_COLOR.borrowed}
-                    maxBarSize={18}
-                  />
-                  <Bar
-                    dataKey="unavailable"
-                    stackId="s"
-                    fill={STATUS_COLOR.unavailable}
-                    radius={[0, 4, 4, 0]}
-                    maxBarSize={18}
-                  >
-                    <LabelList
-                      dataKey="total"
-                      position="right"
-                      formatter={(v: number) => `${v}권`}
-                      className="fill-muted-foreground text-xs"
-                    />
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-              <div className="mt-2 flex flex-wrap gap-4 text-xs text-muted-foreground">
-                <span className="flex items-center gap-1">
-                  <CheckCircle2
-                    className="size-3.5"
-                    style={{ color: STATUS_COLOR.available }}
-                  />
-                  대출가능
-                </span>
-                <span className="flex items-center gap-1">
-                  <XCircle
-                    className="size-3.5"
-                    style={{ color: STATUS_COLOR.borrowed }}
-                  />
-                  대출중
-                </span>
-                <span className="flex items-center gap-1">
-                  <AlertTriangle
-                    className="size-3.5"
-                    style={{ color: STATUS_COLOR.unavailable }}
-                  />
-                  대출불가능(훼손·분실)
-                </span>
-              </div>
-            </>
+            <StackedStatusBar
+              rows={shelfChartData.map((s) => ({
+                label: s.zone,
+                values: {
+                  available: s.available,
+                  borrowed: s.borrowed,
+                  unavailable: s.unavailable,
+                },
+              }))}
+              segments={[
+                {
+                  key: "available",
+                  label: "대출가능",
+                  color: STATUS_COLOR.available,
+                },
+                {
+                  key: "borrowed",
+                  label: "대출중",
+                  color: STATUS_COLOR.borrowed,
+                },
+                {
+                  key: "unavailable",
+                  label: "대출불가능(훼손·분실)",
+                  color: STATUS_COLOR.unavailable,
+                },
+              ]}
+              unit="권"
+            />
           )}
         </section>
 
@@ -377,27 +345,32 @@ function BooksPage() {
                 </option>
               ))}
             </select>
-            <select
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value as SortKey)}
-              className={`h-8 w-auto shrink-0 ${selectClass}`}
-              aria-label="정렬"
-            >
-              <option value="default">기본 정렬</option>
-              <option value="category">분야순</option>
-              <option value="title">제목순</option>
-              <option value="status">재고 상태순</option>
-            </select>
           </div>
 
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>제목</TableHead>
-                <TableHead>저자</TableHead>
-                <TableHead>분야</TableHead>
-                <TableHead>서가</TableHead>
-                <TableHead>재고</TableHead>
+                {(
+                  [
+                    { key: "title_kr", label: "제목" },
+                    { key: "author", label: "저자" },
+                    { key: "category", label: "분야" },
+                    { key: "zone", label: "서가" },
+                    { key: "status", label: "재고" },
+                  ] as const
+                ).map((col) => (
+                  <TableHead
+                    key={col.key}
+                    className="cursor-pointer select-none hover:text-foreground"
+                    onClick={() => toggleBooksSort(col.key)}
+                  >
+                    {col.label}
+                    <SortIcon
+                      active={booksSortKey === col.key}
+                      direction={booksDirection}
+                    />
+                  </TableHead>
+                ))}
                 <TableHead className="text-right">작업</TableHead>
               </TableRow>
             </TableHeader>
