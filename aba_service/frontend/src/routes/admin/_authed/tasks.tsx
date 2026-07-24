@@ -360,6 +360,7 @@ function TasksPage() {
                       disabled={!available}
                       style={{ fontWeight: available ? 700 : 400 }}
                     >
+                      {available ? "✓ " : ""}
                       {r.name} ({r.state ?? "상태미상"})
                       {available ? "" : " — 배차 불가"}
                     </option>

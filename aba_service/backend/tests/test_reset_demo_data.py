@@ -72,6 +72,27 @@ def test_실제_침입기록도_보존한다(db_session):
     assert remaining[0].source == "pinky1"
 
 
+def test_실제_대출중인_책은_in_stock을_강제로_되돌리지_않는다(db_session):
+    member = _make_member(db_session)
+    book = _make_book(db_session)
+    now = datetime.now()
+
+    real_borrowed = Loan(
+        member_id=member.id, book_id=book.id, status="borrowed",
+        borrowed_at=now - timedelta(days=1), due_at=now + timedelta(days=13),
+        returned_at=None, is_demo=False,
+    )
+    db_session.add(real_borrowed)
+    book.in_stock = False
+    db_session.commit()
+
+    reset_demo_data(db_session)
+
+    db_session.refresh(book)
+    assert db_session.query(Loan).filter(Loan.is_demo.is_(False)).count() == 1
+    assert book.in_stock is False
+
+
 def test_예약과_배달요청도_is_demo만_지운다(db_session):
     member = _make_member(db_session)
     book = _make_book(db_session)

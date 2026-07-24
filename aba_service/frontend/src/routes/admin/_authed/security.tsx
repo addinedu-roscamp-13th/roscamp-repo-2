@@ -239,7 +239,7 @@ function SecurityPage() {
           </h3>
 
           {state && state.events.length > 0 ? (
-            <div className="mb-3 shrink-0">
+            <div className="mb-3 h-40 shrink-0">
               <MiniDonut
                 title="확인 상태"
                 data={[

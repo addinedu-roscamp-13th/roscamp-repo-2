@@ -51,7 +51,16 @@ def reset_demo_data(db) -> dict[str, int]:
     )
     db.commit()
 
-    db.query(Book).update({Book.in_stock: True, Book.unavailable: False})
+    # in_stock 은 "지금 대출 중인가"의 source-of-truth인 Loan.status="borrowed" 로
+    # 다시 계산한다 — 위 delete는 is_demo 행만 지웠으므로 남은 대출은 전부 실제 대출이다.
+    # unavailable(사서가 파손/분실로 표시한 값)은 여기서 건드리지 않는다 — 데모도서는
+    # 위에서 행 자체가 삭제됐으니 따로 초기화할 것도 없다.
+    active_book_ids = {
+        row[0]
+        for row in db.query(Loan.book_id).filter(Loan.status == "borrowed").all()
+    }
+    for book in db.query(Book).all():
+        book.in_stock = book.id not in active_book_ids
     db.commit()
 
     return {
