@@ -16,6 +16,10 @@ MIGRATIONS = [
     # db/add_book_unavailable_column.sql 과 동일 — 실행 지점을 여기로 옮긴다.
     "ALTER TABLE cb_books "
     "ADD COLUMN IF NOT EXISTS unavailable TINYINT(1) NOT NULL DEFAULT 0",
+    "ALTER TABLE cb_loans ADD COLUMN IF NOT EXISTS is_demo TINYINT(1) NOT NULL DEFAULT 0",
+    "ALTER TABLE cb_reservations ADD COLUMN IF NOT EXISTS is_demo TINYINT(1) NOT NULL DEFAULT 0",
+    "ALTER TABLE cb_delivery_requests ADD COLUMN IF NOT EXISTS is_demo TINYINT(1) NOT NULL DEFAULT 0",
+    "ALTER TABLE cb_intrusion_events ADD COLUMN IF NOT EXISTS is_demo TINYINT(1) NOT NULL DEFAULT 0",
 ]
 
 

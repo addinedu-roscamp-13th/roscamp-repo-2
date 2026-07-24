@@ -60,6 +60,13 @@ CATEGORY_META = {
 }
 
 
+def _would_create_duplicate_active_loan(
+    book_id: int, is_active: bool, active_book_ids: set[int]
+) -> bool:
+    """이 대출을 그대로 대출중으로 확정하면 같은 책이 두 번째로 대출중이 되는가."""
+    return is_active and book_id in active_book_ids
+
+
 def _top_up_books(db) -> None:
     """카테고리별 도서를 `TARGET_BOOKS_PER_CATEGORY` 권까지 가짜로 채운다(이미 있으면 skip)."""
     for category, meta in CATEGORY_META.items():
@@ -125,6 +132,7 @@ def _seed_intrusions(db, now) -> int:
                 note=random.choice(INTRUSION_NOTES),
                 acknowledged=i >= 3,
                 detected_at=detected_at,
+                is_demo=True,
             )
         )
     db.commit()
@@ -167,16 +175,24 @@ def main() -> None:
 
         now = datetime.now()
 
-        # 1) 대출 이력 — 대부분 반납 완료, 일부는 지금 대출중(자연히 연체/반납임박도 섞인다)
+        # 1) 대출 이력 — 대부분 반납 완료, 일부는 지금 대출중(자연히 연체/반납임박도 섞인다).
+        # active_book_ids 로 "지금 대출중" 인 책을 추적해 같은 책이 동시에 두 번
+        # 대출중이 되지 않게 한다(현실에서 불가능한 상태라 화면 집계가 깨진다).
+        active_book_ids: set[int] = set()
         for _ in range(N_LOANS):
             member = random.choice(members)
             book = random.choice(books)
             borrowed_at = now - timedelta(days=random.uniform(1, DAYS_BACK))
             due_at = borrowed_at + timedelta(days=LOAN_DAYS)
             returned_at = borrowed_at + timedelta(days=random.uniform(1, LOAN_DAYS + 5))
-            if returned_at > now:
+            is_active = returned_at > now
+            if _would_create_duplicate_active_loan(book.id, is_active, active_book_ids):
+                returned_at = borrowed_at + timedelta(days=random.uniform(1, LOAN_DAYS))
+                is_active = False
+            if is_active:
                 returned_at = None
                 status = "borrowed"
+                active_book_ids.add(book.id)
             else:
                 status = "returned"
             db.add(
@@ -187,15 +203,19 @@ def main() -> None:
                     borrowed_at=borrowed_at,
                     due_at=due_at,
                     returned_at=returned_at,
+                    is_demo=True,
                 )
             )
         db.commit()
 
         # 1-1) 반납 임박(1일 이내) 전용 배치 — 위 랜덤 분포만으로는 24시간 창에 잘 안 걸려서
         # 대시보드 "반납 임박(1일 이내)" 리스트가 매번 비어 보이는 걸 막으려고 따로 몇 건 박아둔다.
+        # 이미 대출중으로 잡힌 책은 피한다(중복 대출 방지, 위와 같은 이유).
         for _ in range(N_DUE_TOMORROW_LOANS):
             member = random.choice(members)
-            book = random.choice(books)
+            candidates = [b for b in books if b.id not in active_book_ids] or books
+            book = random.choice(candidates)
+            active_book_ids.add(book.id)
             borrowed_at = now - timedelta(days=LOAN_DAYS) + timedelta(hours=random.uniform(1, 23))
             due_at = now + timedelta(hours=random.uniform(1, 23))
             db.add(
@@ -206,6 +226,7 @@ def main() -> None:
                     borrowed_at=borrowed_at,
                     due_at=due_at,
                     returned_at=None,
+                    is_demo=True,
                 )
             )
         db.commit()
@@ -240,6 +261,7 @@ def main() -> None:
                     created_at=created_at,
                     decided_at=created_at,
                     decided_by="admin",
+                    is_demo=True,
                 )
             )
         db.commit()
@@ -252,7 +274,11 @@ def main() -> None:
                 ["waiting", "ready", "fulfilled", "cancelled"],
                 weights=[40, 15, 25, 20],
             )[0]
-            db.add(Reservation(member_id=member.id, book_id=book.id, status=status))
+            db.add(
+                Reservation(
+                    member_id=member.id, book_id=book.id, status=status, is_demo=True
+                )
+            )
         db.commit()
 
         # 4) 작업 로그(최근 7일) + 5) 야간 침입 이력 + 6) 로봇 상태(FMS 미연결 시 대체)

@@ -192,6 +192,9 @@ class Loan(Base):
     returned_at: Mapped[datetime | None] = mapped_column(
         DateTime, nullable=True, comment="실제 반납 시각 (미반납이면 NULL)"
     )
+    is_demo: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, comment="데모 시드가 만든 행인지"
+    )
 
 
 class Reservation(Base):
@@ -223,6 +226,9 @@ class Reservation(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False, comment="예약 시각"
+    )
+    is_demo: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, comment="데모 시드가 만든 행인지"
     )
 
 
@@ -318,6 +324,9 @@ class DeliveryRequest(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False, comment="접수 시각"
     )
+    is_demo: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, comment="데모 시드가 만든 행인지"
+    )
 
 
 class OpsSetting(Base):
@@ -369,6 +378,9 @@ class IntrusionEvent(Base):
     )
     acknowledged: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, comment="사서 확인 여부"
+    )
+    is_demo: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, comment="데모 시드가 만든 행인지"
     )
 
 
