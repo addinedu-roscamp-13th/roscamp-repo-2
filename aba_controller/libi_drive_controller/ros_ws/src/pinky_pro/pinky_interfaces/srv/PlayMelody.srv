@@ -1,0 +1,4 @@
+string melody       # fur_elise, school_bell
+---
+bool success
+string message

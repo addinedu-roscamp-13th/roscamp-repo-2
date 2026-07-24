@@ -1,0 +1,7 @@
+string preset       # bell, beep, alarm, success, error
+int32 count         # 0 = preset 기본값 사용
+int32 freq          # Hz, 0 = preset 기본값 사용
+float32 duration    # 초, 0.0 = preset 기본값 사용
+---
+bool success
+string message

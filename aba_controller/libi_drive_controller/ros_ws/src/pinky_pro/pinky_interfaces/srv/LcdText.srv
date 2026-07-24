@@ -1,0 +1,11 @@
+string text
+string font_path    # 폰트 파일 전체 경로, 빈 문자열 = 기본 폰트
+int32 font_size     # 8~96, 기본 24
+string color        # hex 색상 #ffffff
+string bg_color     # hex 배경색 #000000
+string align        # center, left, right
+bool scroll
+int32 scroll_speed  # 1~20
+---
+bool success
+string message
