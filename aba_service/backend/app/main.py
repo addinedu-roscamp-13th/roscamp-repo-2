@@ -72,6 +72,10 @@ def startup_event():
     )
     Base.metadata.create_all(bind=engine)
 
+    from .migrations import run_migrations
+
+    run_migrations(engine)
+
     # Warm up the EasyOCR model in the background so it doesn't block boot and
     # the first /api/ocr request doesn't pay the model load/download cost.
     import threading
