@@ -601,6 +601,14 @@ function ChatPage() {
           q: text,
           limit: 4,
         });
+        // 자유 문장 전체가 LIKE 검색어라 거의 매칭이 안 된다 — 매칭 실패 시
+        // q 없이 카테고리만으로 재시도해 그라운딩 목록을 비워두지 않는다.
+        if (books.length === 0) {
+          books = await fetchCatalog({
+            category: detectCategory(text),
+            limit: 4,
+          });
+        }
       }
 
       // 시스템 메시지는 매 턴 새로 쓴다(언어·이번 턴 도서 그라운딩) — 나머지 이력은 그대로 둔다.

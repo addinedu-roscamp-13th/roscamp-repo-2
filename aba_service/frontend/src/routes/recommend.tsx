@@ -55,7 +55,7 @@ function Recommend() {
     <AppShell>
       <div className="px-5 pb-8 pt-3">
         <h1 className="text-balance text-xl font-bold leading-snug text-foreground">
-          🔥 지금 도서관에서 가장 핫한 책
+          🔥 {tr("hotTitle")}
         </h1>
         <p className="mt-1 text-xs text-muted-foreground">
           대출 횟수 기준 Top 10

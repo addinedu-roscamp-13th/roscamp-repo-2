@@ -316,7 +316,7 @@ export async function prepareTool(
       return {
         kind: "choose",
         books: r.books,
-        text: "어떤 책을 말씀하시는 걸까요? 눌러서 골라 주세요.",
+        text: "어떤 책인지 좀 더 정확히 말씀해 주시겠어요? 아래에서 상세를 확인할 수 있어요.",
       };
     }
     book = r.book;
