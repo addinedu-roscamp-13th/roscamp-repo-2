@@ -76,11 +76,8 @@ def startup_event():
 
     run_migrations(engine)
 
-    # Warm up the EasyOCR model in the background so it doesn't block boot and
-    # the first /api/ocr request doesn't pay the model load/download cost.
-    import threading
-
-    threading.Thread(target=ocr.warmup, name="ocr-warmup", daemon=True).start()
+    # OCR 예열은 하지 않는다 — 회원 UI에서 스캔/OCR 진입점을 걷어내 호출자가 없다.
+    # 엔드포인트(`routers/ocr.py`)는 로봇팔·사서 기능이 나중에 쓸 수 있어 남겨 둔다.
 
 
 @app.get("/api/health", tags=["health"])
