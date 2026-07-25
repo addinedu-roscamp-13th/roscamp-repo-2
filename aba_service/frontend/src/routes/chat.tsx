@@ -641,6 +641,12 @@ function ChatPage() {
 
         if (prepared.kind === "error") {
           updateMessage(pendingId, { text: prepared.text, pending: false });
+          // 실패도 이력에 남긴다 — 안 남기면 다음 턴에 모델이 방금 거절된 걸
+          // 잊고 같은 도구를 또 부르거나 이미 됐다고 우길 수 있다.
+          historyRef.current.push({
+            role: "assistant",
+            content: prepared.text,
+          });
           return;
         }
         if (prepared.kind === "choose") {
@@ -649,6 +655,10 @@ function ChatPage() {
             text: prepared.text,
             books: prepared.books,
             pending: false,
+          });
+          historyRef.current.push({
+            role: "assistant",
+            content: prepared.text,
           });
           return;
         }
@@ -724,6 +734,20 @@ function ChatPage() {
         historyRef.current.pop();
       }
       console.error(error);
+
+      // LLM 이 죽어도 정지 같은 하드웨어 명령은 살아있어야 한다 — 정규식 경로는
+      // 네트워크 없이 로컬에서만 판단하므로 Ollama 장애와 무관하게 동작한다.
+      const robot = tryParseRobotCommand(text);
+      if (robot) {
+        updateMessage(pendingId, {
+          text: `🤖 로봇 명령을 실행 중입니다... (${robot.robot_type} - ${robot.action})`,
+          pending: true,
+        });
+        const resultText = await callRobotExecute(text, robot);
+        updateMessage(pendingId, { text: resultText, pending: false });
+        return;
+      }
+
       const reply = makeReply(text, lang);
       const suffix =
         lang === "KR"
@@ -807,7 +831,9 @@ function ChatPage() {
               pending={pendingCall}
               onCancel={() => {
                 setPendingCall(null);
-                addBotMessage("알겠어요, 취소했어요.");
+                const text = "알겠어요, 취소했어요.";
+                addBotMessage(text);
+                historyRef.current.push({ role: "assistant", content: text });
               }}
               onConfirm={async (name, args) => {
                 const confirmed: PendingCall = { ...pendingCall, name, args };
