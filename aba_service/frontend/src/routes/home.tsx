@@ -1,6 +1,13 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { AppShell } from "@/components/AppShell";
+import {
+  BookDetailSheet,
+  reserveFromSheet,
+} from "@/components/BookDetailSheet";
+import { BookRow } from "@/components/BookRow";
+import { fetchCatalog, type CatalogBook } from "@/lib/books-api";
 import { LANGS, useI18n } from "@/lib/i18n";
+import { useDebounced } from "@/lib/use-debounced";
 import { useSpeechRecognition, useSpeechSupported } from "@/lib/use-speech";
 import { useEffect, useState } from "react";
 import {
@@ -13,8 +20,15 @@ import {
 } from "lucide-react";
 import { BOOKS } from "@/lib/mock-data";
 import { Link } from "@tanstack/react-router";
+import { z } from "zod";
+
+const homeSearchSchema = z.object({
+  // 쿼리스트링은 문자열이라 coerce 가 필요하다.
+  listen: z.coerce.boolean().optional(),
+});
 
 export const Route = createFileRoute("/home")({
+  validateSearch: homeSearchSchema,
   head: () => ({ meta: [{ title: "LiBi — 홈" }] }),
   component: Home,
 });
@@ -22,11 +36,15 @@ export const Route = createFileRoute("/home")({
 function Home() {
   const { lang, tr } = useI18n();
   const [query, setQuery] = useState("");
+  const [suggest, setSuggest] = useState<CatalogBook[]>([]);
+  const [picked, setPicked] = useState<CatalogBook | null>(null);
+  const debounced = useDebounced(query, 250);
   const supported = useSpeechSupported();
   const speechLang = LANGS.find((l) => l.code === lang)?.speech ?? "ko-KR";
   const { listening, transcript, error, start, stop } =
     useSpeechRecognition(speechLang);
   const navigate = useNavigate();
+  const { listen } = Route.useSearch();
 
   useEffect(() => {
     if (!listening && transcript.trim()) {
@@ -38,6 +56,27 @@ function Home() {
       return () => clearTimeout(id);
     }
   }, [listening, transcript, navigate]);
+
+  useEffect(() => {
+    const term = debounced.trim();
+    if (!term) {
+      setSuggest([]);
+      return;
+    }
+    let cancelled = false;
+    void fetchCatalog({ q: term, limit: 30 }).then((rows) => {
+      if (!cancelled) setSuggest(rows);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [debounced]);
+
+  useEffect(() => {
+    if (listen && supported) start();
+    // 최초 진입에서 한 번만 — 이후에는 사용자가 직접 켜고 끈다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const newest = BOOKS.slice(0, 3);
 
@@ -104,6 +143,21 @@ function Home() {
             className="h-14 w-full rounded-2xl border border-border bg-card pl-12 pr-4 text-sm text-foreground shadow-card outline-none placeholder:text-muted-foreground focus:ring-2 focus:ring-primary"
           />
         </form>
+
+        {suggest.length > 0 && (
+          /* 10권까지 보이고 넘치면 목록 안에서 스크롤된다 — 아래 퀵메뉴가 밀리지 않게. */
+          <div className="mt-2 max-h-[52vh] space-y-2 overflow-y-auto rounded-2xl border border-border bg-card p-2 shadow-card">
+            {suggest.map((b) => (
+              <BookRow key={b.id} book={b} onSelect={setPicked} />
+            ))}
+          </div>
+        )}
+
+        <BookDetailSheet
+          book={picked}
+          onOpenChange={(open) => !open && setPicked(null)}
+          onReserve={(b) => void reserveFromSheet(b)}
+        />
 
         {/* Quick menu — 요청은 검색과 분리된 화면(`/request`)으로 간다 */}
         <section className="mt-3 grid grid-cols-3 gap-3">

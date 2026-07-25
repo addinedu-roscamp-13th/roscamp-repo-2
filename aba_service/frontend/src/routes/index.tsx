@@ -18,16 +18,17 @@ function Onboarding() {
   const [step, setStep] = useState<"lang" | "input">("lang");
   const navigate = useNavigate();
 
-  const goHome = async (askMic: boolean) => {
-    if (askMic && typeof navigator !== "undefined" && navigator.mediaDevices?.getUserMedia) {
+  const goHome = async (startListening: boolean) => {
+    if (startListening && typeof navigator !== "undefined" && navigator.mediaDevices?.getUserMedia) {
       try {
         const s = await navigator.mediaDevices.getUserMedia({ audio: true });
         s.getTracks().forEach((t) => t.stop());
       } catch {
-        /* user can still proceed */
+        /* 권한을 거부해도 텍스트로는 계속 쓸 수 있어야 한다 */
       }
     }
-    navigate({ to: "/home" });
+    // 버튼 이름이 「음성으로 시작」인데 권한만 받고 끝나면 거짓말이다.
+    navigate({ to: "/home", search: startListening ? { listen: true } : {} });
   };
 
   return (
