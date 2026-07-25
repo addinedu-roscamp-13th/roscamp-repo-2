@@ -1,5 +1,5 @@
-// 자동 생성 — 원본: pinky_navigation/map/arte2.yaml + params/waypoint.yaml
-// x,y 는 arte2.png 안에서의 정규화 좌표(0~1). ROS 의 y축은 이미지와 반대라 뒤집어 계산했다.
+// 자동 생성 — 원본: pinky_navigation/map/arte3.yaml + params/waypoint.yaml
+// x,y 는 arte3.png 안에서의 정규화 좌표(0~1). ROS 의 y축은 이미지와 반대라 뒤집어 계산했다.
 // 지도를 다시 뜨거나 waypoint 를 바꾸면 이 파일을 재생성해야 한다.
 
 export type WaypointKind = "shelf" | "table" | "facility" | "corridor";
