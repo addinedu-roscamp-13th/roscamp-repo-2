@@ -1,6 +1,7 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { BookOpen, MapPin, Search as SearchIcon, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { z } from "zod";
 
 import { AppShell } from "@/components/AppShell";
 import { fetchCatalog, type CatalogBook } from "@/lib/books-api";
@@ -13,7 +14,13 @@ import {
   type DeliveryRequestOut,
 } from "@/lib/member";
 
+// 쿼리스트링은 문자열로 들어온다 — `z.number()` 는 통과하지 못한다.
+const requestSearchSchema = z.object({
+  bookId: z.coerce.number().int().positive().optional(),
+});
+
 export const Route = createFileRoute("/request")({
+  validateSearch: requestSearchSchema,
   head: () => ({ meta: [{ title: "LiBi — 도서 요청" }] }),
   component: RequestPage,
 });

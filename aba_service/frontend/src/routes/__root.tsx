@@ -9,6 +9,7 @@ import { useEffect } from "react";
 
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
+import { Toaster } from "@/components/ui/sonner";
 import { I18nProvider } from "@/lib/i18n";
 
 function NotFoundComponent() {
@@ -104,6 +105,7 @@ function RootComponent() {
     <QueryClientProvider client={queryClient}>
       <I18nProvider>
         <Outlet />
+        <Toaster position="top-center" richColors />
       </I18nProvider>
     </QueryClientProvider>
   );
