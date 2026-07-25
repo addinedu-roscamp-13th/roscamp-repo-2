@@ -12,7 +12,7 @@ import { MAP_IMAGE, WAYPOINTS, type MapWaypoint } from "@/lib/map-waypoints";
  * 로봇이 가는 위치와 어긋나지 않는다.
  *
  * ## 왜 가로로 돌리나
- * arte2 맵 원본은 세로로 길다(63×108px = 1.26m × 2.16m). 모바일 화면 폭에 세로 맵을
+ * arte3 맵 원본은 세로로 길다(63×108px = 1.26m × 2.16m). 모바일 화면 폭에 세로 맵을
  * 넣으면 아주 작아지므로 **시계방향 90° 회전**해 가로로 눕힌다.
  * 정규화 좌표 변환: (x, y) → (1 − y, x).
  */
@@ -113,12 +113,12 @@ const ZONE_DEFS: {
 ];
 
 const TONE: Record<string, string> = {
-  pink: "bg-pink-200/80 border-pink-300 text-pink-900",
-  amber: "bg-amber-200/80 border-amber-300 text-amber-900",
-  sky: "bg-sky-200/80 border-sky-300 text-sky-900",
-  violet: "bg-violet-200/80 border-violet-300 text-violet-900",
-  emerald: "bg-emerald-200/80 border-emerald-300 text-emerald-900",
-  stone: "bg-stone-200/80 border-stone-300 text-stone-700",
+  pink: "bg-rose-100/90 border-rose-300 text-rose-900",
+  amber: "bg-amber-100/90 border-amber-300 text-amber-900",
+  sky: "bg-sky-100/90 border-sky-400 text-sky-900",
+  violet: "bg-violet-100/90 border-violet-300 text-violet-900",
+  emerald: "bg-emerald-100/90 border-emerald-300 text-emerald-900",
+  stone: "bg-stone-100/90 border-stone-400 text-stone-700",
 };
 
 /** 박스가 너무 납작해 글자가 안 들어가는 것을 막는 최소 크기(정규화 비율). */
@@ -270,12 +270,12 @@ export function LibraryMap({
       // 원본 63×108 을 90° 돌렸으므로 가로:세로 = 108:63
       style={{ aspectRatio: "108 / 63" }}
     >
-      {/* 배경: 실제 arte2 점유격자 지도를 90° 회전해 깔아둔다 */}
+      {/* 배경: 실제 arte3 점유격자 지도를 90° 회전해 깔아둔다 */}
       <img
         src={MAP_IMAGE}
         alt=""
         aria-hidden
-        className="pointer-events-none absolute left-1/2 top-1/2 h-auto w-[58%] -translate-x-1/2 -translate-y-1/2 -rotate-90 opacity-25 [image-rendering:pixelated]"
+        className="pointer-events-none absolute left-1/2 top-1/2 h-auto w-[58%] -translate-x-1/2 -translate-y-1/2 -rotate-90 opacity-60 [image-rendering:pixelated]"
       />
 
       {zones.map((z) => {
@@ -293,8 +293,8 @@ export function LibraryMap({
               width: `${z.width}%`,
               height: `${z.height}%`,
             }}
-            className={`absolute flex items-center justify-center rounded-lg border text-[10px] font-bold transition-all ${z.tone} ${
-              active ? "z-10 scale-105 ring-2 ring-primary" : ""
+            className={`absolute flex items-center justify-center rounded-md border-2 text-[10px] font-bold transition-all ${z.tone} ${
+              active ? "z-10 scale-105 shadow-lg ring-2 ring-primary" : ""
             } ${onSelect ? "cursor-pointer" : "cursor-default"}`}
           >
             <span className="px-1 text-center leading-tight">{z.label}</span>
