@@ -172,6 +172,9 @@ export const memberApi = {
       body: JSON.stringify({ book_id: bookId }),
     }),
   requests: () => call<DeliveryRequestOut[]>("/api/member/requests"),
+  /** 요청 이력 1건 삭제. 승인 대기 중인 건은 409 가 온다. */
+  deleteRequest: (id: number) =>
+    call<void>(`/api/member/requests/${id}`, { method: "DELETE" }),
   /**
    * 내 주문에서 일어난 **사건** (도착·완료 알림).
    *
