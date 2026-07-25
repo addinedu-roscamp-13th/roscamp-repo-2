@@ -9,7 +9,7 @@ import { fetchCatalog, type CatalogBook } from "@/lib/books-api";
 import { LANGS, useI18n } from "@/lib/i18n";
 import { useDebounced } from "@/lib/use-debounced";
 import { useSpeechRecognition, useSpeechSupported } from "@/lib/use-speech";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Mic,
   BookMarked,
@@ -72,11 +72,16 @@ function Home() {
     };
   }, [debounced]);
 
+  // useSpeechSupported()는 마운트 직후 false로 시작해 자기 useEffect에서만 true로
+  // 바뀐다. []로 한 번만 도는 이 effect가 같은 마운트 플러시의 초기값(false)을
+  // 캡처해버리면 영영 못 켜진다 — supported가 실제로 true가 될 때까지 기다린다.
+  const startedRef = useRef(false);
   useEffect(() => {
-    if (listen && supported) start();
-    // 최초 진입에서 한 번만 — 이후에는 사용자가 직접 켜고 끈다.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (listen && supported && !startedRef.current) {
+      startedRef.current = true;
+      start();
+    }
+  }, [listen, supported, start]);
 
   const newest = BOOKS.slice(0, 3);
 
