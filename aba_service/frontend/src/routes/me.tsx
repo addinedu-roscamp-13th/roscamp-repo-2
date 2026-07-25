@@ -200,7 +200,8 @@ function MePage() {
           <AccordionItem value="loans">
             <AccordionTrigger>{`대출 현황 (${loans.length})`}</AccordionTrigger>
             <AccordionContent>
-              <div className="space-y-2">
+              {/* 10건까지는 그대로 보이고, 넘치면 이 상자 안에서만 스크롤된다. */}
+              <div className="max-h-[50vh] space-y-2 overflow-y-auto pr-1">
                 {loans.length === 0 ? (
                   <Empty text="대출 중인 도서가 없습니다" />
                 ) : (
@@ -251,7 +252,8 @@ function MePage() {
               ) : null}
             </div>
             <AccordionContent>
-              <div className="space-y-2">
+              {/* 10건까지는 그대로 보이고, 넘치면 이 상자 안에서만 스크롤된다. */}
+              <div className="max-h-[50vh] space-y-2 overflow-y-auto pr-1">
                 {requests.length === 0 ? (
                   <Empty text="요청 내역이 없습니다. 「도서 요청」 화면에서 신청해 보세요" />
                 ) : (
@@ -315,7 +317,8 @@ function MePage() {
           <AccordionItem value="reservations">
             <AccordionTrigger>{`예약 (${reservations.length})`}</AccordionTrigger>
             <AccordionContent>
-              <div className="space-y-2">
+              {/* 10건까지는 그대로 보이고, 넘치면 이 상자 안에서만 스크롤된다. */}
+              <div className="max-h-[50vh] space-y-2 overflow-y-auto pr-1">
                 {reservations.length === 0 ? (
                   <Empty text="예약한 도서가 없습니다" />
                 ) : (
@@ -345,7 +348,8 @@ function MePage() {
           <AccordionItem value="wishlist">
             <AccordionTrigger>{`읽고 싶은 책 (${wishlist.length})`}</AccordionTrigger>
             <AccordionContent>
-              <div className="space-y-2">
+              {/* 10건까지는 그대로 보이고, 넘치면 이 상자 안에서만 스크롤된다. */}
+              <div className="max-h-[50vh] space-y-2 overflow-y-auto pr-1">
                 {wishlist.length === 0 ? (
                   <Empty text="담아둔 책이 없습니다" />
                 ) : (

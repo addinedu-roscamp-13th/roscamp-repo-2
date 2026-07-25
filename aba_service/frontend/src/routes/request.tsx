@@ -46,6 +46,16 @@ export const Route = createFileRoute("/request")({
 type Step = 1 | 2 | 3;
 type Mode = "read" | "borrow";
 
+const CATS = [
+  "all",
+  "literature",
+  "art",
+  "science",
+  "humanities",
+  "kids",
+] as const;
+type Cat = (typeof CATS)[number];
+
 function RequestPage() {
   const { lang, tr } = useI18n();
   const navigate = useNavigate();
@@ -55,6 +65,7 @@ function RequestPage() {
   const [step, setStep] = useState<Step>(1);
   const [query, setQuery] = useState("");
   const debouncedQuery = useDebounced(query);
+  const [cat, setCat] = useState<Cat>("all");
   const [books, setBooks] = useState<CatalogBook[]>([]);
   const [picked, setPicked] = useState<CatalogBook | null>(null);
   const [lastRequest, setLastRequest] = useState<DeliveryRequestOut | null>(
@@ -65,15 +76,27 @@ function RequestPage() {
   const [busy, setBusy] = useState(false);
   const [mine, setMine] = useState<DeliveryRequestOut[]>([]);
 
+  const catLabels: Record<Cat, string> = {
+    all: tr("catAll"),
+    literature: tr("catLiterature"),
+    art: tr("catArt"),
+    science: tr("catScience"),
+    humanities: tr("catHumanities"),
+    kids: tr("catKids"),
+  };
+
   useEffect(() => {
     let cancelled = false;
-    void fetchCatalog({ q: debouncedQuery.trim() || null }).then((rows) => {
+    void fetchCatalog({
+      q: debouncedQuery.trim() || null,
+      category: cat === "all" ? null : cat,
+    }).then((rows) => {
       if (!cancelled) setBooks(rows);
     });
     return () => {
       cancelled = true;
     };
-  }, [debouncedQuery]);
+  }, [debouncedQuery, cat]);
 
   // 상세 시트나 LiBi 가 `?bookId=` 를 달고 보내면 1단계는 이미 끝난 셈이다.
   // 한 건만 조회한다 — 카탈로그 200 권을 받아 뒤지면 장서가 늘 때 못 찾는다.
@@ -209,6 +232,23 @@ function RequestPage() {
                   <X className="size-4" />
                 </button>
               ) : null}
+            </div>
+
+            {/* 카테고리별로도 고를 수 있게 — 6개라 화면 폭을 넘어가면 가로 스크롤된다. */}
+            <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
+              {CATS.map((c) => (
+                <button
+                  key={c}
+                  onClick={() => setCat(c)}
+                  className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-bold transition-colors ${
+                    cat === c
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-card text-muted-foreground ring-1 ring-border"
+                  }`}
+                >
+                  {catLabels[c]}
+                </button>
+              ))}
             </div>
 
             <div className="mt-3 space-y-2">

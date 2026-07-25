@@ -125,29 +125,22 @@ function SearchPage() {
           </p>
         )}
 
-        {/* 요청은 이 화면의 일이 아니다 — 별도 화면으로 보낸다. 결과를 다 스크롤해야
-            보이던 카드였는데, 검색바 바로 아래로 올렸다. */}
-        <Link
-          to="/request"
-          className="mt-4 block rounded-2xl border-2 border-dashed border-primary/40 bg-primary-soft/40 p-4 text-center"
-        >
-          <p className="text-sm font-semibold text-primary">
-            책을 받아보고 싶으세요? 도서 요청하기 →
-          </p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            자리로 받기 · 대여 신청 · 예약을 한 곳에서
-          </p>
-        </Link>
-
-        <Link
-          to="/chat"
-          className="mt-3 block rounded-2xl border-2 border-dashed border-primary/30 bg-primary-soft/40 p-4 text-center"
-        >
-          <p className="text-sm font-semibold text-primary">
-            못 찾으셨나요? LiBi에게 물어보세요
-          </p>
-          <p className="mt-1 text-xs text-muted-foreground">{tr("chatPh")}</p>
-        </Link>
+        {/* 요청은 이 화면의 일이 아니다 — 별도 화면으로 보낸다. 예전엔 두 줄짜리 카드를
+            세로로 쌓아 부피가 컸다 — 한 줄 배지 두 개로 줄였다. */}
+        <div className="mt-4 grid grid-cols-2 gap-2">
+          <Link
+            to="/request"
+            className="flex items-center justify-center rounded-xl border border-dashed border-primary/40 bg-primary-soft/40 px-3 py-2.5 text-center text-xs font-semibold text-primary"
+          >
+            도서 요청하기 →
+          </Link>
+          <Link
+            to="/chat"
+            className="flex items-center justify-center rounded-xl border border-dashed border-primary/30 bg-primary-soft/40 px-3 py-2.5 text-center text-xs font-semibold text-primary"
+          >
+            LiBi에게 물어보기
+          </Link>
+        </div>
 
         <div className="mt-4 flex gap-2 overflow-x-auto pb-1 -mx-5 px-5">
           {CATS.map((c) => (
