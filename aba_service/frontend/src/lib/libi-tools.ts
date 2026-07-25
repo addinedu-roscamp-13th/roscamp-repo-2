@@ -245,7 +245,9 @@ async function resolveBook(title: string): Promise<Resolution> {
   );
   if (exact.length === 1) return { kind: "one", book: exact[0] };
   if (exact.length > 1) return { kind: "many", books: exact };
-  if (rows.length === 1) return { kind: "one", book: rows[0] };
+  // 정확히 일치하는 게 하나도 없으면, 후보가 한 권뿐이어도 확정하지 않는다.
+  // 검색어가 저자명·요약 등에 우연히 걸려 "이 책"이라 자신할 근거가 없다 —
+  // 후보를 보여주고 사용자가 직접 고르게 한다.
   return { kind: "many", books: rows.slice(0, 10) };
 }
 

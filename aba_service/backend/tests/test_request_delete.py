@@ -80,3 +80,41 @@ def test_delete_requires_auth(client, db_session, member, fms):
     res = client.delete(f"/api/member/requests/{row.id}")
 
     assert res.status_code == 401
+
+
+def test_cannot_delete_approved_request_still_active_in_fms(
+    client, db_session, member, member_auth, fms
+):
+    book = make_book(db_session)
+    row = _request_row(db_session, member, book, task_id="t-1")
+    fms.active_orders = [{"id": "t-1", "status": "MOVING"}]
+
+    res = client.delete(f"/api/member/requests/{row.id}", headers=member_auth)
+
+    assert res.status_code == 409
+    assert db_session.get(DeliveryRequest, row.id) is not None
+
+
+def test_can_delete_approved_request_once_fms_marks_it_completed(
+    client, db_session, member, member_auth, fms
+):
+    book = make_book(db_session)
+    row = _request_row(db_session, member, book, task_id="t-1")
+    fms.active_orders = [{"id": "t-1", "status": "COMPLETED"}]
+
+    res = client.delete(f"/api/member/requests/{row.id}", headers=member_auth)
+
+    assert res.status_code == 204
+
+
+def test_can_delete_approved_request_fms_no_longer_knows_about(
+    client, db_session, member, member_auth, fms
+):
+    """FMS 가 이미 정리해서 목록에서 빠진 주문 — 완료됐다고 보고 지울 수 있다."""
+    book = make_book(db_session)
+    row = _request_row(db_session, member, book, task_id="t-1")
+    fms.active_orders = []
+
+    res = client.delete(f"/api/member/requests/{row.id}", headers=member_auth)
+
+    assert res.status_code == 204

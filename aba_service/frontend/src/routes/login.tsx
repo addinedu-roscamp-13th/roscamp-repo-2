@@ -1,16 +1,26 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
+import { z } from "zod";
 
 import { AppShell } from "@/components/AppShell";
 import { memberApi, setToken } from "@/lib/member";
 
+// 로그인 전 하려던 일(예: 도서 상세에서 요청하기)을 잃지 않기 위한 복귀 경로.
+// 없으면 /me 로 간다. 임의 URL을 열어주는 open-redirect 가 되지 않도록
+// 반드시 "/" 로 시작하는 내부 경로만 허용한다.
+const loginSearchSchema = z.object({
+  redirect: z.string().startsWith("/").optional().catch(undefined),
+});
+
 export const Route = createFileRoute("/login")({
+  validateSearch: loginSearchSchema,
   head: () => ({ meta: [{ title: "LiBi — 로그인" }] }),
   component: LoginPage,
 });
 
 function LoginPage() {
   const navigate = useNavigate();
+  const { redirect } = Route.useSearch();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -23,7 +33,7 @@ function LoginPage() {
     try {
       const res = await memberApi.login(username.trim(), password);
       setToken(res.access_token);
-      navigate({ to: "/me" });
+      navigate({ to: redirect || "/me" });
     } catch (err) {
       setError(err instanceof Error ? err.message : "로그인에 실패했습니다");
     } finally {

@@ -90,6 +90,9 @@ class FakeFms:
         self.reason = "FMS 연결 실패: 대역"
         #: FMS 가 내려줄 사건들 (도착 알림). 시험이 직접 채운다.
         self.events: list[dict] = []
+        #: `list_orders()` 가 돌려줄 진행중 주문 스냅샷. 시험이 직접 채운다
+        #: (예: [{"id": "t-1", "status": "MOVING"}]).
+        self.active_orders: list[dict] = []
 
     def submit_order(self, **kwargs) -> tuple[bool, str]:
         if not self.ok:
@@ -98,7 +101,7 @@ class FakeFms:
         return True, self.next_task_id
 
     def list_orders(self) -> tuple[bool, list[dict]]:
-        return True, []
+        return True, self.active_orders
 
     def list_events(self, since: int = 0, limit: int = 50) -> tuple[bool, list[dict], int]:
         if not self.ok:

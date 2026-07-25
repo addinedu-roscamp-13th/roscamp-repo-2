@@ -187,7 +187,15 @@ function RequestPage() {
             로봇이 책을 가져다 드립니다. 요청하려면 로그인이 필요해요.
           </p>
           <button
-            onClick={() => navigate({ to: "/login" })}
+            onClick={() =>
+              navigate({
+                to: "/login",
+                // 로그인하고 나면 지금 고르려던 책으로 그대로 돌아온다.
+                search: {
+                  redirect: bookId ? `/request?bookId=${bookId}` : "/request",
+                },
+              })
+            }
             className="mt-6 h-12 w-full rounded-2xl bg-primary text-sm font-bold text-primary-foreground"
           >
             로그인하기
