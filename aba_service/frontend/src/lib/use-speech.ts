@@ -110,13 +110,3 @@ export function useSpeechRecognition(lang: string, silenceMs: number = DEFAULT_S
 
   return { listening, transcript, error, start, stop, setTranscript };
 }
-
-export function speak(text: string, lang: string) {
-  if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
-  const u = new SpeechSynthesisUtterance(text);
-  u.lang = lang;
-  u.rate = 1;
-  u.pitch = 1;
-  window.speechSynthesis.cancel();
-  window.speechSynthesis.speak(u);
-}

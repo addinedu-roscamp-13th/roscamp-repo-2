@@ -11,10 +11,8 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SearchRouteImport } from './routes/search'
-import { Route as ScanRouteImport } from './routes/scan'
 import { Route as RequestRouteImport } from './routes/request'
 import { Route as RecommendRouteImport } from './routes/recommend'
-import { Route as OcrRouteImport } from './routes/ocr'
 import { Route as MeRouteImport } from './routes/me'
 import { Route as MapRouteImport } from './routes/map'
 import { Route as LoginRouteImport } from './routes/login'
@@ -48,11 +46,6 @@ const SearchRoute = SearchRouteImport.update({
   path: '/search',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ScanRoute = ScanRouteImport.update({
-  id: '/scan',
-  path: '/scan',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const RequestRoute = RequestRouteImport.update({
   id: '/request',
   path: '/request',
@@ -61,11 +54,6 @@ const RequestRoute = RequestRouteImport.update({
 const RecommendRoute = RecommendRouteImport.update({
   id: '/recommend',
   path: '/recommend',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const OcrRoute = OcrRouteImport.update({
-  id: '/ocr',
-  path: '/ocr',
   getParentRoute: () => rootRouteImport,
 } as any)
 const MeRoute = MeRouteImport.update({
@@ -187,10 +175,8 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/map': typeof MapRoute
   '/me': typeof MeRoute
-  '/ocr': typeof OcrRoute
   '/recommend': typeof RecommendRoute
   '/request': typeof RequestRoute
-  '/scan': typeof ScanRoute
   '/search': typeof SearchRoute
   '/settings': typeof SettingsRoute
   '/admin': typeof AdminAuthedRouteWithChildren
@@ -217,10 +203,8 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/map': typeof MapRoute
   '/me': typeof MeRoute
-  '/ocr': typeof OcrRoute
   '/recommend': typeof RecommendRoute
   '/request': typeof RequestRoute
-  '/scan': typeof ScanRoute
   '/search': typeof SearchRoute
   '/settings': typeof SettingsRoute
   '/admin/login': typeof AdminLoginRoute
@@ -247,10 +231,8 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/map': typeof MapRoute
   '/me': typeof MeRoute
-  '/ocr': typeof OcrRoute
   '/recommend': typeof RecommendRoute
   '/request': typeof RequestRoute
-  '/scan': typeof ScanRoute
   '/search': typeof SearchRoute
   '/settings': typeof SettingsRoute
   '/admin/_authed': typeof AdminAuthedRouteWithChildren
@@ -279,10 +261,8 @@ export interface FileRouteTypes {
     | '/login'
     | '/map'
     | '/me'
-    | '/ocr'
     | '/recommend'
     | '/request'
-    | '/scan'
     | '/search'
     | '/settings'
     | '/admin'
@@ -309,10 +289,8 @@ export interface FileRouteTypes {
     | '/login'
     | '/map'
     | '/me'
-    | '/ocr'
     | '/recommend'
     | '/request'
-    | '/scan'
     | '/search'
     | '/settings'
     | '/admin/login'
@@ -338,10 +316,8 @@ export interface FileRouteTypes {
     | '/login'
     | '/map'
     | '/me'
-    | '/ocr'
     | '/recommend'
     | '/request'
-    | '/scan'
     | '/search'
     | '/settings'
     | '/admin/_authed'
@@ -369,10 +345,8 @@ export interface RootRouteChildren {
   LoginRoute: typeof LoginRoute
   MapRoute: typeof MapRoute
   MeRoute: typeof MeRoute
-  OcrRoute: typeof OcrRoute
   RecommendRoute: typeof RecommendRoute
   RequestRoute: typeof RequestRoute
-  ScanRoute: typeof ScanRoute
   SearchRoute: typeof SearchRoute
   SettingsRoute: typeof SettingsRoute
   AdminAuthedRoute: typeof AdminAuthedRouteWithChildren
@@ -395,13 +369,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SearchRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/scan': {
-      id: '/scan'
-      path: '/scan'
-      fullPath: '/scan'
-      preLoaderRoute: typeof ScanRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/request': {
       id: '/request'
       path: '/request'
@@ -414,13 +381,6 @@ declare module '@tanstack/react-router' {
       path: '/recommend'
       fullPath: '/recommend'
       preLoaderRoute: typeof RecommendRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/ocr': {
-      id: '/ocr'
-      path: '/ocr'
-      fullPath: '/ocr'
-      preLoaderRoute: typeof OcrRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/me': {
@@ -625,10 +585,8 @@ const rootRouteChildren: RootRouteChildren = {
   LoginRoute: LoginRoute,
   MapRoute: MapRoute,
   MeRoute: MeRoute,
-  OcrRoute: OcrRoute,
   RecommendRoute: RecommendRoute,
   RequestRoute: RequestRoute,
-  ScanRoute: ScanRoute,
   SearchRoute: SearchRoute,
   SettingsRoute: SettingsRoute,
   AdminAuthedRoute: AdminAuthedRouteWithChildren,

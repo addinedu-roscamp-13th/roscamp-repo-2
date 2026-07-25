@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { AppShell } from "@/components/AppShell";
 import { LANGS, useI18n, type Lang } from "@/lib/i18n";
 import {
@@ -8,9 +8,6 @@ import {
   QrCode,
   X,
   ExternalLink,
-  ScanLine,
-  ScanText,
-  ChevronRight,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
@@ -136,40 +133,6 @@ function Settings() {
           ) : null}
         </Section>
 
-        <Section title="스캔 / 인식 도구" icon={ScanLine}>
-          <Link
-            to="/scan"
-            className="flex items-center gap-3 rounded-xl border-2 border-border bg-card p-3 text-left transition-colors hover:border-primary"
-          >
-            <span className="inline-flex size-10 items-center justify-center rounded-xl bg-primary-soft text-primary">
-              <ScanLine className="size-5" />
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block text-sm font-semibold text-foreground">바코드 · QR 카메라</span>
-              <span className="block text-[11px] text-muted-foreground">
-                카메라로 QR·바코드를 인식해 텍스트로 변환
-              </span>
-            </span>
-            <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
-          </Link>
-
-          <Link
-            to="/ocr"
-            className="flex items-center gap-3 rounded-xl border-2 border-border bg-card p-3 text-left transition-colors hover:border-primary"
-          >
-            <span className="inline-flex size-10 items-center justify-center rounded-xl bg-primary-soft text-primary">
-              <ScanText className="size-5" />
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block text-sm font-semibold text-foreground">OCR 텍스트 인식</span>
-              <span className="block text-[11px] text-muted-foreground">
-                이미지 속 한국어·영어 문자를 추출해 화면에 출력
-              </span>
-            </span>
-            <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
-          </Link>
-        </Section>
-
         <Section title={tr("chooseLang")} icon={Languages}>
           <div className="grid grid-cols-2 gap-2">
             {LANGS.map((l) => (
@@ -201,7 +164,7 @@ function Settings() {
         </Section>
 
         <p className="mt-8 text-center text-[11px] text-muted-foreground">
-          LiBi v0.1 · made with 📚 by Lovable
+          LiBi v0.1
         </p>
       </div>
 
