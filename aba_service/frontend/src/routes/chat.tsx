@@ -23,10 +23,11 @@ import {
   type PendingCall,
   type ToolResult,
 } from "@/lib/libi-tools";
-import { Send, Map as MapIcon, X, Menu } from "lucide-react";
+import { Send, Map as MapIcon, X, Menu, Mic } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { useSpeechRecognition, useSpeechSupported } from "@/lib/use-speech";
 
 export const Route = createFileRoute("/chat")({
   head: () => ({ meta: [{ title: "LiBi — LiBi 챗봇" }] }),
@@ -506,6 +507,13 @@ function ChatPage() {
   // 연타가 두 번째 응답으로 pendingCall 을 덮어쓸 수 있다.
   const busy = sending || pendingCall !== null;
 
+  // 음성 입력 — 홈/검색 마이크와 달리 여기선 인식된 문장을 검색어가 아니라
+  // 그대로 LiBi 에게 보낸다(도구 호출까지 이어짐).
+  const speechSupported = useSpeechSupported();
+  const speechLang = LANGS.find((l) => l.code === lang)?.speech ?? "ko-KR";
+  const { listening, transcript, start, stop } =
+    useSpeechRecognition(speechLang);
+
   const scrollRef = useRef<HTMLDivElement>(null);
   // 화면에 그리는 Msg[] 와 별개로, 모델에 보낼 원본 이력을 따로 둔다.
   // 화면용에는 카드·스켈레톤 같은 표시 전용 항목이 섞여 있어 그대로 못 보낸다.
@@ -526,6 +534,17 @@ function ChatPage() {
         : m,
     );
   }, [lang]);
+
+  // 인식이 끝나면(침묵 감지로 자동 정지) 그 문장을 그대로 보낸다 — 홈 화면의
+  // "말하면 자동으로 넘어간다" 패턴과 같다.
+  useEffect(() => {
+    if (!listening && transcript.trim() && !busy) {
+      const text = transcript.trim();
+      const id = setTimeout(() => void send(text), 400);
+      return () => clearTimeout(id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listening, transcript]);
 
   const updateMessage = (id: string, patch: Partial<Msg>) =>
     setMessages((m) =>
@@ -904,12 +923,29 @@ function ChatPage() {
               </button>
 
               <input
-                value={input}
+                value={listening ? transcript : input}
                 onChange={(e) => setInput(e.target.value)}
-                placeholder={tr("chatPh")}
+                placeholder={listening ? tr("listening") : tr("chatPh")}
                 disabled={busy}
+                readOnly={listening}
                 className="h-11 flex-1 rounded-full border border-border bg-background px-4 text-sm outline-none focus:border-primary disabled:opacity-60"
               />
+
+              {speechSupported && (
+                <button
+                  type="button"
+                  onClick={() => (listening ? stop() : start())}
+                  disabled={busy}
+                  aria-label="voice input"
+                  className={`flex size-11 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-40 ${
+                    listening
+                      ? "bg-accent text-accent-foreground"
+                      : "bg-secondary text-secondary-foreground"
+                  }`}
+                >
+                  <Mic className="size-5" />
+                </button>
+              )}
 
               <button
                 type="submit"
