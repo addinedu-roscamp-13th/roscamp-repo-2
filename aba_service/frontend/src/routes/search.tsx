@@ -53,9 +53,19 @@ function SearchPage() {
     useSpeechRecognition(speechLang);
 
   useEffect(() => setQuery(q ?? ""), [q]);
+
+  // 인식이 끝나면 이 화면의 검색어가 아니라 LiBi 로 그대로 보낸다 — 홈 화면과
+  // 같은 규칙("대여 신청해줘" 가 검색어로 안 찍히게).
   useEffect(() => {
-    if (transcript) setQuery(transcript);
-  }, [transcript]);
+    if (!listening && transcript.trim()) {
+      const t = transcript.trim();
+      const id = setTimeout(
+        () => navigate({ to: "/chat", search: { q: t } }),
+        400,
+      );
+      return () => clearTimeout(id);
+    }
+  }, [listening, transcript, navigate]);
 
   // 도서는 DB(cb_books)에서 온다 — 서가 위치와 재고를 그대로 보여준다.
   useEffect(() => {
@@ -92,13 +102,14 @@ function SearchPage() {
         <div className="flex items-center gap-2 rounded-2xl border border-border bg-card p-2 shadow-card">
           <SearchIcon className="ml-2 size-5 text-muted-foreground" />
           <input
-            value={query}
+            value={listening ? transcript : query}
             onChange={(e) => setQuery(e.target.value)}
             onBlur={() => navigate({ to: "/search", search: { q: query } })}
-            placeholder={tr("searchPh")}
+            placeholder={listening ? tr("listening") : tr("searchPh")}
+            readOnly={listening}
             className="flex-1 bg-transparent py-2 text-sm outline-none placeholder:text-muted-foreground"
           />
-          {query && (
+          {query && !listening && (
             <button
               onClick={() => setQuery("")}
               className="text-muted-foreground"
@@ -110,7 +121,7 @@ function SearchPage() {
             onClick={() => (listening ? stop() : start())}
             className={`flex size-10 items-center justify-center rounded-xl transition-colors ${
               listening
-                ? "bg-accent text-accent-foreground"
+                ? "voice-pulse bg-accent text-accent-foreground"
                 : "bg-primary text-primary-foreground"
             }`}
             aria-label="voice search"

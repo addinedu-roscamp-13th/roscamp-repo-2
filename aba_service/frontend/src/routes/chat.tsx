@@ -28,8 +28,13 @@ import { useEffect, useRef, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useSpeechRecognition, useSpeechSupported } from "@/lib/use-speech";
+import { z } from "zod";
+
+// 홈·검색의 마이크가 인식이 끝나면 여기로 그 문장을 그대로 들고 온다.
+const chatSearchSchema = z.object({ q: z.string().optional() });
 
 export const Route = createFileRoute("/chat")({
+  validateSearch: chatSearchSchema,
   head: () => ({ meta: [{ title: "LiBi — LiBi 챗봇" }] }),
   component: ChatPage,
 });
@@ -492,6 +497,7 @@ function greetingFor(lang: "KR" | "EN" | "ZH" | "VI") {
 
 function ChatPage() {
   const { lang, tr } = useI18n();
+  const { q } = Route.useSearch();
 
   const [messages, setMessages] = useState<Msg[]>([
     { id: "init", role: "bot", text: greetingFor(lang) },
@@ -545,6 +551,16 @@ function ChatPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [listening, transcript]);
+
+  // 홈/검색 마이크가 `?q=` 로 문장을 들고 오면 도착하자마자 한 번 보낸다.
+  const autoSentRef = useRef(false);
+  useEffect(() => {
+    if (q?.trim() && !autoSentRef.current) {
+      autoSentRef.current = true;
+      void send(q.trim());
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q]);
 
   const updateMessage = (id: string, patch: Partial<Msg>) =>
     setMessages((m) =>
@@ -904,6 +920,11 @@ function ChatPage() {
 
           {/* input (fixed at bottom) */}
           <div className="shrink-0 border-t border-border bg-card p-3 safe-bottom">
+            {listening && (
+              <p className="mb-2 text-center text-xs font-bold text-primary">
+                🎙️ {tr("listening")}
+              </p>
+            )}
             <form
               onSubmit={(e) => {
                 e.preventDefault();
@@ -937,9 +958,9 @@ function ChatPage() {
                   onClick={() => (listening ? stop() : start())}
                   disabled={busy}
                   aria-label="voice input"
-                  className={`flex size-11 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-40 ${
+                  className={`relative flex size-11 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-40 ${
                     listening
-                      ? "bg-accent text-accent-foreground"
+                      ? "voice-pulse bg-accent text-accent-foreground"
                       : "bg-secondary text-secondary-foreground"
                   }`}
                 >

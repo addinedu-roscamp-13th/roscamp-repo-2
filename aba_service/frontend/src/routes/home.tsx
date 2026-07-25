@@ -46,11 +46,13 @@ function Home() {
   const navigate = useNavigate();
   const { listen } = Route.useSearch();
 
+  // 인식이 끝나면 검색이 아니라 LiBi 로 그대로 보낸다 — "대여 신청해줘" 같은
+  // 말이 그냥 검색어로 찍히지 않고 실제로 처리되게.
   useEffect(() => {
     if (!listening && transcript.trim()) {
       const q = transcript.trim();
       const id = setTimeout(
-        () => navigate({ to: "/search", search: { q } }),
+        () => navigate({ to: "/chat", search: { q } }),
         400,
       );
       return () => clearTimeout(id);
@@ -88,66 +90,58 @@ function Home() {
   return (
     <AppShell>
       <div className="px-5 pb-8 pt-4">
-        {/* Voice hero */}
-        <section className="flex flex-col items-center py-8">
-          <p className="mb-6 text-center text-sm font-medium text-muted-foreground">
-            {listening ? tr("listening") : tr("tapToTalk")}
-          </p>
-          <button
-            onClick={() => (listening ? stop() : start())}
-            disabled={!supported}
-            aria-label={tr("tapToTalk")}
-            className={`relative flex size-40 items-center justify-center rounded-full text-primary-foreground shadow-float transition-transform active:scale-95 disabled:opacity-50 ${
-              listening ? "bg-accent voice-pulse" : "bg-primary"
-            }`}
-          >
-            {listening ? (
-              <span className="flex h-8 items-end">
-                {[0, 1, 2, 3, 4].map((i) => (
-                  <span
-                    key={i}
-                    className="listening-bar"
-                    style={{ animationDelay: `${i * 0.12}s` }}
-                  />
-                ))}
-              </span>
-            ) : (
-              <Mic className="size-16" />
-            )}
-          </button>
-          {transcript && (
-            <p className="mt-6 max-w-xs rounded-2xl bg-card px-4 py-2 text-center text-sm text-foreground shadow-card">
-              "{transcript}"
-            </p>
-          )}
-          {error === "unsupported" && (
-            <p className="mt-4 text-xs text-destructive">
-              {tr("noSpeechSupport")}
-            </p>
-          )}
-          {error === "error" && (
-            <p className="mt-4 text-xs text-destructive">{tr("micDenied")}</p>
-          )}
-        </section>
-
-        {/* 도서 검색 — 음성이 어려운 상황을 위한 텍스트 입구 */}
+        {/* 검색 — 마이크는 검색창 안에 작게 둔다. 예전엔 화면 절반을 차지하는
+            큰 마이크였는데, 그 크기 때문에 "이건 뭐든 알아듣는 전용 버튼"처럼
+            보여 "대여 신청해줘" 같은 말을 검색어로만 처리해 혼란을 줬다.
+            검색 화면과 같은 작은 아이콘으로 두면 검색 보조 수단으로 읽힌다.
+            말이 끝나면 검색이 아니라 LiBi(`/chat`)로 그대로 넘어간다. */}
         <form
           onSubmit={(e) => {
             e.preventDefault();
             const q = query.trim();
             if (q) navigate({ to: "/search", search: { q } });
           }}
-          className="relative mt-2"
+          className="mt-4 flex items-center gap-2 rounded-2xl border border-border bg-card p-2 shadow-card"
         >
-          <Search className="pointer-events-none absolute left-4 top-1/2 size-5 -translate-y-1/2 text-muted-foreground" />
+          <Search className="ml-2 size-5 shrink-0 text-muted-foreground" />
           <input
-            value={query}
+            value={listening ? transcript : query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder={tr("searchPh")}
+            placeholder={listening ? tr("listening") : tr("searchPh")}
             aria-label={tr("navSearch")}
-            className="h-14 w-full rounded-2xl border border-border bg-card pl-12 pr-4 text-sm text-foreground shadow-card outline-none placeholder:text-muted-foreground focus:ring-2 focus:ring-primary"
+            readOnly={listening}
+            className="flex-1 bg-transparent py-2 text-sm outline-none placeholder:text-muted-foreground"
           />
+          {supported && (
+            <button
+              type="button"
+              onClick={() => (listening ? stop() : start())}
+              aria-label={tr("tapToTalk")}
+              className={`flex size-10 shrink-0 items-center justify-center rounded-xl transition-colors ${
+                listening
+                  ? "voice-pulse bg-accent text-accent-foreground"
+                  : "bg-primary text-primary-foreground"
+              }`}
+            >
+              <Mic className="size-5" />
+            </button>
+          )}
         </form>
+        {listening && (
+          <p className="mt-2 text-center text-xs font-medium text-primary">
+            🎙️ {tr("listening")}
+          </p>
+        )}
+        {error === "unsupported" && (
+          <p className="mt-2 text-center text-xs text-destructive">
+            {tr("noSpeechSupport")}
+          </p>
+        )}
+        {error === "error" && (
+          <p className="mt-2 text-center text-xs text-destructive">
+            {tr("micDenied")}
+          </p>
+        )}
 
         {suggest.length > 0 && (
           /* 10권까지 보이고 넘치면 목록 안에서 스크롤된다 — 아래 퀵메뉴가 밀리지 않게. */
@@ -203,10 +197,10 @@ function Home() {
                 key={b.id}
                 to="/search"
                 search={{ q: b.title[lang] }}
-                className="w-32 shrink-0 snap-start"
+                className="w-40 shrink-0 snap-start"
               >
                 <div
-                  className={`flex h-44 items-center justify-center rounded-xl bg-gradient-to-br ${b.color} text-5xl shadow-card`}
+                  className={`flex h-56 items-center justify-center rounded-2xl bg-gradient-to-br ${b.color} text-6xl shadow-card`}
                 >
                   {b.cover}
                 </div>
@@ -219,22 +213,22 @@ function Home() {
           </div>
         </section>
 
-        <section className="mt-8 rounded-2xl border border-border bg-card p-4 shadow-card">
-          <div className="flex items-center gap-3">
-            <div className="flex size-10 items-center justify-center rounded-xl bg-primary text-primary-foreground">
-              <BookMarked className="size-5" />
+        <section className="mt-8 rounded-2xl border border-border bg-card p-5 shadow-card">
+          <div className="flex items-center gap-4">
+            <div className="flex size-14 shrink-0 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
+              <BookMarked className="size-7" />
             </div>
             <div className="flex-1">
-              <div className="text-sm font-bold text-foreground">
+              <div className="text-base font-bold text-foreground">
                 {tr("navChat")}
               </div>
-              <div className="text-xs text-muted-foreground">
+              <div className="mt-0.5 text-sm text-muted-foreground">
                 {tr("chatPh")}
               </div>
             </div>
             <Link
               to="/chat"
-              className="rounded-full bg-primary px-4 py-2 text-xs font-bold text-primary-foreground"
+              className="shrink-0 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-foreground"
             >
               열기
             </Link>
@@ -264,14 +258,14 @@ function QuickCard({
   return (
     <Link
       to={to}
-      className="flex aspect-square flex-col items-center justify-center gap-2 rounded-2xl border border-border bg-card p-3 text-center shadow-card transition-transform active:scale-95"
+      className="flex aspect-square flex-col items-center justify-center gap-3 rounded-2xl border border-border bg-card p-4 text-center shadow-card transition-transform active:scale-95"
     >
       <div
-        className={`flex size-12 items-center justify-center rounded-xl ${tones[tone]}`}
+        className={`flex size-16 items-center justify-center rounded-2xl ${tones[tone]}`}
       >
-        <Icon className="size-6" />
+        <Icon className="size-8" />
       </div>
-      <div className="text-xs font-semibold leading-tight text-foreground">
+      <div className="text-sm font-semibold leading-tight text-foreground">
         {label}
       </div>
     </Link>

@@ -22,14 +22,14 @@ APPROVALS = "/api/admin/ops/approvals"
 
 def test_열람_요청은_승인없이_바로_FMS_주문(client, member_auth, book, fms):
     res = client.post(
-        READ, json={"book_id": book.id, "table": "테이블-1번-좌"}, headers=member_auth
+        READ, json={"book_id": book.id, "table": "1번테이블"}, headers=member_auth
     )
     assert res.status_code == 201, res.text
     body = res.json()
     assert body["approval"] == "APPROVED"
     assert body["fms_task_id"] == "t-1"
     assert fms.submit_count == 1
-    assert fms.orders[0]["dropoff"] == "테이블-1번-좌"
+    assert fms.orders[0]["dropoff"] == "1번테이블"
 
 
 def test_열람_자리는_화이트리스트_밖이면_거절(client, member_auth, book, fms):
@@ -45,7 +45,7 @@ def test_열람도_FMS가_못받으면_기록을_남기지_않는다(
 ):
     fms.ok = False
     res = client.post(
-        READ, json={"book_id": book.id, "table": "테이블-1번-좌"}, headers=member_auth
+        READ, json={"book_id": book.id, "table": "1번테이블"}, headers=member_auth
     )
     assert res.status_code == 503
     assert db_session.query(DeliveryRequest).count() == 0
@@ -135,7 +135,7 @@ def test_열람_요청은_승인_대기_목록에_안_올라온다(
     client, member_auth, admin_auth, book, fms
 ):
     client.post(
-        READ, json={"book_id": book.id, "table": "테이블-1번-좌"}, headers=member_auth
+        READ, json={"book_id": book.id, "table": "1번테이블"}, headers=member_auth
     )
     res = client.get(APPROVALS, headers=admin_auth)
     assert res.json()["pending"] == []
