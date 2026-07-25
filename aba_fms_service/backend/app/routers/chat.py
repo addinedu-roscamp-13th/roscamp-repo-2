@@ -127,12 +127,11 @@ async def _wait_arrival(frag: str, interp: dict[str, Any], admin_db: AsyncSessio
     if loc is None:
         await asyncio.sleep(3.0)
         return False
-    ip = robot.ip_address
     tol = 0.25  # CLAUDE.md xy_goal_tolerance 와 동일
     start = time.time()
     await asyncio.sleep(1.0)  # 목표를 막 받은 직후엔 아직 출발 전 — 잠깐 뒤부터 확인
     while time.time() - start < timeout_s:
-        st = fleet_telemetry.get_state(ip)
+        st = fleet_telemetry.get_state_for_robot(robot.name)
         pose = (st or {}).get("pose")
         if pose is not None:
             dx = float(pose["x"]) - float(loc.x)

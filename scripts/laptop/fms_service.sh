@@ -31,6 +31,54 @@ NAVGRAPH="$FLEET_WS/maps/library/arte2.navgraph.yaml"
 ARRIVE_RADIUS="${ARRIVE_RADIUS:-0.05}"
 SESSION="libi_fms"
 
+# ── 순회 루트 이름 → navgraph 정점 인덱스 해석 ──────────────────────────────
+# fleet_node 의 patrol_route/security_patrol_route 는 정수 인덱스를 받는다. 그런데 인덱스는
+# waypoint.yaml 삽입순서라 비순차(순회경로-6=17, -8=18, -7=19, -5=20)여서 하드코딩하면
+# navgraph 재생성 때 조용히 밀린다. 그래서 navgraph 메타의 정점 이름을 읽어 **매 기동 때**
+# 해석한다. 이름 없음/중복/2개 미만이면 fleet_node 를 안 띄우고 즉시 종료(무-grant 방지).
+# ⚠️ waypoint.yaml 을 고쳤으면 이 스크립트 전에 navgraph 를 재생성해야 한다:
+#     <venv>/python scripts/gen_arte2_navgraph.py
+PATROL_NAMES="순회경로-1 예술서가 문학서가 순회경로-6 순회경로-7 순회경로-8 순회경로-5 순회경로-4 순회경로-3 순회경로-2"
+SECURITY_NAMES="$PATROL_NAMES"   # 일단 주간과 동일(야간 전용 경로 생기면 여기만 교체)
+
+RESOLVE_PY=""
+for c in "$FMS/backend/.venv/bin/python" "$REPO_ROOT/aba_service/backend/.venv/bin/python" python3; do
+  if command -v "$c" >/dev/null 2>&1 && "$c" -c "import yaml" 2>/dev/null; then RESOLVE_PY="$c"; break; fi
+done
+[ -z "$RESOLVE_PY" ] && die "python(pyyaml) 을 찾지 못해 순회 루트를 해석할 수 없습니다."
+
+resolve_route() {   # <navgraph> <공백구분 이름들> → 인덱스열(stdout). 실패 시 non-zero + stderr.
+  "$RESOLVE_PY" - "$1" "$2" <<'PY'
+import sys, yaml
+navgraph, names = sys.argv[1], sys.argv[2].split()
+d = yaml.safe_load(open(navgraph))
+verts = d["levels"]["L1"]["vertices"]
+name_to_idx = {}
+for i, v in enumerate(verts):
+    meta = v[2] if len(v) > 2 and isinstance(v[2], dict) else {}
+    nm = meta.get("name")
+    if nm is None:
+        continue
+    if nm in name_to_idx:
+        print(f"[resolve] navgraph 중복 정점 이름: {nm}", file=sys.stderr); sys.exit(2)
+    name_to_idx[nm] = i
+out = []
+for nm in names:
+    if nm not in name_to_idx:
+        print(f"[resolve] navgraph 에 정점 없음: {nm} (navgraph 재생성했는지 확인)", file=sys.stderr); sys.exit(3)
+    out.append(str(name_to_idx[nm]))
+if len(out) < 2:
+    print("[resolve] 해석된 순회 노드 2개 미만", file=sys.stderr); sys.exit(4)
+sys.stderr.write("[resolve] " + "  ".join(f"{n}={i}" for n, i in zip(names, out)) + "\n")
+print(" ".join(out))
+PY
+}
+
+PATROL_ROUTE="$(resolve_route "$NAVGRAPH" "$PATROL_NAMES")" || die "patrol_route 해석 실패 — 위 stderr 참고 (navgraph 재생성 필요할 수 있음)"
+SECURITY_ROUTE="$(resolve_route "$NAVGRAPH" "$SECURITY_NAMES")" || die "security_patrol_route 해석 실패"
+echo "[fms] patrol_route         = $PATROL_ROUTE"
+echo "[fms] security_patrol_route = $SECURITY_ROUTE"
+
 need_cmd tmux "sudo apt install -y tmux"
 tmux has-session -t "$SESSION" 2>/dev/null && \
   die "'$SESSION' 세션이 이미 떠 있습니다. 먼저 ./kill.sh 로 정리하세요."
@@ -43,7 +91,7 @@ tmux new-session -d -s "$SESSION" -n bridge \
 # fleet_ws 안 빌드면 colcon build. RMW/CycloneDDS 는 ~/.bashrc 설정을 따른다(bridge 와 동일).
 if [ -f "$FLEET_WS/install/setup.bash" ] || ensure_built "$FLEET_WS"; then
   tmux new-window -t "$SESSION" -n fleet-node \
-    bash -c "source /opt/ros/jazzy/setup.bash && source '$FLEET_WS/install/setup.bash' && export ROS_DOMAIN_ID=86 && echo '[fleet-node] 배차·교통 (domain 86)...' && ros2 run libi_fleet fleet_node --ros-args -p navgraph_file:='$NAVGRAPH' -p arrive_radius:=$ARRIVE_RADIUS; exec bash"
+    bash -c "source /opt/ros/jazzy/setup.bash && source '$FLEET_WS/install/setup.bash' && export ROS_DOMAIN_ID=86 && echo '[fleet-node] 배차·교통 (domain 86)...' && ros2 run libi_fleet fleet_node --ros-args -p navgraph_file:='$NAVGRAPH' -p arrive_radius:=$ARRIVE_RADIUS -p patrol_route:='$PATROL_ROUTE' -p security_patrol_route:='$SECURITY_ROUTE'; exec bash"
 fi
 
 # 로봇 상태 어댑터 — 도메인 86 에서 돈다(fleet_node·브릿지와 같은 자리라 여기 둔다).

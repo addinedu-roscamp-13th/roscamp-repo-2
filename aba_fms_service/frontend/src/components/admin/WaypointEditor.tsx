@@ -21,16 +21,29 @@ export interface WaypointEditorProps {
 const ZOOM_MIN = 1.0;
 const ZOOM_MAX = 8.0;
 
-// arte2.pgm → public/maps/arte2.png 로 미리 변환해둔 정적 배경. 로봇 연결 여부와
+// arte3.pgm → public/maps/arte3.png 로 미리 변환해둔 정적 배경. 로봇 연결 여부와
 // 무관하게 항상 뜨도록(편집은 로봇 없이도 가능해야 함) 라이브 occupancy grid 대신
-// 이 고정 이미지+메타데이터를 쓴다. arte2.yaml 값과 반드시 일치해야 한다.
-const MAP_IMAGE_SRC = "/maps/arte2.png";
+// 이 고정 이미지+메타데이터를 쓴다. arte3.yaml 값과 반드시 일치해야 한다.
+// (arte3 는 arte2 와 resolution/origin/dims 동일, pgm 픽셀만 갱신 — STATIC_MAP 불변.)
+const MAP_IMAGE_SRC = "/maps/arte3.png";
 const STATIC_MAP: MapMeta = {
   width: 63,
   height: 108,
   resolution: 0.02,
   origin: { x: -0.184, y: -1.949, yaw: 0 },
 };
+
+// 순회(patrol) 루프 간선 — 이 노드열의 연속쌍(닫힌 루프)을 빨강으로 그려 순회 경로를
+// 한눈에 보이게 한다. fleet_node 의 patrol_route(런치 때 이름→인덱스 해석)와 같은 순서·CCW.
+// ⚠️ 순회 노드/간선은 전용차선이 아니다 — 그 상태일 때만 로봇이 여기를 돌 뿐, 다른 로봇도 통행한다.
+const PATROL_LOOP = [
+  "순회경로-1", "예술서가", "문학서가", "순회경로-6", "순회경로-7",
+  "순회경로-8", "순회경로-5", "순회경로-4", "순회경로-3", "순회경로-2",
+];
+const patrolPairKey = (a: string, b: string) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+const PATROL_PAIRS = new Set(
+  PATROL_LOOP.map((n, i) => patrolPairKey(n, PATROL_LOOP[(i + 1) % PATROL_LOOP.length])),
+);
 
 // 보기 좋게 지도를 반시계(CCW) 90도 돌려서 그린다 — 세로로 긴 지도가 가로로
 // 넓게 표시됨. 픽셀 회전 공식: rx = iyTop, ry = width - ix (표준 90° CCW).
@@ -311,7 +324,10 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
       const [ax, ay] = worldToCanvas(map, vp, a.x, a.y);
       const [bx, by] = worldToCanvas(map, vp, b.x, b.y);
       const isLaneSel = selectedLane === ln;
-      const baseColor = ln.bidirectional ? [120, 180, 255] : [251, 146, 60];
+      const isPatrol = PATROL_PAIRS.has(patrolPairKey(ln.from, ln.to));
+      const baseColor = isPatrol
+        ? [239, 68, 68]                                            // 순회 간선 = 빨강
+        : ln.bidirectional ? [120, 180, 255] : [251, 146, 60];
       ctx.strokeStyle = isLaneSel ? "#fb7185" : `rgba(${baseColor.join(",")},0.75)`;
       ctx.lineWidth = (isLaneSel ? 4 : 2) * z;
       ctx.beginPath();

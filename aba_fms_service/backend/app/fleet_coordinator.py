@@ -43,26 +43,26 @@ EVASION_CLEARANCE = 0.35
 EVASION_RETURN_TIMEOUT = 30.0  # s — 원위치 복귀 지시 후 이 시간 지나면 회피 상태 정리
 
 
-def _robot_state(ip: str, base: str) -> Any | None:
+def _robot_state(name: str, base: str) -> Any | None:
     """[2026-07-08] ROS 텔레메트리 캐시 우선 — 1초 HTTP 폴링 제거. stale 시에만 HTTP 폴백."""
-    state = fleet_telemetry.get_state(ip)
+    state = fleet_telemetry.get_state_for_robot(name)
     if state is not None:
         return state
     return _fetch_json(base, "/api/state")
 
 
-def _stop_robot(ip: str, base: str) -> None:
+def _stop_robot(name: str, base: str) -> None:
     """근접 자동 정지 — ROS 명령 우선, 링크 불가 시 HTTP 폴백."""
-    res = fleet_telemetry.send_command(ip, "mission_stop", {}, timeout=2.0)
+    res = fleet_telemetry.send_command_for_robot(name, "mission_stop", {}, timeout=2.0)
     if res is None:
         _fetch_json(base, "/api/mission/stop", "POST", {})
 
 
-def _move_robot(ip: str, base: str, name: str, coords: tuple[float, float, float]) -> None:
+def _move_robot(robot_name: str, base: str, name: str, coords: tuple[float, float, float]) -> None:
     """회피 이동 — 지정 구역으로 goto (ROS 우선, HTTP 폴백). coords=(x,y,yaw)."""
     x, y, yaw = coords
     loc = {"x": x, "y": y, "yaw": yaw}
-    res = fleet_telemetry.send_command(ip, "goto", {"name": name, "location": loc}, timeout=2.0)
+    res = fleet_telemetry.send_command_for_robot(robot_name, "goto", {"name": name, "location": loc}, timeout=2.0)
     if res is None:
         _fetch_json(base, "/api/goto", "POST", {"name": name})
 
@@ -272,7 +272,7 @@ class FleetCoordinator:
                     zones_by_robot.setdefault(lr.robot_id, {})[lr.name] = (float(lr.x), float(lr.y), float(lr.yaw))
 
         # 각 로봇 상태 병렬 조회 (ROS 캐시 우선, stale 시 HTTP 폴백)
-        results = await asyncio.gather(*[asyncio.to_thread(_robot_state, ip, base) for _, _, ip, base in robots])
+        results = await asyncio.gather(*[asyncio.to_thread(_robot_state, name, base) for _, name, _, base in robots])
 
         now = time.time()
         snap: dict[int, dict[str, Any]] = {}
@@ -346,7 +346,7 @@ class FleetCoordinator:
                         if victim in self.holds:
                             continue
                         peer = ib if victim == ia else ia
-                        await asyncio.to_thread(_stop_robot, snap[victim]["ip"], snap[victim]["base"])
+                        await asyncio.to_thread(_stop_robot, snap[victim]["name"], snap[victim]["base"])
                         self.holds[victim] = {
                             "reason": "근접 자동 정지",
                             "peer_id": peer, "peer_name": snap[peer]["name"],
@@ -411,11 +411,11 @@ class FleetCoordinator:
                 origin = _nearest_zone(b_xy, zones)
                 if target is None or origin is None:
                     # 비켜설 곳이 없으면 안전하게 정지(충돌 방지 우선)
-                    await asyncio.to_thread(_stop_robot, B["ip"], B["base"])
+                    await asyncio.to_thread(_stop_robot, B["name"], B["base"])
                     self.holds[bid] = {"reason": "회피 불가 정지", "peer_id": mid, "peer_name": M["name"], "distance": round(nd, 3), "since": now}
                     continue
                 tname, tcoords = target
-                await asyncio.to_thread(_move_robot, B["ip"], B["base"], tname, tcoords)
+                await asyncio.to_thread(_move_robot, B["name"], B["base"], tname, tcoords)
                 self.evasions[bid] = {
                     "mover_id": mid, "mover_name": M["name"],
                     "target_zone": tname, "origin_zone": origin[0], "origin_coords": origin[1],
@@ -432,7 +432,7 @@ class FleetCoordinator:
                 self.evasions.pop(bid, None)
                 continue
             if not ev["returning"]:
-                await asyncio.to_thread(_move_robot, B["ip"], B["base"], ev["origin_zone"], ev["origin_coords"])
+                await asyncio.to_thread(_move_robot, B["name"], B["base"], ev["origin_zone"], ev["origin_coords"])
                 ev["returning"] = True
                 ev["since"] = now
             else:

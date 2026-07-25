@@ -291,6 +291,19 @@ def tasks(_: AdminUser = Depends(get_current_admin)):
     return {"linked": ok, "orders": orders, "kinds": TASK_KINDS}
 
 
+@router.get("/waypoints")
+def waypoints(_: AdminUser = Depends(get_current_admin)):
+    """실시간 모니터링 지도용 내비 그래프(노드+간선). FMS 정본 waypoint.yaml 을 서버가
+    대신 읽어 내려준다 — 브라우저에 FMS 자격증명을 노출하지 않는다. waypoint.yaml 이
+    바뀌면 자동 반영. 실패해도 화면은 로봇 점만이라도 떠야 하므로 빈 그래프로 물러난다."""
+    ok, graph = fms_client.waypoints_shared()
+    return {
+        "linked": ok,
+        "vertices": graph.get("vertices", {}),
+        "lanes": graph.get("lanes", []),
+    }
+
+
 class OrderRequest(BaseModel):
     """작업 지시. **종류마다 필요한 칸이 다르다** — 검증은 `TASK_KINDS` 표가 한다.
 

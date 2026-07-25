@@ -87,6 +87,9 @@ PATTERNS=(
   "dock_confirm.py"
   "set_initial_pose.py"
   "sim_battery.py"
+  # fleet_node(libi_fleet, 배차·교통) 본체 — scripts/laptop/kill.sh 가 세션 이름으로도
+  # 지우지만(libi_fms), 위 어댑터들과 같은 이유로 고아 생존 안전망을 여기에도 둔다.
+  "libi_fleet/lib/libi_fleet/fleet_node"
 )
 
 # 도킹은 모터를 직접 물고 있다. 스크립트로 시작했으면 반드시 멈춰 둔다 —

@@ -124,13 +124,14 @@ _pending_lock = threading.Lock()
 # ── 라이다 전방/후방 여유거리 + cmd_vel 직접 발행 (relative_move 안전정지용) ──────
 # rplidar_link 는 URDF 에서 rpy="0 0 pi" 로 180° 회전 장착이다. 따라서 스캔각 0 = 로봇
 # 후방, 스캔각 ±pi = 로봇 전방. base(로봇) 프레임 각도는 scan_angle + LIDAR_YAW_OFFSET
-# 로 환산한다(값을 [-pi,pi] 로 wrap). clearance/_cmd_vel_pubs 는 _cache 와 같은 IP 키다.
+# 로 환산한다(값을 [-pi,pi] 로 wrap). sim 은 IP(127.0.0.1)를 공유하므로 상태·scan·cmd_vel
+# 모두 IP가 아닌 bridge key 로 분리해야 한다.
 LIDAR_YAW_OFFSET = math.pi
 SCAN_SECTOR_HALF_RAD = math.radians(25.0)   # 전/후방 섹터 반각(±25°)
 SCAN_FRESH_SEC = 2.0                        # 이보다 오래된 스캔은 신뢰 안 함(정지 판단은 fail-safe)
 _scan_lock = threading.Lock()
-_clearance: dict[str, dict[str, Any]] = {}  # ip -> {"front": m|None, "rear": m|None, "ts": t}
-_cmd_vel_pubs: dict[str, Any] = {}          # ip -> /pinkyN/cmd_vel rclpy Publisher
+_clearance: dict[str, dict[str, Any]] = {}  # bridge key -> {"front": m|None, "rear": m|None, "ts": t}
+_cmd_vel_pubs: dict[str, Any] = {}          # bridge key -> /pinkyN/cmd_vel rclpy Publisher
 _TwistMsg: Any = None                       # geometry_msgs.msg.Twist (텔레메트리 스레드가 설정)
 
 
@@ -148,12 +149,28 @@ def _empty_entry() -> dict[str, Any]:
     }
 
 
-_cache: dict[str, dict[str, Any]] = {}  # _telemetry_thread 시작 시 FLEET_ROBOTS 로드 후 채움
+_cache: dict[str, dict[str, Any]] = {}  # bridge key -> state
+
+
+def _unique_key_for_ip(ip_address: str) -> str | None:
+    """IP 전용 레거시 호출을 bridge key 로 변환한다.
+
+    sim 은 같은 loopback IP 를 쓰므로 모호한 경우 None 을 돌려준다. 잘못된 로봇 상태나
+    cmd_vel 을 쓰는 것보다 HTTP 폴백/안전 정지가 낫다.
+    """
+    keys = [key for key, cfg in FLEET_ROBOTS.items()
+            if str(cfg.get("ip")) == str(ip_address)]
+    return keys[0] if len(keys) == 1 else None
 
 
 def get_state(ip_address: str) -> dict[str, Any] | None:
     """robot_agent /api/state 와 동일 스키마의 캐시 상태를 반환. stale 이면 None(호출측 HTTP 폴백)."""
-    entry = _cache.get(ip_address)
+    key = _unique_key_for_ip(ip_address)
+    return _get_state_by_key(key) if key else None
+
+
+def _get_state_by_key(key: str | None) -> dict[str, Any] | None:
+    entry = _cache.get(key or "")
     if entry is None:
         return None
     with _lock:
@@ -173,13 +190,18 @@ def get_state(ip_address: str) -> dict[str, Any] | None:
         }
 
 
+def get_state_for_robot(robot_name: str) -> dict[str, Any] | None:
+    """이름/bridge key 로 특정 로봇의 캐시를 반환한다 (공유 IP sim 안전)."""
+    return _get_state_by_key(key_of(robot_name))
+
+
 def telemetry_info() -> dict[str, Any]:
     """진단용: 로봇별 캐시 신선도 + 명령 링크 상태."""
     now = time.time()
     out = {}
     with _lock:
         for key, cfg in FLEET_ROBOTS.items():
-            e = _cache.get(cfg["ip"]) or _empty_entry()
+            e = _cache.get(key) or _empty_entry()
             pub = _cmd_pubs.get(key)
             subs = None
             if pub is not None:
@@ -291,10 +313,25 @@ def send_command(
     # 이 함수는 아직 IP 로 불린다(HTTP 라우터 호환). 명령 링크는 키로 갈리므로 되짚는다.
     # IP 를 나눠 쓰는 로봇이 있으면 **누구에게 보낼지 정할 수 없다** — 조용히 엉뚱한
     # 로봇을 움직이느니 보내지 않는다. 이름을 아는 호출부는 send_command_async 를 쓴다.
-    keys = [k for k, c in FLEET_ROBOTS.items() if str(c.get("ip")) == str(ip_address)]
-    if len(keys) != 1:
+    key = _unique_key_for_ip(ip_address)
+    if key is None:
         return None
-    pub = _cmd_pubs.get(keys[0])
+    return _send_command_by_key(key, action, args, timeout, assume_sent_on_timeout)
+
+
+def send_command_for_robot(
+    robot_name: str, action: str, args: dict | None = None,
+    timeout: float = CMD_TIMEOUT_SEC, assume_sent_on_timeout: bool = False,
+) -> dict[str, Any] | None:
+    """이름/bridge key 로 동기 명령을 보낸다 (공유 IP sim 안전)."""
+    key = key_of(robot_name)
+    return _send_command_by_key(key, action, args, timeout, assume_sent_on_timeout) if key else None
+
+
+def _send_command_by_key(
+    key: str, action: str, args: dict | None, timeout: float, assume_sent_on_timeout: bool,
+) -> dict[str, Any] | None:
+    pub = _cmd_pubs.get(key)
     if pub is None or _StringMsg is None:
         return None
     try:
@@ -332,16 +369,31 @@ def send_command(
 def clearance(ip_address: str, direction: str = "forward") -> float | None:
     """진행 방향의 최소 장애물 거리(m, 라이다 중심 기준). 스캔이 없거나
     SCAN_FRESH_SEC 보다 오래됐으면 None(호출측이 fail-safe 로 판단)."""
+    key = _unique_key_for_ip(ip_address)
+    return _clearance_by_key(key, direction) if key else None
+
+
+def _clearance_by_key(key: str, direction: str = "forward") -> float | None:
     with _scan_lock:
-        e = _clearance.get(ip_address)
+        e = _clearance.get(key)
         if e is None or (time.time() - e["ts"]) > SCAN_FRESH_SEC:
             return None
         return e["rear"] if direction == "backward" else e["front"]
 
 
+def clearance_for_robot(robot_name: str, direction: str = "forward") -> float | None:
+    key = key_of(robot_name)
+    return _clearance_by_key(key, direction) if key else None
+
+
 def publish_cmd_vel(ip_address: str, linear: float, angular: float) -> bool:
     """서버 도메인 /pinkyN/cmd_vel 로 Twist 를 발행한다. domain_bridge 가 로봇 /cmd_vel 로 역중계한다."""
-    pub = _cmd_vel_pubs.get(ip_address)
+    key = _unique_key_for_ip(ip_address)
+    return _publish_cmd_vel_by_key(key, linear, angular) if key else False
+
+
+def _publish_cmd_vel_by_key(key: str, linear: float, angular: float) -> bool:
+    pub = _cmd_vel_pubs.get(key)
     if pub is None or _TwistMsg is None:
         return False
     try:
@@ -353,6 +405,11 @@ def publish_cmd_vel(ip_address: str, linear: float, angular: float) -> bool:
         return True
     except Exception:
         return False
+
+
+def publish_cmd_vel_for_robot(robot_name: str, linear: float, angular: float) -> bool:
+    key = key_of(robot_name)
+    return _publish_cmd_vel_by_key(key, linear, angular) if key else False
 
 
 # ── ROS 구독 노드 ───────────────────────────────────────────────────────────
@@ -367,8 +424,8 @@ def _telemetry_thread() -> None:
     global _StringMsg, _TwistMsg, FLEET_ROBOTS
     try:
         FLEET_ROBOTS = _load_fleet_robots()
-        for cfg in FLEET_ROBOTS.values():
-            _cache.setdefault(cfg["ip"], _empty_entry())
+        for key in FLEET_ROBOTS:
+            _cache.setdefault(key, _empty_entry())
 
         import rclpy
         from rclpy.executors import SingleThreadedExecutor
@@ -394,23 +451,23 @@ def _telemetry_thread() -> None:
         _StringMsg = String
         _TwistMsg = Twist
 
-        def _touch(ip: str) -> None:
-            _cache[ip]["_last_ros_at"] = time.time()
+        def _touch(key: str) -> None:
+            _cache[key]["_last_ros_at"] = time.time()
 
-        def _make_handlers(ip: str):
+        def _make_handlers(key: str):
             def on_pose(msg: PoseWithCovarianceStamped) -> None:
                 p = msg.pose.pose
                 with _lock:
-                    _cache[ip]["pose"] = {
+                    _cache[key]["pose"] = {
                         "x": round(p.position.x, 4),
                         "y": round(p.position.y, 4),
                         "yaw": round(_yaw_from_quat(p.orientation), 4),
                     }
-                    _touch(ip)
+                    _touch(key)
 
             def on_map(msg: OccupancyGrid) -> None:
                 with _lock:
-                    _cache[ip]["map"] = {
+                    _cache[key]["map"] = {
                         "width": msg.info.width,
                         "height": msg.info.height,
                         "resolution": msg.info.resolution,
@@ -418,7 +475,7 @@ def _telemetry_thread() -> None:
                         "origin_y": msg.info.origin.position.y,
                         "data": list(msg.data),
                     }
-                    _touch(ip)
+                    _touch(key)
 
             def on_plan(msg: Path) -> None:
                 poses = msg.poses
@@ -428,18 +485,18 @@ def _telemetry_thread() -> None:
                     for p in poses[::step]
                 ]
                 with _lock:
-                    _cache[ip]["path"] = pts
-                    _touch(ip)
+                    _cache[key]["path"] = pts
+                    _touch(key)
 
             def on_batt_pct(msg: Float32) -> None:
                 with _lock:
-                    _cache[ip]["battery"]["percent"] = round(float(msg.data), 1)
-                    _touch(ip)
+                    _cache[key]["battery"]["percent"] = round(float(msg.data), 1)
+                    _touch(key)
 
             def on_batt_volt(msg: Float32) -> None:
                 with _lock:
-                    _cache[ip]["battery"]["voltage"] = round(float(msg.data), 2)
-                    _touch(ip)
+                    _cache[key]["battery"]["voltage"] = round(float(msg.data), 2)
+                    _touch(key)
 
             def on_fleet_status(msg: String) -> None:
                 try:
@@ -449,9 +506,9 @@ def _telemetry_thread() -> None:
                 mission = data.get("mission")
                 with _lock:
                     if isinstance(mission, dict):
-                        _cache[ip]["mission"] = mission
+                        _cache[key]["mission"] = mission
                     # 하트비트는 _last_ros_at 과 분리 — nav2 다운을 은폐하지 않도록
-                    _cache[ip]["_last_status_at"] = time.time()
+                    _cache[key]["_last_status_at"] = time.time()
 
             def on_fleet_costmaps(msg: String) -> None:
                 try:
@@ -459,9 +516,9 @@ def _telemetry_thread() -> None:
                 except Exception:
                     return
                 with _lock:
-                    _cache[ip]["local_costmap"] = data.get("local_costmap")
-                    _cache[ip]["global_costmap"] = data.get("global_costmap")
-                    _cache[ip]["_last_status_at"] = time.time()
+                    _cache[key]["local_costmap"] = data.get("local_costmap")
+                    _cache[key]["global_costmap"] = data.get("global_costmap")
+                    _cache[key]["_last_status_at"] = time.time()
 
             def on_scan(msg: "LaserScan") -> None:
                 # 전/후방 섹터의 최소 유효거리만 뽑아 캐시(원본 수백 점은 버린다).
@@ -491,7 +548,7 @@ def _telemetry_thread() -> None:
                     "ts": time.time(),
                 }
                 with _scan_lock:
-                    _clearance[ip] = entry
+                    _clearance[key] = entry
 
             return (on_pose, on_map, on_plan, on_batt_pct, on_batt_volt,
                     on_fleet_status, on_fleet_costmaps, on_scan)
@@ -513,9 +570,9 @@ def _telemetry_thread() -> None:
 
         for cfg in FLEET_ROBOTS.values():
             pre = cfg["prefix"]
-            ip = cfg["ip"]
+            key = cfg["key"]
             (on_pose, on_map, on_plan, on_pct, on_volt,
-             on_status, on_costmaps, on_scan) = _make_handlers(ip)
+             on_status, on_costmaps, on_scan) = _make_handlers(key)
             # amcl_pose·map·fleet_status 는 TRANSIENT_LOCAL — 구독 즉시 마지막 값을 받는다
             node.create_subscription(PoseWithCovarianceStamped, f"{pre}/amcl_pose", on_pose, qos_latched)
             node.create_subscription(OccupancyGrid, f"{pre}/map", on_map, qos_latched)
@@ -532,7 +589,7 @@ def _telemetry_thread() -> None:
                 QoSProfile(depth=5, reliability=ReliabilityPolicy.BEST_EFFORT),
             )
             _cmd_pubs[cfg["key"]] = node.create_publisher(String, f"{pre}/fleet_cmd", 10)
-            _cmd_vel_pubs[ip] = node.create_publisher(Twist, f"{pre}/cmd_vel", 10)
+            _cmd_vel_pubs[key] = node.create_publisher(Twist, f"{pre}/cmd_vel", 10)
 
         print(f"[fleet_telemetry] ROS 구독+명령링크 시작 (domain {TELEMETRY_DOMAIN_ID}, robots {list(FLEET_ROBOTS)})", flush=True)
         executor = SingleThreadedExecutor(context=ctx)

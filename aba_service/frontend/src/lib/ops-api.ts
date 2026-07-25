@@ -185,6 +185,12 @@ export const ops = {
     opsApi<{ linked: boolean; orders: OrderRow[]; kinds: TaskKind[] }>(
       "/api/admin/ops/tasks",
     ),
+  waypoints: () =>
+    opsApi<{
+      linked: boolean;
+      vertices: Record<string, { x: number; y: number; yaw?: number }>;
+      lanes: { from: string; to: string; bidirectional?: boolean }[];
+    }>("/api/admin/ops/waypoints"),
   /**
    * 작업 지시. 종류에 따라 응답이 다르다 —
    * `mode:"order"` 면 주문이 생기고, `mode:"state"` 면 로봇 모드만 바뀐다(주문 없음).

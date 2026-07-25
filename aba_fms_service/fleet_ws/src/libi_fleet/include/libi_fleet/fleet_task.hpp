@@ -57,7 +57,8 @@ struct ActiveTask
   size_t idx{1};           // 현재 향하는 path 인덱스
   bool moving{false};
   bool wait_logged{false};
-  bool patrol{false};      // 순회 task: 끝에 도달해도 완료 안 하고 루프 반복
+  bool patrol{false};      // 순회 task(주간/야간 공통): 끝에 도달해도 완료 안 하고 루프 반복
+  bool security{false};    // 야간 보안순회면 true → security_patrol_route_ 사용(그 외 patrol_route_)
   bool stuck{false};       // 완전 막힘(우회 실패) → 우선순위 top 으로 escalate, 풀리면 원복
   int priority{0};         // (참고용) UI 지정 우선도. 교통 우선순위는 compute_priority 가 계산.
   int start_seq{0};        // 생성 순서(작을수록 오래됨) — 우선순위 나이 tiebreak

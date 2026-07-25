@@ -11,4 +11,9 @@ namespace libi_fleet
 // 반환: 방문 노드열(시작 노드로 닫지 않음). 사이클 형성 실패 시 빈 벡터.
 std::vector<int> right_hand_boundary_cycle(const Navgraph & g);
 
+// route(정점 인덱스 열)의 shoelace signed area × 2 (월드 좌표, y 위쪽 기준).
+//   > 0 → 반시계(CCW),  < 0 → 시계(CW),  == 0 → 방향 없음(직선/점).
+// 순회 방향을 CCW 로 고정할 때 winding 판정에 쓴다.
+double signed_area_2x(const Navgraph & g, const std::vector<int> & route);
+
 }  // namespace libi_fleet

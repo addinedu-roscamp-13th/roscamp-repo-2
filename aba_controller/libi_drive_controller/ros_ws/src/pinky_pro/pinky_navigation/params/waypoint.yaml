@@ -3,140 +3,162 @@
 # 재생성된다(scripts/gen_arte2_navgraph.py). 반영은 각자 재기동 시.
 
 vertices:
-  안네데스크:
-    x: 0.7518
-    y: -0.0333
-    yaw: 0.0
   주차장:
     x: -0.0007
     y: -0.0333
     yaw: 0.0
-  화장실:
-    x: 0.0263
-    y: -1.1789
-    yaw: 3.1415
-  복도-1:
-    x: 0.6005
-    y: -0.3615
-  복도-3:
-    x: 0.3
-    y: -0.3615
-  복도-4:
-    x: 0.3
-    y: -0.66
-  복도-5:
-    x: 0.0263
-    y: -0.3615
-  복도-6:
-    x: 0.0263
-    y: -0.66
-  복도-8:
-    x: 0.0263
-    y: -1.0018
-  복도-10:
-    x: 0.3757
-    y: -1.0018
-  복도-11:
-    x: 0.6005
-    y: -1.0018
-  복도-13:
-    x: 0.6005
-    y: -0.68115
-  테이블-1번-상:
-    x: 0.7205
-    y: -1.5547
-    yaw: 1.5708
-  테이블-2번-하:
-    x: 0.0263
-    y: -1.5547
-    yaw: -1.5708
-  테이블-복도-2:
-    x: 0.3757
-    y: -1.356
-  테이블-복도-4:
-    x: 0.0263
-    y: -1.748
   주차장입구:
     x: 0.6005
     y: -0.0333
     yaw: 3.1415
-  도서관출입구:
-    x: 0.7518
-    y: -0.3615
-    yaw: 0.0
-  노드-1:
-    x: 0.3757
-    y: -1.748
-    yaw: 0.0
   미술작품:
     x: 0.7518
     y: -0.68115
-    yaw: 0.0
-  노드-2:
-    x: 0.721
-    y: -1.364
-    yaw: 0.0
-  노드-3:
-    x: 0.684
-    y: -1.768
-    yaw: 0.0
-  노드-4:
-    x: 0.036
-    y: -1.374
     yaw: 0.0
   수거함:
     x: 0.7518
     y: -1.001
     yaw: 0.0
+  1번테이블:
+    x: 0.572
+    y: -1.385
+    yaw: 0.0
+  2번테이블:
+    x: 0.572
+    y: -1.704
+    yaw: 0.0
+  예술서가:
+    x: 0.3
+    y: -0.3615
+  문학서가:
+    x: 0.0263
+    y: -0.3615
+  과학-인문학서가:
+    x: 0.3
+    y: -0.66
+  순회경로-1:
+    x: 0.6005
+    y: -0.3615
+  순회경로-2:
+    x: 0.6005
+    y: -0.68115
+  순회경로-3:
+    x: 0.6005
+    y: -1.0018
+  순회경로-4:
+    x: 0.3
+    y: -1.0018
+  순회경로-6:
+    x: 0.0263
+    y: -0.66
+  순회경로-8:
+    x: 0.0263
+    y: -1.385
+    yaw: 0.0
+  순회경로-7:
+    x: 0.0263
+    y: -1.0018
+    yaw: 0.0
+  순회경로-5:
+    x: 0.3
+    y: -1.385
+  분류함:
+    x: 0.7518
+    y: -0.0333
+    yaw: 0.0
+  도서관출입구:
+    x: 0.3
+    y: -1.704
+    yaw: 0.0
+  안네데스크:
+    x: 0.0263
+    y: -1.704
+  화장실:
+    x: 0.7518
+    y: -0.3615
+    yaw: 0.0
 lanes:
-- from: 안네데스크
+- from: 분류함
   to: 주차장입구
   bidirectional: true
 - from: 주차장입구
   to: 주차장
   bidirectional: true
-- from: 도서관출입구
-  to: 복도-1
+- from: 화장실
+  to: 순회경로-1
   bidirectional: true
-- from: 복도-3
-  to: 복도-5
+- from: 예술서가
+  to: 문학서가
   bidirectional: true
-- from: 복도-4
-  to: 복도-6
+- from: 과학-인문학서가
+  to: 순회경로-6
   bidirectional: true
-- from: 복도-10
-  to: 복도-11
+- from: 순회경로-7
+  to: 순회경로-3
   bidirectional: true
 - from: 수거함
-  to: 복도-11
+  to: 순회경로-3
   bidirectional: true
 - from: 미술작품
-  to: 복도-13
+  to: 순회경로-2
   bidirectional: true
-- from: 복도-8
-  to: 화장실
+- from: 화장실
+  to: 분류함
+  bidirectional: true
+- from: 화장실
+  to: 미술작품
+  bidirectional: true
+- from: 순회경로-1
+  to: 주차장입구
+  bidirectional: true
+- from: 예술서가
+  to: 과학-인문학서가
+  bidirectional: true
+- from: 문학서가
+  to: 순회경로-6
+  bidirectional: true
+- from: 순회경로-1
+  to: 순회경로-2
+  bidirectional: true
+- from: 순회경로-1
+  to: 예술서가
+  bidirectional: true
+- from: 미술작품
+  to: 수거함
+  bidirectional: true
+- from: 순회경로-2
+  to: 순회경로-3
+  bidirectional: true
+- from: 순회경로-4
+  to: 순회경로-5
+  bidirectional: true
+- from: 순회경로-6
+  to: 순회경로-7
+  bidirectional: true
+- from: 순회경로-7
+  to: 순회경로-8
   bidirectional: true
 - from: 도서관출입구
   to: 안네데스크
   bidirectional: true
-- from: 도서관출입구
-  to: 미술작품
+- from: 순회경로-5
+  to: 도서관출입구
   bidirectional: true
-- from: 복도-1
-  to: 주차장입구
+- from: 2번테이블
+  to: 도서관출입구
   bidirectional: true
-- from: 복도-3
-  to: 복도-4
+- from: 1번테이블
+  to: 2번테이블
   bidirectional: true
-- from: 복도-5
-  to: 복도-6
+- from: 1번테이블
+  to: 순회경로-5
   bidirectional: true
-- from: 복도-1
-  to: 복도-13
+- from: 순회경로-8
+  to: 안네데스크
   bidirectional: true
-- from: 복도-10
-  to: 테이블-복도-2
+- from: 순회경로-8
+  to: 순회경로-5
   bidirectional: true
-- from: 테이블-2번-하
-  to: 테이블-복도-4
+- from: 순회경로-4
+  to: 순회경로-3
   bidirectional: true

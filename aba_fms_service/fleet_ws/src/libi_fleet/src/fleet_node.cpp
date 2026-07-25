@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <map>
 #include <memory>
@@ -23,6 +24,7 @@
 #include "libi_fleet/fleet_task.hpp"
 #include "libi_fleet/navgraph.hpp"
 #include "libi_fleet/patrol_cycle.hpp"
+#include "libi_fleet/security_patrol_cycle.hpp"
 #include "libi_fleet/fms_types.hpp"
 #include "libi_fleet/dispatcher_base.hpp"
 #include "libi_fleet/traffic_base.hpp"
@@ -129,6 +131,9 @@ public:
     patrol_ = declare_parameter<bool>("patrol", true);
     // "auto"(기본) → 우/하 우선 규칙으로 순회 루프 생성(그래프 로드 후). 그 외는 수동 정점 목록.
     const std::string route_s = declare_parameter<std::string>("patrol_route", "auto");
+    // 야간 보안순회 루프. "auto" → security_patrol_boundary_cycle(현재 주간과 동일 위임).
+    // 그 외는 수동 정점 목록(런치 스크립트가 이름→인덱스 해석해 넣는다).
+    const std::string sec_route_s = declare_parameter<std::string>("security_patrol_route", "auto");
 
     if (!graph_.load(navgraph_file_)) {
       RCLCPP_FATAL(get_logger(), "navgraph 로드 실패: %s", navgraph_file_.c_str());
@@ -151,9 +156,28 @@ public:
     } else {
       std::stringstream ss(route_s); int v; while (ss >> v) { patrol_route_.push_back(v); }
     }
+    sanitize_route(patrol_route_, "patrol_route");   // 범위 밖 인덱스 방어(직접 -p 준 경우)
+    ensure_ccw(patrol_route_);   // 순회는 항상 반시계(CCW)
     {
       std::string s; for (int v : patrol_route_) { s += std::to_string(v) + " "; }
-      RCLCPP_INFO(get_logger(), "순회 루프(우/하 우선): %s", s.c_str());
+      RCLCPP_INFO(get_logger(), "순회 루프(CCW): %s", s.c_str());
+    }
+
+    // 야간 보안순회 루프 확정.
+    if (sec_route_s == "auto") {
+      security_patrol_route_ = security_patrol_boundary_cycle(graph_);
+      if (security_patrol_route_.size() < 2) {   // 생성 실패 → 주간 루프로 폴백(일단 동일)
+        RCLCPP_WARN(get_logger(), "security_patrol_route auto 생성 실패 → 주간 순회 루프 재사용");
+        security_patrol_route_ = patrol_route_;
+      }
+    } else {
+      std::stringstream ss2(sec_route_s); int v; while (ss2 >> v) { security_patrol_route_.push_back(v); }
+    }
+    sanitize_route(security_patrol_route_, "security_patrol_route");   // 범위 밖 인덱스 방어
+    ensure_ccw(security_patrol_route_);   // 순회는 항상 반시계(CCW)
+    {
+      std::string s; for (int v : security_patrol_route_) { s += std::to_string(v) + " "; }
+      RCLCPP_INFO(get_logger(), "보안순회 루프(CCW): %s", s.c_str());
     }
 
     state_sub_ = create_subscription<RmfRobotState>(
@@ -343,15 +367,18 @@ private:
 
   void on_timer()
   {
-    // 순회 모드(per-robot): PATROL 모드 로봇이 task 없으면 외곽 루프 순회 부여
-    if (patrol_route_.size() >= 2) {
-      for (auto & kv : robots_) {
-        RobotInfo & r = kv.second;
-        if (r.busy || mode_of(r.name) != "PATROL") { continue; }
-        bool has = false;
-        for (const auto & t : tasks_) { if (t.robot == r.name) { has = true; break; } }
-        if (!has) { start_patrol(r); }
-      }
+    // 순회 모드(per-robot): task 없는 PATROL 로봇은 주간 순회, SECURITY_PATROL 로봇은
+    // 보안 순회 루프를 부여한다. 둘 다 문자열 정확일치 — SECURITY_PATROL 이 빠져 있어서
+    // 야간 로봇이 웨이포인트 허가를 못 받고 제자리에 멈추던 구멍을 여기서 메운다.
+    for (auto & kv : robots_) {
+      RobotInfo & r = kv.second;
+      if (r.busy) { continue; }
+      bool has = false;
+      for (const auto & t : tasks_) { if (t.robot == r.name) { has = true; break; } }
+      if (has) { continue; }
+      const std::string m = mode_of(r.name);
+      if (m == "PATROL" && patrol_route_.size() >= 2) { start_patrol(r); }
+      else if (m == "SECURITY_PATROL" && security_patrol_route_.size() >= 2) { start_security_patrol(r); }
     }
 
     for (auto it = tasks_.begin(); it != tasks_.end();) {
@@ -399,7 +426,7 @@ private:
         t.wait_ticks = 0;   // 노드 도달 = 진전 → 타임드 우회 카운터 리셋
         if (t.idx >= t.path.size()) {
           if (t.patrol) {
-            t.path = make_patrol_path(r, -1);   // 현재 위치서 canonical 랩 재생성(방향 유지)
+            t.path = make_patrol_path(r, -1, route_for(t));   // 현재 위치서 canonical 랩 재생성(방향 유지)
             t.idx = 1; t.moving = false;
             RCLCPP_INFO(get_logger(), "[%s] %s 순회 1바퀴 → 계속", t.id.c_str(), t.robot.c_str());
           } else {
@@ -446,7 +473,7 @@ private:
           RCLCPP_INFO(get_logger(), "[%s] %s → v%d (GRANT)", t.id.c_str(), t.robot.c_str(), next);
         } else if (dec == MoveDecision::DEADLOCK) {
           // 우회는 kMaxReroutes 번까지만(livelock 방지). 초과하면 우회 포기 → escalate + 대기.
-          int goal_node = t.patrol ? patrol_succ(next) : t.path.back();   // 순회는 방향 유지(막힌 노드 다음)
+          int goal_node = patrol_goal(t, next);   // 순회는 막힌 노드 다음 canonical(비-canonical 이면 최종목적지 폴백)
           auto reroute = (t.reroutes < kMaxReroutes && goal_node >= 0)
                        ? graph_.dijkstra(cur, goal_node, next) : std::vector<int>{};   // next 를 피해 우회
           if (reroute.size() >= 2) {
@@ -464,7 +491,7 @@ private:
           }
         } else {   // WAIT
           if (blocked_by_stopped(next)) {   // 정지 로봇(영구 장애물)이 막음 → 우회
-            auto reroute = graph_.dijkstra(cur, t.path.back(), next);
+            auto reroute = graph_.dijkstra(cur, patrol_goal(t, next), next);   // 순회는 방향 유지
             if (reroute.size() >= 2) {
               RCLCPP_WARN(get_logger(), "[%s] %s ⤴ 정지 로봇(v%d) 우회 → %zu nodes",
                           t.id.c_str(), t.robot.c_str(), next, reroute.size());
@@ -483,7 +510,7 @@ private:
               t.wait_logged = true;
             }
             if (t.wait_ticks >= kRerouteWaitTicks) {
-              int goal_node = t.patrol ? patrol_succ(next) : t.path.back();   // 순회는 방향 유지
+              int goal_node = patrol_goal(t, next);   // 순회는 방향 유지(비-canonical 이면 최종목적지 폴백)
               auto reroute = (goal_node >= 0) ? graph_.dijkstra(cur, goal_node, next)
                                               : std::vector<int>{};
               if (reroute.size() >= 2) {
@@ -649,38 +676,106 @@ private:
     if (r != robots_.end()) { r->second.busy = false; r->second.task_id.clear(); }
   }
 
-  // canonical 순회 루프에서 node 의 다음 노드. node 가 루프에 없으면 -1.
-  int patrol_succ(int node) const
+  // 순회 task 의 루트(주간=patrol_route_, 야간=security_patrol_route_).
+  const std::vector<int> & route_for(const ActiveTask & t) const
   {
-    const int n = static_cast<int>(patrol_route_.size());
+    return t.security ? security_patrol_route_ : patrol_route_;
+  }
+
+  // 주어진 순회 루프에서 node 의 다음 노드(방향 유지). node 가 루프에 없으면 -1.
+  static int route_succ(const std::vector<int> & route, int node)
+  {
+    const int n = static_cast<int>(route.size());
     for (int i = 0; i < n; ++i) {
-      if (patrol_route_[i] == node) { return patrol_route_[(i + 1) % n]; }
+      if (route[i] == node) { return route[(i + 1) % n]; }
     }
     return -1;
   }
 
-  // 현재 위치에서 canonical 방향으로 한 바퀴 랩 경로 생성(가장 가까운 정점 진입 → 정방향).
-  // avoid_first>=0 이면 진입점의 다음 홉이 그 노드일 때 한 칸 앞에서 시작(방향은 유지).
-  std::vector<int> make_patrol_path(const RobotInfo & r, int avoid_first) const
+  // 우회 목적지 산출. 순회 task 는 **막힌 노드의 다음 canonical 노드**(방향 유지)를 목표로
+  // 우회한다. 단 이미 우회 중이라 next 가 canonical 루프에 없으면(route_succ==-1) 현재 경로의
+  // 최종 목적지로 폴백한다 — 그 값은 우회를 만들 때 route_succ 로 잡은 canonical 노드다.
+  // (일반 작업 task 는 언제나 최종 목적지 t.path.back().)
+  int patrol_goal(const ActiveTask & t, int next) const
   {
-    const size_t n = patrol_route_.size();
-    size_t k = 0; double bd = 1e18;   // 가장 가까운 순회 정점 = 진입점
+    if (!t.patrol) { return t.path.back(); }
+    const int g = route_succ(route_for(t), next);
+    return g >= 0 ? g : t.path.back();
+  }
+
+  // 순회 방향을 항상 **반시계(CCW)** 로 고정한다. 월드 좌표(위에서 본 평면, y 위쪽)에서
+  // shoelace signed area > 0 이면 CCW. CW 로 만들어졌으면(예: auto 경계순회는 우수법이라
+  // CW 일 수 있다) 루트를 뒤집어 CCW 로 맞춘다. 정점 3개 미만이면 방향 개념이 없어 그대로 둔다.
+  void ensure_ccw(std::vector<int> & route) const
+  {
+    if (signed_area_2x(graph_, route) < 0.0) {   // CW → 뒤집어 CCW
+      std::reverse(route.begin(), route.end());
+    }
+  }
+
+  // 범위 밖 정점 인덱스를 버린다(경고). fms_service.sh 는 이름해석으로 이미 안전하지만,
+  // `-p patrol_route:=`/`-p security_patrol_route:=` 로 직접 준 값은 검증되지 않았다 —
+  // 그대로 두면 signed_area_2x/make_patrol_path 의 graph_.vertex(.at) 에서 기동 중 throw.
+  void sanitize_route(std::vector<int> & route, const char * label) const
+  {
+    const int n = graph_.size();
+    const size_t before = route.size();
+    route.erase(std::remove_if(route.begin(), route.end(),
+                [n](int v) { return v < 0 || v >= n; }), route.end());
+    if (route.size() != before) {
+      RCLCPP_WARN(get_logger(), "%s: 범위 밖 정점 인덱스 %zu개 무시(그래프 정점 %d개)",
+                  label, before - route.size(), n);
+    }
+  }
+
+  // 현재 위치에서 CCW 방향으로 한 바퀴 랩 경로 생성.
+  // 진입점 = 로봇에서 **그래프거리(벽 고려, Dijkstra)** 최근접 순회 정점(직선거리 아님).
+  // avoid_first>=0 이면 진입점의 다음 홉이 그 노드일 때 한 칸 앞에서 시작(방향은 유지).
+  std::vector<int> make_patrol_path(const RobotInfo & r, int avoid_first,
+                                    const std::vector<int> & route) const
+  {
+    const size_t n = route.size();
+    if (n == 0) { return {}; }
+    // 진입점: 로봇을 최근접 그래프 노드로 스냅 → 각 순회 정점까지 Dijkstra 경로비용 최소.
+    // 도달불가 후보(빈 경로)는 건너뛴다(path_cost({})==0 을 최소로 오인 방지).
+    const int snap = graph_.nearest(r.x, r.y);
+    size_t k = 0; double bd = 1e18;
     for (size_t i = 0; i < n; ++i) {
-      const Vertex & v = graph_.vertex(patrol_route_[i]);
-      double dd = std::hypot(r.x - v.x, r.y - v.y);
+      double dd;
+      if (route[i] == snap) {
+        dd = 0.0;                                    // 진입점이 곧 최근접 노드
+      } else {
+        const auto p = graph_.dijkstra(snap, route[i]);
+        if (p.empty()) { continue; }                 // 도달불가 → skip
+        dd = graph_.path_cost(p);
+      }
       if (dd < bd) { bd = dd; k = i; }
     }
-    if (avoid_first >= 0 && patrol_route_[(k + 1) % n] == avoid_first) { k = (k + 1) % n; }
+    if (bd > 1e17) {                                 // 전부 도달불가(비정상 그래프) → 직선거리 폴백
+      for (size_t i = 0; i < n; ++i) {
+        const Vertex & v = graph_.vertex(route[i]);
+        const double dd = std::hypot(r.x - v.x, r.y - v.y);
+        if (dd < bd) { bd = dd; k = i; }
+      }
+    }
+    if (avoid_first >= 0 && route[(k + 1) % n] == avoid_first) { k = (k + 1) % n; }
     std::vector<int> path;
-    for (size_t i = 0; i < n; ++i) { path.push_back(patrol_route_[(k + i) % n]); }
-    path.push_back(patrol_route_[k]);   // 루프 닫기(마지막==처음)
+    // 로봇이 진입점(route[k]) 위에 있지 않으면 현재 노드를 맨 앞에 둔다 — 그래야 진입점이
+    // **첫 목표**가 된다. 안 그러면 t.idx=1(start_patrol)이 path[0]=진입점을 건너뛰고
+    // path[1]로 보내 진입점이 한 칸 밀린다. 일반 task 는 path[0]=로봇 시작노드(L338)라
+    // 이 문제가 없다 — 여기서도 같은 규칙으로 맞춘다. 이미 진입점 위면(snap==route[k])
+    // 붙이지 않아 즉시 다음 노드로 진행(랩 재생성 케이스가 그렇다).
+    if (snap != route[k]) { path.push_back(snap); }
+    for (size_t i = 0; i < n; ++i) { path.push_back(route[(k + i) % n]); }
+    path.push_back(route[k]);   // 루프 닫기(마지막==처음)
     return path;
   }
 
-  // 로봇을 외곽 루프(patrol_route)에 태워 무한 순회 시작.
+  // 로봇을 주간 순회 루프에 태워 무한 순회 시작.
   void start_patrol(RobotInfo & r)
   {
-    std::vector<int> path = make_patrol_path(r, -1);
+    std::vector<int> path = make_patrol_path(r, -1, patrol_route_);
+    if (path.size() < 2) { return; }
     r.busy = true;
     std::string tid = "P-" + r.name;
     r.task_id = tid;
@@ -690,7 +785,25 @@ private:
     traffic_->request_move(r.name, path[0], path[0], compute_priority(r.name, t));   // 진입점 점유
     tasks_.push_back(t);
     publish_task_state(tid, "PATROL", r.name);
-    RCLCPP_INFO(get_logger(), "[%s] %s 순회 시작 (진입 v%d, %zu nodes)",
+    RCLCPP_INFO(get_logger(), "[%s] %s 순회 시작 (시작 v%d, %zu nodes)",
+                tid.c_str(), r.name.c_str(), path[0], path.size());
+  }
+
+  // 로봇을 야간 보안순회 루프에 태워 무한 순회 시작.
+  void start_security_patrol(RobotInfo & r)
+  {
+    std::vector<int> path = make_patrol_path(r, -1, security_patrol_route_);
+    if (path.size() < 2) { return; }
+    r.busy = true;
+    std::string tid = "SP-" + r.name;
+    r.task_id = tid;
+    ActiveTask t; t.id = tid; t.robot = r.name; t.path = path;
+    t.idx = 1; t.moving = false; t.patrol = true; t.security = true;   // 순회 tier + 야간 루트
+    t.start_seq = ++task_seq_;
+    traffic_->request_move(r.name, path[0], path[0], compute_priority(r.name, t));   // 진입점 점유
+    tasks_.push_back(t);
+    publish_task_state(tid, "SECURITY_PATROL", r.name);
+    RCLCPP_INFO(get_logger(), "[%s] %s 보안순회 시작 (시작 v%d, %zu nodes)",
                 tid.c_str(), r.name.c_str(), path[0], path.size());
   }
 
@@ -826,6 +939,7 @@ private:
   int resend_ticks_{7};                    // 이동 중 경로 재발행 주기(틱). 0=끔
   bool patrol_{false};
   std::vector<int> patrol_route_;
+  std::vector<int> security_patrol_route_;   // 야간 보안순회 루프(CCW 정규화)
   std::map<std::string, std::string> robot_mode_;   // 로봇 → PATROL|IDLE|STOP|CHARGE
   std::map<std::string, RobotInfo> robots_;
   std::vector<ActiveTask> tasks_;
