@@ -13,7 +13,7 @@ export interface MapWaypoint {
   y: number;
 }
 
-export const MAP_IMAGE = "/map/arte2.png";
+export const MAP_IMAGE = "/map/arte3.png";
 /** 이미지 원본 비율(가로/세로) — 컨테이너 aspect-ratio 에 쓴다. */
 export const MAP_ASPECT = 63 / 108;
 

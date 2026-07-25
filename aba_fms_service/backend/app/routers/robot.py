@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 
 from app.database import get_robot_db
 from app import ros_bridge
-from app.models import LcdImage
+from app.models import LcdImage, iso_utc
 
 from .auth import get_current_admin
 
@@ -83,7 +83,7 @@ def _image_payload(image: LcdImage) -> dict:
         "original_name": image.original_name,
         "content_type": image.content_type,
         "size_bytes": image.size_bytes,
-        "created_at": image.created_at.isoformat() if image.created_at else None,
+        "created_at": iso_utc(image.created_at),
     }
 
 

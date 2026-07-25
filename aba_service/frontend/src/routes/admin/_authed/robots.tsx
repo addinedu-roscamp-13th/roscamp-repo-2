@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 
 import { AdminShell } from "@/components/admin/AdminShell";
 import { MiniDonut } from "@/components/admin/charts";
-import { MAP_IMAGE, WAYPOINTS } from "@/lib/map-waypoints";
+import { MAP_IMAGE } from "@/lib/map-waypoints";
 import {
   ops,
   type OrderRow,
@@ -40,6 +40,30 @@ function rotate(x: number, y: number): [number, number] {
   return [y, 1 - x];
 }
 
+/** 월드 좌표 → 화면 퍼센트(0~100). toNorm(정규화) → rotate(회전) 을 로봇 점과 동일 순서로 적용. */
+function screenPct(x: number, y: number): { x: number; y: number } {
+  const { nx, ny } = toNorm(x, y);
+  const [rx, ry] = rotate(nx, ny);
+  return { x: rx * 100, y: ry * 100 };
+}
+
+// 순회(patrol) 루프 간선 — 이 노드열의 연속쌍(닫힌 루프)을 빨강으로 그린다. 관제
+// WaypointEditor 와 같은 순서·CCW, fleet_node 의 patrol_route 와 동일. 순회 노드/간선은
+// 전용차선이 아니다 — 그 상태일 때만 로봇이 여기를 돌 뿐 다른 로봇도 통행한다.
+const PATROL_LOOP = [
+  "순회경로-1", "예술서가", "문학서가", "순회경로-6", "순회경로-7",
+  "순회경로-8", "순회경로-5", "순회경로-4", "순회경로-3", "순회경로-2",
+];
+const patrolPairKey = (a: string, b: string) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+const PATROL_PAIRS = new Set(
+  PATROL_LOOP.map((n, i) => patrolPairKey(n, PATROL_LOOP[(i + 1) % PATROL_LOOP.length])),
+);
+
+type NavGraph = {
+  vertices: Record<string, { x: number; y: number }>;
+  lanes: { from: string; to: string; bidirectional?: boolean }[];
+};
+
 const STATE_TONE: Record<string, string> = {
   PATROL: "bg-emerald-500/15 text-emerald-700",
   IDLE: "bg-slate-500/15 text-slate-600",
@@ -47,6 +71,8 @@ const STATE_TONE: Record<string, string> = {
   ERROR: "bg-rose-500/15 text-rose-700",
   CHARGING: "bg-sky-500/15 text-sky-700",
   RETURNING: "bg-violet-500/15 text-violet-700",
+  INTERACTING: "bg-fuchsia-500/15 text-fuchsia-700",
+  SECURITY_PATROL: "bg-teal-500/15 text-teal-700",
 };
 
 const ORDER_STATUS_LABEL: Record<string, string> = {
@@ -63,7 +89,21 @@ const FLEET_STATE_COLOR = {
   working: "#f59e0b",
   charging: "#0ea5e9",
   error: "#f43f5e",
+  stale: "#94a3b8",
 } as const;
+
+// 로봇 한 대가 정확히 한 버킷에만 들어가도록 우선순위로 가른다(끊김 최우선).
+// 카드 배지와 **같은 `state`** 만 본다 — `busy`(작업 배정 여부)는 안 본다. 그걸 섞으면
+// 같은 PATROL 로봇이 배정 유무로 가용/작업중으로 갈려 상태화면(FMS)과 어긋난다.
+// PATROL·SECURITY_PATROL 은 대기 가능 용량이라 가용, 실제 배달(WORKING)만 작업중.
+// stale 은 별도 버킷으로 세어 도넛 합계 == 로봇 수.
+function fleetBucket(r: RobotRow): keyof typeof FLEET_STATE_COLOR {
+  if (r.stale) return "stale";
+  if (r.state === "ERROR") return "error";
+  if (r.state === "CHARGING" || r.state === "RETURNING") return "charging";
+  if (r.state === "WORKING") return "working";
+  return "available";
+}
 
 function RobotsPage() {
   const [robots, setRobots] = useState<RobotRow[]>([]);
@@ -71,7 +111,17 @@ function RobotsPage() {
   const [plugins, setPlugins] = useState<Record<string, string>>({});
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [kinds, setKinds] = useState<TaskKind[]>([]);
+  const [graph, setGraph] = useState<NavGraph>({ vertices: {}, lanes: [] });
   const [err, setErr] = useState<string | null>(null);
+
+  // 내비 그래프는 거의 안 바뀌므로 마운트 때 한 번만 읽는다(로봇 위치는 아래 인터벌).
+  // 실패해도 지도는 로봇 점만이라도 떠야 하므로 조용히 넘어간다.
+  useEffect(() => {
+    ops
+      .waypoints()
+      .then((g) => setGraph({ vertices: g.vertices, lanes: g.lanes }))
+      .catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     const load = () =>
@@ -90,37 +140,24 @@ function RobotsPage() {
     return () => clearInterval(t);
   }, []);
 
+  const fleetCounts = robots.reduce(
+    (acc, r) => {
+      acc[fleetBucket(r)] += 1;
+      return acc;
+    },
+    { available: 0, working: 0, charging: 0, error: 0, stale: 0 },
+  );
   const fleetChart = [
-    {
-      label: "가용",
-      value: robots.filter(
-        (r) =>
-          !r.busy &&
-          !r.stale &&
-          r.state !== "ERROR" &&
-          r.state !== "CHARGING" &&
-          r.state !== "RETURNING",
-      ).length,
-      color: FLEET_STATE_COLOR.available,
-    },
-    {
-      label: "작업중",
-      value: robots.filter((r) => r.busy).length,
-      color: FLEET_STATE_COLOR.working,
-    },
-    {
-      label: "충전중",
-      value: robots.filter(
-        (r) => r.state === "CHARGING" || r.state === "RETURNING",
-      ).length,
-      color: FLEET_STATE_COLOR.charging,
-    },
-    {
-      label: "오류",
-      value: robots.filter((r) => r.state === "ERROR").length,
-      color: FLEET_STATE_COLOR.error,
-    },
+    { label: "가용", value: fleetCounts.available, color: FLEET_STATE_COLOR.available },
+    { label: "작업중", value: fleetCounts.working, color: FLEET_STATE_COLOR.working },
+    { label: "충전중", value: fleetCounts.charging, color: FLEET_STATE_COLOR.charging },
+    { label: "오류", value: fleetCounts.error, color: FLEET_STATE_COLOR.error },
+    { label: "끊김", value: fleetCounts.stale, color: FLEET_STATE_COLOR.stale },
   ];
+
+  // navgraph 정점 인덱스 → 이름. 라이브 그래프의 키 순서 == navgraph 인덱스 순서
+  // (waypoint.yaml 삽입순서). 정적 map-waypoints 대신 이걸 써서 재생성 후에도 라벨이 맞는다.
+  const vertexNames = Object.keys(graph.vertices);
 
   const orderFor = (robotName: string) =>
     orders.find(
@@ -159,14 +196,42 @@ function RobotsPage() {
                 aria-hidden
                 className="pointer-events-none absolute left-1/2 top-1/2 h-auto w-[58%] -translate-x-1/2 -translate-y-1/2 -rotate-90 opacity-60 [image-rendering:pixelated]"
               />
-              {/* 서가·시설 정점 (옅게) — WAYPOINTS 는 이미 0~1 정규화 좌표라 rotate() 만 적용 */}
-              {WAYPOINTS.filter((w) => w.kind !== "corridor").map((w) => {
-                const [rx, ry] = rotate(w.x, w.y);
+              {/* 간선(lanes) — 라이브 그래프. 순회 루프 간선은 빨강, 그 외 회색. */}
+              <svg
+                viewBox="0 0 100 100"
+                preserveAspectRatio="none"
+                className="pointer-events-none absolute inset-0 h-full w-full"
+              >
+                {graph.lanes.map((ln, i) => {
+                  const a = graph.vertices[ln.from];
+                  const b = graph.vertices[ln.to];
+                  if (!a || !b) return null;
+                  const p1 = screenPct(a.x, a.y);
+                  const p2 = screenPct(b.x, b.y);
+                  const patrol = PATROL_PAIRS.has(patrolPairKey(ln.from, ln.to));
+                  return (
+                    <line
+                      key={`${ln.from}-${ln.to}-${i}`}
+                      x1={p1.x}
+                      y1={p1.y}
+                      x2={p2.x}
+                      y2={p2.y}
+                      stroke={patrol ? "#ef4444" : "#94a3b8"}
+                      strokeWidth={patrol ? 2 : 1}
+                      strokeOpacity={patrol ? 0.95 : 0.55}
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  );
+                })}
+              </svg>
+              {/* 노드(정점) — 라이브 그래프. 월드→screenPct 로 로봇 점과 같은 좌표계. */}
+              {Object.entries(graph.vertices).map(([name, v]) => {
+                const p = screenPct(v.x, v.y);
                 return (
                   <span
-                    key={w.name}
-                    title={w.label}
-                    style={{ left: `${rx * 100}%`, top: `${ry * 100}%` }}
+                    key={name}
+                    title={name}
+                    style={{ left: `${p.x}%`, top: `${p.y}%` }}
                     className="absolute size-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-slate-400"
                   />
                 );
@@ -292,7 +357,7 @@ function RobotsPage() {
                           <Field label="목표 정점">
                             {r.goal_vertex === null
                               ? "—"
-                              : (WAYPOINTS[r.goal_vertex]?.label ??
+                              : (vertexNames[r.goal_vertex] ??
                                 `v${r.goal_vertex}`)}
                           </Field>
                         )}

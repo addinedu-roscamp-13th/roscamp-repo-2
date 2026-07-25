@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import OLLAMA_URL
 from app.database import get_admin_db, get_robot_db
 from app.deps import get_current_admin
+from app.models import iso_utc
 from app.models import Admin, AiModelSettings, Robot, RobotLearnedAction, RobotLearnedScenario
 from app.robot_dispatch import ROBOT_SERVER_URL, CONTROL_ACTIONS, DRIVING_ACTIONS, call_local_api, resolve_learned_command
 
@@ -160,8 +161,8 @@ def action_out(row: RobotLearnedAction) -> dict[str, Any]:
         "action_type": row.action_type,
         "params": _loads(row.params, {}),
         "enabled": row.enabled,
-        "created_at": row.created_at.isoformat() if row.created_at else None,
-        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        "created_at": iso_utc(row.created_at),
+        "updated_at": iso_utc(row.updated_at),
     }
 
 
@@ -174,8 +175,8 @@ def scenario_out(row: RobotLearnedScenario) -> dict[str, Any]:
         "nodes": _loads(row.nodes, []),
         "edges": _loads(row.edges, []),
         "enabled": row.enabled,
-        "created_at": row.created_at.isoformat() if row.created_at else None,
-        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        "created_at": iso_utc(row.created_at),
+        "updated_at": iso_utc(row.updated_at),
     }
 
 

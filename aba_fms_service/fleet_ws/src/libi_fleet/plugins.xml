@@ -2,7 +2,7 @@
   <class type="libi_fleet::Auction" base_class_type="libi_fleet::DispatcherBase">
     <description>Auction / SSI dispatch — lowest Dijkstra path-cost bid wins (single-task now; batch queue extends to true SSI).</description>
   </class>
-  <class type="libi_fleet::ReservationDeadlock" base_class_type="libi_fleet::TrafficBase">
-    <description>Node + edge reservation with wait-for-graph DFS deadlock detection (caller reroutes on DEADLOCK).</description>
+  <class type="libi_fleet::GrantAllTraffic" base_class_type="libi_fleet::TrafficBase">
+    <description>[experimental] Traffic OFF — always GRANT, no reservation/deadlock. Diagnostic only, unsafe for real robots.</description>
   </class>
 </library>

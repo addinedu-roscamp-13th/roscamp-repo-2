@@ -1,4 +1,5 @@
 #include "RobotController.h"
+#include "RosLink.h"
 
 #include <QVariantMap>
 #include <QTime>
@@ -57,6 +58,7 @@ RobotController::RobotController(QObject *parent) : QObject(parent) {
     // 배터리 서서히 변동 (목): 충전중이면 +, 아니면 - / 15% 미만이면 자동충전 (SR-18)
     m_batteryTimer.setInterval(4000);
     connect(&m_batteryTimer, &QTimer::timeout, this, [this]() {
+        if (m_rosConnected) return;   // 실제 FSM 연결 시 목 배터리·상태변경 정지
         if (m_estop) return;
         if (m_charging) {
             if (m_battery < 100) { m_battery += 1; emit batteryChanged(); }
@@ -124,7 +126,11 @@ void RobotController::setMode(const QString &m) {
     m_mode = m; emit modeChanged();
     // 화면별 기본 표정
     if (m == QLatin1String("home")) setEmotion(QStringLiteral("happy"));
-    else if (m == QLatin1String("guide")) setEmotion(QStringLiteral("interest"));
+    else if (m == QLatin1String("guide")) {
+        setEmotion(QStringLiteral("interest"));
+        if (m_robotState == QStringLiteral("대기") && m_rosConnected)
+            requestTransition(QStringLiteral("PATROL"));   // IDLE→INTERACTING 직접 불가, PATROL 경유 (연결됐을 때만 — 목 모드서 HTTP 안 튀게)
+    }
     else if (m == QLatin1String("search")) setEmotion(QStringLiteral("thinking"));
     else if (m == QLatin1String("recommend")) setEmotion(QStringLiteral("fun"));
 }
@@ -156,6 +162,9 @@ void RobotController::emergencyStop() {
     setTaskStatus(QStringLiteral("비상정지"));
     setEmotion(QStringLiteral("sad"));
     if (m_patrol) { m_patrol = false; emit patrolActiveChanged(); }
+    // 실제 FSM 도 ERROR 로 — 이게 없으면 m_rosConnected(목 해제) 상태에서 화면만 정지고
+    // 로봇 FSM 은 PATROL/WORKING 인 채 계속 동작한다. force=true: 어느 상태에서든 진입.
+    requestTransition(QStringLiteral("ERROR"), /*force=*/true);
     log(QStringLiteral("⛔ 비상정지 — 모든 동작 중단, 명령 무시"));
 }
 
@@ -177,6 +186,7 @@ void RobotController::clearError() {
     if (m_estop) { clearEmergencyStop(); return; }   // 비상정지로 인한 에러는 해제 흐름으로
     setGuidePhase(QStringLiteral("idle"));
     setRobotState(QStringLiteral("대기"));
+    requestTransition(QStringLiteral("IDLE"), /*force=*/true);
     setTaskStatus(QStringLiteral("명령 대기"));
     if (m_patrol) { m_patrol = false; emit patrolActiveChanged(); }
     setEmotion(QStringLiteral("happy"));
@@ -193,6 +203,7 @@ void RobotController::resetToIdle() {
     setGuidePhase(QStringLiteral("idle"));
     stopDrive();
     setRobotState(QStringLiteral("대기"));
+    requestTransition(QStringLiteral("IDLE"));
     setTaskStatus(QStringLiteral("명령 대기"));
     if (m_patrol) { m_patrol = false; emit patrolActiveChanged(); }
     setEmotion(QStringLiteral("happy"));
@@ -206,6 +217,10 @@ void RobotController::startPatrol() {
     if (m_guidePhase == QLatin1String("guiding")) { emit toast(QStringLiteral("안내 중에는 순찰을 시작할 수 없습니다.")); return; }
     setGuidePhase(QStringLiteral("idle"));
     setRobotState(QStringLiteral("순찰"));
+    // 실제 FSM 도 PATROL 로 — 이게 없으면 로컬만 "순찰"이고 다음 /libi/fsm_state 발행에
+    // IDLE 로 되돌아간다(그러면 IDLE 엔 ui_touch 간선이 없어 이후 터치도 거부됨).
+    // IDLE→PATROL 은 수동 patrol_request 정규 간선이라 force 불필요.
+    requestTransition(QStringLiteral("PATROL"));
     setTaskStatus(QStringLiteral("명령 대기"));
     if (!m_patrol) { m_patrol = true; emit patrolActiveChanged(); }
     setEmotion(QStringLiteral("happy"));
@@ -275,6 +290,7 @@ void RobotController::beginFollowing() {
     m_following = true; emit followingChanged();
     setRobotState(QStringLiteral("작업중"));
     setTaskStatus(QStringLiteral("관리자 추종 중"));
+    requestTransition(QStringLiteral("WORKING"));
     log(QStringLiteral("관리자 추종 시작 — FMS 승인됨"));
     emit toast(QStringLiteral("관리자 추종을 시작합니다."));
 }
@@ -335,12 +351,34 @@ void RobotController::reportFollowRelease() {
     });
 }
 
+// 관리자 전이 요청. 검증·감사는 FMS /api/fsm/transition 이 한다(로컬은 optimistic,
+// /libi/fsm_state 구독이 실제 상태로 교정). ERROR 이탈은 error_code 가 필요하므로
+// error 해제는 force=true 로 보낸다.
+void RobotController::requestTransition(const QString &target, bool force) {
+    if (m_robotId.isEmpty()) {
+        log(QStringLiteral("전이 요청 불가 — ROBOT_ID 미설정")); return;
+    }
+    QNetworkRequest req{QUrl(m_fmsUrl + QStringLiteral("/api/fsm/transition"))};
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    QJsonObject body;
+    body[QStringLiteral("robot_id")] = m_robotId;
+    body[QStringLiteral("target_state")] = target;
+    body[QStringLiteral("force")] = force;
+    QNetworkReply *reply = m_net->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, target]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError)
+            log(QStringLiteral("전이 실패(%1) — %2").arg(target, reply->errorString()));
+    });
+}
+
 void RobotController::startGuide(const QString &destination) {
     if (m_estop) { emit toast(QStringLiteral("비상정지 상태입니다.")); return; }
     m_guideDest = destination; emit guideDestinationChanged();
     m_distance = 24.0; emit distanceToGoalChanged();
     setGuidePhase(QStringLiteral("guiding"));
     setRobotState(QStringLiteral("안내중"));
+    requestTransition(QStringLiteral("WORKING"));
     setTaskStatus(QStringLiteral("사용자 명령 수행 중"));
     setEmotion(QStringLiteral("interest"));
     log(QStringLiteral("길잡이 시작 → ") + destination);
@@ -472,4 +510,48 @@ QVariantList RobotController::recommend(const QString &purpose, const QString &i
     }
     if (out.isEmpty()) out = allBooks().mid(0, 3);
     return out.mid(0, 4);
+}
+
+// 8종 canonical(EN) → 패널 한글 표시어휘. INTERACTING/SECURITY_PATROL/RETURNING 은
+// 기존 어휘에 없어 새 라벨을 준다.
+QString RobotController::mapState(const QString &c) {
+    if (c == "IDLE")            return QStringLiteral("대기");
+    if (c == "PATROL")          return QStringLiteral("순찰");
+    if (c == "SECURITY_PATROL") return QStringLiteral("보안순찰");
+    if (c == "WORKING")         return QStringLiteral("작업중");
+    if (c == "INTERACTING")     return QStringLiteral("응대중");
+    if (c == "CHARGING")        return QStringLiteral("충전중");
+    if (c == "RETURNING")       return QStringLiteral("복귀중");
+    if (c == "ERROR")           return QStringLiteral("에러");
+    return c;   // 미지 상태는 원문 표시
+}
+
+void RobotController::attachRos(RosLink *ros) {
+    m_ros = ros;
+    connect(ros, &RosLink::fsmStateReceived, this,
+        [this](QString state, double remaining, QString errorCode,
+               double battery, bool docked) {
+            Q_UNUSED(errorCode); Q_UNUSED(docked);
+            m_rosConnected = true;
+            setRobotState(mapState(state));
+            const int r = static_cast<int>(remaining + 0.5);
+            if (r != m_interactingRemaining) { m_interactingRemaining = r; emit interactingRemainingChanged(); }
+            if (battery >= 0) {
+                const int b = static_cast<int>(battery + 0.5);
+                if (b != m_battery) { m_battery = b; emit batteryChanged(); }
+            }
+            const bool ch = (state == "CHARGING");
+            if (ch != m_charging) { m_charging = ch; emit chargingChanged(); }
+        });
+}
+
+// QML 전역 탭에서 호출. 매 탭이 ui_last_touch_at 발행 → 로봇 20초 타이머 리셋/유지.
+// 순찰 중 첫 탭은 fleet_cmd ui_touch 로 INTERACTING 진입을 튕긴다.
+void RobotController::onScreenTouch() {
+    if (!m_ros) return;
+    m_ros->publishTouch();
+    if (m_robotState == QStringLiteral("순찰")) {
+        m_ros->publishFleetCmd(QStringLiteral("{\"action\":\"ui_touch\"}"));
+        log(QStringLiteral("화면 터치 — 응대 진입 요청(ui_touch)"));
+    }
 }

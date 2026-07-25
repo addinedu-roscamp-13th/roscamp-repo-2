@@ -3,10 +3,15 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+import subprocess
+import sys
 import urllib.error
 import urllib.request
 import time
+from pathlib import Path
 from typing import Any
+
+import yaml
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel, Field
@@ -108,6 +113,22 @@ async def _target_url(robot_id: int, nav_port: int, db: AsyncSession) -> str:
     # 프론트가 옛 Flask 포트(8080)를 nav_port 로 넘겨도 무시하고 등록 포트를 우선 사용한다.
     port = robot.port or nav_port
     return f"http://{robot.ip_address}:{port}"
+
+
+async def _robot_name(robot_id: int, db: AsyncSession) -> str:
+    """robot_id -> 등록 이름. 공유 IP sim에서도 ROS 경로를 확정하는 식별자다."""
+    robot = (
+        await db.execute(
+            select(Robot).where(
+                Robot.id == robot_id,
+                Robot.robot_type == "pinky",
+                Robot.is_active == True,
+            )
+        )
+    ).scalar_one_or_none()
+    if robot is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="활성 주행로봇을 찾을 수 없습니다.")
+    return str(robot.name)
 
 
 def _request_json(base: str, path: str, method: str = "GET", payload: dict[str, Any] | None = None) -> Any:
@@ -212,8 +233,7 @@ async def _proxy(
 
 async def _state_for_robot(robot_id: int, nav_port: int, db: AsyncSession) -> Any:
     base = await _target_url(robot_id, nav_port, db)
-    ip = base.split("//", 1)[-1].rsplit(":", 1)[0]
-    cached = fleet_telemetry.get_state(ip)
+    cached = fleet_telemetry.get_state_for_robot(await _robot_name(robot_id, db))
     if cached is not None:
         return cached
     return await asyncio.to_thread(_request_json, base, "/api/state")
@@ -273,11 +293,11 @@ async def _ros_command(
     - 로봇이 에러 응답(ok=False) → HTTP 프록시였다면 받았을 상태코드로 HTTPException
     - 성공 → 로봇 nav_router 와 동일 스키마의 응답 dict
     """
-    base = await _target_url(robot_id, nav_port, db)
-    ip = base.split("//", 1)[-1].rsplit(":", 1)[0]
+    await _target_url(robot_id, nav_port, db)
+    robot_name = await _robot_name(robot_id, db)
     res = await asyncio.to_thread(
-        fleet_telemetry.send_command,
-        ip,
+        fleet_telemetry.send_command_for_robot,
+        robot_name,
         action,
         args or {},
         timeout,
@@ -420,6 +440,61 @@ async def save_waypoints(body: WaypointSaveRequest, robot_id: int = Query(...), 
     return res
 
 
+# ── 단일 공유 내비 그래프 ────────────────────────────────────────────────────
+#
+# 로봇별(위 waypoint_get/save)이 아니라 **정본 waypoint.yaml 하나**를 편집한다.
+# 정본 = 로봇 nav 패키지의 waypoint.yaml (fleet_node navgraph 의 원본). 저장하면 그 파일에
+# 쓰고 fleet_node navgraph 를 재생성한다. 반영은 **재기동 시**(런타임 push/reload 없음 — 의도):
+# fleet_node 는 재생성된 navgraph 를, 로봇은 이 waypoint.yaml 을 다음 기동에 읽는다.
+# (로봇이 install/ 사본을 읽으면 colcon 빌드/배포로 동기화 필요 — 실물 배포 시 유의.)
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+_SHARED_WAYPOINT = (
+    _REPO_ROOT
+    / "aba_controller/libi_drive_controller/ros_ws/src/pinky_pro"
+    / "pinky_navigation/params/waypoint.yaml"
+)
+_GEN_NAVGRAPH = _REPO_ROOT / "scripts/gen_arte2_navgraph.py"
+
+
+@router.get("/waypoints/shared")
+async def get_shared_waypoints(_admin: Admin = Depends(get_current_admin)):
+    """단일 공유 내비 그래프 조회 — 정본 waypoint.yaml. 로봇 선택과 무관."""
+    if not _SHARED_WAYPOINT.exists():
+        raise HTTPException(status_code=404, detail="공유 waypoint.yaml 을 찾을 수 없습니다")
+    data = yaml.safe_load(_SHARED_WAYPOINT.read_text()) or {}
+    return {"vertices": data.get("vertices", {}), "lanes": data.get("lanes", [])}
+
+
+@router.put("/waypoints/shared")
+async def save_shared_waypoints(
+    body: WaypointSaveRequest, _admin: Admin = Depends(get_current_admin)
+):
+    """단일 공유 내비 그래프 저장 — 정본 waypoint.yaml 에 쓰고 fleet_node navgraph 재생성.
+
+    반영은 **재기동 시**: fleet_node 는 재생성된 navgraph 를, 로봇은 이 waypoint.yaml 을
+    다음 기동에 읽는다. 런타임 push/reload 는 하지 않는다(의도).
+    """
+    doc = {"vertices": body.vertices, "lanes": body.lanes}
+    header = (
+        "# waypoint.yaml — 내비 그래프 (vertices + lanes)\n"
+        "# 관제 웨이포인트 에디터가 쓰는 단일 공유 정본. 고치면 fleet_node navgraph 도\n"
+        "# 재생성된다(scripts/gen_arte2_navgraph.py). 반영은 각자 재기동 시.\n\n"
+    )
+    _SHARED_WAYPOINT.write_text(
+        header + yaml.safe_dump(doc, allow_unicode=True, sort_keys=False)
+    )
+
+    try:
+        r = subprocess.run(
+            [sys.executable, str(_GEN_NAVGRAPH)],
+            cwd=str(_REPO_ROOT), capture_output=True, text=True, timeout=30,
+        )
+        regen = {"ok": r.returncode == 0, "detail": (r.stdout or r.stderr).strip()[-300:]}
+    except Exception as e:  # noqa: BLE001 — 저장 자체는 성공했으므로 재생성 실패만 알린다
+        regen = {"ok": False, "detail": str(e)}
+    return {"ok": True, "vertices": len(body.vertices), "navgraph_regenerated": regen}
+
+
 @router.post("/waypoints/{name}/goto")
 async def waypoint_goto(name: str, robot_id: int = Query(...), nav_port: int = Query(NAV2_DEFAULT_PORT, ge=1, le=65535), db: AsyncSession = Depends(get_admin_db), _admin: Admin = Depends(get_current_admin)):
     """간선(lane)을 따라 지정 노드까지 순차 이동 — fleet_link.waypoint_goto."""
@@ -432,8 +507,7 @@ async def waypoint_goto(name: str, robot_id: int = Query(...), nav_port: int = Q
 
 @router.post("/relative-move")
 async def relative_move(body: RelativeMoveRequest, robot_id: int = Query(...), nav_port: int = Query(NAV2_DEFAULT_PORT, ge=1, le=65535), db: AsyncSession = Depends(get_admin_db), _admin: Admin = Depends(get_current_admin)):
-    base = await _target_url(robot_id, nav_port, db)
-    ip = base.split("//", 1)[-1].rsplit(":", 1)[0]
+    robot_name = await _robot_name(robot_id, db)
     dir_str = "backward" if body.direction == "backward" else "forward"
     direction = -1.0 if dir_str == "backward" else 1.0
     linear = float(body.speed_mps) * direction
@@ -444,7 +518,7 @@ async def relative_move(body: RelativeMoveRequest, robot_id: int = Query(...), n
     # relative_move 는 nav2 를 우회하는 저수준 조그다 — 스스로 장애물을 피하지 못하므로
     # 라이다 전방(후진 시 후방) 여유거리로 안전정지를 건다.
     # fail-safe: 여유거리를 확인할 수 없으면(스캔 없음/오래됨) 아예 움직이지 않는다.
-    c0 = fleet_telemetry.clearance(ip, dir_str)
+    c0 = fleet_telemetry.clearance_for_robot(robot_name, dir_str)
     if c0 is None:
         raise HTTPException(
             status_code=503,
@@ -461,25 +535,25 @@ async def relative_move(body: RelativeMoveRequest, robot_id: int = Query(...), n
     stopped_reason: str | None = None
     try:
         while time.time() - started < duration:
-            c = fleet_telemetry.clearance(ip, dir_str)
+            c = fleet_telemetry.clearance_for_robot(robot_name, dir_str)
             if c is None:
                 stopped_reason = "scan_lost"
                 break
             if c < stop_gap:
                 stopped_reason = "obstacle"
                 break
-            if not fleet_telemetry.publish_cmd_vel(ip, linear, 0.0):
+            if not fleet_telemetry.publish_cmd_vel_for_robot(robot_name, linear, 0.0):
                 raise HTTPException(status_code=503, detail="로봇 cmd_vel 토픽 링크가 연결되지 않았습니다")
             sent += 1
             await asyncio.sleep(per_iter)
     finally:
         for _ in range(3):
-            fleet_telemetry.publish_cmd_vel(ip, 0.0, 0.0)
+            fleet_telemetry.publish_cmd_vel_for_robot(robot_name, 0.0, 0.0)
             await asyncio.sleep(0.03)
 
     traveled = round(min(float(body.distance_m), sent * per_iter * abs(linear)), 3)
     if stopped_reason == "obstacle":
-        last_c = fleet_telemetry.clearance(ip, dir_str)
+        last_c = fleet_telemetry.clearance_for_robot(robot_name, dir_str)
         return {"success": True, "mode": "ros2_cmd_vel", "stopped_reason": "obstacle",
                 "clearance_m": last_c, "min_clearance_m": stop_gap,
                 "distance_m": body.distance_m, "traveled_m": traveled, "published": sent,

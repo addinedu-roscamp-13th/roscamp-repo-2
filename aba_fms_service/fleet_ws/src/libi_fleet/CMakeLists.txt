@@ -14,7 +14,7 @@ find_package(std_srvs REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
 # --- core 라이브러리 (navgraph) ---
-add_library(libi_fleet_core src/navgraph.cpp src/patrol_cycle.cpp)
+add_library(libi_fleet_core src/navgraph.cpp src/patrol_cycle.cpp src/security_patrol_cycle.cpp)
 set_property(TARGET libi_fleet_core PROPERTY POSITION_INDEPENDENT_CODE ON)  # shared 플러그인에 링크되므로 PIC
 target_include_directories(libi_fleet_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -25,7 +25,7 @@ ament_target_dependencies(libi_fleet_core rclcpp)
 # --- pluginlib 플러그인 (dispatcher/traffic) ---
 add_library(libi_fleet_plugins SHARED
   plugins/auction.cpp
-  plugins/reservation_deadlock.cpp)
+  plugins/grant_all_traffic.cpp)
 target_include_directories(libi_fleet_plugins PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
@@ -56,6 +56,13 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(test_patrol_cycle libi_fleet_core)
   target_compile_definitions(test_patrol_cycle PRIVATE
+    TEST_NAVGRAPH_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../../maps/library/new_map.navgraph.yaml")
+
+  ament_add_gtest(test_security_patrol_cycle test/test_security_patrol_cycle.cpp)
+  target_include_directories(test_security_patrol_cycle PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(test_security_patrol_cycle libi_fleet_core)
+  target_compile_definitions(test_security_patrol_cycle PRIVATE
     TEST_NAVGRAPH_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../../maps/library/new_map.navgraph.yaml")
 endif()
 

@@ -36,4 +36,8 @@ if [ ! -x "$BIN" ]; then
 fi
 
 echo "[gui] robot_id=$ROBOT_ID  domain=${ROS_DOMAIN_ID:-(미설정)}  fms=$FMS_URL  perception=$PERCEPTION_URL"
+
+# ROS2 런타임 (rclcpp 노드 — /libi/fsm_state 구독, ui_last_touch_at·fleet_cmd 발행)
+[ -f /opt/ros/jazzy/setup.bash ] && source /opt/ros/jazzy/setup.bash
+
 exec "$BIN" "${@:2}"

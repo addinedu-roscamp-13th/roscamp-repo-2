@@ -33,7 +33,7 @@ None 으로 남고 `BatteryCheck` 가 영영 통과하지 않아 **로봇이 CHA
 
 ## 실행
 
-    ROS_DOMAIN_ID=90 python3 sim_battery.py                 # 100% 고정
+    ROS_DOMAIN_ID=90 python3 sim_battery.py                 # 60% 고정(기본)
     ROS_DOMAIN_ID=90 python3 sim_battery.py --start 30       # 충전부터 보고 싶을 때
     ROS_DOMAIN_ID=90 python3 sim_battery.py --drain 5        # 5%/분씩 소모
 """
@@ -102,7 +102,7 @@ class SimBattery(Node):
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--start", type=float, default=100.0, help="시작 잔량 %%")
+    ap.add_argument("--start", type=float, default=60.0, help="시작 잔량 %% (기본 60 — 즉시 자동순회 방지)")
     ap.add_argument("--charge", type=float, default=30.0, help="도킹 중 회복 %%/분")
     ap.add_argument("--drain", type=float, default=0.0,
                     help="비도킹 시 소모 %%/분 (기본 0 — 시험이 배터리로 끊기지 않게)")

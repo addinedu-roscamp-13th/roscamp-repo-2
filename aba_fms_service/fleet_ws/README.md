@@ -62,6 +62,22 @@ libi_modes (미션 PC)       그 로봇이 어떻게 행동할지   8상태 FSM 
 robot_agent · ros_ws       실제 하드웨어
 ```
 
+## 플러그인 (배차·교통) — `fleet_node --ros-args -p dispatcher_plugin:=… -p traffic_plugin:=…`
+
+런타임 교체는 `/fms/set_plugins`, 부팅 지정은 위 파라미터. `plugins.xml` 참고.
+
+| base | 플러그인 | 설명 |
+|---|---|---|
+| DispatcherBase | `libi_fleet::Auction` | 배차 — Dijkstra 최저 경로비용 입찰 승리 (기본) |
+| TrafficBase | `libi_fleet::ReservationDeadlock` | 교통 — 노드 예약 + wait-for DFS 교착감지 (기본, **실사용**) |
+| TrafficBase | `libi_fleet::GrantAllTraffic` | ⚠️ **진단 전용** — 항상 GRANT, 충돌회피·교착감지 **없음**. 실사용 금지 |
+
+`GrantAllTraffic` 은 "명령 하나에 로봇이 다 같이 움직이는" 현상이 교통관제 셔플 때문인지
+가리려고 만든 도구다. traffic 을 이걸로 껐는데도 다 움직였다 → **원인은 교통관제가 아니라
+서버측 fleet-wide 순찰(`patrol` 파라미터, 기본 `true`)** 임이 드러났다. idle 로봇까지
+외곽 루프를 무한 순찰하므로, "배차한 로봇만 움직이게" 하려면 `-p patrol:=false` 로 띄운다
+(교통관제·존과는 별개 레이어).
+
 **명령 인터페이스는 이미 맞물린다.** `libi_fleet`은 로봇당 Drive와만 통신하며
 `navigate` · `perform_action`을 보내는데, `libi_modes`의 `WorkingBranch`가 정확히 그
 `active_command` 값들을 dispatch한다 (`NavigationExec`는 `{navigate, dock}`,

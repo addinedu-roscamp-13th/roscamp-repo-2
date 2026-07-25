@@ -221,3 +221,21 @@ def fleet_snapshot() -> tuple[bool, dict]:
         return True, json.loads(text).get("snapshot", {})
     except ValueError:
         return False, {}
+
+
+def waypoints_shared() -> tuple[bool, dict]:
+    """FMS 공유 내비 그래프(정본 waypoint.yaml) — `{"vertices": {name: pose}, "lanes": [...]}`.
+
+    사서 실시간 모니터링 지도가 현재 노드·간선을 그리려면 필요하다. FMS 의
+    `/api/control/waypoints/shared` 는 관리자 인증이 걸려 있어 브라우저가 직접 못 부르므로,
+    도서관 백엔드가 서비스 계정으로 대신 읽어 내려준다(FMS 자격증명 미노출). waypoint.yaml
+    이 바뀌면 자동 반영된다. 실패하면 `(False, {})` — 지도는 로봇 점만이라도 떠야 한다.
+    """
+    ok, text = _authed("/api/control/waypoints/shared", "GET", None)
+    if not ok:
+        return False, {}
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return False, {}
+    return True, {"vertices": data.get("vertices", {}), "lanes": data.get("lanes", [])}

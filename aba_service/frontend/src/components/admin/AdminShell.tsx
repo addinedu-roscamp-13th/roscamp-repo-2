@@ -92,7 +92,7 @@ const NAV_GROUPS: NavGroup[] = [
     icon: Radar,
     items: [
       { to: "/admin/robots", label: "실시간 모니터링", icon: Bot },
-      { to: "/admin/alerts", label: "작업 알림 · 로그", icon: Bell },
+      { to: "/admin/alerts", label: "작업 로그", icon: Bell },
       { to: "/admin/security", label: "야간 보안", icon: ShieldAlert },
     ],
   },

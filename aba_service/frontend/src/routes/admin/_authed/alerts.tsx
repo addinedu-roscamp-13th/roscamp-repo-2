@@ -7,7 +7,7 @@ import { ConfirmDeleteDialog } from "@/components/admin/ConfirmDeleteDialog";
 import { ops, opsApi } from "@/lib/ops-api";
 
 export const Route = createFileRoute("/admin/_authed/alerts")({
-  head: () => ({ meta: [{ title: "LiBi Admin — 작업 알림 · 로그" }] }),
+  head: () => ({ meta: [{ title: "LiBi Admin — 작업 로그" }] }),
   component: AlertsPage,
 });
 
@@ -75,6 +75,7 @@ function AlertsPage() {
   const [err, setErr] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<LogRow | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [resetting, setResetting] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -102,6 +103,27 @@ function AlertsPage() {
       .then(load)
       .catch((e) => setErr(e instanceof Error ? e.message : "처리 실패"));
 
+  const resetLogs = async () => {
+    if (
+      !window.confirm(
+        "작업 로그를 전부 초기화할까요?\n\n" +
+          "목록에서 감춰지며(감사 위해 행은 보존), FMS 가 같은 종료 작업을 계속 " +
+          "돌려줘도 다시 나타나지 않습니다. 새로 생기는 작업은 계속 쌓입니다.",
+      )
+    )
+      return;
+    setResetting(true);
+    try {
+      const r = await ops.resetTaskLogs();
+      toast.success(`작업 로그 ${r.hidden}건을 초기화했습니다`);
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "초기화 실패");
+    } finally {
+      setResetting(false);
+    }
+  };
+
   const removeLog = async () => {
     if (!deleteTarget) return;
     setDeleting(true);
@@ -118,7 +140,7 @@ function AlertsPage() {
   };
 
   return (
-    <AdminShell title="작업 알림 · 로그">
+    <AdminShell title="작업 로그">
       <div className="flex h-full flex-col gap-4">
         {err ? (
           <p className="rounded-lg bg-rose-500/10 px-3 py-2 text-sm text-rose-700">
@@ -165,7 +187,7 @@ function AlertsPage() {
         {/* 로그 */}
         <section className="flex min-h-0 flex-1 flex-col rounded-lg border p-4">
           <div className="mb-3 flex items-center gap-2">
-            <h3 className="text-sm font-semibold">작업 결과 로그</h3>
+            <h3 className="text-sm font-semibold">작업 로그</h3>
             {(["", "ASSIGNED", "COMPLETED", "FAILED"] as const).map((f) => (
               <button
                 key={f || "all"}
@@ -179,6 +201,13 @@ function AlertsPage() {
                 {f === "" ? "전체" : STATUS_LABEL[f]}
               </button>
             ))}
+            <button
+              onClick={() => void resetLogs()}
+              disabled={resetting || logs.length === 0}
+              className="ml-auto rounded-full bg-rose-500/10 px-2.5 py-1 text-xs font-semibold text-rose-700 disabled:pointer-events-none disabled:opacity-40"
+            >
+              {resetting ? "초기화 중…" : "초기화"}
+            </button>
           </div>
           <div className="min-h-0 flex-1 overflow-auto">
             <table className="w-full text-sm">

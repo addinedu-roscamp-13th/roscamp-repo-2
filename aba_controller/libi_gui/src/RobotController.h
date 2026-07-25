@@ -8,6 +8,7 @@
 
 class QNetworkAccessManager;
 class QNetworkReply;
+class RosLink;
 
 // RobotController
 // -----------------------------------------------------------------------------
@@ -35,6 +36,7 @@ class RobotController : public QObject {
     Q_PROPERTY(int battery READ battery NOTIFY batteryChanged)
     Q_PROPERTY(bool charging READ charging NOTIFY chargingChanged)
     Q_PROPERTY(QString robotState READ robotState NOTIFY robotStateChanged)   // 대기/순찰/안내중/작업중/에러/충전중
+    Q_PROPERTY(int interactingRemaining READ interactingRemaining NOTIFY interactingRemainingChanged)
     Q_PROPERTY(bool patrolActive READ patrolActive NOTIFY patrolActiveChanged)
     Q_PROPERTY(bool following READ following NOTIFY followingChanged)   // 관리자 추종 중
     Q_PROPERTY(QString emotion READ emotion WRITE setEmotion NOTIFY emotionChanged)
@@ -64,6 +66,7 @@ public:
     int battery() const { return m_battery; }
     bool charging() const { return m_charging; }
     QString robotState() const { return m_robotState; }
+    int interactingRemaining() const { return m_interactingRemaining; }
     bool patrolActive() const { return m_patrol; }
     bool following() const { return m_following; }
     QString emotion() const { return m_emotion; }
@@ -94,6 +97,11 @@ public:
     Q_INVOKABLE void startAdminFollow();             // 관리자 추종 시작 (FMS 승인 후)
     Q_INVOKABLE void stopAdminFollow();              // 관리자 추종 종료 (FMS 에 해제 보고)
     void releaseFollowOnExit();                      // 종료 직전 해제 (main.cpp 의 aboutToQuit)
+
+    void attachRos(RosLink *ros);                    // RosLink 의 fsm_state 시그널을 배선 (Task 5)
+
+    // QML 전역 탭에서 호출. ui_last_touch_at 발행 + 순찰 중이면 ui_touch fleet_cmd (Task 6)
+    Q_INVOKABLE void onScreenTouch();
 
     // 길잡이
     Q_INVOKABLE void startGuide(const QString &destination);
@@ -126,6 +134,7 @@ signals:
     void batteryChanged();
     void chargingChanged();
     void robotStateChanged();
+    void interactingRemainingChanged();
     void patrolActiveChanged();
     void followingChanged();
     void emotionChanged();
@@ -149,9 +158,11 @@ private:
     // FMS 추종 승인/해제 HTTP. 응답 처리는 콜백에서 하므로 UI 스레드를 막지 않는다.
     void requestFollowGrant();
     void reportFollowRelease();
+    void requestTransition(const QString &target, bool force = false);
     void onFollowGrantReply(QNetworkReply *reply);
     void beginFollowing();
     void setRobotState(const QString &s);
+    static QString mapState(const QString &canonical);   // ROS FSM canonical(EN) → 패널 한글 표시어휘
     void setTaskStatus(const QString &s);
     void setGuidePhase(const QString &p);
     QVariantList allBooks() const;
@@ -163,6 +174,9 @@ private:
     int m_battery = 78;
     bool m_charging = false;
     QString m_robotState = QStringLiteral("순찰");
+    RosLink *m_ros = nullptr;
+    int m_interactingRemaining = 0;
+    bool m_rosConnected = false;
     bool m_patrol = true;
     bool m_following = false;
     QString m_emotion = QStringLiteral("happy");

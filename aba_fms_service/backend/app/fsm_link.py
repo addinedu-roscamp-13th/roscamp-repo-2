@@ -240,6 +240,54 @@ def request_transition(
     return entry["result"] if ok else None
 
 
+def set_sim_battery(domain_id: int, value: float, timeout: float = 2.0) -> dict[str, Any]:
+    """[sim 전용] 로봇 도메인의 sim 배터리 소스에 잔량을 강제 설정한다.
+
+    FSM 화면의 배터리는 로봇이 발행한 fsm_state 에서 오므로 서버가 그 값을 직접 못 바꾼다.
+    대신 sim 배터리 소스(`scripts/sim_battery.py`, `/sim_battery/set` Float32 구독)에 값을
+    밀어 넣으면 FSM 노드가 그걸 읽어 다시 발행하고, 전이(≤15% RETURNING · ≥80% PATROL)도
+    실제로 밟힌다. 실물 로봇엔 이 토픽 구독자가 없어 delivered=False 로 돌아온다.
+
+    수동 버튼용이라 도메인마다 임시 rclpy 컨텍스트를 열고 발행 후 닫는다(빈도 낮음).
+    ponytail: 요청마다 context init/shutdown. 빈번해지면 도메인별 상주 퍼블리셔로 승격.
+    """
+    try:
+        import rclpy
+        from rclpy.node import Node
+        from std_msgs.msg import Float32
+    except Exception as e:  # ROS 미설치 환경
+        return {"ok": False, "delivered": False, "reason": f"rclpy 미설치: {e}"}
+
+    value = min(100.0, max(0.0, float(value)))
+    ctx = rclpy.Context()
+    try:
+        rclpy.init(context=ctx, domain_id=int(domain_id))
+        node = Node("fms_sim_battery_set", context=ctx)
+        pub = node.create_publisher(Float32, "/sim_battery/set", 10)
+        # 발행자 생성 직후엔 구독자 발견 전이라 그냥 쏘면 유실된다 — 구독 발견을 기다린다.
+        deadline = time.time() + timeout
+        while pub.get_subscription_count() == 0 and time.time() < deadline:
+            time.sleep(0.05)
+        delivered = pub.get_subscription_count() > 0
+        pub.publish(Float32(data=value))
+        time.sleep(0.2)  # DDS flush 여유 후 닫는다
+        node.destroy_node()
+        return {
+            "ok": True,
+            "delivered": delivered,
+            "value": value,
+            "reason": "" if delivered
+            else "sim_battery 구독자를 찾지 못했습니다 (실물이거나 sim_battery.py 미기동).",
+        }
+    except Exception as e:
+        return {"ok": False, "delivered": False, "reason": str(e)}
+    finally:
+        try:
+            rclpy.shutdown(context=ctx)
+        except Exception:
+            pass
+
+
 def _fsm_thread() -> None:
     global _cmd_pub, _StringMsg
     try:

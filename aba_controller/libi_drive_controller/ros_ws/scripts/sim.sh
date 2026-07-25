@@ -33,13 +33,17 @@ ROS_WS_DIR="$(dirname "$SCRIPT_DIR")"
 # 안 주면 예전과 같은 pinky_sim — kill.sh 는 이 이름을 지운다.
 SESSION="${SIM_SESSION:-pinky_sim}"
 
-WORLD_PATH="$ROS_WS_DIR/src/pinky_pro/pinky_navigation/worlds/arte2.sdf"
-MAP_PATH="$ROS_WS_DIR/src/pinky_pro/pinky_navigation/map/arte2.yaml"
+WORLD_PATH="$ROS_WS_DIR/src/pinky_pro/pinky_navigation/worlds/world2.sdf"
+MAP_PATH="$ROS_WS_DIR/src/pinky_pro/pinky_navigation/map/arte3.yaml"
 DOMAIN_BRIDGE_TEMPLATE="$ROS_WS_DIR/../../../aba_fms_service/config/domain_bridge_sim.yaml"
 ROBOT_AGENT_DIR="$ROS_WS_DIR/../robot_agent"
 
 # 하드코딩 대신 현재 셸에 이미 설정된 ROS_DOMAIN_ID를 그대로 쓴다(없으면 90 기본값).
 SIM_DOMAIN_ID="${ROS_DOMAIN_ID:-90}"
+# bridge topic prefix, FSM, spawn selection must use the same per-instance identity.
+# This must be set before rendering the bridge config; otherwise direct ./sim.sh launches
+# with an empty bridge key even though the FSM later defaults to pinkySim.
+FSM_ROBOT_ID="${FSM_ROBOT_ID:-pinkySim}"
 
 USE_GUI=false
 WITH_FSM=true
@@ -73,16 +77,74 @@ sed -e "s|^from_domain: .*|from_domain: $SIM_DOMAIN_ID|" \
     "$DOMAIN_BRIDGE_TEMPLATE" > "$DOMAIN_BRIDGE_CONFIG"
 echo "[sim] 브릿지 접두사 /$BRIDGE_KEY  (domain $SIM_DOMAIN_ID -> 86)"
 
-ROS_SETUP="export ROS_DOMAIN_ID=$SIM_DOMAIN_ID && source /opt/ros/jazzy/setup.bash && source '$ROS_WS_DIR/install/setup.bash' && if [ -f /opt/ros/jazzy/lib/librmw_cyclonedds_cpp.so ]; then export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp; export CYCLONEDDS_URI=file://$ROS_WS_DIR/cyclonedds.xml; fi"
+# GZ_PARTITION 을 안 주면 gz-transport 기본 파티션이 "호스트명:사용자명" 이라, 이 노트북에서
+# 한 사용자가 sim 을 여러 개 띄우면 **전부 같은 gz-transport 버스를 공유한다.** ROS_DOMAIN_ID 는
+# DDS(ROS2/nav2)만 분리할 뿐 Gazebo 쪽(world/model pose 등)엔 적용되지 않아서, 서로 다른
+# world2 인스턴스의 로봇 위치·포즈가 뒤섞인다 — 로봇들이 "붙어다니는" 증상으로 나타난다.
+# 도메인마다 고유한 파티션을 줘서 sim 인스턴스별로 완전히 분리한다.
+ROS_SETUP="export ROS_DOMAIN_ID=$SIM_DOMAIN_ID && export GZ_PARTITION=pinky_sim_$SIM_DOMAIN_ID && source /opt/ros/jazzy/setup.bash && source '$ROS_WS_DIR/install/setup.bash' && if [ -f /opt/ros/jazzy/lib/librmw_cyclonedds_cpp.so ]; then export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp; export CYCLONEDDS_URI=file://$ROS_WS_DIR/cyclonedds.xml; fi"
 
 # libi_modes 는 별도 워크스페이스(aba_controller/libi_modes/ros_ws)라 그쪽 install 도 겹쳐 source 한다.
 # 도메인은 위와 같다 — FSM 은 로봇과 같은 도메인에서 돌아야 배터리·명령을 그대로 주고받는다.
 LIBI_MODES_WS="$ROS_WS_DIR/../../libi_modes/ros_ws"
-FSM_ROBOT_ID="${FSM_ROBOT_ID:-pinkySim}"
 LIBI_MODES_SETUP="$ROS_SETUP && source '$LIBI_MODES_WS/install/setup.bash'"
 
+NAVGRAPH="$ROS_WS_DIR/../../../aba_fms_service/fleet_ws/maps/library/arte2.navgraph.yaml"
+
+# 로봇 번호별 시작 waypoint — sim·실물(pi.sh) 공통 배정. 1=주차장 2=문학서가 3=도서관출입구.
+# FSM_ROBOT_ID 에서 끝자리 숫자로 번호를 뽑는다(Pinky-1/pinky1 모두 매치). 번호가 없으면
+# (기본 pinkySim 등) 예전처럼 스폰 원점(0,0,0)을 그대로 쓴다.
+ROBOT_NUM="$(printf '%s' "$FSM_ROBOT_ID" | grep -oE '[0-9]+' | tail -1)"
+case "$ROBOT_NUM" in
+  1) INIT_DOCK="주차장" ;;
+  2) INIT_DOCK="문학서가" ;;
+  3) INIT_DOCK="도서관출입구" ;;
+  *) INIT_DOCK="" ;;
+esac
+
+if [ -n "$INIT_DOCK" ]; then
+  # Resolve the dock exactly once.  Gazebo and AMCL must receive these same values:
+  # another name lookup after spawning turns a waypoint rename into a map/odom mismatch.
+  # A missing/duplicate/malformed dock is fatal before any tmux window is created; never
+  # silently substitute (0, 0), which masked this failure for pinky1.
+  SPAWN_POSE="$(NAVGRAPH_PATH="$NAVGRAPH" DOCK_NAME="$INIT_DOCK" python3 - <<'PY'
+import os
+import sys
+
+import yaml
+
+navgraph = os.environ["NAVGRAPH_PATH"]
+dock_name = os.environ["DOCK_NAME"]
+try:
+    with open(navgraph, encoding="utf-8") as source:
+        vertices = yaml.safe_load(source)["levels"]["L1"]["vertices"]
+except (OSError, KeyError, TypeError, yaml.YAMLError) as error:
+    raise SystemExit(f"[sim] cannot read navgraph {navgraph}: {error}")
+
+matches = []
+for vertex in vertices:
+    meta = vertex[2] if len(vertex) > 2 and isinstance(vertex[2], dict) else {}
+    if str(meta.get("name", "")) == dock_name:
+        matches.append((float(vertex[0]), float(vertex[1]), float(meta.get("yaw", 0.0))))
+
+if len(matches) != 1:
+    raise SystemExit(
+        f"[sim] expected exactly one dock named {dock_name!r} in {navgraph}; found {len(matches)}. "
+        "Update the pinky-number-to-dock mapping before starting the simulation.")
+
+print(*matches[0])
+PY
+)"
+  read -r SPAWN_X SPAWN_Y SPAWN_YAW <<< "$SPAWN_POSE"
+  echo "[sim] 로봇번호 $ROBOT_NUM → '$INIT_DOCK' ($SPAWN_X, $SPAWN_Y, yaw=$SPAWN_YAW) 에서 스폰"
+else
+  SPAWN_X="0.0"
+  SPAWN_Y="0.0"
+  SPAWN_YAW="0.0"
+fi
+
 tmux new-session -d -s "$SESSION" -n gazebo \
-  bash -c "$ROS_SETUP && ros2 launch pinky_gz_sim launch_sim.launch.xml use_gui:=$USE_GUI world:='$WORLD_PATH'; exec bash"
+  bash -c "$ROS_SETUP && ros2 launch pinky_gz_sim launch_sim.launch.xml use_gui:=$USE_GUI world:='$WORLD_PATH' spawn_x:=$SPAWN_X spawn_y:=$SPAWN_Y spawn_yaw:=$SPAWN_YAW; exec bash"
 
 tmux new-window -t "$SESSION" -n nav2 \
   bash -c "$ROS_SETUP && echo '[nav2] 로봇 스폰 대기 중 (/scan 토픽 확인)...' && for i in \$(seq 1 30); do ros2 topic list 2>/dev/null | grep -q '/scan' && break; sleep 1; done && ros2 launch pinky_navigation gz_bringup_launch.xml map:='$MAP_PATH'; exec bash"
@@ -123,8 +185,13 @@ fi
 # 같아 보인다. 자세한 이유는 set_initial_pose.py 머리말.
 INIT_POSE="$ROS_WS_DIR/../scripts/set_initial_pose.py"
 if [ -f "$INIT_POSE" ]; then
-  tmux new-window -t "$SESSION" -n init-pose \
-    bash -c "$ROS_SETUP && echo '[init-pose] AMCL 초기 자세 (스폰 0,0,0)...' && python3 '$INIT_POSE' --x 0 --y 0 --yaw 0; exec bash"
+  if [ -n "$INIT_DOCK" ]; then
+    tmux new-window -t "$SESSION" -n init-pose \
+      bash -c "$ROS_SETUP && echo \"[init-pose] Gazebo 스폰 자세를 AMCL에 적용 ($SPAWN_X, $SPAWN_Y, yaw=$SPAWN_YAW)...\" && python3 '$INIT_POSE' --x '$SPAWN_X' --y '$SPAWN_Y' --yaw '$SPAWN_YAW'; exec bash"
+  else
+    tmux new-window -t "$SESSION" -n init-pose \
+      bash -c "$ROS_SETUP && echo '[init-pose] AMCL 초기 자세 (스폰 0,0,0)...' && python3 '$INIT_POSE' --x 0 --y 0 --yaw 0; exec bash"
+  fi
 fi
 
 # 주차장 도착을 위치로 확인해 /is_docked 를 낸다. **sim·실물 공통**이다.
@@ -133,7 +200,6 @@ fi
 # 이게 없으면 RETURNING 이 영영 안 끝난다 — 부팅 상태가 RETURNING 이라 로봇이
 # 첫 상태에서 한 발짝도 못 나가고, 배차 대상(IDLE/PATROL)이 되지 못한다.
 DOCK_CONFIRM="$ROS_WS_DIR/../scripts/dock_confirm.py"
-NAVGRAPH="$ROS_WS_DIR/../../../aba_fms_service/fleet_ws/maps/library/arte2.navgraph.yaml"
 if [ -f "$DOCK_CONFIRM" ]; then
   tmux new-window -t "$SESSION" -n sim-dock \
     bash -c "$ROS_SETUP && echo '[sim-dock] 주차장 도착 → /is_docked (domain $SIM_DOMAIN_ID)...' && python3 '$DOCK_CONFIRM' --navgraph '$NAVGRAPH'; exec bash"

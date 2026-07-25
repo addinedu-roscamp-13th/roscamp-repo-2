@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# 실물 로봇 하드웨어 + nav2(arte2 맵) + fleet_link(robot_agent/FastAPI 없이 단독)
-# + libi_modes 미션 FSM + 상태별 LED(pinky_led/state_led) 를 tmux 창 5개로 나눠서 실행.
+# 실물 로봇 하드웨어 + nav2(arte3 맵) + fleet_link(robot_agent/FastAPI 없이 단독)
+# + libi_modes 미션 FSM + 상태별 LED(pinky_led/state_led) 를 tmux 창 5~6개로 나눠서 실행.
 # pm2(ecosystem.config.js)를 안 쓰고 로컬에서 직접 붙여서 테스트할 때 쓴다.
 #
 # sim.sh 와 달리 domain_bridge 창이 없다 — 실물에서 브릿지는 로봇이 아니라
 # FMS 서버에서 돈다("로봇은 무수정", domain_bridge_pinky*.yaml 주석 참고).
 # LED 는 실물 전용 — pinkyled 모듈이 rpi_ws281x 를 직접 잡고(root 필요) sim.sh 엔 없다.
 # led_server(pinky_led 의 다른 노드)와 동시 실행 금지 — 둘 다 LED 스트립을 단독 점유한다.
-# 창 전환: Ctrl+b 0/1/2/3/4 (hw/nav2/fleet-link/fsm/led), 또는 Ctrl+b n(다음 창) / Ctrl+b p(이전 창)
+# 창 전환: Ctrl+b 0/1..(hw/nav2/[init-pose]/fleet-link/fsm/led), 또는 Ctrl+b n / Ctrl+b p
+#   (init-pose 창은 FSM_ROBOT_ID 가 Pinky-1/2/3 일 때만 뜬다 — 로봇 번호별 시작 waypoint 주입)
 #   ./pi.sh
 #   ./pi.sh --no-fsm   → fsm 창 없이 (FSM 은 ./fsm-bt.sh 로 따로 띄울 때)
 #   ./pi.sh --no-led   → led 창 없이 (LED 상태 표시 코드 안 쓸 때)
@@ -32,7 +33,20 @@ for arg in "$@"; do
   [ "$arg" = "--no-led" ] && WITH_LED=false
 done
 
-MAP_PATH="$ROS_WS_DIR/src/pinky_pro/pinky_navigation/map/arte2.yaml"
+MAP_PATH="$ROS_WS_DIR/src/pinky_pro/pinky_navigation/map/arte3.yaml"
+NAVGRAPH="$ROS_WS_DIR/../../../aba_fms_service/fleet_ws/maps/library/arte2.navgraph.yaml"
+INIT_POSE="$ROS_WS_DIR/../scripts/set_initial_pose.py"
+
+# 로봇 번호별 시작 waypoint — sim(scripts/sim.sh)과 공통 배정. 1=주차장 2=문학서가 3=도서관출입구.
+# FSM_ROBOT_ID(예: Pinky-3)의 끝자리 숫자로 뽑는다. 실물은 스폰이 없으므로 **운영자가
+# 로봇을 그 waypoint 위치에 실제로 놓아야** AMCL 추정과 실제 위치가 맞는다.
+ROBOT_NUM="$(printf '%s' "$FSM_ROBOT_ID" | grep -oE '[0-9]+' | tail -1)"
+case "$ROBOT_NUM" in
+  1) INIT_DOCK="주차장" ;;
+  2) INIT_DOCK="문학서가" ;;
+  3) INIT_DOCK="도서관출입구" ;;
+  *) INIT_DOCK="" ;;
+esac
 
 if tmux has-session -t "$SESSION" 2>/dev/null; then
   echo "[pi] '$SESSION' 세션이 이미 떠 있습니다. 먼저 ./kill.sh 로 정리하세요."
@@ -65,6 +79,11 @@ tmux new-session -d -s "$SESSION" -n hw \
 
 tmux new-window -t "$SESSION" -n nav2 \
   bash -c "$ROS_SETUP && echo '[nav2] 하드웨어(/scan) 대기 중...' && for i in \$(seq 1 30); do ros2 topic list 2>/dev/null | grep -q '/scan' && break; sleep 1; done && ros2 launch pinky_navigation bringup_launch.xml map:='$MAP_PATH'; exec bash"
+
+if [ -f "$INIT_POSE" ] && [ -n "$INIT_DOCK" ]; then
+  tmux new-window -t "$SESSION" -n init-pose \
+    bash -c "$ROS_SETUP && echo \"[init-pose] ⚠️ 로봇을 '$INIT_DOCK' 위치에 놓았는지 확인하세요. AMCL 초기 자세 발행 중...\" && python3 '$INIT_POSE' --dock '$INIT_DOCK' --navgraph '$NAVGRAPH'; exec bash"
+fi
 
 tmux new-window -t "$SESSION" -n fleet-link \
   bash -c "$ROS_SETUP && cd '$ROBOT_AGENT_DIR' && echo '[fleet-link] robot_agent 없이 fleet_link 단독 실행 (costmap 제외 경량 버전)...' && python3 scripts/run_fleet_link-tunning.py; exec bash"

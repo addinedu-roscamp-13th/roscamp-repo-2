@@ -12,6 +12,8 @@ sim 로봇은 전부 `127.0.0.1` 이라, 두 번째를 등록하는 순간 첫 �
 
 실물에서는 IP 가 달라 안 드러난다 — **2대 시험이 아니었으면 못 찾았다.**
 """
+import time
+
 import app.fleet_telemetry as ft
 
 
@@ -54,3 +56,18 @@ def test_send_command_by_ip_refuses_when_the_ip_is_ambiguous(monkeypatch):
     monkeypatch.setattr(ft, "FLEET_ROBOTS", _two_sims_on_one_ip())
     monkeypatch.setattr(ft, "_cmd_pubs", {"pinkysim": object(), "pinkysim2": object()})
     assert ft.send_command("127.0.0.1", "goal", {}) is None
+
+
+def test_shared_ip_sims_keep_pose_cache_separate(monkeypatch):
+    """sim2 pose callback must never overwrite sim1's cached pose."""
+    monkeypatch.setattr(ft, "FLEET_ROBOTS", _two_sims_on_one_ip())
+    now = time.time()
+    monkeypatch.setattr(ft, "_cache", {
+        "pinkysim": {**ft._empty_entry(), "pose": {"x": 1.0, "y": 2.0, "yaw": 0.0}, "_last_ros_at": now},
+        "pinkysim2": {**ft._empty_entry(), "pose": {"x": 9.0, "y": 8.0, "yaw": 0.0}, "_last_ros_at": now},
+    })
+
+    assert ft.get_state_for_robot("Pinkysim")["pose"]["x"] == 1.0
+    assert ft.get_state_for_robot("Pinkysim2")["pose"]["x"] == 9.0
+    # Legacy IP-only lookup is intentionally refused when it cannot identify a sim.
+    assert ft.get_state("127.0.0.1") is None

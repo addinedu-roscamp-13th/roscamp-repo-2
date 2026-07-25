@@ -42,6 +42,18 @@ ApplicationWindow {
         }
     }
 
+    // 전역 터치 감지 — 매 탭을 로봇에 알려 INTERACTING 진입/유지. 아래 화면 입력은 그대로 통과.
+    // z 는 페이지 콘텐츠(z:0) **위**, 배너(z:90)·비상정지(z:100) **아래**여야 한다. z:-1 이면
+    // 맨 아래라 hit-test 가 위의 버튼을 먼저 집어 이 MouseArea 는 탭을 아예 못 받고
+    // (accepted=false/propagate 는 이벤트를 받은 뒤에만 의미) → 20초 세션이 갱신도, 첫
+    // ui_touch 진입도 안 된다. 위에 두고 press 를 거절(accepted=false)해 아래 버튼으로 흘린다.
+    MouseArea {
+        anchors.fill: parent
+        propagateComposedEvents: true
+        z: 80
+        onPressed: (mouse) => { controller.onScreenTouch(); mouse.accepted = false; }
+    }
+
     Component { id: homeC;        HomeScreen {} }
     Component { id: guideC;       GuideScreen {} }
     Component { id: searchC;      SearchScreen {} }
@@ -57,6 +69,23 @@ ApplicationWindow {
         function onFollowingChanged() {
             if (controller.following) controller.setMode("follow");
             else if (controller.mode === "follow") controller.setMode("adminControl");
+        }
+    }
+
+    // INTERACTING 안내: 남은초 표시, 5초 이하면 "곧 이동합니다" 상단 경고 모달
+    Rectangle {
+        id: interactBanner
+        visible: controller.robotState === "응대중"
+        anchors { top: parent.top; left: parent.left; right: parent.right }
+        height: 72
+        color: controller.interactingRemaining <= 5 ? "#c0392b" : "#2c3e50"
+        z: 90
+        Text {
+            anchors.centerIn: parent
+            color: "white"; font.pixelSize: 26; font.bold: true
+            text: controller.interactingRemaining <= 5
+                  ? "곧 이동합니다 (" + controller.interactingRemaining + "초)"
+                  : "응대 중 · " + controller.interactingRemaining + "초 후 순찰 재개"
         }
     }
 

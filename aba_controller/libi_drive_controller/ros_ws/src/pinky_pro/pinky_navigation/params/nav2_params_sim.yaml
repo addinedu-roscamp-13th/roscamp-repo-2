@@ -215,7 +215,7 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 5.0      # [2026-06-30] 10.0 → 5.0
-        inflation_radius: 0.08        # [2026-06-30] 0.05 → 0.08 (벽 밀착 경로 방지)
+        inflation_radius: 0.06        # [2026-07-25] 0.08 → 0.06 (=robot_radius) RPP collision-ahead abort 완화, 좁은 통로 여유. global(:277)은 유지
       voxel_layer:
         plugin: "nav2_costmap_2d::VoxelLayer"
         enabled: True

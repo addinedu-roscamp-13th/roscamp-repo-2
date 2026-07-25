@@ -6,7 +6,8 @@ FMS orchestrator 는 **진행 중인 큐**만 들고 있고, 끝난 작업을 �
 `/sync` 를 부르면 FMS 의 현재 종료 작업들을 가져와 없는 것만 적재한다(멱등).
 """
 
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
@@ -14,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import fms_client
+from ..config import get_settings
 from ..database import get_db
 from ..models import AdminUser, IntrusionEvent, OpsSetting, TaskLog
 from ..security import get_current_admin
@@ -24,9 +26,12 @@ SECURITY_KEY = "security_mode"
 NIGHT_START_KEY = "security_night_start"  # "HH:MM" — 야간 진입
 NIGHT_END_KEY = "security_night_end"  # "HH:MM" — 주간 복귀
 BOUNDARY_KEY = "security_last_boundary"  # 마지막으로 자동 적용한 경계 시각(ISO)
+EVENT_SEQ_KEY = "tasklog_event_seq"  # 배정 사건을 어디까지 적재했는지 (fleet_events seq)
 TERMINAL = {"COMPLETED", "FAILED", "CANCELLED"}
 #: 로그에 남기는 상태 — 배정 시점 하나 + 결과 셋. EXECUTING 은 그 사이 상태라 굳이 안 남긴다.
 TRACKED = TERMINAL | {"ASSIGNED"}
+#: fleet_events 사건 종류 → 작업 로그 상태. 이 사건들만 실제 ts 로 로그에 반영한다.
+_EVENT_STATUS = {"task_started": "ASSIGNED", "task_done": "COMPLETED", "task_failed": "FAILED"}
 
 
 # ── 작업 로그 / 알림 ─────────────────────────────────────────────────────────
@@ -77,9 +82,92 @@ def _sync_logs(db: Session) -> int:
     return added
 
 
+_APP_TZ = ZoneInfo(get_settings().app_timezone)
+
+
+def _event_dt(e: dict) -> datetime:
+    """사건이 실제로 일어난 시각. fleet_events 의 `ts`(unix=UTC epoch)를 앱 표준
+    naive-local(app_timezone) 로 **명시 환산**한다.
+
+    ts 는 외부(fms)에서 온 UTC epoch 이라, 프로세스 tz pin(config._pin_process_timezone)에
+    암묵 의존하지 않고 UTC→app_timezone 을 직접 변환한 뒤 tzinfo 를 벗겨 저장한다 — 그래야
+    UTC 호스트든 KST 호스트든 같은 벽시계 값이 나온다(pin 이 곧 앱 계약이지만, 외부 epoch 은
+    명시가 안전하다). 저장 형식은 이 표의 다른 행(func.now()/datetime.now())과 같은 naive-local.
+    ts 가 없거나 이상하면 지금 시각으로 폴백한다 — 시각이 비는 것보단 낫다.
+    """
+    ts = e.get("ts")
+    try:
+        aware = datetime.fromtimestamp(float(ts), tz=timezone.utc)
+    except (TypeError, ValueError, OSError):
+        aware = datetime.now(timezone.utc)
+    return aware.astimezone(_APP_TZ).replace(tzinfo=None)
+
+
+def _sync_events(db: Session) -> int:
+    """배정(ASSIGNED) 순간을 **사건**으로 잡아 적재한다.
+
+    왜 사건인가: orchestrator 는 `assign()` 한 호출 안에서 ASSIGNED→EXECUTING 을 원자적으로
+    밟아, 상태 스냅샷(`list_orders`)을 아무리 폴링해도 ASSIGNED 를 절대 못 본다. 또 order
+    스냅샷엔 **시각이 없어** 종료 시각을 실제로 알 수 없다. 사건에는 `ts`(실제 발생 시각)가
+    있으므로, 배정(task_started)·종료(task_done/failed)를 사건으로 잡아 **진짜 시각**으로 남긴다.
+
+    `_sync_logs`(order 폴링)와 같은 행을 다루지만, 사건이 먼저 종료 상태를 실제 ts 로 박아
+    두면 `_sync_logs` 는 상태가 안 바뀌어 건너뛴다(덮어쓰지 않음). 사건 버퍼(fleet_events)는
+    링이라 폴링 간격이 너무 벌어지면 일부 사건은 놓칠 수 있고, 그 땐 `_sync_logs` 가 폴링
+    시각으로 종료를 남기는 폴백이 된다 — 알림 성격이라 감수한다.
+    """
+    since = int(_get_setting(db, EVENT_SEQ_KEY) or 0)
+    ok, events, latest = fms_client.list_events(since, limit=200)
+    if not ok:
+        return 0
+    rows = {r.task_id: r for r in db.scalars(select(TaskLog)).all()}
+    changed = 0
+    for e in events:
+        status = _EVENT_STATUS.get(e.get("kind"))
+        if not status:
+            continue
+        task_id = e.get("task_id", "")
+        if not task_id:
+            continue
+        when = _event_dt(e)  # 실제 발생 시각(사건 ts). 폴링 시각 아님.
+        # task_failed 사건 text 는 "실패: {사유}" — 접두 벗겨 사유만 남긴다.
+        reason = None
+        if status == "FAILED":
+            text = e.get("text") or ""
+            reason = text[len("실패: "):] if text.startswith("실패: ") else (text or None)
+        row = rows.get(task_id)
+        if row is None:
+            row = TaskLog(
+                task_id=task_id,
+                kind=(e.get("requester") or "").split(":")[-1] or e.get("leg_kind", ""),
+                robot=e.get("robot"),
+                status=status,
+                leg_idx=int(e.get("leg_idx") or 0),
+                leg_count=int(e.get("leg_count") or 0),
+                reason=reason,
+                recorded_at=when,
+            )
+            db.add(row)
+            rows[task_id] = row
+            changed += 1
+        elif status != "ASSIGNED" and row.status != status:
+            # 배정→종료 갱신. 종료 실제 시각(when)으로 기록. task_started 재수신은 무시(위 조건).
+            row.status = status
+            row.leg_idx = int(e.get("leg_idx") or row.leg_idx)
+            row.leg_count = int(e.get("leg_count") or row.leg_count)
+            if reason:
+                row.reason = reason
+            row.recorded_at = when
+            changed += 1
+    if latest != since or changed:
+        _put_setting(db, EVENT_SEQ_KEY, str(latest))
+        db.commit()
+    return changed
+
+
 @router.post("/logs/sync")
 def sync_logs(db: Session = Depends(get_db), _: AdminUser = Depends(get_current_admin)):
-    return {"added": _sync_logs(db)}
+    return {"added": _sync_events(db) + _sync_logs(db)}
 
 
 @router.get("/logs")
@@ -89,7 +177,8 @@ def logs(
     db: Session = Depends(get_db),
     _: AdminUser = Depends(get_current_admin),
 ):
-    """작업 결과 로그. 조회할 때마다 FMS 를 한 번 훑어 새 종료 작업을 적재한다."""
+    """작업 결과 로그. 조회할 때마다 배정 사건 + FMS 종료 작업을 적재한다."""
+    _sync_events(db)  # 배정(ASSIGNED)은 사건으로만 잡힌다 — 종료 갱신보다 먼저
     _sync_logs(db)
     stmt = select(TaskLog).where(TaskLog.hidden.is_(False))
     if status_filter:
@@ -130,9 +219,27 @@ def delete_log(
     return {"ok": True}
 
 
+@router.post("/logs/reset")
+def reset_logs(db: Session = Depends(get_db), _: AdminUser = Depends(get_current_admin)):
+    """작업 로그 초기화 — 지금 보이는(hidden=False) 로그를 전부 숨긴다.
+
+    per-row 삭제와 같은 **soft(hidden) 방식**이다. 하드 삭제하면 FMS 가 같은 종료 task 를
+    계속 돌려줘(`_sync_logs` 가 task_id 존재만으로 재수입) 다음 조회에서 그대로 부활한다.
+    감사 위해 행은 남기고 목록에서만 감춘다. 새로 생기는 작업은 계속 쌓인다.
+    """
+    n = (
+        db.query(TaskLog)
+        .filter(TaskLog.hidden.is_(False))
+        .update({TaskLog.hidden: True}, synchronize_session=False)
+    )
+    db.commit()
+    return {"ok": True, "hidden": n}
+
+
 @router.get("/alerts")
 def alerts(db: Session = Depends(get_db), _: AdminUser = Depends(get_current_admin)):
     """작업 알림 — 방금 끝난 작업(완료/실패)과 미확인 침입."""
+    _sync_events(db)  # 배정 사건도 함께 — 종료 갱신보다 먼저
     _sync_logs(db)
     since = datetime.now() - timedelta(hours=12)
     recent = db.scalars(

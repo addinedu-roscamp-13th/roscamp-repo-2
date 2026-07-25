@@ -76,4 +76,17 @@ std::vector<int> right_hand_boundary_cycle(const Navgraph & g)
   return cycle;
 }
 
+double signed_area_2x(const Navgraph & g, const std::vector<int> & route)
+{
+  const size_t n = route.size();
+  if (n < 3) { return 0.0; }
+  double area2 = 0.0;
+  for (size_t i = 0; i < n; ++i) {
+    const Vertex & a = g.vertex(route[i]);
+    const Vertex & b = g.vertex(route[(i + 1) % n]);
+    area2 += a.x * b.y - b.x * a.y;
+  }
+  return area2;
+}
+
 }  // namespace libi_fleet
