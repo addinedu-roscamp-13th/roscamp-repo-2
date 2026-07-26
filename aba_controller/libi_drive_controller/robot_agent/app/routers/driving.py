@@ -3,6 +3,7 @@ import datetime
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import time
@@ -12,6 +13,7 @@ from typing import List, Literal, cast
 from fastapi import APIRouter, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
+from app.core import ros_env
 from app.core.bridge import bridge
 from app.drivers.driving_driver import DrivingDriver
 from app.schemas.driving import MoveRequest, RotateRequest
@@ -117,7 +119,12 @@ async def drive_ws(websocket: WebSocket):
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 LOG_DIR = PROJECT_ROOT / "logs"
-ROS_SETUP = "/opt/ros/jazzy/setup.bash"
+#: 시스템 ROS2. 리터럴을 여기서 다시 적지 않는다 — 같은 값이 두 곳에 있으면 갈라진다.
+ROS_SETUP = str(ros_env.SYSTEM_SETUP)
+
+#: bash 로 넘길 값을 한 셸 워드로 인용한다. 이름을 짧게 둔 이유는 f-string 안에서
+#  쓰이기 때문이고, 인용은 **셸에 넘기는 마지막 지점에서 한 번만** 한다.
+_q = shlex.quote
 
 MAP_DIR = PROJECT_ROOT / "maps"
 MAP_FILE = MAP_DIR / "map"
@@ -149,12 +156,48 @@ def _build_command(name: str) -> list[str]:
                 f"use_sim_time:={ust}"]
     if name == "nav2":
         ust = _detect_use_sim_time()
-        return ["bash", "-c",
-                f"source {ROS_SETUP} && "
-                "export TURTLEBOT3_MODEL=${TURTLEBOT3_MODEL:-burger} && "
-                "ros2 launch nav2_bringup navigation_launch.py "
-                f"params_file:={PROJECT_ROOT}/config/nav2_params.yaml "
-                f"use_sim_time:={ust}"]
+        # [2026-07-26] nav2 파라미터는 pinky_navigation 패키지 것 **하나만** 쓴다.
+        #
+        # 예전엔 {PROJECT_ROOT}/config/nav2_params.yaml 을 가리켰다. 그 파일은 pi.sh·pm2 가
+        # 띄우는 실제 설정과 완전히 다른 물건이었다:
+        #     API 쪽   MPPI  20 Hz  xy_tol 0.25  yaw_tol 0.25  radius 0.22  inflation 0.70
+        #     실제     RPP   10 Hz  xy_tol 0.03  yaw_tol 0.15  radius 0.06  inflation 0.08
+        # 즉 **어느 경로로 nav2 를 켰느냐에 따라 로봇이 다르게 움직였다.**
+        #
+        # 특히 xy_goal_tolerance 0.25 는 fleet_node 의 arrive_radius 0.05 보다 크다.
+        # nav2 는 25 cm 지점에서 "도착"이라며 goal 을 끝내는데 fleet_node 는 5 cm 안에
+        # 들어와야 도착으로 인정하므로, 로봇은 멈춰 서고 관제는 영원히 기다린다(교착).
+        # pinky_navigation/params/nav2_params.yaml 주석에 그 부등식과 실측 사례가 있다:
+        #     update_min_d(0.02) < xy_goal_tolerance(0.03) < arrive_radius(0.05) < 최소 레인(0.062)
+        #
+        # 경로를 하드코딩하지 않고 패키지 share 에서 찾는다 — 설치 위치가 로봇마다 달라도
+        # 따라가고, 패키지가 없으면 조용히 엉뚱한 파일을 쓰는 대신 큰 소리로 실패한다.
+        # 각 단계를 줄로 나눈다. 한 줄 `A && B && C=$(...) && [ -f ] || {…}` 형태는
+        # ① && 와 || 가 같은 우선순위라 앞 단계 실패에도 뒤 메시지가 나오고
+        # ② `C=$(...)` 의 종료상태가 명령치환 결과라, 패키지를 못 찾으면 체인이 거기서 끊겨
+        #    아래 안내 메시지가 아예 출력되지 않는다. 둘 다 디버깅을 방해한다.
+        overlay = ros_env.overlay_setup()
+        return ["bash", "-c", "\n".join([
+            *ros_env.env_lines(),
+            "export TURTLEBOT3_MODEL=${TURTLEBOT3_MODEL:-burger}",
+            'NAV2_SHARE="$(ros2 pkg prefix --share pinky_navigation 2>/dev/null || true)"',
+            'NAV2_PARAMS="$NAV2_SHARE/params/nav2_params.yaml"',
+            'if [ -z "$NAV2_SHARE" ] || [ ! -f "$NAV2_PARAMS" ]; then',
+            '  echo "[nav2] pinky_navigation 파라미터를 찾지 못했습니다: $NAV2_PARAMS" >&2',
+            # ⚠️ 진단 메시지에 경로를 실을 때 `echo "... {shlex.quote(p)} ..."` 를 쓰면 안 된다.
+            #   shlex.quote 는 값을 **하나의 셸 워드**로 만들어 줄 뿐이고, 그 결과를 다시
+            #   큰따옴표 안에 넣으면 작은따옴표가 리터럴 문자가 되면서 `$(...)` 가 그대로
+            #   전개된다 — 실측: LIBI_ROS_WS_SETUP='/tmp/x$(touch /tmp/PWNED)' 로
+            #   `echo "... '/tmp/x$(touch /tmp/PWNED)'" ` 가 되어 명령이 실행됐다.
+            #   포맷을 고정한 printf 에 **인용된 값 하나를 인자로** 넘기면 전개가 없다.
+            f"  printf '%s\\n' {_q('[nav2] ROS overlay: ' + (str(overlay) if overlay else '찾지 못함'))} >&2",
+            f"  printf '%s\\n' {_q('[nav2] overlay 후보: ' + ros_env.describe_candidates())} >&2",
+            f"  printf '%s\\n' {_q('[nav2] 다른 위치에 있으면 ' + ros_env.OVERLAY_ENV + ' 환경변수로 지정하세요')} >&2",
+            "  exit 1",
+            "fi",
+            "exec ros2 launch nav2_bringup navigation_launch.py "
+            f'params_file:="$NAV2_PARAMS" use_sim_time:={ust}',
+        ])]
     return COMMANDS[name]
 
 

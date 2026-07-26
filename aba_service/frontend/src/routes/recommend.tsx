@@ -1,12 +1,15 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { AppShell } from "@/components/AppShell";
+import {
+  BookDetailSheet,
+  reserveFromSheet,
+} from "@/components/BookDetailSheet";
+import { BookRow, BookRowSkeleton } from "@/components/BookRow";
+import { fetchPopular, type CatalogBook } from "@/lib/books-api";
 import { useI18n } from "@/lib/i18n";
-import { BOOKS, type Book } from "@/lib/mock-data";
-import { fetchBooks } from "@/lib/books-api";
 import { useEffect, useState } from "react";
-import { ChevronDown } from "lucide-react";
 
-const CATS = ["all", "literature", "art", "science", "humanities", "kids"] as const;
+const CATS = ["all", "literature", "art", "science", "humanities"] as const;
 type Cat = (typeof CATS)[number];
 
 export const Route = createFileRoute("/recommend")({
@@ -15,23 +18,22 @@ export const Route = createFileRoute("/recommend")({
 });
 
 function Recommend() {
-  const { lang, tr } = useI18n();
+  const { tr } = useI18n();
   const [cat, setCat] = useState<Cat>("all");
-  const [open, setOpen] = useState<string | null>(null);
-  // Load the live catalog from the DB; fall back to the local mock on failure.
-  const [books, setBooks] = useState<Book[]>(BOOKS);
+  const [books, setBooks] = useState<CatalogBook[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [picked, setPicked] = useState<CatalogBook | null>(null);
 
   useEffect(() => {
     let alive = true;
-    fetchBooks({ limit: 200 }).then((rows) => {
-      if (alive && rows.length) setBooks(rows);
-    });
+    setLoading(true);
+    void fetchPopular({ category: cat === "all" ? null : cat, limit: 10 })
+      .then((rows) => alive && setBooks(rows))
+      .finally(() => alive && setLoading(false));
     return () => {
       alive = false;
     };
-  }, []);
-
-  const filtered = cat === "all" ? books : books.filter((b) => b.category === cat);
+  }, [cat]);
 
   const labels: Record<Cat, string> = {
     all: tr("catAll"),
@@ -39,7 +41,6 @@ function Recommend() {
     art: tr("catArt"),
     science: tr("catScience"),
     humanities: tr("catHumanities"),
-    kids: tr("catKids"),
   };
 
   return (
@@ -48,6 +49,9 @@ function Recommend() {
         <h1 className="text-balance text-xl font-bold leading-snug text-foreground">
           🔥 {tr("hotTitle")}
         </h1>
+        <p className="mt-1 text-xs text-muted-foreground">
+          대출 횟수 기준 Top 10
+        </p>
 
         <div className="mt-4 flex gap-2 overflow-x-auto pb-1 -mx-5 px-5">
           {CATS.map((c) => (
@@ -65,63 +69,37 @@ function Recommend() {
           ))}
         </div>
 
-        <ol className="mt-5 space-y-3">
-          {filtered.map((b, i) => {
-            const isOpen = open === b.id;
-            return (
-              <li
-                key={b.id}
-                className="overflow-hidden rounded-2xl border border-border bg-card shadow-card"
-              >
-                <button
-                  onClick={() => setOpen(isOpen ? null : b.id)}
-                  className="flex w-full items-center gap-3 p-3 text-left"
-                >
-                  <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-accent text-base font-black text-accent-foreground">
-                    #{i + 1}
-                  </div>
-                  <div
-                    className={`flex size-16 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br ${b.color} text-3xl`}
-                  >
-                    {b.cover}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="line-clamp-1 text-sm font-bold text-foreground">
-                      {b.title[lang]}
-                    </div>
-                    <div className="text-xs text-muted-foreground">{b.author}</div>
-                  </div>
-                  <ChevronDown
-                    className={`size-5 shrink-0 text-muted-foreground transition-transform ${
-                      isOpen ? "rotate-180" : ""
-                    }`}
-                  />
-                </button>
-                {isOpen && (
-                  <div className="border-t border-border bg-muted/30 p-4">
-                    <p className="text-sm leading-relaxed text-foreground">{b.summary[lang]}</p>
-                    <div className="mt-3">
-                      <p className="text-[11px] font-bold uppercase tracking-wide text-primary">
-                        {tr("recommendFor")}
-                      </p>
-                      <div className="mt-2 flex flex-wrap gap-1.5">
-                        {b.forWhom[lang]?.map((k) => (
-                          <span
-                            key={k}
-                            className="rounded-full bg-accent-soft px-2.5 py-1 text-[11px] font-semibold text-accent-foreground"
-                          >
-                            {k}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                )}
+        <ol className="mt-5 space-y-2">
+          {loading ? (
+            <>
+              <BookRowSkeleton />
+              <BookRowSkeleton />
+              <BookRowSkeleton />
+            </>
+          ) : books.length === 0 ? (
+            <p className="rounded-2xl border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
+              아직 대출 기록이 없어요.
+            </p>
+          ) : (
+            books.map((b, i) => (
+              <li key={b.id} className="flex items-center gap-2">
+                <span className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-accent text-sm font-black text-accent-foreground">
+                  {i + 1}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <BookRow book={b} onSelect={setPicked} />
+                </div>
               </li>
-            );
-          })}
+            ))
+          )}
         </ol>
       </div>
+
+      <BookDetailSheet
+        book={picked}
+        onOpenChange={(open) => !open && setPicked(null)}
+        onReserve={(b) => void reserveFromSheet(b)}
+      />
     </AppShell>
   );
 }

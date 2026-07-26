@@ -172,6 +172,9 @@ export const memberApi = {
       body: JSON.stringify({ book_id: bookId }),
     }),
   requests: () => call<DeliveryRequestOut[]>("/api/member/requests"),
+  /** 요청 이력 1건 삭제. 승인 대기 중인 건은 409 가 온다. */
+  deleteRequest: (id: number) =>
+    call<void>(`/api/member/requests/${id}`, { method: "DELETE" }),
   /**
    * 내 주문에서 일어난 **사건** (도착·완료 알림).
    *
@@ -195,12 +198,14 @@ export type MemberNotification = {
   book_title: string;
 };
 
-/** 열람 요청 시 고를 수 있는 자리 — 백엔드 화이트리스트와 같아야 한다. */
+/**
+ * 열람 요청 시 고를 수 있는 자리.
+ *
+ * 실제 로봇 지도(waypoint.yaml)의 테이블 정점은 "1번테이블"/"2번테이블" 단 두 개뿐이다
+ * (상/좌/우 서브 포지션 없음). 백엔드 화이트리스트(`delivery.py`의 `ALLOWED_TABLES`)와
+ * 정확히 같은 값이어야 한다 — 어긋나면 "선택할 수 없는 자리입니다" 400 이 난다.
+ */
 export const TABLES: { value: string; label: string }[] = [
-  { value: "테이블-1번-상", label: "테이블 1번 (상)" },
-  { value: "테이블-1번-좌", label: "테이블 1번 (좌)" },
-  { value: "테이블-1번-우", label: "테이블 1번 (우)" },
-  { value: "테이블-2번-하", label: "테이블 2번 (하)" },
-  { value: "테이블-2번-좌", label: "테이블 2번 (좌)" },
-  { value: "테이블-2번-우", label: "테이블 2번 (우)" },
+  { value: "1번테이블", label: "테이블 1번" },
+  { value: "2번테이블", label: "테이블 2번" },
 ];

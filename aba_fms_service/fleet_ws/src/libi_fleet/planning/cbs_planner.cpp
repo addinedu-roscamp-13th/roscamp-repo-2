@@ -1,17 +1,26 @@
-// cbs_planner.cpp — CBS + Space-Time A* 다중로봇 경로계획 (초안, 독립 실행).
+// cbs_planner.cpp — CBS + 가중 Space-Time A* 다중로봇 경로계획.
 // 근거: doc "03 교통관제 알고리즘 — CBS + Space-Time A*". 출발 전 전 로봇 경로를 미리
 // 계산해 충돌 0(vertex/edge)으로 동시 출발.
 //
-// 상태: 아직 TrafficBase 플러그인 아님. fleet_node 의 교통 인터페이스는 노드단위 반응형
-//   (request_move 한 칸씩)이라 배치 계획을 넘길 통로가 없다. 이 파일은 알고리즘 코어 +
-//   self-check 만 담는다. 배선(fleet_node 가 전 로봇 start/goal 을 plan() 에 넘기고,
-//   받은 타임라인을 노드별 GRANT 판정으로 되먹임)은 다음 단계.
+// [2026-07-26] 단위시간 간선 → **가중 간선**으로 승급. 예전 ponytail 주석의 숙제였다.
+//   이유: 틱을 실제 시간으로 쓰려면 간선마다 소요가 달라야 한다. arte2 는 최소 레인이
+//   0.062 m 인데 긴 레인은 그 몇 배다. 모든 간선을 1틱으로 두면 짧은 레인은 기어가야 하고
+//   긴 레인은 못 지킨다 — 계획 시각과 실제 시각이 처음부터 어긋난다.
+//   이제 상태는 (정점, 도착틱)이고, 정점 점유는 [arrive, depart] **구간**이다.
 //
-// 빌드/검증:  g++ -std=c++17 cbs_planner.cpp -o cbs && ./cbs
-// ponytail: 단위시간 간선(모든 이동/대기 = 1틱). 간선 길이 편차가 크면 가중 space-time 으로 승급.
-// ponytail: CBS 고수준은 최선우선(비용순)이되 제약트리 크기 상한 없음 — 로봇 수 많아지면 캡 필요.
+// [2026-07-26] clearance(여유 틱) 도입. 실제 로봇은 계획대로 정확히 도착하지 않으므로
+//   점유 구간을 비교할 때 양쪽에 여유를 덧대 겹침을 판정한다. 계획에서 미리 벌려 두면
+//   실행이 조금 밀려도 무충돌이 유지된다.
+//
+// 빌드/검증:  g++ -std=c++17 -I../include cbs_planner.cpp -o cbs && ./cbs
+// ponytail: CBS 고수준은 최선우선(비용순) + 확장 상한(max_nodes). 상한을 넘으면 실패로
+//           본다 — 조용히 오래 도는 것보다 낫다. 로봇이 늘면 상한부터 올린다.
 
+#include "libi_fleet/cbs_planner.hpp"
+
+#include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <cstdio>
 #include <limits>
 #include <map>
@@ -20,175 +29,398 @@
 #include <tuple>
 #include <vector>
 
-namespace libi_fleet {
+namespace libi_fleet
+{
+namespace
+{
 
-using Graph = std::vector<std::vector<int>>;  // adj[v] = 인접 정점들
-using Path  = std::vector<int>;               // path[t] = 시각 t 의 정점
+constexpr int kInf = std::numeric_limits<int>::max();
 
-// 한 로봇에 걸리는 제약. vertex: t 에 v 금지. edge: t 에 u→v 진입 금지(t-1 에 u, t 에 v).
-struct Constraints {
-  std::set<std::pair<int, int>> vertex;          // (v, t)
-  std::set<std::tuple<int, int, int>> edge;      // (u, v, t)
+// 한 로봇에 걸리는 제약. 구간 단위다(가중 간선이라 한 시점으로는 못 막는다).
+//   vertex: [t0, t1] 동안 v 점유 금지
+//   edge  : [t0, t1] 과 겹치게 u→v 통과 금지
+struct TimedConstraints
+{
+  std::vector<std::tuple<int, int, int>> vertex;       // (v, t0, t1)
+  std::vector<std::tuple<int, int, int, int>> edge;    // (u, v, t0, t1)
 };
 
-// 시각 t 의 로봇 위치. 경로 끝을 넘어가면 목표에 머문다(도착 후 점유 유지).
-static int loc_at(const Path& p, int t) {
-  return t < static_cast<int>(p.size()) ? p[t] : p.back();
+bool overlaps(int a0, int a1, int b0, int b1)
+{
+  return a0 <= b1 && b0 <= a1;
 }
 
-// 목표까지 홉 거리(BFS). space-time A* 의 admissible 휴리스틱(이동 1틱 이상).
-static std::vector<int> bfs_dist(const Graph& g, int goal) {
-  std::vector<int> d(g.size(), std::numeric_limits<int>::max());
-  std::queue<int> q;
+// 시각 t 에 정점 v 에 있어도 되나.
+bool vertex_blocked(const TimedConstraints & c, int v, int t)
+{
+  for (const auto & [cv, t0, t1] : c.vertex) {
+    if (cv == v && t >= t0 && t <= t1) { return true; }
+  }
+  return false;
+}
+
+// [t_dep, t_arr] 동안 u→v 를 지나도 되나.
+bool edge_blocked(const TimedConstraints & c, int u, int v, int t_dep, int t_arr)
+{
+  for (const auto & [cu, cv, t0, t1] : c.edge) {
+    if (cu == u && cv == v && overlaps(t_dep, t_arr, t0, t1)) { return true; }
+  }
+  return false;
+}
+
+// 목표까지의 **가중** 최단 소요(틱). space-time A* 의 admissible 휴리스틱.
+//
+// ★ **역방향이어야 한다.** navgraph 의 lane 은 방향 간선이다 — yaml 이 [a,b] 와 [b,a] 를
+//   따로 적는 것이 그 뜻이고, navgraph.cpp:21-35 로더도 각 lane 을 방향 인접으로만 넣는다.
+//   goal 에서 나가는 간선을 따라가면 "goal **에서** v 까지"를 재게 되는데, 필요한 것은
+//   "v **에서** goal 까지"다. 방향 그래프에서 이 둘은 다르다.
+//
+//   증상: 0→1→2 (goal=2), 2→3 만 있는 그래프에서 예전 코드는 d[0]=INF 를 내놓고
+//         "도달 불가 그래프"로 즉시 포기했다. 실제로는 0→1→2 로 갈 수 있는데도.
+//   무방향 그래프에서는 둘이 같아서 기존 self-check(T자)로는 드러나지 않았다.
+//   (가중으로 바뀌면서 BFS → Dijkstra 가 됐다. 역방향이어야 하는 이유는 그대로다.)
+std::vector<int> reverse_dijkstra(const TimedGraph & g, int goal)
+{
+  const int n = static_cast<int>(g.size());
+  std::vector<std::vector<std::pair<int, int>>> rev(n);
+  for (int v = 0; v < n; ++v) {
+    for (const auto & [w, cost] : g[v]) { rev[w].push_back({v, cost}); }
+  }
+  std::vector<int> d(n, kInf);
+  using QN = std::pair<int, int>;   // (거리, 정점)
+  std::priority_queue<QN, std::vector<QN>, std::greater<QN>> pq;
   d[goal] = 0;
-  q.push(goal);
-  while (!q.empty()) {
-    int v = q.front();
-    q.pop();
-    for (int w : g[v]) {
-      if (d[w] == std::numeric_limits<int>::max()) {
-        d[w] = d[v] + 1;
-        q.push(w);
+  pq.push({0, goal});
+  while (!pq.empty()) {
+    auto [dv, v] = pq.top();
+    pq.pop();
+    if (dv > d[v]) { continue; }
+    for (const auto & [w, cost] : rev[v]) {
+      if (dv + cost < d[w]) {
+        d[w] = dv + cost;
+        pq.push({d[w], w});
       }
     }
   }
   return d;
 }
 
-// Space-Time A*: 제약을 지키며 start→goal 의 시각별 경로. 실패 시 빈 경로.
-// max_goal_t: 이 시각 이후 goal 에 걸린 vertex 제약이 없어야 도착 인정(다른 로봇 통과 대기).
-static Path space_time_astar(const Graph& g, int start, int goal,
-                             const Constraints& c, int horizon) {
-  const std::vector<int> h = bfs_dist(g, goal);
-  if (h[start] == std::numeric_limits<int>::max()) return {};  // 도달 불가 그래프
+// 가중 Space-Time A*: 제약을 지키며 start→goal 의 시각별 경로. 실패 시 빈 Route.
+//
+// 상태는 (정점, 도착틱). 확장은 두 가지다:
+//   · 대기  : (v, t) → (v, t+1)          — 그 틱에 v 가 막혀 있지 않아야 한다
+//   · 이동  : (v, t) → (w, t+cost)       — [t, t+cost] 동안 v→w 가 막혀 있지 않아야 하고,
+//                                          도착 시각에 w 가 막혀 있지 않아야 한다
+// 대기를 1틱짜리 상태로 쪼개 두므로, 머무는 동안의 정점 제약이 자동으로 매 틱 검사된다.
+Route timed_astar(
+  const TimedGraph & g, int start, int goal, const TimedConstraints & c, int horizon,
+  int max_expansions)
+{
+  const std::vector<int> h = reverse_dijkstra(g, goal);
+  if (h[start] == kInf) { return {}; }   // 도달 불가 그래프
 
-  // goal 에 걸린 마지막 제약 시각 — 그 전에 도착해 앉아 있으면 안 된다.
-  int max_goal_t = 0;
-  for (const auto& [v, t] : c.vertex)
-    if (v == goal) max_goal_t = std::max(max_goal_t, t);
+  // 목표에 도착하면 그 자리에 계속 앉아 있는다. 그러니 goal 에 걸린 제약이 끝난 **뒤에**
+  // 도착해야 한다. 그 전에 도착하면 남의 통과를 막는다.
+  int min_goal_arrive = 0;
+  for (const auto & [cv, t0, t1] : c.vertex) {
+    if (cv == goal) { min_goal_arrive = std::max(min_goal_arrive, t1 + 1); }
+  }
 
-  struct Node { int v, t, f; };
-  struct Cmp { bool operator()(const Node& a, const Node& b) const { return a.f > b.f; } };
-  std::priority_queue<Node, std::vector<Node>, Cmp> open;
-  std::map<std::pair<int, int>, int> came_g;                 // (v,t) → g(=t)
-  std::map<std::pair<int, int>, std::pair<int, int>> parent; // (v,t) → 이전 (v,t)
+  struct N { int v, t, f; };
+  struct Cmp { bool operator()(const N & a, const N & b) const { return a.f > b.f; } };
+  std::priority_queue<N, std::vector<N>, Cmp> open;
+  std::set<std::pair<int, int>> closed;
+  std::map<std::pair<int, int>, std::pair<int, int>> parent;
 
+  // ★ 시작 상태에도 제약을 적용한다. 이게 없으면 두 로봇의 **출발 정점이 같은** 충돌을
+  //   CBS 가 영원히 못 푼다: 고수준이 시작 정점에 제약을 걸어 분기해도, 저수준이
+  //   시작 상태를 제약 검사 없이 open 에 넣어 같은 경로를 그대로 돌려주고, 고수준은
+  //   같은 충돌을 다시 보고 또 분기한다 — **제약트리가 무한히 자란다.**
+  //   (실측: test_cbs_planner.SameStartVertexDoesNotHang 이 8초 타임아웃으로 죽었다)
+  //
+  //   물리적으로 두 로봇이 한 정점에 겹칠 수는 없지만, arte2 처럼 정점 간격이 좁고
+  //   도착 판정 반경이 0.05 m 인 맵에서는 **초기 위치가 같은 정점으로 스냅**될 수 있다.
+  //   그때 플래너가 안 돌아오면 배차 전체가 멈춘다.
+  if (vertex_blocked(c, start, 0)) { return {}; }
   open.push({start, 0, h[start]});
-  came_g[{start, 0}] = 0;
 
+  int expansions = 0;
   while (!open.empty()) {
-    Node n = open.top();
+    if (++expansions > max_expansions) { return {}; }   // 상한 초과 — 계획 포기(멈추지 않는다)
+    const N n = open.top();
     open.pop();
-    if (n.v == goal && n.t >= max_goal_t) {  // 재구성
-      Path p;
-      std::pair<int, int> cur{n.v, n.t};
+    const std::pair<int, int> key{n.v, n.t};
+    if (closed.count(key)) { continue; }
+    closed.insert(key);
+
+    if (n.v == goal && n.t >= min_goal_arrive) {
+      // 재구성 — (정점, 도착틱) 사슬을 되짚어 Step 으로 접는다.
+      std::vector<std::pair<int, int>> chain;
+      std::pair<int, int> cur = key;
       while (true) {
-        p.push_back(cur.first);
+        chain.push_back(cur);
         auto it = parent.find(cur);
-        if (it == parent.end()) break;
+        if (it == parent.end()) { break; }
         cur = it->second;
       }
-      return Path(p.rbegin(), p.rend());
-    }
-    if (n.t >= horizon) continue;  // 지평선 초과 — 이 가지 버림
+      std::reverse(chain.begin(), chain.end());
 
-    // 이웃 + 제자리 대기(wait 도 경로의 일부).
-    std::vector<int> moves = g[n.v];
-    moves.push_back(n.v);
-    for (int w : moves) {
-      int nt = n.t + 1;
-      if (c.vertex.count({w, nt})) continue;                 // vertex 제약
-      if (c.edge.count({n.v, w, nt})) continue;              // edge 제약
-      auto key = std::make_pair(w, nt);
-      if (came_g.count(key)) continue;                       // 이미 더 이르게 도달(g=t 단조)
-      came_g[key] = nt;
-      parent[key] = {n.v, n.t};
-      if (h[w] == std::numeric_limits<int>::max()) continue; // 목표서 끊긴 정점
+      Route r;
+      for (const auto & [v, t] : chain) {
+        if (!r.empty() && r.back().v == v) {
+          r.back().depart = t;      // 같은 정점에서 대기 — 체류 구간을 늘린다
+        } else {
+          r.push_back(Step{v, t, t});
+        }
+      }
+      r.back().depart = kNeverEnds;  // 목표에 계속 앉아 있음
+      return r;
+    }
+    if (n.t >= horizon) { continue; }
+
+    // 대기.
+    if (!vertex_blocked(c, n.v, n.t + 1)) {
+      const std::pair<int, int> nk{n.v, n.t + 1};
+      if (!closed.count(nk) && !parent.count(nk)) {
+        parent[nk] = key;
+        open.push({n.v, n.t + 1, n.t + 1 + h[n.v]});
+      }
+    }
+    // 이동.
+    for (const auto & [w, cost] : g[n.v]) {
+      const int nt = n.t + cost;
+      if (nt > horizon) { continue; }
+      if (h[w] == kInf) { continue; }                        // 목표에서 끊긴 정점
+      if (edge_blocked(c, n.v, w, n.t, nt)) { continue; }
+      if (vertex_blocked(c, w, nt)) { continue; }
+      const std::pair<int, int> nk{w, nt};
+      if (closed.count(nk) || parent.count(nk)) { continue; }
+      parent[nk] = key;
       open.push({w, nt, nt + h[w]});
     }
   }
   return {};
 }
 
-struct Conflict { bool exists = false; int a, b, u, v, t; bool is_edge; };
+struct TimedConflict
+{
+  bool exists{false};
+  int a{0}, b{0};        // 충돌한 두 로봇
+  bool is_edge{false};
+  int u{0}, v{0};        // vertex 충돌이면 u==v==정점, edge 충돌이면 a 의 진행 방향 u→v
+  int a0{0}, a1{0};      // a 쪽 점유/통과 구간
+  int b0{0}, b1{0};      // b 쪽 점유/통과 구간
+  int at{0};             // 정렬용 — 충돌이 시작되는 시각
+};
 
-// 두 경로의 첫 충돌(시각 오름차순). vertex: 같은 t·같은 정점. edge: 서로 자리 맞바꿈.
-static Conflict find_conflict(const std::vector<Path>& paths) {
-  int T = 0;
-  for (const auto& p : paths) T = std::max(T, static_cast<int>(p.size()));
-  for (int t = 0; t < T; ++t) {
-    for (size_t i = 0; i < paths.size(); ++i) {
-      for (size_t j = i + 1; j < paths.size(); ++j) {
-        int ai = loc_at(paths[i], t), aj = loc_at(paths[j], t);
-        if (ai == aj) return {true, (int)i, (int)j, ai, ai, t, false};   // vertex
-        if (t > 0) {
-          int pi = loc_at(paths[i], t - 1), pj = loc_at(paths[j], t - 1);
-          if (pi == aj && pj == ai)  // i: pi→ai, j: pj→aj, 자리 교환
-            return {true, (int)i, (int)j, pi, ai, t, true};              // edge
+// 두 계획의 첫 충돌(시각 오름차순).
+//   vertex: 같은 정점의 점유 구간이 겹침(여유 clearance 포함)
+//   edge  : 같은 간선을 서로 반대 방향으로 통과하는 구간이 겹침
+//
+// 같은 방향 추종(후미추돌)은 따로 보지 않는다 — 양 끝 정점의 점유 구간이 clearance 만큼
+// 벌어져 있으면 사이 간격이 유지되기 때문이다(노드 예약만으로 충분하다는 기존 설계와 같다).
+TimedConflict find_conflict(const std::vector<Route> & routes, int clearance)
+{
+  TimedConflict best;
+  auto better = [&](const TimedConflict & c) { return !best.exists || c.at < best.at; };
+
+  for (size_t i = 0; i < routes.size(); ++i) {
+    for (size_t j = i + 1; j < routes.size(); ++j) {
+      // vertex 충돌.
+      for (const auto & si : routes[i]) {
+        for (const auto & sj : routes[j]) {
+          if (si.v != sj.v) { continue; }
+          if (!overlaps(si.arrive - clearance, si.depart + clearance, sj.arrive, sj.depart)) {
+            continue;
+          }
+          TimedConflict c;
+          c.exists = true;
+          c.a = static_cast<int>(i);
+          c.b = static_cast<int>(j);
+          c.is_edge = false;
+          c.u = c.v = si.v;
+          c.a0 = si.arrive; c.a1 = si.depart;
+          c.b0 = sj.arrive; c.b1 = sj.depart;
+          c.at = std::max(si.arrive, sj.arrive);
+          if (better(c)) { best = c; }
+        }
+      }
+      // edge 충돌(자리 맞바꿈).
+      for (size_t k = 0; k + 1 < routes[i].size(); ++k) {
+        const int iu = routes[i][k].v, iv = routes[i][k + 1].v;
+        const int i0 = routes[i][k].depart, i1 = routes[i][k + 1].arrive;
+        for (size_t m = 0; m + 1 < routes[j].size(); ++m) {
+          const int ju = routes[j][m].v, jv = routes[j][m + 1].v;
+          if (!(iu == jv && iv == ju)) { continue; }   // 반대 방향이 아니면 통과
+          const int j0 = routes[j][m].depart, j1 = routes[j][m + 1].arrive;
+          if (!overlaps(i0 - clearance, i1 + clearance, j0, j1)) { continue; }
+          TimedConflict c;
+          c.exists = true;
+          c.a = static_cast<int>(i);
+          c.b = static_cast<int>(j);
+          c.is_edge = true;
+          c.u = iu; c.v = iv;
+          c.a0 = i0; c.a1 = i1;
+          c.b0 = j0; c.b1 = j1;
+          c.at = std::max(i0, j0);
+          if (better(c)) { best = c; }
         }
       }
     }
   }
-  return {};
+  return best;
 }
 
-// CBS 고수준: 제약트리를 비용순 최선우선 탐색. 충돌 없는 잎이 해.
-// 실패(해 없음/지평선 초과) 시 빈 벡터.
-std::vector<Path> cbs_plan(const Graph& g, const std::vector<int>& starts,
-                           const std::vector<int>& goals) {
-  const int N = static_cast<int>(starts.size());
-  const int horizon = 4 * static_cast<int>(g.size()) + 8;  // ponytail: 넉넉한 상한
+int route_cost(const Route & r)
+{
+  return r.empty() ? 0 : r.back().arrive;
+}
 
-  struct CbsNode {
-    std::vector<Constraints> con;
-    std::vector<Path> paths;
-    int cost;
-  };
-  auto plan_all = [&](CbsNode& node) -> bool {
-    node.cost = 0;
-    for (int i = 0; i < N; ++i) {
-      node.paths[i] = space_time_astar(g, starts[i], goals[i], node.con[i], horizon);
-      if (node.paths[i].empty()) return false;
-      node.cost += static_cast<int>(node.paths[i].size());
+}  // namespace
+
+int vertex_at(const Route & r, int t)
+{
+  for (const auto & s : r) {
+    if (t >= s.arrive && t <= s.depart) { return s.v; }
+  }
+  return -1;
+}
+
+int ticks_for(double dist_m, double speed_mps, double tick_seconds)
+{
+  if (speed_mps <= 0.0 || tick_seconds <= 0.0) { return 1; }
+  const double t = dist_m / speed_mps / tick_seconds;
+  const int ticks = static_cast<int>(std::ceil(t));
+  return ticks < 1 ? 1 : ticks;
+}
+
+std::string route_to_string(const Route & r)
+{
+  std::string s;
+  char buf[64];
+  for (size_t i = 0; i < r.size(); ++i) {
+    const int dep = r[i].depart >= kNeverEnds ? -1 : r[i].depart;
+    if (dep < 0) {
+      std::snprintf(buf, sizeof(buf), "v%d@%d~", r[i].v, r[i].arrive);
+    } else {
+      std::snprintf(buf, sizeof(buf), "v%d@%d-%d", r[i].v, r[i].arrive, dep);
     }
-    return true;
+    if (i) { s += " → "; }
+    s += buf;
+  }
+  return s;
+}
+
+std::vector<Route> cbs_plan_timed(
+  const TimedGraph & g, const std::vector<int> & starts, const std::vector<int> & goals,
+  const PlanOptions & opt)
+{
+  const int N = static_cast<int>(starts.size());
+  if (N == 0 || starts.size() != goals.size()) { return {}; }
+
+  // 지평선. 0 이면 자동.
+  //
+  // 예전엔 `4 × |V| × 최대간선` 이었다. 단위시간(1틱) 간선일 땐 그럭저럭이었지만, 실물
+  // 속도(0.07 m/s)로 한 레인이 10~16틱이 되면서 41정점 맵에서 2600틱을 넘었다. 저수준
+  // 상태 수는 |V| × horizon 이라 그대로 십만 단위 탐색이 된다.
+  //
+  // 실제로 필요한 길이는 "제약 없는 최단 소요" + "남들에게 양보하며 기다릴 여유" 다.
+  // 양보는 로봇 수만큼, 한 번에 최대 (가장 비싼 간선 + 여유) 만큼 밀린다고 본다.
+  int horizon = opt.horizon;
+  if (horizon <= 0) {
+    int max_edge = 1;
+    for (const auto & row : g) {
+      for (const auto & [w, cost] : row) { (void)w; max_edge = std::max(max_edge, cost); }
+    }
+    int longest = 0;
+    for (int i = 0; i < N; ++i) {
+      const std::vector<int> h = reverse_dijkstra(g, goals[i]);
+      if (starts[i] >= 0 && starts[i] < static_cast<int>(h.size()) && h[starts[i]] != kInf) {
+        longest = std::max(longest, h[starts[i]]);
+      }
+    }
+    horizon = 2 * longest + N * (max_edge + opt.clearance + 1) + 8;
+  }
+
+  struct CbsNode
+  {
+    std::vector<TimedConstraints> con;
+    std::vector<Route> routes;
+    int cost{0};
   };
+  struct Cmp { bool operator()(const CbsNode & a, const CbsNode & b) const { return a.cost > b.cost; } };
 
-  struct Cmp { bool operator()(const CbsNode& a, const CbsNode& b) const { return a.cost > b.cost; } };
+  CbsNode root;
+  root.con.resize(N);
+  root.routes.resize(N);
+  for (int i = 0; i < N; ++i) {
+    root.routes[i] = timed_astar(g, starts[i], goals[i], root.con[i], horizon, opt.max_expansions);
+    if (root.routes[i].empty()) { return {}; }
+    root.cost += route_cost(root.routes[i]);
+  }
+
   std::priority_queue<CbsNode, std::vector<CbsNode>, Cmp> tree;
-
-  CbsNode root{std::vector<Constraints>(N), std::vector<Path>(N), 0};
-  if (!plan_all(root)) return {};
   tree.push(root);
 
+  int expanded = 0;
   while (!tree.empty()) {
+    if (++expanded > opt.max_nodes) { return {}; }   // 상한 초과 — 실패로 본다
     CbsNode cur = tree.top();
     tree.pop();
-    Conflict cf = find_conflict(cur.paths);
-    if (!cf.exists) return cur.paths;  // 충돌 없는 잎 = 해
+
+    const TimedConflict cf = find_conflict(cur.routes, opt.clearance);
+    if (!cf.exists) { return cur.routes; }           // 충돌 없는 잎 = 해
 
     // 충돌한 두 로봇 각각에 제약을 하나 붙여 가지 둘로 분기.
+    // "상대가 쓰는 구간(+여유)" 을 나는 쓰지 말라는 형태다.
     for (int side = 0; side < 2; ++side) {
-      int agent = side == 0 ? cf.a : cf.b;
+      const int agent = side == 0 ? cf.a : cf.b;
+      const int o0 = side == 0 ? cf.b0 : cf.a0;      // 상대 구간
+      const int o1 = side == 0 ? cf.b1 : cf.a1;
       CbsNode child = cur;
       if (cf.is_edge) {
-        // edge 충돌: agent 쪽 진행 방향 u→v(또는 v→u)를 시각 t 에 금지.
-        int u = side == 0 ? cf.u : cf.v;
-        int v = side == 0 ? cf.v : cf.u;
-        child.con[agent].edge.insert({u, v, cf.t});
+        // 내 진행 방향을 상대 통과 구간(+여유) 동안 금지.
+        const int u = side == 0 ? cf.u : cf.v;
+        const int v = side == 0 ? cf.v : cf.u;
+        child.con[agent].edge.push_back({u, v, o0 - opt.clearance, o1 + opt.clearance});
       } else {
-        child.con[agent].vertex.insert({cf.u, cf.t});  // vertex 충돌: 그 시각 그 정점 금지
+        child.con[agent].vertex.push_back({cf.u, o0 - opt.clearance, o1 + opt.clearance});
       }
-      // 해당 로봇만 재계획.
-      child.paths[agent] = space_time_astar(g, starts[agent], goals[agent],
-                                            child.con[agent], horizon);
-      if (child.paths[agent].empty()) continue;  // 이 가지 막힘
+      child.routes[agent] = timed_astar(g, starts[agent], goals[agent],
+                                        child.con[agent], horizon, opt.max_expansions);
+      if (child.routes[agent].empty()) { continue; }  // 이 가지 막힘
       child.cost = 0;
-      for (const auto& p : child.paths) child.cost += static_cast<int>(p.size());
+      for (const auto & r : child.routes) { child.cost += route_cost(r); }
       tree.push(child);
     }
   }
-  return {};  // 제약트리 소진 — 해 없음
+  return {};   // 제약트리 소진 — 해 없음
+}
+
+std::vector<Path> cbs_plan(
+  const Graph & g, const std::vector<int> & starts, const std::vector<int> & goals)
+{
+  TimedGraph tg(g.size());
+  for (size_t v = 0; v < g.size(); ++v) {
+    for (int w : g[v]) { tg[v].push_back({w, 1}); }
+  }
+  PlanOptions opt;
+  opt.clearance = 0;   // 하위호환 — 예전과 같은 빡빡한 판정
+  const std::vector<Route> routes = cbs_plan_timed(tg, starts, goals, opt);
+  if (routes.empty()) { return {}; }
+
+  std::vector<Path> out;
+  out.reserve(routes.size());
+  for (const auto & r : routes) {
+    Path p;
+    for (size_t i = 0; i < r.size(); ++i) {
+      const bool last = (i + 1 == r.size());
+      const int end = last ? r[i].arrive : r[i].depart;
+      for (int t = r[i].arrive; t <= end; ++t) { p.push_back(r[i].v); }
+    }
+    out.push_back(std::move(p));
+  }
+  return out;
 }
 
 }  // namespace libi_fleet
@@ -199,37 +431,32 @@ std::vector<Path> cbs_plan(const Graph& g, const std::vector<int>& starts,
 //                                        3
 // A:0→2, B:2→0 은 좁은 1 에서 정면충돌(edge). 한쪽이 3 으로 비켜야 풀린다.
 #ifndef CBS_NO_MAIN
-int main() {
+int main()
+{
   using namespace libi_fleet;
-  Graph g = {{1}, {0, 2, 3}, {1}, {1}};
-  std::vector<int> starts = {0, 2};
-  std::vector<int> goals  = {2, 0};
 
-  std::vector<Path> sol = cbs_plan(g, starts, goals);
+  // 1) 무가중 하위호환 경로.
+  const Graph g = {{1}, {0, 2, 3}, {1}, {1}};
+  const std::vector<Path> sol = cbs_plan(g, {0, 2}, {2, 0});
   assert(!sol.empty() && "해를 찾아야 한다");
   assert(sol.size() == 2);
-
-  // 시작/목표 일치.
-  for (int i = 0; i < 2; ++i) {
-    assert(sol[i].front() == starts[i]);
-    assert(sol[i].back() == goals[i]);
-  }
-  // 충돌 0 확인.
-  Conflict cf = find_conflict(sol);
-  assert(!cf.exists && "해에 vertex/edge 충돌이 없어야 한다");
-
-  // 좁은 그래프라 한쪽은 반드시 3 을 경유(비켜서기)해야 함.
   bool used_bay = false;
-  for (const auto& p : sol)
-    for (int v : p) if (v == 3) used_bay = true;
+  for (const auto & p : sol) {
+    for (int v : p) { if (v == 3) { used_bay = true; } }
+  }
   assert(used_bay && "정면충돌 회피에 대기소(3)를 써야 한다");
 
-  for (int i = 0; i < 2; ++i) {
-    std::printf("robot %d:", i);
-    for (int v : sol[i]) std::printf(" %d", v);
-    std::printf("\n");
+  // 2) 가중 + 여유. 1→2 가 긴 레인(3틱)이라 타이밍이 달라진다.
+  TimedGraph tg = {{{1, 1}}, {{0, 1}, {2, 3}, {3, 1}}, {{1, 3}}, {{1, 1}}};
+  PlanOptions opt;
+  opt.clearance = 1;
+  const std::vector<Route> timed = cbs_plan_timed(tg, {0, 2}, {2, 0}, opt);
+  assert(!timed.empty() && "가중 그래프에서도 해를 찾아야 한다");
+  for (size_t i = 0; i < timed.size(); ++i) {
+    std::printf("robot %zu: %s\n", i, route_to_string(timed[i]).c_str());
   }
-  std::printf("OK — 충돌 0, 대기소 경유 확인\n");
+
+  std::printf("OK — 무가중 하위호환 + 가중/여유 계획 확인\n");
   return 0;
 }
 #endif

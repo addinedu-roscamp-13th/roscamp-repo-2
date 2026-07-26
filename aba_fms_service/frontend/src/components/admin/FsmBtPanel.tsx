@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 
+import { BtFlowSection } from "@/components/admin/BtFlowSection";
 import { FsmRobotCard } from "@/components/admin/FsmRobotCard";
 import { adminApi, type FsmSnapshot } from "@/lib/admin-api";
 
@@ -80,31 +81,39 @@ export function FsmBtPanel() {
   // items-stretch + 카드의 min-h-[75vh] 로 카드가 화면 세로를 채우고, 남는 공간은
   // 전이 이력이 flex-1 로 흡수해 스크롤한다.
   return (
-    <div className="grid items-stretch gap-3 md:grid-cols-2 xl:grid-cols-3">
-      {selected.map((name, index) => (
-        <FsmRobotCard
-          key={index}
-          robotName={name}
-          onRobotChange={(next) =>
-            setSelected((prev) =>
-              prev.map((cur, i) => (i === index ? next : cur)),
-            )
-          }
-          robots={robots}
-          takenNames={selected.filter(
-            (n, i): n is string => !!n && i !== index,
-          )}
-          model={model}
-          liveSnapshots={snapshots}
-        />
-      ))}
+    <>
+      {/* 위: 한 대를 크게 — BT 흐름 그래프. 아래: 세 대를 나란히 — 전이 제어·이력. */}
+      <BtFlowSection
+        robots={robots.map((r) => r.name)}
+        snapshots={snapshots}
+      />
 
-      {robots.length === 0 && (
-        <p className="text-sm text-muted-foreground">
-          등록된 주행 로봇(pinky)이 없습니다. 로봇 레지스트리에서 먼저
-          등록하세요.
-        </p>
-      )}
-    </div>
+      <div className="grid items-stretch gap-3 md:grid-cols-2 xl:grid-cols-3">
+        {selected.map((name, index) => (
+          <FsmRobotCard
+            key={index}
+            robotName={name}
+            onRobotChange={(next) =>
+              setSelected((prev) =>
+                prev.map((cur, i) => (i === index ? next : cur)),
+              )
+            }
+            robots={robots}
+            takenNames={selected.filter(
+              (n, i): n is string => !!n && i !== index,
+            )}
+            model={model}
+            liveSnapshots={snapshots}
+          />
+        ))}
+
+        {robots.length === 0 && (
+          <p className="text-sm text-muted-foreground">
+            등록된 주행 로봇(pinky)이 없습니다. 로봇 레지스트리에서 먼저
+            등록하세요.
+          </p>
+        )}
+      </div>
+    </>
   );
 }

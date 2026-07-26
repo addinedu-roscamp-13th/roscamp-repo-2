@@ -84,6 +84,7 @@ class BookOut(BaseModel):
     zone: str
     shelf: str
     in_stock: bool = Field(serialization_alias="inStock")
+    unavailable: bool = False
     summary: dict[str, str]
     for_whom: dict[str, list[str]] = Field(serialization_alias="forWhom")
 

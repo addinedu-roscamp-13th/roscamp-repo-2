@@ -18,6 +18,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 export ROBOT_ID="${1:-${ROBOT_ID:-}}"
 export FMS_URL="${FMS_URL:-http://127.0.0.1:9001}"
+# 도서 검색/추천이 붙는 곳(회원 앱과 같은 aba_service backend). 로봇이 아니라 서버
+# 머신이므로 기본값이 맞는 경우는 거의 없다 — 실제 서버 주소로 넘겨야 한다.
+export ABA_SERVICE_URL="${ABA_SERVICE_URL:-http://127.0.0.1:8000}"
 # 추종 화면이 붙을 AI 서버(perception_server). 로봇이 아니라 별도 머신이므로 기본값이
 # 맞는 경우는 거의 없다 — 실제 AI 서버 주소로 넘겨야 영상이 뜬다.
 export PERCEPTION_URL="${PERCEPTION_URL:-127.0.0.1:5007}"
@@ -35,7 +38,7 @@ if [ ! -x "$BIN" ]; then
   exit 1
 fi
 
-echo "[gui] robot_id=$ROBOT_ID  domain=${ROS_DOMAIN_ID:-(미설정)}  fms=$FMS_URL  perception=$PERCEPTION_URL"
+echo "[gui] robot_id=$ROBOT_ID  domain=${ROS_DOMAIN_ID:-(미설정)}  fms=$FMS_URL  aba=$ABA_SERVICE_URL  perception=$PERCEPTION_URL"
 
 # ROS2 런타임 (rclcpp 노드 — /libi/fsm_state 구독, ui_last_touch_at·fleet_cmd 발행)
 [ -f /opt/ros/jazzy/setup.bash ] && source /opt/ros/jazzy/setup.bash

@@ -3,7 +3,6 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
-import { BtTreeView } from "@/components/admin/BtTreeView";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -247,7 +246,7 @@ export function FsmRobotCard({
     : "bg-slate-100 text-slate-400";
 
   return (
-    <section className="flex h-full min-h-[75vh] flex-col overflow-hidden rounded-xl border bg-card">
+    <section className="flex h-full min-h-[38vh] flex-col overflow-hidden rounded-xl border bg-card">
       {/* ── 헤더: 항상 보인다. 3대를 한눈에 훑는 게 목적 ──
           좁은 컬럼이라 두 줄로 나눈다: (선택+상태) / (브랜치+계기판) */}
       <div className="space-y-2 border-b px-3 py-3">
@@ -329,18 +328,10 @@ export function FsmRobotCard({
       {open &&
         (received ? (
           <div className="flex min-h-0 flex-1 flex-col">
-            {/* 상태 다이어그램은 뺐다 — 카드가 세로 컬럼이라 폭이 좁고, 8상태 전이도는
-                컬럼 안에서 뭉개진다. 현재 상태는 헤더 배지로 충분하고, 지금 무슨 일이
-                일어나는지는 아래 BT 트리가 더 정확히 보여준다. */}
-            <div className="border-b p-3">
-              <h3 className="mb-2 text-xs font-bold text-slate-700">
-                BT 트리{" "}
-                <span className="font-normal text-muted-foreground">
-                  실행 중 강조
-                </span>
-              </h3>
-              <BtTreeView tree={snapshot?.tree ?? null} />
-            </div>
+            {/* 상태 다이어그램도 BT 트리도 여기 없다 — 카드가 세로 컬럼이라 폭이 좁아
+                둘 다 뭉개진다. 현재 상태는 헤더 배지가, "지금 무슨 일이 일어나는가"는
+                화면 위 BT 흐름 섹션(BtFlowSection)이 전체 폭으로 보여준다.
+                이 카드가 맡는 건 전이 제어와 이력이다. */}
 
             {/* ── 전이 제어 ── */}
             <div className="flex flex-wrap items-center gap-2 border-b bg-muted/40 px-3 py-2.5">

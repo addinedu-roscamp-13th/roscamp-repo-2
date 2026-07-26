@@ -12,7 +12,8 @@ class TrackingController:
         self.last_direction = None
 
     def step(self, detection, scan, dt):
-        lin, ang = self.pid.compute(detection.cx, detection.area, dt)
+        lin, ang = self.pid.compute(detection.cx, detection.area, dt,
+                                    image_width=getattr(detection, "image_width", 0))
         lin, ang = apply_avoidance(lin, ang, scan, self.cfg)
         if abs(ang) > 0.01:
             self.last_direction = 1.0 if ang > 0 else -1.0

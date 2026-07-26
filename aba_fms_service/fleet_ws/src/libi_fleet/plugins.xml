@@ -2,6 +2,12 @@
   <class type="libi_fleet::Auction" base_class_type="libi_fleet::DispatcherBase">
     <description>Auction / SSI dispatch — lowest Dijkstra path-cost bid wins (single-task now; batch queue extends to true SSI).</description>
   </class>
+  <class type="libi_fleet::ReservationDeadlock" base_class_type="libi_fleet::TrafficBase">
+    <description>교통 — 노드 예약 + wait-for 그래프 DFS 교착감지. 목표 노드를 먼저 확보한 뒤 출발 노드를 놓으므로 노드예약만으로 정면충돌·후미추돌이 막힌다. 실사용 기본값.</description>
+  </class>
+  <class type="libi_fleet::CbsTraffic" base_class_type="libi_fleet::TrafficBase">
+    <description>교통 — CBS + 가중 Space-Time A* 로 출발 전 전 로봇 시간표를 만들고, 그 시간표대로 통과를 연다. 틱이 실제 시간(레인 길이 → 소요 틱). 계획이 밀리면 ReservationDeadlock 과 같은 반응형으로 자동 강등.</description>
+  </class>
   <class type="libi_fleet::GrantAllTraffic" base_class_type="libi_fleet::TrafficBase">
     <description>[experimental] Traffic OFF — always GRANT, no reservation/deadlock. Diagnostic only, unsafe for real robots.</description>
   </class>

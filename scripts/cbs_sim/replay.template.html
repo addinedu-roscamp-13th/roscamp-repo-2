@@ -1,0 +1,244 @@
+<meta charset="utf-8">
+<title>CBS 주행 리플레이</title>
+<style>
+  :root {
+    --bg:#fff; --fg:#16181d; --muted:#6b7280; --line:#d8dce3; --panel:#f7f8fa;
+    --accent:#2563eb; --warn:#d97706; --bad:#dc2626; --good:#059669;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0f1115; --fg:#e8eaed; --muted:#9aa3ae; --line:#2a2f3a; --panel:#151922;
+            --accent:#60a5fa; --warn:#fbbf24; --bad:#f87171; --good:#34d399; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Noto Sans KR",sans-serif; }
+  header { padding:14px 20px; border-bottom:1px solid var(--line);
+           display:flex; gap:14px; align-items:baseline; flex-wrap:wrap; }
+  h1 { font-size:15px; margin:0; font-weight:650; letter-spacing:-0.01em; }
+  .meta { color:var(--muted); font-size:12.5px; }
+  .controls { display:flex; gap:12px; align-items:center; padding:12px 20px;
+              border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  button { font:inherit; padding:6px 14px; border-radius:7px; cursor:pointer;
+           border:1px solid var(--line); background:var(--bg); color:var(--fg); }
+  button:hover { border-color:var(--accent); color:var(--accent); }
+  input[type=range] { flex:1; min-width:200px; accent-color:var(--accent); }
+  .clock { font-variant-numeric:tabular-nums; color:var(--muted); min-width:230px; font-size:13px; }
+  .wrap { display:grid; grid-template-columns:minmax(0,1fr) 380px; }
+  @media (max-width:960px){ .wrap{grid-template-columns:1fr;} }
+  .stage { padding:16px 20px; min-width:0; }
+  aside { border-left:1px solid var(--line); background:var(--panel); padding:16px 20px;
+          min-width:0; max-height:88vh; overflow:auto; }
+  @media (max-width:960px){ aside{border-left:0;border-top:1px solid var(--line);max-height:none;} }
+  svg { display:block; width:100%; height:auto; }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted);
+       margin:18px 0 8px; font-weight:600; }
+  h2:first-child { margin-top:0; }
+  table { border-collapse:collapse; width:100%; font-size:12.5px; }
+  th,td { text-align:left; padding:4px 8px 4px 0; vertical-align:top; }
+  th { color:var(--muted); font-weight:500; }
+  code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11.5px; }
+  .sw { display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:6px; }
+  .ev { padding:3px 0; border-bottom:1px solid var(--line); font-size:12.5px; }
+  .ev.now { background:color-mix(in srgb, var(--accent) 14%, transparent); }
+  .t { color:var(--muted); font-variant-numeric:tabular-nums; margin-right:8px; }
+  .shift { color:var(--warn); font-weight:600; }
+  .same { color:var(--muted); }
+  .box { padding:9px 11px; border-radius:8px; font-size:12.5px; margin-bottom:10px; }
+  .box.good { background:color-mix(in srgb,var(--good) 13%,transparent); }
+  .box.warn { background:color-mix(in srgb,var(--warn) 15%,transparent); }
+</style>
+
+<header>
+  <h1>CBS 주행 리플레이 — 실제 관제로 돌린 기록</h1>
+  <span class="meta" id="meta"></span>
+</header>
+
+<div class="controls">
+  <button id="play">▶ 재생</button>
+  <button id="reset">처음으로</button>
+  <input type="range" id="scrub" min="0" step="0.05" value="0">
+  <span class="clock" id="clock"></span>
+</div>
+
+<div class="wrap">
+  <div class="stage"><svg id="map" viewBox="0 0 100 100"></svg></div>
+  <aside>
+    <div id="verdict"></div>
+    <h2>시간표 변화</h2>
+    <div id="plans"></div>
+    <h2>사건</h2>
+    <div id="events"></div>
+  </aside>
+</div>
+
+<script>
+const RUN = /*RUN_JSON*/;
+const V = RUN.vertices, FR = RUN.frames, EV = RUN.events, PL = RUN.plans;
+const COLORS = ["#2563eb", "#e11d48", "#059669", "#d97706", "#7c3aed"];
+const names = FR.length ? Object.keys(FR[0].p) : [];
+const T_END = FR.length ? FR[FR.length - 1].t : 0;
+
+// ── 좌표 변환 ──────────────────────────────────────────────────────────
+const PAD = 9, W = 100, H = 100;
+const xs = V.map(v=>v.x), ys = V.map(v=>v.y);
+const minX=Math.min(...xs), maxX=Math.max(...xs), minY=Math.min(...ys), maxY=Math.max(...ys);
+const sx=Math.max(1e-6,maxX-minX), sy=Math.max(1e-6,maxY-minY);
+const sc=Math.min((W-2*PAD)/sx,(H-2*PAD)/sy);
+const ox=(W-sx*sc)/2, oy=(H-sy*sc)/2;
+const px=p=>ox+(p.x-minX)*sc, py=p=>oy+(maxY-p.y)*sc;
+const pxy=(x,y)=>[ox+(x-minX)*sc, oy+(maxY-y)*sc];
+
+const NS="http://www.w3.org/2000/svg";
+const el=(n,a)=>{const e=document.createElementNS(NS,n); for(const k in a) e.setAttribute(k,a[k]); return e;};
+const map=document.getElementById("map");
+
+const seen=new Set();
+for(const l of RUN.lanes){
+  const k=l.u<l.v?`${l.u}-${l.v}`:`${l.v}-${l.u}`;
+  if(seen.has(k)) continue; seen.add(k);
+  map.appendChild(el("line",{x1:px(V[l.u]),y1:py(V[l.u]),x2:px(V[l.v]),y2:py(V[l.v]),
+    stroke:"var(--line)","stroke-width":0.45}));
+}
+const nodeEls=V.map(v=>{
+  const c=el("circle",{cx:px(v),cy:py(v),r:1.15,fill:"var(--panel)",stroke:"var(--line)","stroke-width":0.3});
+  map.appendChild(c);
+  const t=el("text",{x:px(v),y:py(v)-1.9,"font-size":2,fill:"var(--muted)","text-anchor":"middle"});
+  t.textContent=v.i; map.appendChild(t);
+  return c;
+});
+
+// 실제 주행 궤적(누적)
+const trails=names.map((n,i)=>{
+  const p=el("polyline",{fill:"none",stroke:COLORS[i%COLORS.length],"stroke-width":0.45,
+    "stroke-opacity":0.5}); map.appendChild(p); return p;
+});
+const dots=names.map((n,i)=>{
+  const g=el("g",{});
+  g.appendChild(el("circle",{r:2.1,fill:COLORS[i%COLORS.length],"fill-opacity":0.2}));
+  g.appendChild(el("circle",{r:1.3,fill:COLORS[i%COLORS.length]}));
+  g.appendChild(el("line",{x1:0,y1:0,x2:3,y2:0,stroke:COLORS[i%COLORS.length],"stroke-width":0.5}));
+  const t=el("text",{"font-size":2.2,fill:"var(--fg)","text-anchor":"middle",y:-3.1,"font-weight":600});
+  t.textContent=n; g.appendChild(t);
+  map.appendChild(g); return g;
+});
+
+// ── 시간표 변화 ────────────────────────────────────────────────────────
+// 같은 경로라도 arrive 가 달라지면 **예약 시각이 밀린 것**이다. 그게 지연 반영의 증거다.
+(function renderPlans(){
+  const box=document.getElementById("plans");
+  if(!PL.length){ box.innerHTML='<p class="meta">시간표 없음 — 반응형 교통으로 돌았습니다.</p>'; return; }
+  let html="";
+  PL.forEach((p,k)=>{
+    const prev=k?PL[k-1]:null;
+    html+=`<div style="margin-bottom:12px"><b>#${p.seq}</b> <span class="t">t=${p.t}s</span>`;
+    for(const [rn,d] of Object.entries(p.robots||{})){
+      const pv=prev&&prev.robots&&prev.robots[rn];
+      const samePath=pv&&JSON.stringify(pv.path)===JSON.stringify(d.path);
+      const shifted=pv&&JSON.stringify(pv.arrive)!==JSON.stringify(d.arrive);
+      html+=`<div style="margin:4px 0 0 0"><span class="sw" style="background:${COLORS[names.indexOf(rn)%COLORS.length]}"></span>`;
+      html+=`<code>${d.path.join("→")}</code><br>`;
+      html+=`<span class="t">도착틱</span><code>${d.arrive.join(", ")}</code>`;
+      if(pv){
+        html+=samePath?' <span class="same">경로 동일</span>':' <span class="shift">경로 변경</span>';
+        if(shifted) html+=` · <span class="shift">예약 시각 밀림 (${pv.arrive[pv.arrive.length-1]}→${d.arrive[d.arrive.length-1]}틱)</span>`;
+      }
+      html+="</div>";
+    }
+    html+="</div>";
+  });
+  box.innerHTML=html;
+})();
+
+// ── 사건 ───────────────────────────────────────────────────────────────
+const evBox=document.getElementById("events");
+const evEls=EV.map(e=>{
+  const d=document.createElement("div");
+  d.className="ev";
+  const label = e.kind==="delay" ? `⏸ ${e.robot} ${e.dur}초 정지(장애물)`
+              : e.kind==="task"  ? `${e.state} · ${e.robot}`
+              : `경로 수신 ${e.robot} (${e.n}점)`;
+  d.innerHTML=`<span class="t">${e.t}s</span>${label}`;
+  evBox.appendChild(d);
+  return d;
+});
+
+// ── 판정 ───────────────────────────────────────────────────────────────
+(function verdict(){
+  const box=document.getElementById("verdict");
+  const done=EV.filter(e=>e.kind==="task"&&e.state==="COMPLETED").map(e=>e.robot);
+  const delayed=EV.filter(e=>e.kind==="delay");
+  let html="";
+  html+=`<div class="box ${done.length===names.length?"good":"warn"}">`;
+  html+=`<b>완료 ${done.length}/${names.length}</b>`;
+  if(done.length) html+=` — ${done.join(", ")}`;
+  html+=`</div>`;
+  if(delayed.length){
+    html+=`<div class="box warn"><b>지연 주입 ${delayed.length}회</b> — `;
+    html+=delayed.map(d=>`${d.robot} ${d.dur}초`).join(", ");
+    html+=` · 시간표 재계산 ${PL.length}회</div>`;
+  }
+  box.innerHTML=html;
+  document.getElementById("meta").textContent=
+    `${RUN.title} · 로봇 ${names.length} · ${T_END.toFixed(1)}초 · 프레임 ${FR.length}`;
+})();
+
+// ── 재생 ───────────────────────────────────────────────────────────────
+const scrub=document.getElementById("scrub"), clock=document.getElementById("clock");
+const playBtn=document.getElementById("play");
+scrub.max=T_END;
+let t=0, playing=false, last=0;
+
+function frameAt(tt){
+  let lo=0, hi=FR.length-1;
+  while(lo<hi){ const m=(lo+hi)>>1; if(FR[m].t<tt) lo=m+1; else hi=m; }
+  return FR[lo];
+}
+
+function render(){
+  const f=frameAt(t);
+  if(!f) return;
+  names.forEach((n,i)=>{
+    const [x,y,yaw]=f.p[n];
+    const [sx2,sy2]=pxy(x,y);
+    dots[i].setAttribute("transform",`translate(${sx2} ${sy2}) rotate(${-yaw*180/Math.PI})`);
+  });
+  // 궤적은 현재 시각까지만
+  names.forEach((n,i)=>{
+    const pts=[];
+    for(const fr of FR){ if(fr.t>t) break;
+      const [x,y]=fr.p[n]; const [a,b]=pxy(x,y); pts.push(`${a.toFixed(2)},${b.toFixed(2)}`); }
+    trails[i].setAttribute("points",pts.join(" "));
+  });
+  // 예약 표시
+  const occ=f.occ||{};
+  nodeEls.forEach((c,i)=>{
+    const owner=occ[String(i)];
+    if(owner){
+      const ci=names.indexOf(owner);
+      c.setAttribute("fill",COLORS[(ci<0?0:ci)%COLORS.length]);
+      c.setAttribute("fill-opacity",0.55); c.setAttribute("r",1.6);
+    } else {
+      c.setAttribute("fill","var(--panel)"); c.setAttribute("fill-opacity",1); c.setAttribute("r",1.15);
+    }
+  });
+  evEls.forEach((d,i)=>d.classList.toggle("now", Math.abs(EV[i].t-t)<1.0));
+  scrub.value=t;
+  const occTxt=Object.entries(occ).map(([n,r])=>`v${n}:${r}`).join(" ") || "예약 없음";
+  clock.textContent=`${t.toFixed(1)}s / ${T_END.toFixed(1)}s   ${occTxt}`;
+}
+
+function loop(now){
+  if(playing){
+    t=Math.min(T_END,t+(now-last)/1000); last=now;
+    if(t>=T_END){ playing=false; playBtn.textContent="▶ 재생"; }
+    render();
+  }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(n=>{last=n; loop(n);});
+playBtn.onclick=()=>{ if(t>=T_END) t=0; playing=!playing; last=performance.now();
+  playBtn.textContent=playing?"⏸ 일시정지":"▶ 재생"; };
+document.getElementById("reset").onclick=()=>{t=0; render();};
+scrub.oninput=()=>{ playing=false; playBtn.textContent="▶ 재생"; t=parseFloat(scrub.value); render(); };
+render();
+</script>

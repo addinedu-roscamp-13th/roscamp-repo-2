@@ -7,7 +7,26 @@ Item {
     id: root
     property string purpose: "자기개발"
     property string interest: "과학"
-    property var recs: controller.recommend(purpose, interest)
+
+    // 검색과 같은 이유로 비동기 — 칩 클릭마다 UI 스레드가 멈추는 걸 막는다.
+    property var recs: []
+    property bool loading: false
+    property bool serviceError: false
+    property int pendingId: 0
+
+    function requestNow() {
+        root.loading = true; root.serviceError = false;
+        root.pendingId = controller.recommendAsync(root.purpose, root.interest);
+    }
+
+    Connections {
+        target: controller
+        function onRecommendReady(id, res, ok) {
+            if (id !== root.pendingId) return;
+            root.loading = false; root.serviceError = !ok; root.recs = ok ? res : [];
+        }
+    }
+    Component.onCompleted: root.requestNow()
 
     ScreenHeader {
         id: header
@@ -30,17 +49,18 @@ Item {
             Text { text: "읽는 목적"; font.family: S.fontFamily; font.pixelSize: 20; font.bold: true; color: S.text }
             Flow {
                 width: parent.width; spacing: 10
-                Chip { text: "자기개발"; icon: "🌱"; selected: root.purpose === "자기개발"; onClicked: root.purpose = "자기개발" }
-                Chip { text: "휴식";     icon: "☕"; selected: root.purpose === "휴식";     onClicked: root.purpose = "휴식" }
+                Chip { text: "자기개발"; icon: "🌱"; selected: root.purpose === "자기개발"; onClicked: { root.purpose = "자기개발"; root.requestNow() } }
+                Chip { text: "휴식";     icon: "☕"; selected: root.purpose === "휴식";     onClicked: { root.purpose = "휴식"; root.requestNow() } }
             }
 
             Text { text: "관심 분야"; font.family: S.fontFamily; font.pixelSize: 20; font.bold: true; color: S.text }
             Flow {
                 width: parent.width; spacing: 10
-                Chip { text: "과학"; icon: "🔬"; selected: root.interest === "과학"; onClicked: root.interest = "과학" }
-                Chip { text: "예술"; icon: "🎨"; selected: root.interest === "예술"; onClicked: root.interest = "예술" }
-                Chip { text: "문학"; icon: "📖"; selected: root.interest === "문학"; onClicked: root.interest = "문학" }
-                Chip { text: "취미"; icon: "🎯"; selected: root.interest === "취미"; onClicked: root.interest = "취미" }
+                Chip { text: "과학";   icon: "🔬"; selected: root.interest === "과학";   onClicked: { root.interest = "과학"; root.requestNow() } }
+                Chip { text: "예술";   icon: "🎨"; selected: root.interest === "예술";   onClicked: { root.interest = "예술"; root.requestNow() } }
+                Chip { text: "문학";   icon: "📖"; selected: root.interest === "문학";   onClicked: { root.interest = "문학"; root.requestNow() } }
+                Chip { text: "인문학"; icon: "🎓"; selected: root.interest === "인문학"; onClicked: { root.interest = "인문학"; root.requestNow() } }
+                Chip { text: "취미";   icon: "🎯"; selected: root.interest === "취미";   onClicked: { root.interest = "취미"; root.requestNow() } }
             }
         }
 
@@ -64,6 +84,7 @@ Item {
         clip: true
         spacing: 14
         model: root.recs
+        visible: !root.loading && root.recs.length > 0
 
         delegate: Rectangle {
             width: recList.width - 8
@@ -98,5 +119,30 @@ Item {
                 }
             }
         }
+    }
+
+    // 불러오는 중 — 스켈레톤 3개 (오른쪽 패널이 텅 비어 보이던 문제 수정)
+    Column {
+        anchors { left: leftPanel.right; right: parent.right; top: header.bottom
+                  leftMargin: 24; rightMargin: 28; topMargin: 12 }
+        spacing: 14
+        visible: root.loading
+        BookRowSkeleton { height: 132 }
+        BookRowSkeleton { height: 132 }
+        BookRowSkeleton { height: 132 }
+    }
+
+    // 추천 없음 / 서비스 오류
+    Text {
+        anchors { left: leftPanel.right; right: parent.right; top: header.bottom
+                  leftMargin: 24; rightMargin: 28; topMargin: 48 }
+        horizontalAlignment: Text.AlignHCenter
+        visible: !root.loading && root.recs.length === 0
+        text: root.serviceError
+              ? "도서 서비스를 불러올 수 없습니다"
+              : "조건에 맞는 추천이 없어요, 다른 관심분야를 골라보세요"
+        font.family: S.fontFamily; font.pixelSize: 16
+        color: root.serviceError ? S.danger : S.textMuted
+        wrapMode: Text.WordWrap
     }
 }

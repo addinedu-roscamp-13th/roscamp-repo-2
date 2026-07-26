@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <map>
 #include <memory>
@@ -37,6 +38,14 @@ using TaskState = libi_fleet_msgs::msg::TaskState;
 using RmfRobotState = rmf_fleet_msgs::msg::RobotState;
 using PathRequest = rmf_fleet_msgs::msg::PathRequest;
 using RmfLocation = rmf_fleet_msgs::msg::Location;
+
+namespace
+{
+// 로봇 소식이 이 시간 이상 끊기면 stale 로 본다. 어댑터 발행 주기는 2 Hz 이므로
+// 10 초면 20 프레임을 놓친 것이라 오탐이 아니다.
+// 이 파일에서만 쓴다 — fleet_task.hpp 로 내보내지 않는다.
+constexpr double kRobotStaleSec = 10.0;
+}  // namespace
 
 namespace libi_fleet
 {
@@ -127,6 +136,13 @@ public:
     // 드라이버는 같은 목적지면 무시하므로(주행 중 끊김 없음) 재발행은 안전하다.
     resend_ticks_ = declare_parameter<int>("resend_ticks", 7);   // ≈1초
 
+    // ── 시간 계획(CBS) 재계획 정책 ─────────────────────────────────────────
+    // 계획 도착 시각을 이만큼 넘기면 그 시간표는 이미 틀렸다고 본다. 장애물 회피·감속으로
+    // 몇 초 밀리는 것은 정상이라 0 으로 두면 재계획만 반복한다.
+    plan_deadline_slack_ = declare_parameter<double>("plan_deadline_slack", 3.0);
+    // 재계획 최소 간격(틱). 매 틱 CBS 를 돌리면 관제가 그것만 하게 된다.
+    replan_cooldown_ticks_ = declare_parameter<int>("replan_cooldown_ticks", 20);
+
     // 순회(patrol) 모드: 켜지면 idle 로봇이 patrol_route(외곽 루프)를 무한 순회.
     patrol_ = declare_parameter<bool>("patrol", true);
     // "auto"(기본) → 우/하 우선 규칙으로 순회 루프 생성(그래프 로드 후). 그 외는 수동 정점 목록.
@@ -186,6 +202,10 @@ public:
     path_pub_ = create_publisher<PathRequest>("/robot_path_requests", rclcpp::QoS(10).reliable());
     task_pub_ = create_publisher<TaskState>("/fms/task_states", 10);
     occ_pub_ = create_publisher<std_msgs::msg::String>("/fms/occupancy", 10);
+    // 시간 계획(CBS)의 **시간표**. 재계획할 때마다 한 번 낸다.
+    // /fms/routes 는 좌표만 있어 "언제 어디" 를 알 수 없다 — 지연으로 예약 시각이 밀리는
+    // 것을 밖에서 보려면 도착틱이 필요하다. 반응형 교통에서는 아무것도 안 나간다.
+    plan_pub_ = create_publisher<std_msgs::msg::String>("/fms/plan", rclcpp::QoS(1).transient_local());
     route_pub_ = create_publisher<std_msgs::msg::String>("/fms/routes", 10);
     goal_pub_ = create_publisher<std_msgs::msg::String>("/fms/goals", 10);
 
@@ -237,6 +257,7 @@ private:
     if (robot_mode_.find(msg->name) == robot_mode_.end()) {
       robot_mode_[msg->name] = patrol_ ? "PATROL" : "IDLE";   // 최초 관측 시 기본 모드
     }
+    last_state_at_[msg->name] = now();
   }
 
   void publish_task_state(const std::string & id, const std::string & state, const std::string & robot)
@@ -359,14 +380,254 @@ private:
     t.arm_actions = arm_actions;
     traffic_->request_move(robot, path[0], path[0], compute_priority(robot, t));   // 시작 노드 점유
     tasks_.push_back(t);
+    replan_all_routes();   // 배치 계획형 교통(CBS)이면 전 로봇 시간표를 다시 짠다
     res->accepted = true; res->task_id = tid; res->reason = "";
     publish_task_state(tid, "ASSIGNED", robot);
     RCLCPP_INFO(get_logger(), "[%s] %s 배차 → goal v%d, path %zu nodes",
                 tid.c_str(), robot.c_str(), goal, path.size());
   }
 
+  // ── 배치 계획형 교통(CBS) 재계획 ─────────────────────────────────────────
+  //
+  // 반응형 플러그인(ReservationDeadlock/GrantAll)은 plans_routes()==false 라 여기서 바로 나간다.
+  // 그래서 기본 동작은 예전과 **한 틱도 달라지지 않는다**.
+  //
+  // 계획형이면 활성 task 전체를 한 번에 다시 푼다. 로봇 3~5대·정점 41개 규모에서는
+  // 신규 로봇만 끼워 넣는 것(prioritized)보다 전체 재계획이 단순하고, 끼워넣기 특유의
+  // 굶주림·불필요한 우회가 없다.
+  //
+  // ⚠️ 출발점은 **관측상 확정된 정점**이다. 이동 중인 로봇은 이미 GRANT 받아 그 노드로
+  //    가고 있으므로(커밋 구간) 그 노드를 출발점으로 잡고, 진행 중인 한 칸은 새 경로 앞에
+  //    그대로 붙인다. 그러지 않으면 로봇이 가는 도중에 경로가 갈아치워져 왔던 길을 되돌아간다.
+  //
+  // ponytail: 순회(patrol) task 는 계획에서 뺀다. 순회 경로는 canonical 랩이라 CBS 가 준
+  //   최단 경로로 갈아치우면 순회 의미가 깨진다(patrol_goal/route_for 가 그 순서를 전제).
+  //   순회 로봇은 CbsTraffic 의 물리 점유 안전망이 막아 준다 — 안전하지만 계획은 그만큼
+  //   보수적이다. 유한 horizon(다음 한 바퀴)만 계획에 넣는 방식으로 승급할 수 있다.
+  void replan_all_routes()
+  {
+    if (!traffic_ || !traffic_->plans_routes() || tasks_.empty()) { return; }
+
+    PlanSnapshot snap;
+    snap.graph = &graph_;
+    // 스스로 못 움직이는 로봇은 영구 장애물로 넣는다 — 계획이 피해 가야 한다.
+    for (const auto & kv : robots_) {
+      if (is_immobile(mode_of(kv.first))) {
+        snap.blocked.push_back(graph_.nearest(kv.second.x, kv.second.y));
+      }
+    }
+
+    std::vector<ActiveTask *> planned;
+    for (auto & t : tasks_) {
+      if (t.patrol) { continue; }
+      if (t.path.size() < 2 || t.idx < 1 || t.idx >= t.path.size()) { continue; }
+      PlanRequest pr;
+      pr.robot = t.robot;
+      pr.start = t.moving ? t.path[t.idx] : t.path[t.idx - 1];   // 커밋 구간 존중
+      pr.goal = t.path.back();
+      pr.priority = compute_priority(t.robot, t);
+      if (pr.start == pr.goal) { continue; }   // 이미 목표 — 계획할 것이 없다
+      snap.robots.push_back(pr);
+      planned.push_back(&t);
+    }
+    if (snap.robots.empty()) { return; }
+
+    const std::vector<PlannedRoute> routes = traffic_->replan(snap);
+    if (routes.size() != planned.size()) {
+      // ⚠️ 조용히 넘어가면 안 된다. 계획이 안 서면 시스템은 반응형으로 도는데, 관제 화면에는
+      //    아무 표시가 없어 "CBS 를 켰는데 왜 그대로지" 를 나중에 디버깅하게 된다.
+      //
+      //    가장 흔한 원인은 **목표가 겹치는 것**이다. 계획은 목표 도착 후 그 정점에 계속
+      //    앉아 있다고 보므로(kNeverEnds), 두 로봇의 목표가 같으면 해가 아예 없다.
+      //    실행기는 도착 즉시 노드를 놓지만, 로봇이 실제로 비켜 주는 건 아니라서
+      //    계획을 느슨하게 푸는 대신 **왜 못 세웠는지 알리는 쪽**을 택한다.
+      std::set<int> goals;
+      std::string dup;
+      for (const auto & r : snap.robots) {
+        if (!goals.insert(r.goal).second) { dup += " v" + std::to_string(r.goal); }
+      }
+      RCLCPP_WARN(get_logger(),
+                  "[traffic] 시간표를 세우지 못했습니다(%zu/%zu) — 반응형으로 운행합니다.%s",
+                  routes.size(), planned.size(),
+                  dup.empty() ? "" : (" 목표 중복:" + dup + " (같은 정점을 목표로 둘 수 없습니다)").c_str());
+      return;   // 기존 경로 그대로. 플러그인은 이미 반응형으로 내려가 있다.
+    }
+
+    const double epoch = now_sec();
+    const double tick_sec = traffic_->tick_seconds();
+    for (size_t i = 0; i < routes.size(); ++i) {
+      ActiveTask & t = *planned[i];
+      if (routes[i].robot != t.robot || routes[i].path.size() < 2) { continue; }
+      std::vector<int> np, na;
+      np.insert(np.end(), routes[i].path.begin(), routes[i].path.end());
+      na.insert(na.end(), routes[i].arrive_tick.begin(), routes[i].arrive_tick.end());
+      if (t.moving) {
+        np.insert(np.begin(), t.path[t.idx - 1]);   // 진행 중인 한 칸을 살린다
+        na.insert(na.begin(), -1);                  // 이미 떠난 정점 — 마감 없음
+        // ⚠️ **지금 향해 가는 정점(커밋 노드)에도 마감을 걸지 않는다.**
+        //    새 계획은 그 정점을 t=0 으로 잡지만, 로봇은 아직 **가는 중**이라 남은 주행시간이
+        //    있다. 0 으로 두면 그 남은 시간이 그대로 "지연" 으로 잡혀, 정상 계획이 세워지자마자
+        //    무효화되고 재계획이 계속 돈다.
+        //    (실측: 시나리오 첫 실행에서 `계획 도착(0틱) 초과 3.1s` 가 3초마다 반복됐다.
+        //     센티널을 이전 정점에만 넣고 커밋 노드에는 안 넣어서 생긴 일이다.)
+        //    커밋 구간의 지연은 stuck 감지(no_move)와 drift_limit 이 이미 담당한다.
+        if (na.size() > 1) { na[1] = -1; }
+      }
+      t.path = np;
+      t.plan_arrive = na;
+      t.plan_epoch = epoch;
+      t.plan_tick_sec = tick_sec;
+      t.idx = 1;
+      t.reroutes = 0;
+      RCLCPP_INFO(get_logger(), "[%s] %s 시간표 재계획 → %zu nodes (도착 %d틱)",
+                  t.id.c_str(), t.robot.c_str(), t.path.size(),
+                  routes[i].arrive_tick.empty() ? -1 : routes[i].arrive_tick.back());
+    }
+    publish_plan(routes, epoch, tick_sec);
+  }
+
+  // 시간표를 밖으로 낸다(시각화·기록용). 재계획할 때마다 한 번.
+  // seq 가 늘어나는 것이 "다시 짰다" 는 신호고, 같은 경로라도 arrive 가 달라지면
+  // **예약 시각이 밀린 것**이다 — 지연이 관제에 반영됐다는 증거다.
+  void publish_plan(const std::vector<PlannedRoute> & routes, double epoch, double tick_sec)
+  {
+    std::string j = "{\"seq\":" + std::to_string(++plan_seq_) +
+                    ",\"epoch\":" + std::to_string(epoch) +
+                    ",\"tick_sec\":" + std::to_string(tick_sec) + ",\"robots\":{";
+    bool first = true;
+    for (const auto & r : routes) {
+      if (!first) { j += ","; }
+      j += "\"" + r.robot + "\":{\"path\":[";
+      for (size_t i = 0; i < r.path.size(); ++i) {
+        j += (i ? "," : "") + std::to_string(r.path[i]);
+      }
+      j += "],\"arrive\":[";
+      for (size_t i = 0; i < r.arrive_tick.size(); ++i) {
+        j += (i ? "," : "") + std::to_string(r.arrive_tick[i]);
+      }
+      j += "]}";
+      first = false;
+    }
+    j += "}}";
+    std_msgs::msg::String m; m.data = j;
+    plan_pub_->publish(m);
+  }
+
+  // 계획이 밀려서 반응형으로 강등된 뒤, 다시 계획으로 되돌아온다.
+  //
+  // 장애물·지체로 늦는 것은 정상 운영에서 늘 일어난다. 강등만 있고 복귀가 없으면 CBS 는
+  // 첫 지연 한 번으로 영영 꺼진 채 남는다 — 그러면 붙인 의미가 없다.
+  //
+  // ⚠️ 매 틱(150ms) 재계획하면 CBS 가 관제를 먹는다. 최소 간격을 둔다. 지연은 몇 초 단위로
+  //    풀리는 일이라 이 정도 지연 반응이면 충분하다.
+  void service_replan_requests()
+  {
+    if (!traffic_ || !traffic_->plans_routes()) { return; }
+    if (replan_cooldown_ > 0) { replan_cooldown_--; return; }
+    if (!traffic_->needs_replan() && !replan_requested_) { return; }
+
+    // 진전(노드 도달) 없이 재계획이 반복되면 간격을 배로 늘린다.
+    //
+    // 지연 원인이 계획으로 안 풀리는 것일 때(복도가 막힘, 로봇이 아주 느림) 고정 간격이면
+    // CBS 가 3초마다 영원히 돈다 — 관제가 그것만 하게 된다. 진전이 생기면(도달 시) 0 으로
+    // 되돌리므로, 정상 운영에서는 항상 최단 간격이다.
+    const int shift = std::min(replan_streak_, 4);          // 최대 16배
+    replan_cooldown_ = replan_cooldown_ticks_ * (1 << shift);
+    replan_streak_++;
+
+    RCLCPP_INFO(get_logger(), "[traffic] 시간표 무효 → 재계획 (사유: %s, 다음 간격 %d틱)",
+                traffic_->last_demote_reason().empty() ? "도착 마감 초과" : traffic_->last_demote_reason().c_str(),
+                replan_cooldown_);
+    replan_requested_ = false;
+    replan_all_routes();
+  }
+
+  static double now_sec()
+  {
+    return std::chrono::duration<double>(
+             std::chrono::steady_clock::now().time_since_epoch()).count();
+  }
+
+  // 계획 도착 시각을 넘겼나. 넘겼으면 그 시간표는 이미 남의 통과를 잘못 열어 주고 있다.
+  //
+  // ⚠️ 로봇이 늦는 것 자체는 막을 수 없다(장애물 회피·감속·리로컬라이제이션). 막을 수 있는 건
+  //    **늦은 걸 모르는 것**이다. 계획은 "이 정점을 이 시각에 비운다"를 전제로 남에게 통과를
+  //    열어 줬으므로, 그 전제가 깨진 순간 다시 짜야 한다.
+  void check_plan_deadline(const ActiveTask & t)
+  {
+    if (t.plan_arrive.empty() || t.idx >= t.plan_arrive.size()) { return; }
+    if (t.plan_arrive[t.idx] < 0) { return; }   // 마감 없음(재계획 시점에 이미 이동 중이던 칸)
+    const double due = t.plan_epoch + t.plan_arrive[t.idx] * t.plan_tick_sec + plan_deadline_slack_;
+    if (now_sec() <= due) { return; }
+    if (!replan_requested_) {
+      std::string dbg;
+      for (size_t i = 0; i < t.plan_arrive.size(); ++i) {
+        dbg += (i ? "," : "") + std::string(i == t.idx ? "*" : "") +
+               std::to_string(t.path[i]) + "@" + std::to_string(t.plan_arrive[i]);
+      }
+      RCLCPP_WARN(get_logger(),
+                  "[%s] %s ⏱ v%d 계획 도착(%d틱) 초과 %.1fs → 재계획 요청 [idx=%zu %s]",
+                  t.id.c_str(), t.robot.c_str(), t.path[t.idx], t.plan_arrive[t.idx],
+                  now_sec() - due + plan_deadline_slack_, t.idx, dbg.c_str());
+    }
+    replan_requested_ = true;
+  }
+
   void on_timer()
   {
+    service_replan_requests();
+
+    // ── 로봇 인식 상태 경고 ────────────────────────────────────────────────
+    // robots_ 는 /robot_state 로만 채워지고(on_robot_state) **어디서도 제거되지 않는다.**
+    // 그래서 두 가지 고장이 각각 다른 모습으로 나타나고, 둘 다 예전엔 무증상이었다:
+    //
+    //   ① 로봇을 한 번도 못 봄  → 순회 루프가 돌 대상이 없어 배차·순찰이 시작조차 안 된다
+    //   ② 보다가 소식이 끊김    → 옛날 좌표를 현재 위치로 믿고 도착 판정·GRANT 를 계속 낸다
+    //
+    // 그동안 관제 패널에는 로봇이 정상으로 보인다(패널은 amcl_pose 를 직접 읽는다).
+    // 2026-07-26 순찰 정지가 ①이었고, 침묵 때문에 진단이 몇 시간 걸렸다.
+    if (robots_.empty()) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 15000,
+        "로봇 0대 — /robot_state 를 아무도 발행하지 않고 있습니다. 배차·순회가 시작되지 않습니다. "
+        "확인: pgrep -af robot_state_adapter  /  "
+        "어댑터 로그에 'amcl_pose 대기' 가 있으면 브릿지·AMCL 문제입니다  /  "
+        "기동: ./scripts/laptop/robot-link.sh --all");
+    } else {
+      // 두 경우를 **구별해서** 모은다 — 원인도 조치도 다르다.
+      //   never : /robot_state 를 한 번도 못 받았다. 위치가 (0,0) 인 유령이다.
+      //           robots_ 에는 on_set_battery(:880) 가 미관측 로봇도 만들어 넣는다.
+      //   stale : 받다가 끊겼다. 어댑터가 죽었거나 브릿지가 끊긴 것이다.
+      const auto t_now = now();
+      std::string never_seen, stale;
+      for (const auto & kv : robots_) {
+        auto it = last_state_at_.find(kv.first);
+        if (it == last_state_at_.end()) {
+          if (!never_seen.empty()) { never_seen += ", "; }
+          never_seen += kv.first;
+        } else if ((t_now - it->second).seconds() > kRobotStaleSec) {
+          if (!stale.empty()) { stale += ", "; }
+          stale += kv.first;
+        }
+      }
+      if (!never_seen.empty()) {
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 15000,
+          "위치 미관측 로봇: %s — /robot_state 를 한 번도 못 받았습니다. "
+          "위치를 (0,0) 으로 두고 배차 판단이 돌아갑니다. "
+          "확인: pgrep -af robot_state_adapter  /  어댑터 로그의 'amcl_pose 대기'",
+          never_seen.c_str());
+      }
+      if (!stale.empty()) {
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 15000,
+          "로봇 상태 끊김(%.0fs 이상): %s — 이 로봇들의 위치는 옛날 값입니다. "
+          "도착 판정과 통행 허가가 실제 위치와 어긋날 수 있습니다. "
+          "확인: pgrep -af robot_state_adapter",
+          kRobotStaleSec, stale.c_str());
+      }
+    }
+
     // 순회 모드(per-robot): task 없는 PATROL 로봇은 주간 순회, SECURITY_PATROL 로봇은
     // 보안 순회 루프를 부여한다. 둘 다 문자열 정확일치 — SECURITY_PATROL 이 빠져 있어서
     // 야간 로봇이 웨이포인트 허가를 못 받고 제자리에 멈추던 구멍을 여기서 메운다.
@@ -393,6 +654,7 @@ private:
       if (t.moving && std::hypot(r.x - t.last_x, r.y - t.last_y) < 0.02) { t.no_move++; }
       else { t.no_move = 0; }
       t.last_x = r.x; t.last_y = r.y;
+      check_plan_deadline(t);   // 계획 도착 시각 초과 → 재계획 요청(시간 계획일 때만)
       if (stuck_ticks_ > 0 && t.no_move > stuck_ticks_) {
         RCLCPP_ERROR(get_logger(), "[%s] %s ⚠ 무진행(슬롯카 stuck 추정) → 예약 해제·task 취소",
                      t.id.c_str(), t.robot.c_str());
@@ -423,6 +685,7 @@ private:
         t.idx++;
         t.moving = false;
         t.reroutes = 0;   // 노드 도달 = 진전 → 우회 카운터 리셋
+        replan_streak_ = 0;   // 진전 → 재계획 backoff 도 원복
         t.wait_ticks = 0;   // 노드 도달 = 진전 → 타임드 우회 카운터 리셋
         if (t.idx >= t.path.size()) {
           if (t.patrol) {
@@ -933,6 +1196,11 @@ private:
   std::string navgraph_file_;
   std::string fleet_name_;
   int stuck_ticks_{0};   // 0 = 무진행 감지 비활성
+  double plan_deadline_slack_{3.0};   // 계획 도착 시각을 이만큼 넘기면 재계획(초)
+  int replan_cooldown_ticks_{20};     // 재계획 최소 간격(틱)
+  int replan_cooldown_{0};
+  bool replan_requested_{false};      // 도착 마감 초과로 fleet_node 가 스스로 요청
+  int replan_streak_{0};              // 진전 없이 이어진 재계획 횟수(backoff 지수)
   double arrive_radius_{kArriveDefault};   // 도착 판정 반경(m) — 맵 축척마다 다름
   double prefetch_radius_{kPrefetchDefault};  // 경유 노드 선행 통과 반경(m). 0 이면 꺼짐
   bool full_path_{false};                  // true 면 남은 정점 전부 전송(단일 로봇 디버깅용)
@@ -942,6 +1210,9 @@ private:
   std::vector<int> security_patrol_route_;   // 야간 보안순회 루프(CCW 정규화)
   std::map<std::string, std::string> robot_mode_;   // 로봇 → PATROL|IDLE|STOP|CHARGE
   std::map<std::string, RobotInfo> robots_;
+  //: 로봇별 마지막 /robot_state 수신 시각. **robots_ 는 만료되지 않으므로** 이것이
+  //  "이 로봇 소식이 끊겼다"를 알 수 있는 유일한 근거다.
+  std::map<std::string, rclcpp::Time> last_state_at_;
   std::vector<ActiveTask> tasks_;
   EnergyParams energy_;             // 배터리 소비 모델(완주 가능성 관문)
   int task_counter_{0};
@@ -953,6 +1224,8 @@ private:
   rclcpp::Publisher<PathRequest>::SharedPtr path_pub_;
   rclcpp::Publisher<TaskState>::SharedPtr task_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr occ_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr plan_pub_;
+  int plan_seq_{0};
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr route_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr goal_pub_;
   rclcpp::Service<SubmitTask>::SharedPtr srv_;

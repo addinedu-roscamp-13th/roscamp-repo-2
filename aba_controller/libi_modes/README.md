@@ -3,6 +3,28 @@
 LIBI(도서관 배달·수거 모바일 매니퓰레이터)의 **미션 레벨 상태 기계**다.
 8개 상태와 그 사이 전이를 **별도 FSM 라이브러리 없이 py_trees 하나로** 구현한다.
 
+> ## ⚠️ 트리를 바꾸면 같이 갱신할 것
+>
+> 이 트리는 관제 화면(`/admin/fsm` → **BT 흐름**)에 실시간으로 그려진다.
+> 노드를 추가·삭제·**개명**하거나 배선을 바꿨으면 아래도 같이 고친다.
+> 안 고치면 코드는 멀쩡한데 **화면만 조용히 거짓**이 된다.
+>
+> | 바꾼 것 | 같이 갱신 |
+> |---|---|
+> | 노드 추가·삭제·개명 | `aba_fms_service/frontend/src/components/admin/btNodeFlags.ts` — 키가 py_trees `name` **문자열 그대로**다. 이름이 바뀌면 플래그가 조용히 안 붙는다(범례 숫자 0으로 드러남) |
+> | 구현·배선 상태 | 같은 파일. `unwired`(로직은 있는데 부를 통로 없음) / `partial`(일부만 동작) / `unreachable`(진입 불가). 근거를 `file:line` 주석으로 남긴다 |
+> | 트리 구조·전이 규칙 | 이 README 의 브랜치 설명과 전이 박스 |
+> | 다른 프로세스의 하위 BT | `libi_modes/ros/state_io.py` 의 `_GRAFT_POINT` — 그 leaf 밑에 접붙인다 |
+>
+> 화면에 그려지는 **노드 성격**(Sequence / Selector / Parallel/정책)은
+> `state_io._kind` 가 만들어 스냅샷의 `kind` 필드로 나간다. 새 제어노드를 쓰면 거기도 본다.
+>
+> **이 레포의 BT 는 둘이다**
+> - 여기 미션 BT(75노드) — `/libi/bt_snapshot` 으로 발행
+> - `../libi_modes/ros_ws/src/libi_perception/recovery_bt.py` 추종 회복 BT — 별도 프로세스라
+>   `/libi/follow_bt_snapshot` 으로 내보내 미션 BT 의 `FollowExec` **밑에 접붙인다**
+> - (`aba_ai_service/follower_BT/` 는 py_trees 가 아니라 자체 상태기계다 — 대상 아님)
+
 ```
 aba_controller/libi_modes/ros_ws/src/libi_modes/
 ├── libi_modes/
@@ -410,10 +432,16 @@ InteractingBranch (Sequence, memory=False)
 **`BatteryCheck`를 두지 않는 이유** — 전이 박스에서 `INTERACTING -> RETURNING`을 의도적으로 제외했다.
 `INTERACTING`은 `WORKING`과 함께 배터리 검사가 없는 두 브랜치다.
 
-**인터록** — 진입 시 `drive_lock`과 `arm_lock`을 **모두** 체결한다.
-이용자가 터치패널 앞에 있다는 것은 로봇팔 작업 반경 안에 있다는 의미이므로 주행만 잠그는 것은 불충분하다.
-체결·해제는 `UiSessionTimer`의 `initialise()` / `terminate()`에서 처리한다.
-**`terminate()`에서 반드시 해제해야 한다** — 누락 시 다른 상태로 전이해도 로봇이 움직이지 않는다.
+**인터록** — ⚠️ **이 트리는 인터록을 강제하지 않는다.** 예전엔 `UiSessionTimer`가
+`drive_lock`/`arm_lock`을 체결한다고 적혀 있었지만, 그 두 키를 읽는 production 코드는
+레포 전체에 하나도 없었다(2026-07-26 전수 확인). 그래서 두 키를 삭제했다.
+
+"응대 중엔 움직이지 않는다"를 실제로 보장하는 것은 **브랜치 우선순위**다 — `Priorities`가
+Selector라 한 tick에 브랜치 하나만 돌고, `INTERACTING`이 잡히면 다른 브랜치의 액션 leaf는
+애초에 tick되지 않는다. blackboard 불리언은 그 보장에 관여한 적이 없다.
+
+FMS가 `/fleet_cmd`로 직접 미는 주행까지 막는 **교차 프로세스 인터록**이 필요하면 로봇 쪽
+`fleet_link`에서 막아야 한다. blackboard 값은 그 프로세스에 닿지 않는다.
 
 **신규 leaf: `UiSessionTimer`**
 

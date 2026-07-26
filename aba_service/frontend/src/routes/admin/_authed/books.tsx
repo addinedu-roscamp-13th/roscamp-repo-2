@@ -73,7 +73,7 @@ const EMPTY: BookFormValue = {
   author: "",
   category: "literature",
   cover: CATEGORY_COVER.literature,
-  zone: SHELF_WAYPOINTS[0]?.name ?? "문학-1",
+  zone: SHELF_WAYPOINTS[0]?.name ?? "문학서가",
   shelf: "",
   in_stock: true,
   unavailable: false,

@@ -78,7 +78,8 @@ ApplicationWindow {
         visible: controller.robotState === "응대중"
         anchors { top: parent.top; left: parent.left; right: parent.right }
         height: 72
-        color: controller.interactingRemaining <= 5 ? "#c0392b" : "#2c3e50"
+        // 응대중은 위험 상태가 아니다 — LED 규칙(빨강=위험)과 맞춰 남은시간과 무관하게 초록 유지.
+        color: S.success
         z: 90
         Text {
             anchors.centerIn: parent

@@ -52,7 +52,8 @@ class RosProviders:
                  pose_topic="/amcl_pose",
                  mission_actions=("goal", "goto", "home", "mission_start"),
                  nav_actions=("navigate",),
-                 arm_actions=("perform_action",)):
+                 arm_actions=("perform_action",),
+                 follow_actions=("follow_admin",)):
         self._node = node
         self._log = node.get_logger()
         self._mission_actions = set(mission_actions)
@@ -64,6 +65,11 @@ class RosProviders:
         # 팔 명령은 이름을 그대로 active_command 로 쓴다 — ArmExec 의 handles 와 맞춰야 한다
         # (working_actions.ArmExec: handles={"perform_action"}).
         self._arm_actions = set(arm_actions)
+        # 추종도 같은 규칙 — FollowExec.handles={"follow_admin"} 과 이름이 같아야 한다.
+        # ⚠️ 이 분류가 없으면 follow_admin 이 last_command 로 새어 나가 **active_command 가
+        #    되지 않고**, FollowExec 은 ACTIVE_COMMAND 만 보므로 드라이버를 꽂아도
+        #    영영 안 잡힌다 (ArmExec 이 예전에 같은 이유로 죽어 있었다).
+        self._follow_actions = set(follow_actions)
 
         self._battery = None
         self._docked = None
@@ -114,7 +120,13 @@ class RosProviders:
         action = str(cmd.get("action", "")).strip()
         if not action:
             return
-        self._command_received_at = self._now()
+        # ⚠️ **monotonic 이어야 한다.** 이 값을 읽는 곳은 CommandTimeout 하나뿐이고,
+        #    그쪽은 time.monotonic() 으로 현재 시각을 잰다. 여기에 ROS 시계(=epoch 초)를
+        #    찍으면 `max(last_activity, received_at)` 이 항상 epoch 을 고르고,
+        #    `now - since` 가 -17억이 되어 **타임아웃이 영원히 성립하지 않는다**
+        #    (실측: monotonic 24,328 vs epoch 1,785,051,205).
+        #    바로 위 _on_ui_touch 가 같은 이유로 이미 monotonic 을 쓴다.
+        self._command_received_at = time.monotonic()
         if action in self._nav_actions:
             # FMS 가 준 BT 층 주행 명령 — 목적지를 함께 저장한다.
             # NavigationExec 의 드라이버가 이 값을 읽어 실행 층(goal)으로 내려보낸다.
@@ -131,6 +143,8 @@ class RosProviders:
             self._active_command = "navigate"
         elif action in self._mission_actions:
             self._active_command = "navigate"      # WorkingBranch 의 NavigationExec 이 받는다
+        elif action in self._follow_actions:
+            self._active_command = action
         elif action in self._arm_actions:
             # 팔 명령도 **실행 커맨드**다 — WorkingBranch 의 ArmExec 이 받는다.
             # 예전엔 이 갈래가 없어서 perform_action 이 last_command 로 새어 나갔고,
@@ -144,8 +158,10 @@ class RosProviders:
         p = msg.pose.pose.position
         self._robot_pose = {"x": float(p.x), "y": float(p.y)}
 
-    def _now(self):
-        return self._node.get_clock().now().nanoseconds / 1e9
+    # ⚠️ ROS 시계로 시각을 찍는 헬퍼(`_now`)는 삭제했다. 이 클래스가 내보내는 시각 값
+    #    (ui_last_touch_at, command_received_at)은 **전부 time.monotonic 기준**이어야 한다 —
+    #    읽는 쪽(UiSessionTimer, CommandTimeout)이 monotonic 으로 현재 시각을 재기 때문이다.
+    #    둘을 섞을 통로를 아예 없애 같은 실수가 다시 나지 않게 한다.
 
     # ── Topics2BB 인터페이스 ─────────────────────────────────────────────────
 

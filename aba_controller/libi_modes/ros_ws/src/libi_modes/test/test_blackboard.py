@@ -14,7 +14,7 @@ def test_keys_are_unique_strings():
 def test_expected_keys_present():
     expected = {
         "CURRENT_MODE", "NEXT_MODE", "FAULT", "BATTERY_PERCENT", "IS_DOCKED",
-        "LAST_COMMAND", "UI_LAST_TOUCH_AT", "DRIVE_LOCK", "ARM_LOCK",
+        "LAST_COMMAND", "UI_LAST_TOUCH_AT",
         "ACTIVE_COMMAND", "COMMAND_RECEIVED_AT", "DOCK_RETRY_COUNT", "ERROR_CODE",
     }
     assert expected.issubset(set(vars(Keys).keys()))

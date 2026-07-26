@@ -23,7 +23,7 @@ export function AppShell({
       {/* 로봇 도착 알림 — 어느 화면에 있든 떠야 해서 여기 둔다.
           책이 도착하는 순간 회원이 「요청 현황」 탭을 보고 있을 이유가 없다. */}
       <ArrivalToast />
-      <header className="sticky top-0 z-30 flex items-center justify-between gap-2 border-b border-border bg-paper px-4 py-3">
+      <header className="sticky top-0 z-30 flex items-center justify-between gap-2 border-b border-border bg-paper px-4 py-3.5">
         <div className="flex min-w-0 flex-col">
           <span className="font-serif text-lg font-bold leading-none text-primary">
             Li<span className="text-accent">Bi</span>

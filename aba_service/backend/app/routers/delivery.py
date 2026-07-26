@@ -51,12 +51,8 @@ NEEDS_APPROVAL = {"borrow"}
 
 #: 열람 요청으로 고를 수 있는 자리. waypoint.yaml 의 테이블 정점만 허용한다(화이트리스트).
 ALLOWED_TABLES = {
-    "테이블-1번-상",
-    "테이블-1번-좌",
-    "테이블-1번-우",
-    "테이블-2번-하",
-    "테이블-2번-좌",
-    "테이블-2번-우",
+    "1번테이블",
+    "2번테이블",
 }
 
 
@@ -302,3 +298,39 @@ def my_requests(
             item.leg_count = snap.get("leg_count")
         out.append(item)
     return out
+
+
+@router.delete("s/{request_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_my_request(
+    request_id: int,
+    db: Session = Depends(get_db),
+    current: Member = Depends(get_current_member),
+):
+    """내 요청 이력 1건 삭제.
+
+    라우터 prefix 때문에 실제 경로는 `/api/member/requests/{id}` 다.
+
+    남의 요청은 **존재 여부도 알려주지 않는다**(403 이 아니라 404). 승인 대기 중인
+    요청은 사서 승인 큐에 걸려 있으므로 막는다 — 회원이 지워도 사서 화면에는 남아
+    양쪽이 어긋난다. 승인됐지만 로봇이 아직 옮기는 중인 요청도 막는다 — FMS 가
+    아직 그 주문을 들고 있으면(터미널 상태가 아니면) 지워도 로봇은 계속 움직이는데
+    회원은 그 사실을 알 방법이 없어진다.
+    """
+    row = db.get(DeliveryRequest, request_id)
+    if row is None or row.member_id != current.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "요청을 찾을 수 없습니다")
+    if row.approval == PENDING:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "사서 승인을 기다리는 요청은 삭제할 수 없습니다"
+        )
+    if row.fms_task_id:
+        ok, orders = fms_client.list_orders()
+        if ok:
+            order = next((o for o in orders if o.get("id") == row.fms_task_id), None)
+            if order is not None and order.get("status") not in ("COMPLETED", "FAILED"):
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    "로봇이 아직 옮기는 중인 요청은 삭제할 수 없습니다",
+                )
+    db.delete(row)
+    db.commit()

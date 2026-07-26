@@ -1,0 +1,312 @@
+<meta charset="utf-8">
+<title>CBS 시간표 뷰어</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #16181d; --muted: #6b7280; --line: #d8dce3;
+    --grid: #eef1f5; --panel: #f7f8fa; --accent: #2563eb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115; --fg: #e8eaed; --muted: #9aa3ae; --line: #2a2f3a;
+      --grid: #191d25; --panel: #151922; --accent: #60a5fa;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Noto Sans KR", sans-serif;
+  }
+  header {
+    padding: 14px 20px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+  }
+  h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+  .meta { color: var(--muted); font-size: 12.5px; }
+  .wrap { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 0; }
+  @media (max-width: 900px) { .wrap { grid-template-columns: 1fr; } }
+  .stage { padding: 16px 20px; min-width: 0; }
+  aside {
+    border-left: 1px solid var(--line); padding: 16px 20px; background: var(--panel);
+    min-width: 0;
+  }
+  @media (max-width: 900px) { aside { border-left: 0; border-top: 1px solid var(--line); } }
+  svg { display: block; width: 100%; height: auto; }
+  .controls {
+    display: flex; align-items: center; gap: 12px; padding: 12px 20px;
+    border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+    flex-wrap: wrap;
+  }
+  button {
+    font: inherit; padding: 6px 14px; border-radius: 7px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--bg); color: var(--fg);
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  input[type=range] { flex: 1; min-width: 160px; accent-color: var(--accent); }
+  .clock { font-variant-numeric: tabular-nums; color: var(--muted); min-width: 190px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 5px 8px 5px 0; }
+  th { color: var(--muted); font-weight: 500; }
+  td.route { color: var(--muted); font-size: 12px; }
+  .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 7px; }
+  .verdict { margin-top: 14px; padding: 10px 12px; border-radius: 8px; font-size: 13px; }
+  .ok { background: color-mix(in srgb, #16a34a 12%, transparent); }
+  .bad { background: color-mix(in srgb, #dc2626 14%, transparent); }
+  .scroll { overflow-x: auto; }
+  footer { padding: 12px 20px 26px; color: var(--muted); font-size: 12.5px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+</style>
+
+<header>
+  <h1>CBS + 가중 Space-Time A* — 시간표 재생</h1>
+  <span class="meta" id="meta"></span>
+</header>
+
+<div class="controls">
+  <button id="play">▶ 재생</button>
+  <button id="step">한 틱</button>
+  <button id="reset">처음으로</button>
+  <input type="range" id="scrub" min="0" max="100" step="0.02" value="0">
+  <span class="clock" id="clock"></span>
+</div>
+
+<div class="wrap">
+  <div class="stage"><svg id="map" viewBox="0 0 100 100"></svg></div>
+  <aside>
+    <table id="legend"></table>
+    <div class="verdict" id="verdict"></div>
+    <div class="scroll"><svg id="gantt" viewBox="0 0 100 100"></svg></div>
+    <p class="meta" style="margin-top:10px">
+      가로 막대 = 그 로봇이 정점을 <b>점유</b>한 구간. 같은 세로줄(정점)에서 막대가 겹치지
+      않아야 무충돌이다. 얇은 선은 간선 위 이동.
+    </p>
+  </aside>
+</div>
+
+<footer>
+  틱 하나 = <span id="tickSec"></span>초. 간선 소요는 레인 길이 ÷ 속도로 계산했다 —
+  화면의 시간은 실제 주행 시간이다. <code>clearance</code> 는 실행 드리프트를 흡수하려고
+  계획에서 미리 벌려 둔 여유 틱.
+</footer>
+
+<script>
+const PLAN = /*PLAN_JSON*/;
+
+const COLORS = ["#2563eb", "#e11d48", "#059669", "#d97706", "#7c3aed", "#0891b2"];
+const NEVER = 1e9;
+
+const V = PLAN.vertices;
+const robots = PLAN.robots.filter(r => r.route.length > 0);
+const dep = s => (s.depart === null ? NEVER : s.depart);
+
+// 마지막 도착 틱 + 여유 → 재생 길이.
+const finish = Math.max(1, ...robots.map(r => r.route[r.route.length - 1].arrive));
+const HORIZON = finish + 3;
+
+// 틱은 플래너 내부 단위다. 사람이 보는 축은 **초** — 틱은 괄호로만 남긴다.
+// (tick_seconds=1.0 이면 두 숫자가 같아 보이지만, 0.5 로 주면 갈라진다)
+const sec = t => (t * PLAN.tick_seconds).toFixed(1);
+
+// ── 좌표 변환: 지도(m) → 화면 ──────────────────────────────────────────
+const PAD = 8, W = 100, H = 100;
+const xs = V.map(v => v.x), ys = V.map(v => v.y);
+const minX = Math.min(...xs), maxX = Math.max(...xs);
+const minY = Math.min(...ys), maxY = Math.max(...ys);
+const spanX = Math.max(1e-6, maxX - minX), spanY = Math.max(1e-6, maxY - minY);
+const scale = Math.min((W - 2 * PAD) / spanX, (H - 2 * PAD) / spanY);
+const offX = (W - spanX * scale) / 2, offY = (H - spanY * scale) / 2;
+const px = v => offX + (v.x - minX) * scale;
+const py = v => offY + (maxY - v.y) * scale;   // ROS 는 y 가 위 → 화면은 아래
+
+// ── 지도 그리기 ────────────────────────────────────────────────────────
+const map = document.getElementById("map");
+const svgns = "http://www.w3.org/2000/svg";
+const el = (n, a) => { const e = document.createElementNS(svgns, n); for (const k in a) e.setAttribute(k, a[k]); return e; };
+
+const seen = new Set();
+for (const l of PLAN.lanes) {
+  const key = l.u < l.v ? `${l.u}-${l.v}` : `${l.v}-${l.u}`;
+  if (seen.has(key)) continue;
+  seen.add(key);
+  map.appendChild(el("line", {
+    x1: px(V[l.u]), y1: py(V[l.u]), x2: px(V[l.v]), y2: py(V[l.v]),
+    stroke: "var(--line)", "stroke-width": 0.5,
+  }));
+}
+for (const v of V) {
+  map.appendChild(el("circle", { cx: px(v), cy: py(v), r: 1.1, fill: "var(--grid)", stroke: "var(--line)", "stroke-width": 0.3 }));
+  const t = el("text", { x: px(v), y: py(v) - 1.9, "font-size": 2.1, fill: "var(--muted)", "text-anchor": "middle" });
+  t.textContent = v.i;
+  map.appendChild(t);
+}
+
+// 계획 경로를 옅게 깔아 둔다 — 로봇이 어디로 갈지 미리 보인다.
+robots.forEach((r, i) => {
+  const pts = r.route.map(s => `${px(V[s.v])},${py(V[s.v])}`).join(" ");
+  map.appendChild(el("polyline", {
+    points: pts, fill: "none", stroke: COLORS[i % COLORS.length],
+    "stroke-width": 0.6, "stroke-opacity": 0.35, "stroke-dasharray": "1.5 1.5",
+  }));
+});
+
+const dots = robots.map((r, i) => {
+  const g = el("g", {});
+  g.appendChild(el("circle", { r: 2.2, fill: COLORS[i % COLORS.length], "fill-opacity": 0.22 }));
+  g.appendChild(el("circle", { r: 1.35, fill: COLORS[i % COLORS.length] }));
+  const label = el("text", { "font-size": 2.3, fill: "var(--fg)", "text-anchor": "middle", y: -3.2, "font-weight": 600 });
+  label.textContent = r.name;
+  g.appendChild(label);
+  map.appendChild(g);
+  return g;
+});
+
+// ── 시각 t(연속)에서의 위치. 정점에 있으면 그 좌표, 이동 중이면 선형 보간 ──
+function poseAt(route, t) {
+  for (let k = 0; k < route.length; k++) {
+    const s = route[k];
+    if (t >= s.arrive && t <= dep(s)) return { x: px(V[s.v]), y: py(V[s.v]), at: s.v };
+    if (k + 1 < route.length) {
+      const a = dep(s), b = route[k + 1].arrive;
+      if (t > a && t < b) {
+        const f = (t - a) / Math.max(1e-9, b - a);
+        const p = V[s.v], q = V[route[k + 1].v];
+        return { x: px(p) + (px(q) - px(p)) * f, y: py(p) + (py(q) - py(p)) * f, at: -1 };
+      }
+    }
+  }
+  const first = route[0];
+  if (t < first.arrive) return { x: px(V[first.v]), y: py(V[first.v]), at: first.v };
+  const last = route[route.length - 1];
+  return { x: px(V[last.v]), y: py(V[last.v]), at: last.v };
+}
+
+// ── 간트: 정점 점유 구간 ───────────────────────────────────────────────
+const gantt = document.getElementById("gantt");
+{
+  const rowH = 100 / Math.max(1, robots.length * 1.6 + 1.2);   // 아래 눈금축 자리
+  const tw = 100 / HORIZON;
+
+  // 초 눈금. 눈금 간격은 5칸 안팎이 되게 고른다.
+  const axisY = robots.length * rowH * 1.6 + 3;
+  const rawStep = HORIZON * PLAN.tick_seconds / 5;
+  const nice = [0.5, 1, 2, 5, 10, 15, 30, 60, 120].find(s => s >= rawStep) || 300;
+  gantt.appendChild(el("line", { x1: 0, y1: axisY, x2: 100, y2: axisY, stroke: "var(--line)", "stroke-width": 0.3 }));
+  for (let s = 0; s <= HORIZON * PLAN.tick_seconds; s += nice) {
+    const x = (s / PLAN.tick_seconds) * tw;
+    gantt.appendChild(el("line", { x1: x, y1: 0, x2: x, y2: axisY, stroke: "var(--line)", "stroke-width": 0.2, "stroke-opacity": 0.6 }));
+    const lab = el("text", { x, y: axisY + 3.4, "font-size": 2.6, fill: "var(--muted)", "text-anchor": "middle" });
+    lab.textContent = `${s}s`;
+    gantt.appendChild(lab);
+  }
+
+  robots.forEach((r, i) => {
+    const y = i * rowH * 1.6 + 2;
+    r.route.forEach((s, k) => {
+      const end = Math.min(dep(s), HORIZON);
+      gantt.appendChild(el("rect", {
+        x: s.arrive * tw, y, width: Math.max(0.6, (end - s.arrive) * tw), height: rowH * 0.72,
+        fill: COLORS[i % COLORS.length], "fill-opacity": 0.85, rx: 0.6,
+      }));
+      const lab = el("text", { x: s.arrive * tw + 0.5, y: y + rowH * 0.55, "font-size": 2.2, fill: "var(--bg)", "font-weight": 600 });
+      lab.textContent = s.v;
+      gantt.appendChild(lab);
+      if (k + 1 < r.route.length) {
+        gantt.appendChild(el("line", {
+          x1: dep(s) * tw, y1: y + rowH * 0.36, x2: r.route[k + 1].arrive * tw, y2: y + rowH * 0.36,
+          stroke: COLORS[i % COLORS.length], "stroke-width": 0.55, "stroke-dasharray": "0.8 0.8",
+        }));
+      }
+    });
+  });
+  var ganttCursor = el("line", { y1: 0, y2: 100, stroke: "var(--accent)", "stroke-width": 0.4 });
+  gantt.appendChild(ganttCursor);
+  var ganttTickW = tw;
+}
+
+// ── 검증: 정점 점유가 겹치는 쌍이 있나 (뷰어가 독립적으로 다시 센다) ──
+(function verify() {
+  const bad = [];
+  for (let i = 0; i < robots.length; i++) {
+    for (let j = i + 1; j < robots.length; j++) {
+      for (const a of robots[i].route) {
+        for (const b of robots[j].route) {
+          if (a.v !== b.v) continue;
+          if (a.arrive <= dep(b) && b.arrive <= dep(a)) {
+            bad.push(`${robots[i].name}·${robots[j].name} @ v${a.v}`);
+          }
+        }
+      }
+    }
+  }
+  const box = document.getElementById("verdict");
+  if (!robots.length) { box.className = "verdict bad"; box.textContent = "계획이 없습니다."; return; }
+  if (bad.length) {
+    box.className = "verdict bad";
+    box.innerHTML = `<b>충돌 ${bad.length}건</b><br>${bad.slice(0, 6).join("<br>")}`;
+  } else {
+    box.className = "verdict ok";
+    box.innerHTML = `<b>정점 점유 충돌 0</b> — 로봇 ${robots.length}대, 완료 ${sec(finish)}초 (${finish}틱)`;
+  }
+})();
+
+// ── 범례 ───────────────────────────────────────────────────────────────
+{
+  const t = document.getElementById("legend");
+  t.innerHTML = "<tr><th>로봇</th><th>경로</th><th>도착</th></tr>";
+  robots.forEach((r, i) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td><span class="swatch" style="background:${COLORS[i % COLORS.length]}"></span>${r.name}</td>` +
+      `<td class="route">v${r.start} → v${r.goal}</td>` +
+      `<td>${sec(r.route[r.route.length - 1].arrive)}s</td>`;
+    t.appendChild(tr);
+  });
+  document.getElementById("meta").textContent =
+    `정점 ${V.length} · 로봇 ${robots.length} · 여유 ${PLAN.clearance}틱 · 속도 ${PLAN.speed_mps} m/s`;
+  document.getElementById("tickSec").textContent = PLAN.tick_seconds;
+}
+
+// ── 재생 ───────────────────────────────────────────────────────────────
+const scrub = document.getElementById("scrub");
+const clock = document.getElementById("clock");
+const playBtn = document.getElementById("play");
+scrub.max = HORIZON;
+let t = 0, playing = false, last = 0;
+
+function render() {
+  robots.forEach((r, i) => {
+    const p = poseAt(r.route, t);
+    dots[i].setAttribute("transform", `translate(${p.x} ${p.y})`);
+  });
+  ganttCursor.setAttribute("x1", t * ganttTickW);
+  ganttCursor.setAttribute("x2", t * ganttTickW);
+  scrub.value = t;
+  const occ = robots.map((r, i) => {
+    const a = poseAt(r.route, t).at;
+    return a >= 0 ? `${r.name}:v${a}` : `${r.name}:이동중`;
+  }).join("  ");
+  clock.textContent = `${sec(t)}s  (${t.toFixed(1)}틱)   ${occ}`;
+}
+
+function frame(now) {
+  if (playing) {
+    const dt = (now - last) / 1000;
+    last = now;
+    t = Math.min(HORIZON, t + dt / PLAN.tick_seconds);
+    if (t >= HORIZON) { playing = false; playBtn.textContent = "▶ 재생"; }
+    render();
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(n => { last = n; frame(n); });
+
+playBtn.onclick = () => {
+  if (t >= HORIZON) t = 0;
+  playing = !playing;
+  last = performance.now();
+  playBtn.textContent = playing ? "⏸ 일시정지" : "▶ 재생";
+};
+document.getElementById("step").onclick = () => { playing = false; playBtn.textContent = "▶ 재생"; t = Math.min(HORIZON, Math.floor(t) + 1); render(); };
+document.getElementById("reset").onclick = () => { t = 0; render(); };
+scrub.oninput = () => { playing = false; playBtn.textContent = "▶ 재생"; t = parseFloat(scrub.value); render(); };
+render();
+</script>

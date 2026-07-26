@@ -10,6 +10,12 @@ LINEAR_X_MAX = 0.12            # forward max (m/s)
 LINEAR_X_REVERSE_MAX = 0.06   # reverse max (m/s) — smaller: LiDAR blind rear
 
 # ---- bearing PID (angular_z) ----
+# ⚠️ 폴백값일 뿐이다. 검출 payload 에 `image_width` 가 있으면 그쪽이 이긴다
+#    (`detection.py` / `pid.compute(image_width=...)`).
+#    실제 로봇 카메라는 480x360 이다 — `robot_agent/app/hardware/camera_stream.py:338`
+#    Picamera2 `main={"size": (480, 360)}`, rpicam-vid 도 `--width 480 --height 360`.
+#    (V4L2 폴백 경로만 640x480 을 요청한다: 같은 파일 :400-401)
+#    소스가 해상도를 안 실어 보내는 동안에는 이 값이 쓰이므로, **소스를 고치는 것이 우선**이다.
 IMAGE_WIDTH = 640
 KP_ANGLE = 0.0010
 KI_ANGLE = 0.0

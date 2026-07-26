@@ -161,7 +161,6 @@ export const CATEGORY_LABEL: Record<string, string> = {
   art: "예술",
   science: "과학",
   humanities: "인문학",
-  kids: "유아",
 };
 
 /** 표지를 책마다 따로 고르지 않는다 — 분야만 보고 바로 알아보게 분야당 아이콘 하나. */
@@ -170,7 +169,6 @@ export const CATEGORY_COVER: Record<string, string> = {
   art: "🎨",
   science: "🔬",
   humanities: "📚",
-  kids: "🧸",
 };
 
 export const ops = {

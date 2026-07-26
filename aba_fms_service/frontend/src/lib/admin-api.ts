@@ -1208,6 +1208,9 @@ export type BtNodeStatus = "SUCCESS" | "FAILURE" | "RUNNING" | "INVALID";
 
 export interface FsmTreeNode {
   name: string;
+  /** 노드의 성격 — Sequence / Selector / Parallel/SuccessOnOne / leaf 클래스명.
+   *  `*` 는 memory=True. state_io._kind 가 만든다. 구버전 로봇은 안 보낼 수 있다. */
+  kind?: string;
   status: BtNodeStatus;
   children: FsmTreeNode[];
 }
@@ -1222,6 +1225,9 @@ export interface FsmSnapshot {
   tree: FsmTreeNode | null;
   transitioned_at: number;
   stale: boolean;
+  /** 트리 수신만 끊긴 경우. 상태(fsm_state)는 계속 와도 트리가 멈출 수 있어
+   *  `stale` 만으로는 "멈춘 트리를 살아 있는 것처럼" 그리는 걸 못 막는다. */
+  tree_stale?: boolean;
 }
 
 export interface FsmStateResponse {
