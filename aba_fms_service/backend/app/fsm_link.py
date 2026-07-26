@@ -99,13 +99,24 @@ def _apply_tree_msg(cache: dict[str, dict[str, Any]], payload: dict) -> str | No
         return None
     entry = cache.setdefault(robot_id, _empty_entry())
     entry["tree"] = tree
-    entry["_last_ros_at"] = time.time()
+    now = time.time()
+    entry["_last_ros_at"] = now
+    # ⚠️ 트리 수신 시각을 **따로** 둔다. 예전엔 상태 메시지와 같은 `_last_ros_at` 하나만
+    #    갱신해서, `/libi/fsm_state` 는 계속 오는데 `/libi/bt_snapshot` 만 끊긴 경우
+    #    낡은 트리가 `stale: false` 로 나갔다 — 관제 화면이 **멈춘 트리를 살아 있는 것처럼**
+    #    계속 그렸다(RUNNING 색과 애니메이션까지 그대로).
+    entry["_last_tree_at"] = now
     return robot_id
 
 
 def is_stale(entry: dict[str, Any]) -> bool:
     """수신이 끊긴 캐시인지. UI 는 이걸로 '수신 끊김'을 표시한다."""
     return (time.time() - entry.get("_last_ros_at", 0.0)) > FRESH_SEC
+
+
+def is_tree_stale(entry: dict[str, Any]) -> bool:
+    """**트리만** 끊긴 경우. 상태는 계속 와도 트리가 멈출 수 있다(위 주석)."""
+    return (time.time() - entry.get("_last_tree_at", 0.0)) > FRESH_SEC
 
 
 def snapshot(robot_id: str) -> dict[str, Any] | None:
@@ -115,6 +126,7 @@ def snapshot(robot_id: str) -> dict[str, Any] | None:
             return None
         out = dict(entry)
     out["stale"] = is_stale(out)
+    out["tree_stale"] = is_tree_stale(out)
     return out
 
 
@@ -162,6 +174,7 @@ def all_snapshots() -> dict[str, dict[str, Any]]:
         items = {k: dict(v) for k, v in _cache.items()}
     for entry in items.values():
         entry["stale"] = is_stale(entry)
+        entry["tree_stale"] = is_tree_stale(entry)
     return items
 
 
