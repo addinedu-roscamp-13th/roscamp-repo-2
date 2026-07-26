@@ -148,6 +148,15 @@ class FsmNode(Node):
             "nav": FleetCmdDriver(self, "goal",
                                   args_fn=lambda: self._nav_args(home_location)).bind(cmd_pub),
             "arm": FleetCmdDriver(self, "perform_action").bind(cmd_pub),
+            # 사람 추종 — libi_perception 의 RemoteControl 이 같은 /fleet_cmd 를 구독해
+            # FollowSession 을 켜고 끈다. 세션은 스스로 안 끝나므로(관리자가 멈추거나
+            # 회복이 소진될 때까지) 응답 타임아웃을 길게 준다 — 기본 120초면 추종 중에
+            # "응답 없음"으로 실패 처리된다.
+            #
+            # ⚠️ libi_perception 이 안 떠 있으면 이 명령에 아무도 응답하지 않고
+            #    timeout_sec 뒤 failure 가 된다. 예전처럼 조용히 안 도는 게 아니라
+            #    "추종 실패"로 관제에 뜬다.
+            "follow": FleetCmdDriver(self, "follow_admin", timeout_sec=3600.0).bind(cmd_pub),
             # 주차장으로 goto. `home` 이 아니라 `goal` 인 이유는 위 return_x 주석 참고.
             "return_dock": FleetCmdDriver(
                 self, "goal",
@@ -281,7 +290,18 @@ def main(args=None):
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        pass
+        node.get_logger().info("Ctrl+C — 미션 FSM 을 정리합니다")
+    except Exception as exc:      # noqa: BLE001 — 아래에서 진짜 오류만 다시 던진다
+        # rclpy 는 SIGINT/SIGTERM 에 기본 핸들러를 걸어 전역 컨텍스트를 비동기로 종료한다.
+        # 그 타이밍에 따라 spin() 이 던지는 예외 타입이 달라진다(ExternalShutdownException,
+        # RCLError, get_global_executor() 가 None 이 된 뒤의 AttributeError …).
+        # 타입을 나열해 잡으면 두더지잡기라, **컨텍스트가 이미 죽었는가**만 본다.
+        #   죽었다 → 정상 종료의 부산물이니 삼킨다. 안 그러면 트레이스백이 로그를 덮어
+        #            "왜 죽었나"(예: 누가 SIGTERM 을 보냈나)가 가려진다.
+        #   살아있다 → 진짜 내부 오류다. 다시 던진다.
+        if rclpy.ok():
+            raise
+        node.get_logger().info(f"종료 신호 수신({type(exc).__name__}) — 미션 FSM 을 정리합니다")
     finally:
         node.destroy_node()
         if rclpy.ok():

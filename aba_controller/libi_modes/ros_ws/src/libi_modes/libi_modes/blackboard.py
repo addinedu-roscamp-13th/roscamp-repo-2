@@ -12,8 +12,6 @@ class Keys:
     # INTERACTING 남은초(초, float). UiSessionTimer 가 매 tick 쓴다. state_io 가 읽어
     # /libi/fsm_state JSON 의 remaining_sec 으로 내보낸다(패널 카운트다운용). 비-INTERACTING 시 0.0.
     INTERACTING_REMAINING = "interacting_remaining"
-    DRIVE_LOCK = "drive_lock"
-    ARM_LOCK = "arm_lock"
     ACTIVE_COMMAND = "active_command"
     # 주행 명령의 목적지 {x, y, yaw}. FMS 가 /fleet_cmd{navigate} 로 내려보낸 args 다.
     # 예전엔 이게 없어서 nav 드라이버가 home 좌표로 하드코딩돼 있었고, 그래서

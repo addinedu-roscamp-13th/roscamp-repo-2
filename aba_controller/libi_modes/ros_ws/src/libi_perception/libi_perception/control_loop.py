@@ -38,6 +38,15 @@ class ControlLoop:
     def state(self):
         return self.switch.state
 
+    @property
+    def search_tree(self):
+        """지금 도는 회복 BT. SEARCHING 이 아니면 None.
+
+        관제 화면이 이 트리를 미션 BT 의 `FollowExec` 밑에 붙여 그린다
+        (follow_node.snapshot_dict → /libi/follow_bt_snapshot).
+        """
+        return self._search_tree if self.switch.state == 'SEARCHING' else None
+
     def _start_search(self):
         lkd = self.tracker.last_direction or 1.0
         self._search_ctx = SearchContext(self.get_detection, self.publish,

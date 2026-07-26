@@ -196,19 +196,15 @@ def test_security_patrol_low_battery_returns(seed, read, tick):
 
 # ── INTERACTING ───────────────────────────────────────────────────────────────
 
-def test_interacting_holds_session_and_locks(seed, read, tick):
+def test_interacting_holds_session(seed, read, tick):
     seed(**{Keys.CURRENT_MODE: "INTERACTING", Keys.UI_LAST_TOUCH_AT: 0.0})
     assert tick(interacting.create(PARAMS, clock=lambda: 5.0)) == Status.RUNNING
-    assert read(Keys.DRIVE_LOCK) is True
-    assert read(Keys.ARM_LOCK) is True, "a visitor at the panel is inside the arm's radius"
 
 
-def test_interacting_timeout_to_patrol_and_unlocks(seed, read, tick):
+def test_interacting_timeout_to_patrol(seed, read, tick):
     seed(**{Keys.CURRENT_MODE: "INTERACTING", Keys.UI_LAST_TOUCH_AT: 0.0})
     assert tick(interacting.create(PARAMS, clock=lambda: 25.0)) == Status.SUCCESS
     assert read(Keys.CURRENT_MODE) == "PATROL"
-    assert read(Keys.DRIVE_LOCK) is False
-    assert read(Keys.ARM_LOCK) is False, "a missed release leaves the robot frozen"
 
 
 def test_interacting_ui_close_to_patrol(seed, read, tick):
@@ -217,11 +213,10 @@ def test_interacting_ui_close_to_patrol(seed, read, tick):
     assert read(Keys.CURRENT_MODE) == "PATROL"
 
 
-def test_interacting_task_assigned_to_working_unlocks(seed, read, tick):
+def test_interacting_task_assigned_to_working(seed, read, tick):
     seed(**{Keys.CURRENT_MODE: "INTERACTING", Keys.LAST_COMMAND: "task_assigned"})
     assert tick(interacting.create(PARAMS, clock=lambda: 5.0)) == Status.SUCCESS
     assert read(Keys.CURRENT_MODE) == "WORKING"
-    assert read(Keys.DRIVE_LOCK) is False
 
 
 def test_interacting_stop_request_to_idle(seed, read, tick):

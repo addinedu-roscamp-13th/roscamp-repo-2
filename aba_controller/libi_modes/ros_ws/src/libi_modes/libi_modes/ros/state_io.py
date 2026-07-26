@@ -105,6 +105,8 @@ class StateIO:
                  request_topic="/libi/fsm_transition_request",
                  result_topic="/libi/fsm_transition_result",
                  typed_state_topic="fsm_state_typed",
+                 follow_snapshot_topic="/libi/follow_bt_snapshot",
+                 follow_stale_sec=3.0,
                  service_name="request_transition"):
         self._node = node
         self._robot_id = robot_id
@@ -122,11 +124,38 @@ class StateIO:
         node.create_subscription(String, request_topic, self._on_request_topic, 10)
         self._srv = node.create_service(RequestTransition, service_name, self._on_request_srv)
 
+        # 추종 회복 BT 는 **다른 프로세스**(libi_perception)에서 돈다. 그 트리를 받아
+        # 우리 스냅샷의 `FollowExec` 밑에 접붙인다 — 관제 화면이 보는 토픽을 하나로 유지한다.
+        # 새 파이프를 만들면 FMS 백엔드·WebSocket·프론트 세 군데를 다 고쳐야 한다.
+        self._follow_stale_sec = follow_stale_sec
+        self._follow_tree = None
+        self._follow_at = 0.0
+        node.create_subscription(String, follow_snapshot_topic, self._on_follow_snapshot, 10)
+
         self._bb = py_trees.blackboard.Client(name="state_io")
         for key in (Keys.CURRENT_MODE, Keys.ERROR_CODE, Keys.HOLD_UNTIL):
             self._bb.register_key(key=key, access=Access.WRITE)
         for key in (Keys.BATTERY_PERCENT, Keys.IS_DOCKED, Keys.INTERACTING_REMAINING):
             self._bb.register_key(key=key, access=Access.READ)
+
+    def _on_follow_snapshot(self, msg):
+        try:
+            self._follow_tree = (json.loads(msg.data) or {}).get("tree")
+        except (ValueError, TypeError):
+            return                                  # 깨진 프레임은 조용히 버린다
+        self._follow_at = self._clock()
+
+    def _follow_subtree(self):
+        """살아 있는 추종 서브트리. 발행이 끊기면 붙이지 않는다.
+
+        끊긴 걸 그대로 두면 화면에 **멈춘 트리가 계속 붙어 있어** 추종이 도는 것처럼
+        보인다. 그 오독이 이 값이 없는 것보다 나쁘다.
+        """
+        if self._follow_tree is None:
+            return None
+        if self._clock() - self._follow_at > self._follow_stale_sec:
+            return None
+        return self._follow_tree
 
     def _read(self, key, default=None):
         try:
@@ -228,7 +257,8 @@ class StateIO:
 
         snap = String()
         snap.data = json.dumps(
-            {"robot_id": self._robot_id, "current_state": current, "tree": _to_dict(root)},
+            {"robot_id": self._robot_id, "current_state": current,
+             "tree": _to_dict(root, self._follow_subtree())},
             ensure_ascii=False)
         self._snap_pub.publish(snap)
 
@@ -243,9 +273,50 @@ class StateIO:
         self._typed_pub.publish(typed)
 
 
-def _to_dict(node):
+#: 다른 프로세스의 서브트리를 붙일 자리. 이름이 곧 접합점이라 여기만 고치면 된다.
+_GRAFT_POINT = "FollowExec"
+
+
+def _kind(node) -> str:
+    """노드의 **성격**. 화면에서 이름만으로는 Sequence 인지 Selector 인지 알 수 없다.
+
+    예전엔 스냅샷에 `{name, status, children}` 뿐이라, 관제 화면이 제어노드 종류를
+    자식 유무로만 추측했다 — Selector 가 Sequence 처럼 보였다. 그건 오독을 부른다:
+    Sequence 는 "왼쪽부터 다 통과해야", Selector 는 "하나만 통과하면" 이라 뜻이 정반대다.
+
+    표기
+        Sequence      왼쪽부터 순서대로, 하나라도 실패하면 실패
+        Sequence*     `*` = memory. 통과한 자식은 다음 tick 에 건너뛴다
+        Selector      왼쪽부터 묻다가 하나 통과하면 거기서 멈춤
+        Selector*     `*` = memory
+        Parallel/SuccessOnOne   자식을 **동시에** 돌리고 하나만 성공하면 성공
+        Parallel/SuccessOnAll   전부 성공해야 성공
+        (그 밖)       leaf 의 클래스명 그대로 (IsMode, BatteryCheck, …)
+
+    ⚠️ py_trees Parallel 은 정책과 무관하게 **자식 하나라도 실패하면 즉시 실패**한다.
+       그래서 감시용 Selector 끝에 항상 Running 이 붙어 있다(NoExitCondition).
+    """
+    cls = type(node).__name__
+    if cls == "Parallel":
+        return f"Parallel/{type(getattr(node, 'policy', None)).__name__}"
+    if cls in ("Sequence", "Selector"):
+        return f"{cls}*" if getattr(node, "memory", False) else cls
+    return cls
+
+
+def _to_dict(node, follow_subtree=None):
+    """트리 → `{name, status, children}`.
+
+    `follow_subtree` 가 있으면 `FollowExec` **밑에 붙인다.** 추종 회복 BT 는
+    libi_perception 이라는 **다른 프로세스**에서 돌아 이 트리에 존재하지 않는데,
+    관제 화면에서는 그 leaf 밑에 이어져 보여야 한다(그게 실제 실행 관계다).
+    """
+    children = [_to_dict(c, follow_subtree) for c in getattr(node, "children", [])]
+    if follow_subtree is not None and node.name == _GRAFT_POINT and not children:
+        children = [follow_subtree]
     return {
         "name": node.name,
+        "kind": _kind(node),
         "status": _STATUS_NAME.get(node.status, "INVALID"),
-        "children": [_to_dict(c) for c in getattr(node, "children", [])],
+        "children": children,
     }
