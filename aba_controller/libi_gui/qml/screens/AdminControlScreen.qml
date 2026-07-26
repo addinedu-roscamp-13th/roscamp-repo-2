@@ -25,7 +25,7 @@ Item {
                   leftMargin: 28; rightMargin: 28; topMargin: 14; bottomMargin: 28 }
         spacing: 20
 
-        // ── 왼쪽: 조작/제어 (작업 상태 및 에러 · 복구 제어 · 주변장치) ──
+        // ── 왼쪽: 조작/제어 (작업 상태 및 에러 · 복구 제어) ──
         Card {
             width: (parent.width - 20) * 0.5
             height: parent.height
@@ -127,32 +127,6 @@ Item {
                         implicitWidth: parent.cellW; implicitHeight: 76
                         text: "🛑  추종 종료"; color: S.warning; textColor: "white"
                         onClicked: controller.stopAdminFollow()
-                    }
-                }
-
-                Rectangle { width: parent.width; height: 1; color: S.border }
-
-                // 주변장치
-                Text { text: "🔌  주변장치"; font.family: S.fontFamily; font.pixelSize: 20; font.bold: true; color: S.text }
-                Grid {
-                    width: parent.width
-                    columns: 2
-                    columnSpacing: 14; rowSpacing: 14
-                    property real cellW: (width - columnSpacing) / 2
-
-                    BigButton {
-                        implicitWidth: parent.cellW; implicitHeight: 84
-                        icon: "💡"; text: controller.led ? "LED 끄기" : "LED 켜기"
-                        color: controller.led ? S.sun : S.bgAlt; textColor: S.text
-                        enabledLook: !controller.emergencyStopped
-                        onClicked: controller.setLed(!controller.led)
-                    }
-                    BigButton {
-                        implicitWidth: parent.cellW; implicitHeight: 84
-                        icon: "🔔"; text: "부저"
-                        color: S.bgAlt; textColor: S.text
-                        enabledLook: !controller.emergencyStopped
-                        onClicked: controller.buzz()
                     }
                 }
             }

@@ -48,7 +48,6 @@ const CATEGORY_CHART_COLOR: Record<string, string> = {
   art: "var(--chart-2)",
   science: "var(--chart-3)",
   humanities: "var(--chart-4)",
-  kids: "var(--chart-5)",
 };
 
 /** 도서 재고 상태 — books.tsx 서가 현황 차트와 같은 색 언어(3상태 고정). */

@@ -5,9 +5,12 @@
 #include <QStringList>
 #include <QVariantList>
 #include <QTimer>
+#include <functional>
 
 class QNetworkAccessManager;
 class QNetworkReply;
+class QJsonDocument;
+class QUrlQuery;
 class RosLink;
 
 // RobotController
@@ -53,7 +56,6 @@ class RobotController : public QObject {
     Q_PROPERTY(double joint1 READ joint1 NOTIFY joint1Changed)
     Q_PROPERTY(double joint2 READ joint2 NOTIFY joint2Changed)
     Q_PROPERTY(double gripper READ gripper NOTIFY gripperChanged)
-    Q_PROPERTY(bool led READ led NOTIFY ledChanged)
     Q_PROPERTY(QStringList logs READ logs NOTIFY logsChanged)
 
 public:
@@ -79,7 +81,6 @@ public:
     double joint1() const { return m_joint1; }
     double joint2() const { return m_joint2; }
     double gripper() const { return m_gripper; }
-    bool led() const { return m_led; }
     QStringList logs() const { return m_logs; }
 
     // --- QML 에서 호출 (Q_INVOKABLE) ---
@@ -118,16 +119,29 @@ public:
     Q_INVOKABLE void setJoint1(double v);
     Q_INVOKABLE void setJoint2(double v);
     Q_INVOKABLE void setGripper(double v);
-    Q_INVOKABLE void setLed(bool on);
-    Q_INVOKABLE void buzz();
 
-    // 데이터 조회 (실제로는 Drive Controller→ABA Service 경유; 여기선 목)
+    // 데이터 조회. 도서 관련(검색·추천)은 ABA Service(:8000, cb_books) 를 HTTP 로 그대로
+    // 묻는다 — 지도 시설물 목록만 아직 목(mock)이다(로봇 좌표라 서버가 모른다).
     Q_INVOKABLE QVariantList facilities() const;     // 시설물 목록 (+지도 좌표)
     Q_INVOKABLE QVariantList searchBooks(const QString &query, const QString &category, bool onlyAvailable) const;
     Q_INVOKABLE QVariantList searchFacilities(const QString &query) const;
     Q_INVOKABLE QVariantList recommend(const QString &purpose, const QString &interest) const;
 
+    // 비동기 버전 — SearchScreen/RecommendScreen 전용. QML 프로퍼티 바인딩 안에서 동기
+    // HTTP(위 searchBooks/recommend, httpGetJson 의 QEventLoop)를 직접 부르면 응답을
+    // 기다리는 동안 UI 스레드가 최대 ABA_SERVICE_TIMEOUT_MS 만큼 멈춘다 — 검색창 키 입력마다,
+    // 추천 칩 클릭마다 이 정지가 반복된다. 대신 여기서는 요청을 던지고 즉시 id 를 돌려주고
+    // (네트워크 응답은 기다리지 않는다), 응답이 오면 ...Ready 신호로 알린다. id 는
+    // RobotController 수명 전체에서 유일하다(QML 쪽 Loader 가 화면을 파괴·재생성해도 화면별
+    // 카운터가 아니라 이 값을 그대로 비교하면 되므로, 화면 재진입 시 재사용되는 화면-로컬
+    // id와 옛 응답의 id가 우연히 같아 stale 데이터를 받아들이는 사고를 막는다).
+    Q_INVOKABLE int searchBooksAsync(const QString &query, const QString &category, bool onlyAvailable);
+    Q_INVOKABLE int recommendAsync(const QString &purpose, const QString &interest);
+
 signals:
+    // ok=false 는 "결과 없음"과 구분되는 네트워크/타임아웃 실패 — 화면이 다른 문구를 보여준다.
+    void searchBooksReady(int requestId, QVariantList results, bool ok);
+    void recommendReady(int requestId, QVariantList results, bool ok);
     void modeChanged();
     void isAdminChanged();
     void emergencyStoppedChanged();
@@ -147,7 +161,6 @@ signals:
     void joint1Changed();
     void joint2Changed();
     void gripperChanged();
-    void ledChanged();
     void logsChanged();
 
     void faceGesture(const QString &kind);  // 얼굴 애니메이션 트리거 (wave/bow/nod)
@@ -165,7 +178,11 @@ private:
     static QString mapState(const QString &canonical);   // ROS FSM canonical(EN) → 패널 한글 표시어휘
     void setTaskStatus(const QString &s);
     void setGuidePhase(const QString &p);
-    QVariantList allBooks() const;
+    QJsonDocument httpGetJson(const QString &path, const QUrlQuery &query) const;
+    // GET 을 던지고 즉시 새 id 를 반환. onReady(ok, doc) 는 성공/실패/타임아웃 어느 경로든
+    // 정확히 한 번, reply->deleteLater() 이후 불린다.
+    int httpGetAsync(const QString &path, const QUrlQuery &query,
+                      std::function<void(int requestId, bool ok, const QJsonDocument &doc)> onReady);
 
     // 상태
     QString m_mode = "home";
@@ -186,15 +203,16 @@ private:
     double m_distance = 0.0;
     double m_lin = 0.0, m_ang = 0.0;
     double m_joint1 = 0.0, m_joint2 = 0.0, m_gripper = 50.0;
-    bool m_led = false;
     QStringList m_logs;
 
     // 로봇 식별 + FMS 접속 (환경변수, 기동 시 1회 — gui.sh 참조)
     QString m_robotId;
     QString m_fmsUrl;
+    QString m_abaServiceUrl;        // 도서 검색/추천 — 회원 앱과 같은 ABA Service 백엔드
     bool m_followPending = false;   // 승인 요청 왕복 중 (연타로 중복 요청되는 것 방지)
 
     QNetworkAccessManager *m_net = nullptr;
+    int m_nextRequestId = 1;   // 0 은 QML 쪽 "대기 중인 요청 없음" 센티널
 
     // 목 시뮬레이션 타이머
     QTimer m_batteryTimer;   // 배터리 서서히 변동

@@ -4,33 +4,71 @@
 #include <QVariantMap>
 #include <QTime>
 #include <QEventLoop>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QUrl>
+#include <QUrlQuery>
+#include <QDebug>
 
 // 종료 시 해제 보고를 기다리는 상한. 관제 기록 정리보다 창이 안 닫히는 게 더 나쁘다.
 static constexpr int RELEASE_ON_EXIT_TIMEOUT_MS = 1200;
+// ABA Service 도서 조회 상한 — 터치 입력마다 검색이 다시 나가므로 짧게 잡는다
+// (응답이 늦어도 화면이 몇 초씩 멈추면 안 된다).
+static constexpr int ABA_SERVICE_TIMEOUT_MS = 1500;
 
-// 목 데이터 헬퍼: 책 한 권을 QVariantMap 으로
-static QVariantMap makeBook(const QString &title, const QString &author,
-                            const QString &call, const QString &category,
-                            bool available, const QString &location) {
+// 화면 카테고리 칩은 한글, ABA Service `/api/books` 는 영문 키를 쓴다
+// (books.py 의 CATEGORIES 와 반드시 같아야 한다).
+static QString korToApiCategory(const QString &kor) {
+    if (kor == QLatin1String("과학")) return QStringLiteral("science");
+    if (kor == QLatin1String("예술")) return QStringLiteral("art");
+    if (kor == QLatin1String("문학")) return QStringLiteral("literature");
+    if (kor == QLatin1String("인문학")) return QStringLiteral("humanities");
+    return QString();   // "전체"/빈 값 등 — 필터 없음
+}
+
+static QString apiToKorCategory(const QString &api) {
+    if (api == QLatin1String("science")) return QStringLiteral("과학");
+    if (api == QLatin1String("art")) return QStringLiteral("예술");
+    if (api == QLatin1String("literature")) return QStringLiteral("문학");
+    if (api == QLatin1String("humanities")) return QStringLiteral("인문학");
+    return api;
+}
+
+// ABA Service 의 BookOut(JSON) → 화면이 쓰는 book QVariantMap.
+// 청구기호(call) 는 DB 에 아직 없어 서가 위치(shelf) 로 대신한다.
+static QVariantMap bookFromJson(const QJsonObject &o) {
     QVariantMap m;
-    m["title"] = title;
-    m["author"] = author;
-    m["call"] = call;          // 청구기호
-    m["category"] = category;  // 과학/예술/문학
-    m["available"] = available; // 대여 가능 여부
-    m["location"] = location;  // 서가 위치
+    m["title"] = o.value("title").toObject().value("KR").toString();
+    m["author"] = o.value("author").toString();
+    m["call"] = o.value("shelf").toString();
+    m["category"] = apiToKorCategory(o.value("category").toString());
+    m["available"] = o.value("inStock").toBool() && !o.value("unavailable").toBool();
+    m["location"] = o.value("zone").toString();
     return m;
 }
 
-static QVariantMap makeFacility(const QString &name, const QString &icon, double x, double y) {
+// `name` 은 화면에 보여줄 표시 문구(하이라이트 비교에도 이 값을 쓴다), `waypoint` 는
+// 실제 waypoint.yaml 정점 이름이다 — 둘이 다른 경우가 있다("1번 테이블" 표시 ↔
+// "1번테이블" 정점, "안내데스크" 표시 ↔ "안네데스크" 정점 등). 지금은 startGuide 가
+// 목(mock)이라 표시 문구만 써도 동작하지만, 나중에 실제 ROS2 내비게이션을 붙일 때는
+// 반드시 `waypoint` 값으로 목적지를 잡아야 한다 — `name` 을 정점 이름인 줄 알고 그대로
+// 쓰면 이 프로젝트가 이미 여러 번 겪은 "화면 이름과 실제 정점 이름이 어긋나는" 버그가
+// 똑같이 재현된다.
+// `pillName` 은 지도 위 알약에만 쓰는 짧은 표기다(비우면 `name` 그대로) — 칩 목록·
+// 안내 시작·하이라이트 비교는 전부 `name`(전체 표기)을 그대로 쓴다. 알약은 글자 폭만큼
+// 스스로 커지는 자동 크기라, "1번 테이블"처럼 긴 이름이 오른쪽 끝에서 지도 밖으로
+// 삐져나가는 걸 막는 용도다(실측 확인됨).
+static QVariantMap makeFacility(const QString &name, const QString &waypoint,
+                                 const QString &icon, double x, double y,
+                                 const QString &pillName = QString()) {
     QVariantMap m;
     m["name"] = name;
+    m["pillName"] = pillName.isEmpty() ? name : pillName;
+    m["waypoint"] = waypoint;
     m["icon"] = icon;     // 이모지/표시
     m["x"] = x;           // 지도 좌표 0..1
     m["y"] = y;
@@ -44,15 +82,18 @@ RobotController::RobotController(QObject *parent) : QObject(parent) {
     m_robotId = qEnvironmentVariable("ROBOT_ID");
     m_fmsUrl = qEnvironmentVariable("FMS_URL", QStringLiteral("http://127.0.0.1:9001"));
     while (m_fmsUrl.endsWith(QLatin1Char('/'))) m_fmsUrl.chop(1);
+    // 회원 앱(aba_service backend, 기본 :8000)과 같은 곳 — 도서 검색/추천이 여기로 붙는다.
+    m_abaServiceUrl = qEnvironmentVariable("ABA_SERVICE_URL", QStringLiteral("http://127.0.0.1:8000"));
+    while (m_abaServiceUrl.endsWith(QLatin1Char('/'))) m_abaServiceUrl.chop(1);
 
     m_net = new QNetworkAccessManager(this);
 
     log(QStringLiteral("시스템 시작 — Libi GUI"));
     // 도메인은 GUI 가 쓰진 않지만(아직 ROS2 연동 전), 어느 로봇 패널인지 확인할 수 있게 남긴다.
-    log(QStringLiteral("robot_id=%1  domain=%2  fms=%3")
+    log(QStringLiteral("robot_id=%1  domain=%2  fms=%3  aba=%4")
             .arg(m_robotId.isEmpty() ? QStringLiteral("(미설정)") : m_robotId,
                  qEnvironmentVariable("ROS_DOMAIN_ID", QStringLiteral("(미설정)")),
-                 m_fmsUrl));
+                 m_fmsUrl, m_abaServiceUrl));
     log(QStringLiteral("순찰 모드 진입 (대기 중)"));
 
     // 배터리 서서히 변동 (목): 충전중이면 +, 아니면 - / 15% 미만이면 자동충전 (SR-18)
@@ -429,56 +470,145 @@ void RobotController::setJoint1(double v) { if (!m_isAdmin) return; m_joint1 = v
 void RobotController::setJoint2(double v) { if (!m_isAdmin) return; m_joint2 = v; emit joint2Changed(); }
 void RobotController::setGripper(double v) { if (!m_isAdmin) return; m_gripper = v; emit gripperChanged(); }
 
-void RobotController::setLed(bool on) {
-    if (!m_isAdmin) return;
-    m_led = on; emit ledChanged();
-    log(on ? QStringLiteral("LED 켜짐") : QStringLiteral("LED 꺼짐"));
-}
-
-void RobotController::buzz() {
-    if (!m_isAdmin) return;
-    log(QStringLiteral("부저 울림 🔔"));
-    emit toast(QStringLiteral("부저 🔔"));
-}
-
-// ---- 데이터 (목) ----
-QVariantList RobotController::allBooks() const {
-    QVariantList b;
-    b << makeBook(QStringLiteral("코스모스"), QStringLiteral("칼 세이건"), "440.9 ㅅ", QStringLiteral("과학"), true,  QStringLiteral("A-1 서가"));
-    b << makeBook(QStringLiteral("이기적 유전자"), QStringLiteral("리처드 도킨스"), "472 ㄷ", QStringLiteral("과학"), false, QStringLiteral("A-2 서가"));
-    b << makeBook(QStringLiteral("시간의 역사"), QStringLiteral("스티븐 호킹"), "440 ㅎ", QStringLiteral("과학"), true,  QStringLiteral("A-2 서가"));
-    b << makeBook(QStringLiteral("서양미술사"), QStringLiteral("E.H. 곰브리치"), "609 ㄱ", QStringLiteral("예술"), true,  QStringLiteral("B-1 서가"));
-    b << makeBook(QStringLiteral("디자인의 디자인"), QStringLiteral("하라 켄야"), "658.4 ㅎ", QStringLiteral("예술"), true,  QStringLiteral("B-2 서가"));
-    b << makeBook(QStringLiteral("데미안"), QStringLiteral("헤르만 헤세"), "853 ㅎ", QStringLiteral("문학"), true,  QStringLiteral("C-1 서가"));
-    b << makeBook(QStringLiteral("1984"), QStringLiteral("조지 오웰"), "843 ㅇ", QStringLiteral("문학"), false, QStringLiteral("C-1 서가"));
-    b << makeBook(QStringLiteral("토지"), QStringLiteral("박경리"), "811.3 ㅂ", QStringLiteral("문학"), true,  QStringLiteral("C-3 서가"));
-    return b;
-}
-
+// ---- 데이터 ----
+// 이름·위치는 실제 로봇 내비 그래프(waypoint.yaml)와 회원 앱 지도(LibraryMap.tsx)를
+// 그대로 따른다 — 예전엔 "과학 섹션"/"열람 테이블"(단수)/"대여 데스크"·"반납 데스크"(가상)처럼
+// 실제 정점과 무관한 이름을 썼다. x,y 는 회원 앱과 같은 스키마 배치의 중심점(0..1)이다.
 QVariantList RobotController::facilities() const {
     QVariantList f;
-    f << makeFacility(QStringLiteral("안내 데스크"), QStringLiteral("ℹ"), 0.50, 0.85);
-    f << makeFacility(QStringLiteral("화장실"), QStringLiteral("🚻"), 0.12, 0.20);
-    f << makeFacility(QStringLiteral("과학 섹션"), QStringLiteral("🔬"), 0.25, 0.55);
-    f << makeFacility(QStringLiteral("예술 섹션"), QStringLiteral("🎨"), 0.55, 0.50);
-    f << makeFacility(QStringLiteral("문학 섹션"), QStringLiteral("📖"), 0.80, 0.55);
-    f << makeFacility(QStringLiteral("열람 테이블"), QStringLiteral("🪑"), 0.50, 0.32);
-    f << makeFacility(QStringLiteral("수거함"), QStringLiteral("📥"), 0.85, 0.82);
-    f << makeFacility(QStringLiteral("대여 데스크"), QStringLiteral("📚"), 0.35, 0.85);
-    f << makeFacility(QStringLiteral("반납 데스크"), QStringLiteral("↩"), 0.65, 0.85);
+    f << makeFacility(QStringLiteral("화장실"), QStringLiteral("화장실"), QStringLiteral("🚻"), 0.185, 0.075);
+    f << makeFacility(QStringLiteral("미술작품"), QStringLiteral("미술작품"), QStringLiteral("🖼"), 0.465, 0.075);
+    f << makeFacility(QStringLiteral("수거함"), QStringLiteral("수거함"), QStringLiteral("📥"), 0.56, 0.23);
+    f << makeFacility(QStringLiteral("1번 테이블"), QStringLiteral("1번테이블"), QStringLiteral("🪑"), 0.74, 0.255,
+                       QStringLiteral("1번"));
+    f << makeFacility(QStringLiteral("2번 테이블"), QStringLiteral("2번테이블"), QStringLiteral("🪑"), 0.87, 0.255,
+                       QStringLiteral("2번"));
+    f << makeFacility(QStringLiteral("예술서가"), QStringLiteral("예술서가"), QStringLiteral("🖌"), 0.13, 0.475);
+    f << makeFacility(QStringLiteral("문학서가"), QStringLiteral("문학서가"), QStringLiteral("📖"), 0.13, 0.755);
+    f << makeFacility(QStringLiteral("과학 서가"), QStringLiteral("과학-인문학서가"), QStringLiteral("🔬"), 0.37, 0.405);
+    f << makeFacility(QStringLiteral("인문학서가"), QStringLiteral("과학-인문학서가"), QStringLiteral("🎓"), 0.47, 0.63);
+    f << makeFacility(QStringLiteral("출입구"), QStringLiteral("도서관출입구"), QStringLiteral("🚪"), 0.86, 0.54);
+    f << makeFacility(QStringLiteral("안내데스크"), QStringLiteral("안네데스크"), QStringLiteral("ℹ"), 0.815, 0.925);
     return f;
 }
 
+// ABA Service 에 GET 하나를 동기로 묻는다. QML 의 검색 결과 프로퍼티가 동기 호출
+// (`Q_INVOKABLE ... const`)로 짜여 있어, 여기만 비동기로 바꾸면 화면 쪽도 다시 짜야
+// 한다 — releaseFollowOnExit() 과 같은 방식(QEventLoop + 타임아웃)으로 짧게 기다린다.
+// 실패/타임아웃이면 빈 QJsonDocument 를 돌려주고, 호출부는 그걸 빈 목록으로 받는다
+// (doc.array() 는 무효 문서에도 빈 배열을 준다 — 별도 널 체크가 필요 없다).
+QJsonDocument RobotController::httpGetJson(const QString &path, const QUrlQuery &query) const {
+    QUrl url(m_abaServiceUrl + path);
+    url.setQuery(query);
+    QNetworkReply *reply = m_net->get(QNetworkRequest(url));
+
+    QEventLoop loop;
+    QTimer::singleShot(ABA_SERVICE_TIMEOUT_MS, &loop, &QEventLoop::quit);
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+
+    QJsonDocument doc;
+    if (!reply->isFinished()) {
+        reply->abort();   // 타임아웃 — 응답을 안 기다리고 정리
+        qWarning() << "[aba-service] GET" << path << "timed out";
+    } else if (reply->error() == QNetworkReply::NoError) {
+        doc = QJsonDocument::fromJson(reply->readAll());
+    } else {
+        qWarning() << "[aba-service] GET" << path << "failed:" << reply->errorString();
+    }
+    reply->deleteLater();
+    return doc;
+}
+
+// 비동기 GET — id 를 즉시 반환하고(네트워크 응답은 안 기다림), 응답이 오면(성공/실패/
+// 타임아웃 어느 경로든) onReady 를 정확히 한 번 부른다. 타임아웃은 abort() 로 처리하는데,
+// abort() 자체가 finished() 를 내보내므로 정리 경로가 하나로 합쳐진다(성공/실패/타임아웃을
+// 따로 처리할 필요가 없다). connect 의 context 를 this 로 줘서, RobotController 가 먼저
+// 죽으면(main.cpp 에서 스택 객체) Qt 가 이 연결을 자동 해제 — 죽은 this 를 참조하는 사고를 막는다.
+int RobotController::httpGetAsync(const QString &path, const QUrlQuery &query,
+                                   std::function<void(int, bool, const QJsonDocument &)> onReady) {
+    const int id = m_nextRequestId++;
+    QUrl url(m_abaServiceUrl + path);
+    url.setQuery(query);
+    QNetworkReply *reply = m_net->get(QNetworkRequest(url));
+
+    QTimer::singleShot(ABA_SERVICE_TIMEOUT_MS, reply, [reply]() {
+        if (!reply->isFinished()) reply->abort();
+    });
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply, path, id, onReady]() {
+        const bool ok = reply->error() == QNetworkReply::NoError;
+        QJsonDocument doc;
+        if (ok) doc = QJsonDocument::fromJson(reply->readAll());
+        else qWarning() << "[aba-service] GET" << path << "failed:" << reply->errorString();
+        reply->deleteLater();
+        onReady(id, ok, doc);
+    });
+    return id;
+}
+
+// searchBooks() 와 같은 조회, 화면 프로퍼티 바인딩에서 직접 부르지 않도록 비동기로 분리한
+// 버전. SearchScreen.qml 전용 — onlyAvailable 필터도 동일하게 클라이언트에서 마저 거른다.
+int RobotController::searchBooksAsync(const QString &query, const QString &category, bool onlyAvailable) {
+    QUrlQuery q;
+    if (!query.trimmed().isEmpty()) q.addQueryItem(QStringLiteral("q"), query.trimmed());
+    const QString apiCat = korToApiCategory(category);
+    if (!apiCat.isEmpty()) q.addQueryItem(QStringLiteral("category"), apiCat);
+    q.addQueryItem(QStringLiteral("limit"), QStringLiteral("30"));
+
+    return httpGetAsync(QStringLiteral("/api/books"), q,
+        [this, onlyAvailable](int id, bool ok, const QJsonDocument &doc) {
+            QVariantList out;
+            if (ok) {
+                for (const QJsonValue &v : doc.array()) {
+                    QVariantMap m = bookFromJson(v.toObject());
+                    if (onlyAvailable && !m["available"].toBool()) continue;
+                    out << m;
+                }
+            }
+            emit searchBooksReady(id, out, ok);
+        });
+}
+
+// recommend() 와 같은 조회의 비동기 버전. RecommendScreen.qml 전용.
+int RobotController::recommendAsync(const QString &purpose, const QString &interest) {
+    QString cat = interest;
+    if (interest == QStringLiteral("취미")) cat = QStringLiteral("예술");
+    QUrlQuery q;
+    const QString apiCat = korToApiCategory(cat);
+    if (!apiCat.isEmpty()) q.addQueryItem(QStringLiteral("category"), apiCat);
+    q.addQueryItem(QStringLiteral("limit"), QStringLiteral("4"));
+
+    return httpGetAsync(QStringLiteral("/api/books/recommend"), q,
+        [this, purpose](int id, bool ok, const QJsonDocument &doc) {
+            QVariantList out;
+            if (ok) {
+                for (const QJsonValue &v : doc.array()) {
+                    QVariantMap m = bookFromJson(v.toObject());
+                    const QString category = m["category"].toString();
+                    m["reason"] = (purpose == QStringLiteral("자기개발"))
+                            ? QStringLiteral("성장에 도움이 되는 ") + category + QStringLiteral(" 추천")
+                            : QStringLiteral("편안하게 읽기 좋은 ") + category + QStringLiteral(" 추천");
+                    out << m;
+                }
+            }
+            emit recommendReady(id, out, ok);
+        });
+}
+
+// ABA Service 는 대여 가능 여부로 거르는 파라미터가 따로 없어 클라이언트에서 마저 거른다.
 QVariantList RobotController::searchBooks(const QString &query, const QString &category, bool onlyAvailable) const {
+    QUrlQuery q;
+    if (!query.trimmed().isEmpty()) q.addQueryItem(QStringLiteral("q"), query.trimmed());
+    const QString apiCat = korToApiCategory(category);
+    if (!apiCat.isEmpty()) q.addQueryItem(QStringLiteral("category"), apiCat);
+    q.addQueryItem(QStringLiteral("limit"), QStringLiteral("30"));
+
     QVariantList out;
-    const QString q = query.trimmed();
-    for (const QVariant &v : allBooks()) {
-        const QVariantMap m = v.toMap();
-        if (!category.isEmpty() && category != QStringLiteral("전체") && m["category"].toString() != category) continue;
+    const QJsonDocument doc = httpGetJson(QStringLiteral("/api/books"), q);
+    for (const QJsonValue &v : doc.array()) {
+        QVariantMap m = bookFromJson(v.toObject());
         if (onlyAvailable && !m["available"].toBool()) continue;
-        if (!q.isEmpty() &&
-            !m["title"].toString().contains(q, Qt::CaseInsensitive) &&
-            !m["author"].toString().contains(q, Qt::CaseInsensitive)) continue;
         out << m;
     }
     return out;
@@ -494,22 +624,30 @@ QVariantList RobotController::searchFacilities(const QString &query) const {
     return out;
 }
 
+// LiBi AI(회원 앱 챗봇)가 그라운딩에 쓰는 것과 같은 엔드포인트 — 대화형 LLM 전체를
+// 다시 구현하는 대신, 그 추천이 근거로 삼는 실제 DB 조회만 그대로 재사용한다.
+// 결과가 없으면 서버가 이미 재고 있는 책으로 대체해 내려준다(fallback 클라이언트에 없음).
 QVariantList RobotController::recommend(const QString &purpose, const QString &interest) const {
     // 관심분야 → 카테고리 매핑 (취미는 예술로 근사)
     QString cat = interest;
     if (interest == QStringLiteral("취미")) cat = QStringLiteral("예술");
+
+    QUrlQuery q;
+    const QString apiCat = korToApiCategory(cat);
+    if (!apiCat.isEmpty()) q.addQueryItem(QStringLiteral("category"), apiCat);
+    q.addQueryItem(QStringLiteral("limit"), QStringLiteral("4"));
+
     QVariantList out;
-    for (const QVariant &v : allBooks()) {
-        QVariantMap m = v.toMap();
-        if (!cat.isEmpty() && m["category"].toString() != cat) continue;
-        QString reason = (purpose == QStringLiteral("자기개발"))
-                ? QStringLiteral("성장에 도움이 되는 ") + m["category"].toString() + QStringLiteral(" 추천")
-                : QStringLiteral("편안하게 읽기 좋은 ") + m["category"].toString() + QStringLiteral(" 추천");
-        m["reason"] = reason;
+    const QJsonDocument doc = httpGetJson(QStringLiteral("/api/books/recommend"), q);
+    for (const QJsonValue &v : doc.array()) {
+        QVariantMap m = bookFromJson(v.toObject());
+        const QString category = m["category"].toString();
+        m["reason"] = (purpose == QStringLiteral("자기개발"))
+                ? QStringLiteral("성장에 도움이 되는 ") + category + QStringLiteral(" 추천")
+                : QStringLiteral("편안하게 읽기 좋은 ") + category + QStringLiteral(" 추천");
         out << m;
     }
-    if (out.isEmpty()) out = allBooks().mid(0, 3);
-    return out.mid(0, 4);
+    return out;
 }
 
 // 8종 canonical(EN) → 패널 한글 표시어휘. INTERACTING/SECURITY_PATROL/RETURNING 은

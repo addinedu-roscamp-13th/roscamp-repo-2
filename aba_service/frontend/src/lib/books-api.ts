@@ -9,13 +9,9 @@ export type BookCategory = Book["category"];
 
 // Keyword → category map so we can derive intent from a free-text message.
 // Order matters: the first matching category wins.
-// ⚠️ 시드(`seed_books.py`)와 백엔드 `books.py` 의 5분야를 모두 덮어야 한다 —
-// humanities/kids 가 빠져 있으면 그 분야는 의도 추론에서 영원히 안 잡힌다.
+// ⚠️ 시드(`seed_books.py`)와 백엔드 `books.py` 의 4분야를 모두 덮어야 한다 —
+// humanities 가 빠져 있으면 그 분야는 의도 추론에서 영원히 안 잡힌다.
 const CATEGORY_KEYWORDS: Array<[BookCategory, RegExp]> = [
-  [
-    "kids",
-    /(유아|아동|어린이|그림책|동화|kids|children|picture ?book|幼儿|儿童|thiếu nhi)/i,
-  ],
   [
     "humanities",
     /(인문|철학|역사|심리|사회|humanities|philosophy|history|psychology|人文|哲学|nhân văn|triết học)/i,

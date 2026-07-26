@@ -9,14 +9,7 @@ import { fetchPopular, type CatalogBook } from "@/lib/books-api";
 import { useI18n } from "@/lib/i18n";
 import { useEffect, useState } from "react";
 
-const CATS = [
-  "all",
-  "literature",
-  "art",
-  "science",
-  "humanities",
-  "kids",
-] as const;
+const CATS = ["all", "literature", "art", "science", "humanities"] as const;
 type Cat = (typeof CATS)[number];
 
 export const Route = createFileRoute("/recommend")({
@@ -48,7 +41,6 @@ function Recommend() {
     art: tr("catArt"),
     science: tr("catScience"),
     humanities: tr("catHumanities"),
-    kids: tr("catKids"),
   };
 
   return (

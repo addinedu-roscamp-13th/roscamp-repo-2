@@ -22,6 +22,8 @@ Item {
         highlight: root.guiding ? controller.guideDestination : ""
         robotY: root.guiding ? 0.55 : 0.90
         robotX: 0.50
+        // 지도의 알약을 직접 탭해도 오른쪽 칩 목록과 똑같이 안내가 시작된다.
+        onFacilityClicked: (name) => { if (!root.guiding) controller.startGuide(name) }
     }
 
     // 오른쪽 패널

@@ -35,7 +35,7 @@ static int runShots(QGuiApplication &app, QQmlApplicationEngine &engine,
         controller.setMode("search");          grab("03_search");
         controller.setMode("recommend");       grab("04_recommend");
         controller.setMode("guide");           grab("05_guide_select");
-        controller.startGuide(QStringLiteral("과학 섹션")); grab("06_guide_guiding");
+        controller.startGuide(QStringLiteral("문학서가")); grab("06_guide_guiding");
         controller.setMode("adminLogin");      grab("08_adminLogin");
         controller.login("1234");
         settle(1700);                          // 로그인 토스트가 사라질 때까지 대기

@@ -17,7 +17,7 @@ import { memberApi, getToken, TABLES, APPROVAL_LABEL } from "./member";
 import { fetchCatalog, fetchPopular } from "./books-api";
 import type { CatalogBook, BookCategory } from "./books-api";
 import { bookAvailability, availabilitySentence } from "./book-status";
-import { buildZones } from "../components/LibraryMap";
+import { listZones } from "../components/LibraryMap";
 
 export type ToolName =
   | "search_books"
@@ -59,7 +59,7 @@ const NEEDS_LOGIN: Set<ToolName> = new Set([
   "my_wishlist",
 ]);
 
-const CATEGORY = z.enum(["literature", "art", "science", "humanities", "kids"]);
+const CATEGORY = z.enum(["literature", "art", "science", "humanities"]);
 // `TABLES` (member.ts) 가 백엔드 화이트리스트와 같아야 하는 유일한 출처다 — 여기서
 // 값을 다시 나열하면 둘이 어긋날 수 있으니 그대로 파생시킨다.
 const TABLE = z.enum(TABLES.map((t) => t.value) as [string, ...string[]]);
@@ -124,7 +124,7 @@ const TOOL_DEFS: ToolDef[] = [
   {
     name: "where_is_zone",
     description:
-      "도서관 구역(문학·예술·과학·인문학·유아·테이블·안내데스크·화장실·입구)이 어디인지 알려준다.",
+      "도서관 구역(문학서가·예술서가·과학서가·인문학서가·미술작품·수거함·테이블·안내데스크·화장실·출입구)이 어디인지 알려준다.",
     schema: z.object({ zone_label: ZONE_LABEL }),
     argDocs: { zone_label: "구역 이름 (예: 문학, 과학, 테이블 1)" },
   },
@@ -450,10 +450,13 @@ async function runTool(
       }
       case "where_is_zone": {
         const label = String(args.zone_label).trim();
-        const zone = buildZones().find(
+        // 구역 라벨이 "문학서가"처럼 길어져서, "문학" 같은 짧은 질문은 라벨 쪽이 질문을
+        // 포함하는 방향도 봐야 잡힌다 — 한쪽만 보면 짧은 질문이 전부 못 찾음으로 샌다.
+        const zone = listZones().find(
           (z) =>
             norm(z.label) === norm(label) ||
-            norm(label).includes(norm(z.label)),
+            norm(label).includes(norm(z.label)) ||
+            norm(z.label).includes(norm(label)),
         );
         if (!zone) return { ok: false, text: `«${label}» 구역은 못 찾았어요.` };
         return {

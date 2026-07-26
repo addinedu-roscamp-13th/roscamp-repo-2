@@ -19,6 +19,7 @@ import {
   TrendingUp,
 } from "lucide-react";
 import { BOOKS } from "@/lib/mock-data";
+import { getToken, memberApi } from "@/lib/member";
 import { Link } from "@tanstack/react-router";
 import { z } from "zod";
 
@@ -45,6 +46,45 @@ function Home() {
     useSpeechRecognition(speechLang);
   const navigate = useNavigate();
   const { listen } = Route.useSearch();
+  const [summary, setSummary] = useState<{
+    name: string;
+    loans: number;
+    requests: number;
+    reservations: number;
+    wishlist: number;
+  } | null>(null);
+
+  // 로그인 상태면 LiBi AI 카드 옆에 간단한 요약(대출/요청/예약/위시리스트 건수)을
+  // 띄운다. 급한 것만 골라 보이는 대신 항상 네 가지를 그대로 보여준다 — 상세
+  // 목록·조작은 /me 몫이라 여기선 개수만 가볍게 가져온다.
+  useEffect(() => {
+    if (getToken() === null) return;
+    let cancelled = false;
+    void Promise.all([
+      memberApi.me(),
+      memberApi.loans(),
+      memberApi.requests(),
+      memberApi.reservations(),
+      memberApi.wishlist(),
+    ])
+      .then(([m, loans, requests, reservations, wishlist]) => {
+        if (!cancelled) {
+          setSummary({
+            name: m.full_name ?? m.username,
+            loans: loans.length,
+            requests: requests.length,
+            reservations: reservations.length,
+            wishlist: wishlist.length,
+          });
+        }
+      })
+      .catch(() => {
+        /* 요약을 못 가져와도 홈은 떠야 한다 — 카드가 조용히 로그인 유도로 남는다 */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // 인식이 끝나면 검색이 아니라 LiBi 로 그대로 보낸다 — "대여 신청해줘" 같은
   // 말이 그냥 검색어로 찍히지 않고 실제로 처리되게.
@@ -159,7 +199,7 @@ function Home() {
         />
 
         {/* Quick menu — 요청은 검색과 분리된 화면(`/request`)으로 간다 */}
-        <section className="mt-3 grid grid-cols-3 gap-3">
+        <section className="mt-6 grid grid-cols-3 gap-3">
           <QuickCard
             to="/request"
             icon={BookMarked}
@@ -169,19 +209,21 @@ function Home() {
           <QuickCard
             to="/recommend"
             icon={TrendingUp}
-            label={tr("bestseller")}
+            label={tr("bestsellerShort")}
             tone="muted"
           />
           <QuickCard
             to="/map"
             icon={Map}
-            label={tr("storeMap")}
+            label={tr("storeMapShort")}
             tone="accent"
           />
         </section>
 
-        {/* New arrivals */}
-        <section className="mt-8">
+        {/* New arrivals — 예전엔 카드가 w-40/h-56 로 커서 줄 하나가 화면 폭을 넘어
+            튀어나온 느낌을 줬다. 카드는 줄이고, 대신 섹션 사이 여백을 넓혀 아래
+            LiBi AI 카드까지의 배치가 성기게 남지 않게 한다. */}
+        <section className="mt-10">
           <div className="mb-3 flex items-end justify-between">
             <h2 className="text-base font-bold text-foreground">
               <Sparkles className="-mt-1 mr-1 inline size-4 text-accent" />
@@ -197,10 +239,10 @@ function Home() {
                 key={b.id}
                 to="/search"
                 search={{ q: b.title[lang] }}
-                className="w-40 shrink-0 snap-start"
+                className="w-32 shrink-0 snap-start"
               >
                 <div
-                  className={`flex h-56 items-center justify-center rounded-2xl bg-gradient-to-br ${b.color} text-6xl shadow-card`}
+                  className={`flex h-44 items-center justify-center rounded-2xl bg-gradient-to-br ${b.color} text-5xl shadow-card`}
                 >
                   {b.cover}
                 </div>
@@ -213,26 +255,83 @@ function Home() {
           </div>
         </section>
 
-        <section className="mt-8 rounded-2xl border border-border bg-card p-5 shadow-card">
-          <div className="flex items-center gap-4">
-            <div className="flex size-14 shrink-0 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
-              <BookMarked className="size-7" />
+        {/* 왼쪽 LiBi AI · 오른쪽은 로그인 여부에 따라 내 정보 요약 또는 로그인 유도 */}
+        <section className="mt-12 grid grid-cols-2 gap-3">
+          <div className="flex flex-col gap-2 rounded-2xl border border-border bg-card p-4 shadow-card">
+            <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground">
+              <BookMarked className="size-5" />
             </div>
-            <div className="flex-1">
-              <div className="text-base font-bold text-foreground">
-                {tr("navChat")}
-              </div>
-              <div className="mt-0.5 text-sm text-muted-foreground">
-                {tr("chatPh")}
-              </div>
+            <div className="text-sm font-bold text-foreground">
+              {tr("navChat")}
+            </div>
+            <div className="line-clamp-2 text-xs text-muted-foreground">
+              {tr("chatPh")}
             </div>
             <Link
               to="/chat"
-              className="shrink-0 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-foreground"
+              className="mt-auto w-full rounded-full bg-primary py-2 text-center text-xs font-bold text-primary-foreground"
             >
               열기
             </Link>
           </div>
+
+          {summary ? (
+            <div className="flex flex-col gap-2 rounded-2xl border border-border bg-card p-4 shadow-card">
+              <div className="truncate text-sm font-bold text-foreground">
+                {summary.name}님
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                {(
+                  [
+                    { key: "loans", label: "대출", n: summary.loans },
+                    { key: "requests", label: "요청", n: summary.requests },
+                    {
+                      key: "reservations",
+                      label: "예약",
+                      n: summary.reservations,
+                    },
+                    { key: "wishlist", label: "위시", n: summary.wishlist },
+                  ] as const
+                ).map((s) => (
+                  <Link
+                    key={s.key}
+                    to="/me"
+                    search={{ open: s.key }}
+                    className="rounded-lg bg-muted/60 py-1 text-center active:bg-muted"
+                  >
+                    <div className="text-sm font-black leading-tight text-primary">
+                      {s.n}
+                    </div>
+                    <div className="text-[10px] leading-tight text-muted-foreground">
+                      {s.label}
+                    </div>
+                  </Link>
+                ))}
+              </div>
+              <Link
+                to="/me"
+                className="mt-auto w-full rounded-full border border-border py-2 text-center text-xs font-semibold text-foreground"
+              >
+                내 정보 보기 →
+              </Link>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-2 rounded-2xl border border-dashed border-primary/40 bg-primary-soft/40 p-4 shadow-card">
+              <div className="text-sm font-bold text-foreground">
+                로그인하고 더 써보세요
+              </div>
+              <div className="line-clamp-2 text-xs text-muted-foreground">
+                대출·예약·요청 현황을 한눈에 볼 수 있어요
+              </div>
+              <Link
+                to="/login"
+                search={{ redirect: "/home" }}
+                className="mt-auto w-full rounded-full bg-primary py-2 text-center text-xs font-bold text-primary-foreground"
+              >
+                로그인하기
+              </Link>
+            </div>
+          )}
         </section>
       </div>
     </AppShell>
@@ -265,7 +364,10 @@ function QuickCard({
       >
         <Icon className="size-8" />
       </div>
-      <div className="text-sm font-semibold leading-tight text-foreground">
+      {/* 라벨이 두 줄로 넘어가면 aspect-square 박스가 그 카드만 더 커진다
+          (실측 확인됨) — 언어별 라벨 길이가 달라도 항상 한 줄로 고정해 세
+          카드 외곽 박스 크기를 맞춘다. */}
+      <div className="w-full truncate text-sm font-semibold leading-tight text-foreground">
         {label}
       </div>
     </Link>

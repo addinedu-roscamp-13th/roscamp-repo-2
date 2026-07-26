@@ -29,8 +29,12 @@ class FollowSession:
     deliberately means "told to stop", not "arrived".
     """
 
-    def __init__(self, loop_factory):
+    def __init__(self, loop_factory, publish=None):
         self._loop_factory = loop_factory
+        #: 세션 종료 시 정지 명령을 낼 발행자. 없으면(테스트) 아무것도 안 한다.
+        #: `_loop.publish` 를 몰래 꺼내 쓰지 않고 명시적으로 받는다 — 세션의 책임이
+        #: "루프를 갈아끼우는 것"과 "멈추는 것" 둘 다이므로, 멈출 수단은 세션이 가져야 한다.
+        self._publish = publish
         self._loop = None
         self._stopped = False
 
@@ -46,6 +50,11 @@ class FollowSession:
         return 'failure' if self._loop.state == 'ENDED' else 'running'
 
     def stop(self):
+        # 루프를 버리기 전에 정지 명령을 낸다. 이게 없으면 마지막으로 발행한 속도가
+        # 그대로 살아남는다 — 관리자가 "중단"을 눌렀는데 로봇이 계속 굴러간다.
+        # (베이스의 cmd_vel 타임아웃에 기대면 안 된다. 있는지 보장되지 않는다.)
+        if self._publish is not None:
+            self._publish(0.0, 0.0)
         self._loop = None
         self._stopped = True
 
@@ -78,7 +87,7 @@ def main(args=None):
             self._scan = ScanProvider(self, scan_topic)
             self._cmd = CmdPublisher(self, cmd_topic)
             self._receiver = DetectionReceiver(TcpDetectionSource(host, port))
-            self.session = FollowSession(self._make_loop)
+            self.session = FollowSession(self._make_loop, publish=self._cmd.publish)
             if self.get_parameter('autostart').value:
                 self.session.start()
             self.create_timer(1.0 / config.TICK_HZ, self.session.tick)

@@ -21,14 +21,7 @@ export const Route = createFileRoute("/search")({
   component: SearchPage,
 });
 
-const CATS = [
-  "all",
-  "literature",
-  "art",
-  "science",
-  "humanities",
-  "kids",
-] as const;
+const CATS = ["all", "literature", "art", "science", "humanities"] as const;
 type Cat = (typeof CATS)[number];
 
 /**
@@ -93,7 +86,6 @@ function SearchPage() {
     art: tr("catArt"),
     science: tr("catScience"),
     humanities: tr("catHumanities"),
-    kids: tr("catKids"),
   };
 
   return (

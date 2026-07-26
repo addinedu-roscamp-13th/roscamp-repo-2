@@ -12,9 +12,48 @@ Item {
     property string selectedHighlight: ""
     property string selectedDetail: ""
 
-    property var results: tab === "book"
-        ? controller.searchBooks(query, category, onlyAvail)
-        : controller.searchFacilities(query)
+    // 도서 검색은 원격(ABA Service) 조회라 비동기로 뺐다 — 동기 호출을 프로퍼티 바인딩에
+    // 두면 키 입력마다 UI 스레드가 최대 1.5초 멈춘다. 시설 검색은 로컬 계산이라 그대로 동기.
+    property var results: []
+    property bool loading: false
+    property bool serviceError: false   // 네트워크/타임아웃 — "결과 없음"과 다른 문구
+    property int pendingId: 0           // 0 = 대기 중인 도서 요청 없음
+
+    function requestNow() {
+        if (root.tab !== "book") {
+            // 로컬 동기 계산이라 로딩/에러 상태가 있을 수 없다 — 도서 탭에서 넘어오며
+            // 남아있던 값(예: 요청 중이던 스켈레톤)을 여기서 반드시 꺼야 시설 목록이 가려지지 않는다.
+            root.loading = false; root.serviceError = false;
+            root.results = controller.searchFacilities(root.query);
+            return;
+        }
+        root.loading = true; root.serviceError = false;
+        root.pendingId = controller.searchBooksAsync(root.query, root.category, root.onlyAvail);
+    }
+    function scheduleBookSearch() { debounce.restart(); }
+
+    Timer { id: debounce; interval: 250; onTriggered: root.requestNow() }
+    Connections {
+        target: controller
+        function onSearchBooksReady(id, res, ok) {
+            if (id !== root.pendingId) return;   // stale 응답 — 이미 다른 요청을 기다리는 중
+            root.loading = false; root.serviceError = !ok; root.results = ok ? res : [];
+        }
+    }
+    Component.onCompleted: root.requestNow()
+
+    // 도서 카테고리 → 실제 지도 구역 이름(RobotController::facilities() 와 동일해야
+    // 지도에서 하이라이트된다). 서가 이름 규칙이 분야마다 달라(" 서가" 공백 유무)
+    // 단순 접미사 이어붙이기로는 안 맞는다.
+    function categoryZone(category) {
+        switch (category) {
+        case "과학": return "과학 서가";
+        case "예술": return "예술서가";
+        case "문학": return "문학서가";
+        case "인문학": return "인문학서가";
+        default: return category;
+        }
+    }
 
     ScreenHeader {
         id: header
@@ -33,8 +72,10 @@ Item {
 
         Row {
             spacing: 12
-            Chip { text: "도서"; icon: "📚"; selected: root.tab === "book";     onClicked: { root.tab = "book"; root.selectedHighlight = ""; root.selectedDetail = "" } }
-            Chip { text: "시설"; icon: "🏛"; selected: root.tab === "facility"; onClicked: { root.tab = "facility"; root.selectedHighlight = ""; root.selectedDetail = "" } }
+            // 시설 탭으로 넘어갈 땐 pendingId 를 0으로 리셋 — 넘어가기 전에 나간 도서 검색
+            // 응답이 늦게 와도(id!==0) 무시되어 시설 목록을 덮어쓰지 못한다.
+            Chip { text: "도서"; icon: "📚"; selected: root.tab === "book";     onClicked: { root.tab = "book"; root.selectedHighlight = ""; root.selectedDetail = ""; root.requestNow() } }
+            Chip { text: "시설"; icon: "🏛"; selected: root.tab === "facility"; onClicked: { root.tab = "facility"; root.selectedHighlight = ""; root.selectedDetail = ""; root.pendingId = 0; root.requestNow() } }
         }
 
         TextField {
@@ -43,18 +84,19 @@ Item {
             font.family: S.fontFamily; font.pixelSize: 18
             color: S.text
             leftPadding: 18; rightPadding: 18; topPadding: 12; bottomPadding: 12
-            onTextChanged: root.query = text
+            onTextChanged: { root.query = text; root.tab === "book" ? root.scheduleBookSearch() : root.requestNow() }
             background: Rectangle { radius: 14; color: S.surface; border.color: S.borderStrong; border.width: 1.5 }
         }
 
         Row {
             visible: root.tab === "book"
             spacing: 10
-            Chip { text: "전체"; selected: root.category === "전체"; onClicked: root.category = "전체" }
-            Chip { text: "과학"; selected: root.category === "과학"; onClicked: root.category = "과학" }
-            Chip { text: "예술"; selected: root.category === "예술"; onClicked: root.category = "예술" }
-            Chip { text: "문학"; selected: root.category === "문학"; onClicked: root.category = "문학" }
-            Chip { text: "대여 가능만"; selected: root.onlyAvail; onClicked: root.onlyAvail = !root.onlyAvail }
+            Chip { text: "전체"; selected: root.category === "전체"; onClicked: { root.category = "전체"; root.requestNow() } }
+            Chip { text: "과학"; selected: root.category === "과학"; onClicked: { root.category = "과학"; root.requestNow() } }
+            Chip { text: "예술"; selected: root.category === "예술"; onClicked: { root.category = "예술"; root.requestNow() } }
+            Chip { text: "문학"; selected: root.category === "문학"; onClicked: { root.category = "문학"; root.requestNow() } }
+            Chip { text: "인문학"; selected: root.category === "인문학"; onClicked: { root.category = "인문학"; root.requestNow() } }
+            Chip { text: "대여 가능만"; selected: root.onlyAvail; onClicked: { root.onlyAvail = !root.onlyAvail; root.requestNow() } }
         }
     }
 
@@ -71,6 +113,7 @@ Item {
             clip: true
             spacing: 12
             model: root.results
+            visible: !root.loading && root.results.length > 0
 
             delegate: Rectangle {
                 width: listView.width - 8
@@ -123,7 +166,7 @@ Item {
                     onClicked: {
                         if (root.tab === "book") {
                             root.selectedDetail = modelData.title;
-                            root.selectedHighlight = modelData.category + " 섹션";
+                            root.selectedHighlight = root.categoryZone(modelData.category);
                         } else {
                             root.selectedDetail = modelData.name;
                             root.selectedHighlight = modelData.name;
@@ -133,12 +176,38 @@ Item {
             }
         }
 
+        // 불러오는 중 — 스켈레톤 3개
+        Column {
+            anchors { left: parent.left; top: parent.top }
+            width: listView.width
+            spacing: 12
+            visible: root.loading
+            BookRowSkeleton {}
+            BookRowSkeleton {}
+            BookRowSkeleton {}
+        }
+
+        // 결과 없음 / 서비스 오류
+        Text {
+            anchors { left: parent.left; top: parent.top; topMargin: 48 }
+            width: listView.width
+            horizontalAlignment: Text.AlignHCenter
+            visible: !root.loading && root.results.length === 0
+            text: root.serviceError
+                  ? "도서 서비스를 불러올 수 없습니다"
+                  : (root.tab === "book" ? "검색 결과가 없습니다" : "일치하는 시설이 없습니다")
+            font.family: S.fontFamily; font.pixelSize: 16
+            color: root.serviceError ? S.danger : S.textMuted
+        }
+
         // 지도 + 상세
         MapView {
             id: map
             anchors { left: listView.right; right: parent.right; top: parent.top; leftMargin: 20 }
             height: parent.height * 0.62
             highlight: root.selectedHighlight
+            // 목록에서 고르지 않고 지도의 알약을 바로 탭해도 같은 상세가 뜬다.
+            onFacilityClicked: (name) => { root.selectedDetail = name; root.selectedHighlight = name }
         }
 
         Card {

@@ -97,7 +97,8 @@ function MapPage() {
                     등록된 책이 없습니다
                   </p>
                 ) : (
-                  <div className="mt-2 space-y-2">
+                  // 3권까지는 그대로 보이고, 넘치면 이 상자 안에서만 스크롤된다.
+                  <div className="mt-2 max-h-[260px] space-y-2 overflow-y-auto pr-1">
                     {books.map((b) => (
                       <BookRow key={b.id} book={b} onSelect={setPicked} />
                     ))}

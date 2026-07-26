@@ -1,255 +1,236 @@
-import { useMemo } from "react";
-
-import { MAP_IMAGE, WAYPOINTS, type MapWaypoint } from "@/lib/map-waypoints";
+import {
+  Armchair,
+  BookOpen,
+  DoorOpen,
+  FlaskConical,
+  GraduationCap,
+  Info,
+  Paintbrush,
+  Palette,
+  ShoppingBasket,
+  Toilet,
+  type LucideIcon,
+} from "lucide-react";
 
 /**
- * 도서관 내부 지도 — 구역을 **네모 박스**로 보여준다.
+ * 도서관 내부 지도 — 실사 점유격자 대신, 사서·관제팀이 그린 안내판 스타일
+ * 일러스트 배치를 그대로 옮긴 고정 스키마 지도다.
  *
- * ## 왜 점이 아니라 박스인가
- * 정점 하나하나를 점으로 찍으면 "서가 A 가 저기쯤" 같은 공간 감각이 안 온다. 사람은
- * 구역 단위로 기억하므로, 같은 구역의 정점들을 묶어 **경계 상자**로 그린다.
- * 좌표는 `waypoint.yaml`(로봇이 실제로 쓰는 정점)에서 그대로 계산하므로, 박스 위치가
- * 로봇이 가는 위치와 어긋나지 않는다.
- *
- * ## 왜 가로로 돌리나
- * arte3 맵 원본은 세로로 길다(63×108px = 1.26m × 2.16m). 모바일 화면 폭에 세로 맵을
- * 넣으면 아주 작아지므로 **시계방향 90° 회전**해 가로로 눕힌다.
- * 정규화 좌표 변환: (x, y) → (1 − y, x).
+ * ## 왜 좌표를 계산하지 않고 고정하나
+ * 예전엔 `waypoint.yaml`의 실제 좌표를 회전·정규화해 박스를 계산했다. 정확하지만
+ * 실물 점유격자라 회원이 보기엔 "그냥 회색 벽"이었다 — 어디가 무슨 구역인지 아이콘도
+ * 색도 없었다. 지금은 사서가 그린 안내판(문·팔레트·시험관 같은 아이콘)을 그대로
+ * 배치로 옮겼다. 대신 **정점 이름은 절대 지어내지 않는다** — 아래 각 구역의
+ * `waypoints` 는 `map-waypoints.ts`(= 실제 `waypoint.yaml`)에서 그대로 가져온
+ * 이름이라, 탭했을 때 나가는 도서 조회·안내 문구가 실제 로봇 목적지와 어긋나지 않는다.
  */
 
-/** 구역 정의 — 어떤 정점들이 한 박스로 묶이는지. 순서가 곧 렌더 순서다. */
-const ZONE_DEFS: {
+interface ZoneDef {
   key: string;
   label: string;
-  tone: "pink" | "amber" | "sky" | "violet" | "emerald" | "stone";
+  /** 지도 위 알약 안에 넣을 짧은 표기 — 없으면 label 그대로 쓴다. 좁은 박스용. */
+  pillLabel?: string;
+  icon: LucideIcon;
+  tone: string;
+  /** 가로로 넓은 박스는 "row"(아이콘+글자 한 줄), 세로로 긴 박스는 "col"(아이콘 위·글자 아래). */
+  layout: "row" | "col";
   /** 클릭했을 때 보여줄 설명. */
   desc: string;
   /** 서가라면 이 카테고리의 도서가 꽂혀 있다(`cb_books.category`). */
   category?: string;
-  match: (name: string) => boolean;
-}[] = [
-  {
-    key: "lit",
-    label: "문학",
-    tone: "pink",
-    desc: "소설·시·고전이 있는 서가입니다.",
-    category: "literature",
-    match: (n) => n.startsWith("문학"),
-  },
-  {
-    key: "art",
-    label: "예술",
-    tone: "amber",
-    desc: "미술·디자인·음악·사진 서가입니다.",
-    category: "art",
-    match: (n) => n.startsWith("예술"),
-  },
-  {
-    key: "sci",
-    label: "과학",
-    tone: "sky",
-    desc: "과학·수학·자연 서가입니다.",
-    category: "science",
-    match: (n) => n.startsWith("과학"),
-  },
-  {
-    key: "hum",
-    label: "인문학",
-    tone: "violet",
-    desc: "철학·역사·사회 서가입니다.",
-    category: "humanities",
-    match: (n) => n.startsWith("인문학"),
-  },
-  {
-    key: "exh",
-    label: "미술작품",
-    tone: "amber",
-    desc: "도서관에 전시된 미술작품 구역입니다.",
-    match: (n) => n.startsWith("미술작품"),
-  },
-  {
-    key: "kids",
-    label: "유아",
-    tone: "emerald",
-    desc: "그림책·동화 등 어린이 열람 구역입니다.",
-    category: "kids",
-    match: (n) => n === "유아",
-  },
-  {
-    key: "t1",
-    label: "테이블 1",
-    tone: "stone",
-    desc: "열람 테이블입니다. 여기로 도서를 배달받을 수 있어요.",
-    match: (n) => n.startsWith("테이블-1번"),
-  },
-  {
-    key: "t2",
-    label: "테이블 2",
-    tone: "stone",
-    desc: "열람 테이블입니다. 여기로 도서를 배달받을 수 있어요.",
-    match: (n) => n.startsWith("테이블-2번"),
-  },
-  {
-    key: "desk",
-    label: "안내데스크",
-    tone: "emerald",
-    desc: "대여 신청한 도서를 여기서 사서에게 받습니다.",
-    match: (n) => n === "안네데스크",
-  },
-  {
-    key: "wc",
-    label: "화장실",
-    tone: "stone",
-    desc: "화장실입니다.",
-    match: (n) => n === "화장실",
-  },
-  {
-    key: "gate",
-    label: "입구",
-    tone: "stone",
-    desc: "도서관 출입구입니다.",
-    match: (n) => n === "입구",
-  },
-];
-
-const TONE: Record<string, string> = {
-  pink: "bg-rose-100/90 border-rose-300 text-rose-900",
-  amber: "bg-amber-100/90 border-amber-300 text-amber-900",
-  sky: "bg-sky-100/90 border-sky-400 text-sky-900",
-  violet: "bg-violet-100/90 border-violet-300 text-violet-900",
-  emerald: "bg-emerald-100/90 border-emerald-300 text-emerald-900",
-  stone: "bg-stone-100/90 border-stone-400 text-stone-700",
-};
-
-/** 박스가 너무 납작해 글자가 안 들어가는 것을 막는 최소 크기(정규화 비율). */
-const MIN_SIZE = 0.09;
-/** 정점 하나짜리 구역에 줄 여백. */
-const PAD = 0.02;
-/** 겹침 해소 시 박스 사이에 남길 최소 간격. */
-const GAP = 0.008;
-
-export interface ZoneBox {
-  key: string;
-  label: string;
-  tone: string;
-  /** 회전 후 화면 기준 % 값. */
+  /** 실제 waypoint.yaml 정점 이름(들) — 도서 조회·pickup/dropoff 비교에 쓴다. */
+  waypoints: string[];
   left: number;
   top: number;
   width: number;
   height: number;
-  members: string[];
-  /** 서가라면 이 분야 도서가 꽂혀 있다. */
-  category?: string;
+}
+
+const TONE = {
+  sky: "bg-sky-100 border-sky-400 text-sky-900",
+  amber: "bg-amber-100 border-amber-400 text-amber-900",
+  orange: "bg-orange-100 border-orange-400 text-orange-900",
+  pink: "bg-rose-100 border-rose-300 text-rose-900",
+  violet: "bg-violet-100 border-violet-300 text-violet-900",
+  red: "bg-red-100 border-red-300 text-red-900",
+  emerald: "bg-emerald-100 border-emerald-300 text-emerald-900",
+  stone: "bg-stone-100 border-stone-400 text-stone-700",
+};
+
+const ZONE_DEFS: ZoneDef[] = [
+  {
+    key: "wc",
+    label: "화장실",
+    icon: Toilet,
+    tone: TONE.sky,
+    layout: "row",
+    desc: "화장실입니다. 남녀 공용으로 각 1칸씩 있어요.",
+    waypoints: ["화장실"],
+    left: 8,
+    top: 2,
+    width: 19,
+    height: 11,
+  },
+  {
+    key: "exh",
+    label: "미술작품",
+    icon: Palette,
+    tone: TONE.amber,
+    layout: "row",
+    desc: "도서관에 전시된 미술작품 구역입니다. 로봇이 순찰하며 지나가요.",
+    waypoints: ["미술작품"],
+    left: 33,
+    top: 1,
+    width: 24,
+    height: 13,
+  },
+  {
+    key: "bin",
+    label: "수거함",
+    icon: ShoppingBasket,
+    tone: TONE.orange,
+    layout: "col",
+    desc: "다 본 책이나 반납할 책을 넣어두면 로봇이 거둬 갑니다.",
+    waypoints: ["수거함"],
+    left: 58,
+    top: 10,
+    width: 7,
+    height: 26,
+  },
+  {
+    key: "t1",
+    label: "1번 테이블",
+    pillLabel: "1번",
+    icon: Armchair,
+    tone: TONE.stone,
+    layout: "col",
+    desc: "열람 테이블입니다. 「도서 요청」에서 자리로 받기를 고르면 로봇이 여기로 책을 가져다 줘요.",
+    waypoints: ["1번테이블"],
+    left: 67,
+    top: 16,
+    width: 14,
+    height: 19,
+  },
+  {
+    key: "t2",
+    label: "2번 테이블",
+    pillLabel: "2번",
+    icon: Armchair,
+    tone: TONE.stone,
+    layout: "col",
+    desc: "열람 테이블입니다. 「도서 요청」에서 자리로 받기를 고르면 로봇이 여기로 책을 가져다 줘요.",
+    waypoints: ["2번테이블"],
+    left: 84,
+    top: 16,
+    width: 14,
+    height: 19,
+  },
+  {
+    key: "art",
+    label: "예술서가",
+    icon: Paintbrush,
+    tone: TONE.amber,
+    layout: "col",
+    desc: "미술·디자인·음악·사진 서가입니다.",
+    category: "art",
+    waypoints: ["예술서가"],
+    left: 9,
+    top: 35,
+    width: 8,
+    height: 25,
+  },
+  {
+    key: "lit",
+    label: "문학서가",
+    icon: BookOpen,
+    tone: TONE.pink,
+    layout: "col",
+    desc: "소설·시·고전이 있는 서가입니다.",
+    category: "literature",
+    waypoints: ["문학서가"],
+    left: 9,
+    top: 63,
+    width: 8,
+    height: 25,
+  },
+  {
+    key: "sci",
+    label: "과학 서가",
+    icon: FlaskConical,
+    tone: TONE.sky,
+    layout: "row",
+    desc: "과학·수학·자연 서가입니다.",
+    category: "science",
+    waypoints: ["과학-인문학서가"],
+    left: 26,
+    top: 36,
+    width: 26,
+    height: 9,
+  },
+  {
+    key: "hum",
+    label: "인문학서가",
+    icon: GraduationCap,
+    tone: TONE.violet,
+    layout: "col",
+    desc: "철학·역사·사회 서가입니다.",
+    category: "humanities",
+    waypoints: ["과학-인문학서가"],
+    left: 42,
+    top: 47,
+    width: 10,
+    height: 32,
+  },
+  {
+    key: "gate",
+    label: "출입구",
+    icon: DoorOpen,
+    tone: TONE.red,
+    layout: "col",
+    desc: "도서관 출입구입니다.",
+    waypoints: ["도서관출입구"],
+    left: 92,
+    top: 40,
+    width: 8,
+    height: 28,
+  },
+  {
+    key: "desk",
+    label: "안내데스크",
+    icon: Info,
+    tone: TONE.emerald,
+    layout: "row",
+    desc: "대여 신청한 도서를 여기서 사서에게 받아요. 궁금한 점도 안내데스크에서 물어볼 수 있어요.",
+    waypoints: ["안네데스크"],
+    left: 68,
+    top: 87,
+    width: 27,
+    height: 11,
+  },
+];
+
+export interface ZoneBox {
+  key: string;
+  label: string;
   desc: string;
+  category?: string;
+  /** 이 구역이 대응하는 실제 waypoint.yaml 정점 이름들 — 도서 zone 필터에 그대로 쓴다. */
+  members: string[];
 }
 
-/**
- * (x, y) → 화면 좌표.
- *
- * 원본은 세로로 길어(63×108) 가로로 눕혀야 하고, 거기서 **180° 더 돌린** 방향이
- * 실제 도서관 배치와 맞는다(사용자 확인). 90° CW + 180° = 90° CCW 이므로 결과는
- * `(x, y) → (y, 1 − x)` 다.
- */
-function rotate(x: number, y: number): [number, number] {
-  return [y, 1 - x];
-}
-
-/**
- * 박스가 서로 겹치지 않게 민다.
- *
- * 정점이 하나뿐인 구역(유아·안내데스크 등)은 글자를 넣으려 최소 크기로 부풀리는데, 그때
- * 이웃 구역을 파고든다. 겹친 쌍마다 **파고든 깊이가 작은 축**으로 양쪽을 절반씩 밀어
- * 떼어놓는다. 좌표를 크게 바꾸지 않으므로 실제 위치감은 유지된다.
- */
-function separate(boxes: ZoneBox[]): ZoneBox[] {
-  const overlap = (a: ZoneBox, b: ZoneBox) => {
-    const dx =
-      Math.min(a.left + a.width, b.left + b.width) - Math.max(a.left, b.left);
-    const dy =
-      Math.min(a.top + a.height, b.top + b.height) - Math.max(a.top, b.top);
-    return dx > 0 && dy > 0 ? { dx, dy } : null;
+function toZoneBox(z: ZoneDef): ZoneBox {
+  return {
+    key: z.key,
+    label: z.label,
+    desc: z.desc,
+    category: z.category,
+    members: z.waypoints,
   };
-
-  // 반복해서 밀어낸다 — 한 번 밀면 다른 쌍이 새로 겹칠 수 있다.
-  for (let pass = 0; pass < 12; pass++) {
-    let moved = false;
-    for (let i = 0; i < boxes.length; i++) {
-      for (let j = i + 1; j < boxes.length; j++) {
-        const a = boxes[i];
-        const b = boxes[j];
-        const ov = overlap(a, b);
-        if (!ov) continue;
-        moved = true;
-        const push = (v: number) => v / 2 + GAP * 100;
-        if (ov.dx < ov.dy) {
-          const [l, r] = a.left < b.left ? [a, b] : [b, a];
-          l.left -= push(ov.dx);
-          r.left += push(ov.dx);
-        } else {
-          const [t, d] = a.top < b.top ? [a, b] : [b, a];
-          t.top -= push(ov.dy);
-          d.top += push(ov.dy);
-        }
-      }
-    }
-    if (!moved) break;
-  }
-
-  // 화면 밖으로 나간 것은 되돌린다.
-  for (const b of boxes) {
-    b.left = Math.max(0, Math.min(100 - b.width, b.left));
-    b.top = Math.max(0, Math.min(100 - b.height, b.top));
-  }
-  return boxes;
 }
 
-export function buildZones(waypoints: MapWaypoint[] = WAYPOINTS): ZoneBox[] {
-  const boxes: ZoneBox[] = [];
-  for (const def of ZONE_DEFS) {
-    const members = waypoints.filter((w) => def.match(w.name));
-    if (members.length === 0) continue;
-
-    const pts = members.map((w) => rotate(w.x, w.y));
-    const xs = pts.map((p) => p[0]);
-    const ys = pts.map((p) => p[1]);
-    let x0 = Math.min(...xs);
-    let x1 = Math.max(...xs);
-    let y0 = Math.min(...ys);
-    let y1 = Math.max(...ys);
-
-    // 정점이 하나거나 일렬이면 넓이가 0 이 된다 — 최소 크기를 준다.
-    if (x1 - x0 < MIN_SIZE) {
-      const c = (x0 + x1) / 2;
-      x0 = c - MIN_SIZE / 2;
-      x1 = c + MIN_SIZE / 2;
-    } else {
-      x0 -= PAD;
-      x1 += PAD;
-    }
-    if (y1 - y0 < MIN_SIZE) {
-      const c = (y0 + y1) / 2;
-      y0 = c - MIN_SIZE / 2;
-      y1 = c + MIN_SIZE / 2;
-    } else {
-      y0 -= PAD;
-      y1 += PAD;
-    }
-
-    const clamp = (v: number) => Math.max(0, Math.min(1, v));
-    boxes.push({
-      key: def.key,
-      label: def.label,
-      tone: TONE[def.tone],
-      left: clamp(x0) * 100,
-      top: clamp(y0) * 100,
-      width: (clamp(x1) - clamp(x0)) * 100,
-      height: (clamp(y1) - clamp(y0)) * 100,
-      members: members.map((w) => w.name),
-      category: def.category,
-      desc: def.desc,
-    });
-  }
-  return separate(boxes);
+/** 지도를 그리지 않고 구역 목록만 필요할 때(예: LiBi 봇의 "화장실 어디야" 도구). */
+export function listZones(): ZoneBox[] {
+  return ZONE_DEFS.map(toZoneBox);
 }
 
 export function LibraryMap({
@@ -262,30 +243,34 @@ export function LibraryMap({
   onSelect?: (zone: ZoneBox) => void;
   className?: string;
 }) {
-  const zones = useMemo(() => buildZones(), []);
-
   return (
     <div
-      className={`relative w-full overflow-hidden rounded-xl bg-paper ring-1 ring-border ${className}`}
-      // 원본 63×108 을 90° 돌렸으므로 가로:세로 = 108:63
-      style={{ aspectRatio: "108 / 63" }}
+      className={`relative w-full overflow-hidden rounded-3xl border-[3px] border-[#1c3a5e] bg-[#FBF3E4] ${className}`}
+      style={{
+        aspectRatio: "4 / 3",
+        backgroundImage:
+          "radial-gradient(circle, rgba(28,58,94,0.14) 1px, transparent 1px)",
+        backgroundSize: "22px 22px",
+      }}
     >
-      {/* 배경: 실제 arte3 점유격자 지도를 90° 회전해 깔아둔다 */}
-      <img
-        src={MAP_IMAGE}
-        alt=""
-        aria-hidden
-        className="pointer-events-none absolute left-1/2 top-1/2 h-auto w-[58%] -translate-x-1/2 -translate-y-1/2 -rotate-90 opacity-60 [image-rendering:pixelated]"
-      />
+      {/* 1번/2번 테이블을 하나의 구역으로 묶어 보여주는 점선 테두리 — 그 자체는 탭할 수 없다. */}
+      <div
+        className="pointer-events-none absolute rounded-2xl border-2 border-dashed border-stone-400/70"
+        style={{ left: "66%", top: "13%", width: "32%", height: "24%" }}
+      >
+        <span className="absolute -top-2.5 left-1/2 -translate-x-1/2 rounded-full bg-[#FBF3E4] px-1.5 text-[9px] font-bold text-stone-500">
+          테이블
+        </span>
+      </div>
 
-      {zones.map((z) => {
+      {ZONE_DEFS.map((z) => {
         const active =
-          activeZone === z.key ||
-          (activeZone ? z.members.includes(activeZone) : false);
+          activeZone === z.key || (activeZone ? z.waypoints.includes(activeZone) : false);
+        const Icon = z.icon;
         return (
           <button
             key={z.key}
-            onClick={() => onSelect?.(z)}
+            onClick={() => onSelect?.(toZoneBox(z))}
             disabled={!onSelect}
             style={{
               left: `${z.left}%`,
@@ -293,11 +278,16 @@ export function LibraryMap({
               width: `${z.width}%`,
               height: `${z.height}%`,
             }}
-            className={`absolute flex items-center justify-center rounded-md border-2 text-[10px] font-bold transition-all ${z.tone} ${
+            className={`absolute flex items-center justify-center overflow-hidden rounded-full border-2 p-1 text-[9px] font-bold leading-tight transition-all ${
+              z.layout === "row" ? "flex-row gap-1.5" : "flex-col gap-1"
+            } ${z.tone} ${
               active ? "z-10 scale-105 shadow-lg ring-2 ring-primary" : ""
             } ${onSelect ? "cursor-pointer" : "cursor-default"}`}
           >
-            <span className="px-1 text-center leading-tight">{z.label}</span>
+            <Icon className="size-4 shrink-0" />
+            {/* 붙어 쓴 한글 라벨(예: 예술서가)은 word-break 를 강제로 막으면
+                줄바꿈 자체가 안 돼 통째로 넘친다 — 기본 CJK 줄바꿈(글자 단위)에 맡긴다. */}
+            <span className="text-center">{z.pillLabel ?? z.label}</span>
           </button>
         );
       })}

@@ -46,14 +46,7 @@ export const Route = createFileRoute("/request")({
 type Step = 1 | 2 | 3;
 type Mode = "read" | "borrow";
 
-const CATS = [
-  "all",
-  "literature",
-  "art",
-  "science",
-  "humanities",
-  "kids",
-] as const;
+const CATS = ["all", "literature", "art", "science", "humanities"] as const;
 type Cat = (typeof CATS)[number];
 
 function RequestPage() {
@@ -82,7 +75,6 @@ function RequestPage() {
     art: tr("catArt"),
     science: tr("catScience"),
     humanities: tr("catHumanities"),
-    kids: tr("catKids"),
   };
 
   useEffect(() => {
@@ -259,44 +251,46 @@ function RequestPage() {
               ))}
             </div>
 
-            <div className="mt-3 space-y-2">
-              {books.length === 0 ? (
-                <p className="rounded-2xl border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
-                  검색 결과가 없습니다.
-                </p>
-              ) : null}
-              {books.slice(0, 20).map((b) => (
-                <BookRow
-                  key={b.id}
-                  book={b}
-                  showStatus
-                  trailing={
-                    b.inStock && !b.unavailable ? (
-                      <button
-                        onClick={() => {
-                          setPicked(b);
-                          setStep(2);
-                        }}
-                        className="shrink-0 rounded-full bg-secondary px-3 py-1.5 text-xs font-bold text-secondary-foreground"
-                      >
-                        선택
-                      </button>
-                    ) : b.unavailable ? (
-                      <span className="shrink-0 rounded-full bg-muted px-3 py-1.5 text-[11px] font-bold text-muted-foreground">
-                        대출 불가
-                      </span>
-                    ) : (
-                      <button
-                        onClick={() => void reserve(b)}
-                        className="shrink-0 rounded-full bg-muted px-3 py-1.5 text-xs font-bold text-muted-foreground"
-                      >
-                        예약
-                      </button>
-                    )
-                  }
-                />
-              ))}
-            </div>
+            {books.length === 0 ? (
+              <p className="mt-3 rounded-2xl border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
+                검색 결과가 없습니다.
+              </p>
+            ) : (
+              // 6권까지는 그대로 보이고, 넘치면 이 상자 안에서만 스크롤된다.
+              <div className="mt-3 max-h-[520px] space-y-2 overflow-y-auto pr-1">
+                {books.slice(0, 20).map((b) => (
+                  <BookRow
+                    key={b.id}
+                    book={b}
+                    showStatus
+                    trailing={
+                      b.inStock && !b.unavailable ? (
+                        <button
+                          onClick={() => {
+                            setPicked(b);
+                            setStep(2);
+                          }}
+                          className="shrink-0 rounded-full bg-secondary px-3 py-1.5 text-xs font-bold text-secondary-foreground"
+                        >
+                          선택
+                        </button>
+                      ) : b.unavailable ? (
+                        <span className="shrink-0 rounded-full bg-muted px-3 py-1.5 text-[11px] font-bold text-muted-foreground">
+                          대출 불가
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => void reserve(b)}
+                          className="shrink-0 rounded-full bg-muted px-3 py-1.5 text-xs font-bold text-muted-foreground"
+                        >
+                          예약
+                        </button>
+                      )
+                    }
+                  />
+                ))}
+              </div>
+            )}
           </section>
         )}
 
@@ -434,8 +428,9 @@ function RequestPage() {
           </section>
         )}
 
-        {/* 「다음」은 좌측 하단이다(요구사항). spacer 를 버튼 **뒤에** 둬야 왼쪽에 붙는다. */}
-        <div className="sticky bottom-0 -mx-5 mt-6 flex items-center gap-2 border-t border-border bg-card px-5 py-3">
+        {/* 「다음」은 좌측 하단이다(요구사항). spacer 를 버튼 **뒤에** 둬야 왼쪽에 붙는다.
+            흰 배경 바가 아니라 페이지 배경 위에 그냥 떠 있게 둔다. */}
+        <div className="sticky bottom-0 -mx-5 mt-6 flex items-center gap-2 px-5 py-3">
           {step === 1 && (
             <button
               disabled={!picked}

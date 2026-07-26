@@ -20,7 +20,7 @@ router = APIRouter(prefix="/api/books", tags=["books"])
 # Categories used by the frontend filters / chat intent mapping.
 # ⚠️ 시드(`scripts/seed_books.py`)가 쓰는 5분야와 반드시 같아야 한다 — 여기 없는 값이 오면
 # 필터가 조용히 무시되어 "전체 목록"이 돌아간다(예전에 humanities/kids 가 그랬다).
-CATEGORIES = {"literature", "art", "science", "humanities", "kids"}
+CATEGORIES = {"literature", "art", "science", "humanities"}
 
 
 def _parse_tags(raw: str | None) -> list[str]:

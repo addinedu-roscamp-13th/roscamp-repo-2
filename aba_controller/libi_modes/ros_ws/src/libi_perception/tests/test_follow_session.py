@@ -81,3 +81,24 @@ def test_restart_builds_a_fresh_loop():
     session.start()
     assert len(loops) == 2
     assert loops[0] is not loops[1]
+
+
+def test_stop_publishes_zero_velocity():
+    """관리자가 중단시키면 로봇이 실제로 멈춰야 한다.
+
+    예전엔 _loop 만 버려서 마지막 cmd_vel 이 그대로 살아남았다.
+    베이스의 cmd_vel 타임아웃에 기대면 안 된다 — 있는지 보장되지 않는다.
+    """
+    calls = []
+    s = FollowSession(lambda: _FakeLoop(), publish=lambda lin, ang: calls.append((lin, ang)))
+    s.start()
+    s.stop()
+    assert calls[-1] == (0.0, 0.0)
+
+
+def test_stop_without_publisher_is_safe():
+    """publish 를 안 준 경우(테스트/헤드리스)에도 예외 없이 동작한다."""
+    s = FollowSession(lambda: _FakeLoop())
+    s.start()
+    s.stop()
+    assert s.poll() == 'success'

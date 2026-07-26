@@ -16,6 +16,7 @@
     <file>qml/components/Card.qml</file>
     <file>qml/components/StatusPill.qml</file>
     <file>qml/components/Chip.qml</file>
+<file>qml/components/BookRowSkeleton.qml</file>
     <file>qml/components/TopBar.qml</file>
     <file>qml/components/MapView.qml</file>
     <file>qml/components/ScreenHeader.qml</file>

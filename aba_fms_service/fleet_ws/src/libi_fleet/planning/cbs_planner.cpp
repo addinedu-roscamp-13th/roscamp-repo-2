@@ -37,7 +37,20 @@ static int loc_at(const Path& p, int t) {
 }
 
 // 목표까지 홉 거리(BFS). space-time A* 의 admissible 휴리스틱(이동 1틱 이상).
+//
+// ★ **역방향 BFS 여야 한다.** navgraph 의 lane 은 방향 간선이다 — yaml 이 [a,b] 와 [b,a] 를
+//   따로 적는 것이 그 뜻이고, navgraph.cpp:21-35 로더도 각 lane 을 방향 인접으로만 넣는다.
+//   goal 에서 g[v](나가는 간선)를 따라가면 "goal **에서** v 까지"를 재게 되는데, 필요한 것은
+//   "v **에서** goal 까지"다. 방향 그래프에서 이 둘은 다르다.
+//
+//   증상: 0→1→2 (goal=2), 2→3 만 있는 그래프에서 예전 코드는 d[0]=INF 를 내놓고
+//         "도달 불가 그래프"로 즉시 포기했다. 실제로는 0→1→2 로 갈 수 있는데도.
+//   무방향 그래프에서는 둘이 같아서 기존 self-check(T자)로는 드러나지 않았다.
 static std::vector<int> bfs_dist(const Graph& g, int goal) {
+  Graph rev(g.size());
+  for (size_t v = 0; v < g.size(); ++v) {
+    for (int w : g[v]) rev[w].push_back(static_cast<int>(v));
+  }
   std::vector<int> d(g.size(), std::numeric_limits<int>::max());
   std::queue<int> q;
   d[goal] = 0;
@@ -45,7 +58,7 @@ static std::vector<int> bfs_dist(const Graph& g, int goal) {
   while (!q.empty()) {
     int v = q.front();
     q.pop();
-    for (int w : g[v]) {
+    for (int w : rev[v]) {
       if (d[w] == std::numeric_limits<int>::max()) {
         d[w] = d[v] + 1;
         q.push(w);
@@ -73,6 +86,16 @@ static Path space_time_astar(const Graph& g, int start, int goal,
   std::map<std::pair<int, int>, int> came_g;                 // (v,t) → g(=t)
   std::map<std::pair<int, int>, std::pair<int, int>> parent; // (v,t) → 이전 (v,t)
 
+  // ★ 시작 상태에도 제약을 적용한다. 이게 없으면 두 로봇의 **출발 정점이 같은** 충돌을
+  //   CBS 가 영원히 못 푼다: 고수준이 (start, 0) vertex 제약을 걸어 분기해도, 저수준이
+  //   시작 상태를 제약 검사 없이 open 에 넣어 같은 경로를 그대로 돌려주고, 고수준은
+  //   같은 충돌을 다시 보고 또 분기한다 — **제약트리가 무한히 자란다.**
+  //   (실측: test_cbs_planner.SameStartVertexDoesNotHang 이 8초 타임아웃으로 죽었다)
+  //
+  //   물리적으로 두 로봇이 한 정점에 겹칠 수는 없지만, arte2 처럼 정점 간격이 좁고
+  //   도착 판정 반경이 0.05 m 인 맵에서는 **초기 위치가 같은 정점으로 스냅**될 수 있다.
+  //   그때 플래너가 안 돌아오면 배차 전체가 멈춘다.
+  if (c.vertex.count({start, 0})) return {};   // 시작 자체가 금지 — 이 가지는 막혔다
   open.push({start, 0, h[start]});
   came_g[{start, 0}] = 0;
 

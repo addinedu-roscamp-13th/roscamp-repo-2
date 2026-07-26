@@ -62,6 +62,22 @@ export function BookDetailSheet({
                 {book.zone} · {book.shelf}
               </span>
             </div>
+            {/* 예전엔 본문 하단에 h-12 풀폭 버튼이었다 — 요청 하나 위해 시트를 절반 넘게
+                차지해서 우측 상단의 작은 버튼으로 옮겼다. */}
+            {availability === "available" ? (
+              <button
+                onClick={() => {
+                  onOpenChange(false);
+                  void navigate({
+                    to: "/request",
+                    search: { bookId: book.bookId },
+                  });
+                }}
+                className="shrink-0 rounded-full bg-primary px-3 py-1.5 text-xs font-bold text-primary-foreground"
+              >
+                요청하기 →
+              </button>
+            ) : null}
           </div>
         </DrawerHeader>
 
@@ -103,24 +119,11 @@ export function BookDetailSheet({
           ) : null}
 
           {/* 상태마다 갈 곳이 다르다.
-              - 배치중  : 요청 위저드로 (책이 이미 골라진 채)
+              - 배치중  : 요청 버튼은 위 헤더 우측 상단에 있다(요청으로).
               - 대출 중 : **요청으로 보내지 않는다.** 로봇이 없는 책을 찾으러 가면 안 되므로
                           여기서 바로 예약한다.
               - 대출 불가: 아무 데도 못 간다. 이유만 위에 이미 적혀 있다. */}
-          {availability === "available" ? (
-            <button
-              onClick={() => {
-                onOpenChange(false);
-                void navigate({
-                  to: "/request",
-                  search: { bookId: book.bookId },
-                });
-              }}
-              className="mt-6 h-12 w-full rounded-2xl bg-primary text-sm font-bold text-primary-foreground"
-            >
-              이 책 요청하기 →
-            </button>
-          ) : availability === "borrowed" && onReserve ? (
+          {availability === "borrowed" && onReserve ? (
             <button
               onClick={() => {
                 onReserve(book);

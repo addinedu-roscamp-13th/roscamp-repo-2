@@ -39,6 +39,14 @@ function categoryColor(cat) {
     return accent;
 }
 
+// 실물 로봇 LED 색과 같은 규칙 (led_state_map.yaml 기준):
+// 파랑 = 가용(PATROL/SECURITY_PATROL) · 초록 = 이용 불가(그 외 정상 상태) · 빨강 = 위험(ERROR/CHARGING)
+function ledColorFor(robotState) {
+    if (robotState === "에러" || robotState === "충전중") return danger;
+    if (robotState === "순찰" || robotState === "보안순찰") return sky;
+    return success;   // 대기·응대중·작업중·안내중·복귀중
+}
+
 // 폰트 (Noto Sans CJK KR 설치 확인됨)
 var fontFamily  = "Noto Sans CJK KR";
 

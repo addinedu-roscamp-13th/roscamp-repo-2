@@ -51,14 +51,14 @@ def test_popular_respects_limit(client, db_session):
 
 def test_popular_filters_by_category(client, db_session):
     make_book(db_session, title="문학책")
-    kid = make_book(db_session, title="그림책")
-    kid.category = "kids"
+    sci = make_book(db_session, title="과학책")
+    sci.category = "science"
     db_session.commit()
 
-    res = client.get("/api/books/popular?category=kids&limit=10")
+    res = client.get("/api/books/popular?category=science&limit=10")
 
     assert res.status_code == 200
-    assert [b["title"]["KR"] for b in res.json()] == ["그림책"]
+    assert [b["title"]["KR"] for b in res.json()] == ["과학책"]
 
 
 def test_popular_without_any_loan_still_returns_books(client, db_session):

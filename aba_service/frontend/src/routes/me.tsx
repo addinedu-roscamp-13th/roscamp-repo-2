@@ -1,6 +1,7 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
+import { z } from "zod";
 
 import { AppShell } from "@/components/AppShell";
 import {
@@ -20,7 +21,14 @@ import {
   type WishlistItem,
 } from "@/lib/member";
 
+// 홈의 요약 카드에서 "위시 N" 처럼 특정 섹션을 콕 집어 눌렀을 때, 그 섹션이
+// 펼쳐진 채로 여기 도착하게 한다.
+const meSearchSchema = z.object({
+  open: z.enum(["loans", "requests", "reservations", "wishlist"]).optional(),
+});
+
 export const Route = createFileRoute("/me")({
+  validateSearch: meSearchSchema,
   head: () => ({ meta: [{ title: "LiBi — 내 정보" }] }),
   component: MePage,
 });
@@ -31,6 +39,7 @@ function fmtDate(iso: string): string {
 
 function MePage() {
   const navigate = useNavigate();
+  const { open } = Route.useSearch();
   const [me, setMe] = useState<Member | null>(null);
   const [loans, setLoans] = useState<Loan[]>([]);
   const [requests, setRequests] = useState<DeliveryRequestOut[]>([]);
@@ -70,6 +79,15 @@ function MePage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // `?open=wishlist` 로 왔으면 해당 섹션이 펼쳐진 채(위 defaultValue) 도착하는데,
+  // 접이식 목록 아래쪽이라 화면 밖일 수 있다 — 로딩 끝나면 그 섹션으로 스크롤한다.
+  useEffect(() => {
+    if (!open || loading) return;
+    document
+      .getElementById(open)
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [open, loading]);
 
   const act = async (fn: () => Promise<unknown>) => {
     try {
@@ -196,8 +214,12 @@ function MePage() {
         ) : null}
 
         {/* 섹션 — 접이식, 기본은 전부 접힘(요약이 먼저 보여야 한다) */}
-        <Accordion type="multiple" className="mt-4">
-          <AccordionItem value="loans">
+        <Accordion
+          type="multiple"
+          defaultValue={open ? [open] : []}
+          className="mt-4"
+        >
+          <AccordionItem value="loans" id="loans">
             <AccordionTrigger>{`대출 현황 (${loans.length})`}</AccordionTrigger>
             <AccordionContent>
               {/* 10건까지는 그대로 보이고, 넘치면 이 상자 안에서만 스크롤된다. */}
@@ -237,7 +259,7 @@ function MePage() {
             </AccordionContent>
           </AccordionItem>
 
-          <AccordionItem value="requests">
+          <AccordionItem value="requests" id="requests">
             <div className="flex items-center gap-2">
               <div className="flex-1">
                 <AccordionTrigger>{`요청 현황 (${requests.length})`}</AccordionTrigger>
@@ -314,7 +336,7 @@ function MePage() {
             </AccordionContent>
           </AccordionItem>
 
-          <AccordionItem value="reservations">
+          <AccordionItem value="reservations" id="reservations">
             <AccordionTrigger>{`예약 (${reservations.length})`}</AccordionTrigger>
             <AccordionContent>
               {/* 10건까지는 그대로 보이고, 넘치면 이 상자 안에서만 스크롤된다. */}
@@ -345,7 +367,7 @@ function MePage() {
             </AccordionContent>
           </AccordionItem>
 
-          <AccordionItem value="wishlist">
+          <AccordionItem value="wishlist" id="wishlist">
             <AccordionTrigger>{`읽고 싶은 책 (${wishlist.length})`}</AccordionTrigger>
             <AccordionContent>
               {/* 10건까지는 그대로 보이고, 넘치면 이 상자 안에서만 스크롤된다. */}

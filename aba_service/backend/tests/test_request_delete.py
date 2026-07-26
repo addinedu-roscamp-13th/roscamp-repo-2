@@ -12,7 +12,7 @@ def _request_row(db_session, member, book, *, approval="APPROVED", task_id="t-1"
         book_id=book.id,
         kind="read",
         pickup=book.zone,
-        dropoff="테이블-1번-상",
+        dropoff="1번테이블",
         fms_task_id=task_id,
         approval=approval,
     )

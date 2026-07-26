@@ -29,9 +29,8 @@ Rectangle {
         }
         StatusPill {
             anchors.verticalCenter: parent.verticalCenter
-            pillColor: controller.robotState === "에러" ? S.danger
-                       : controller.robotState === "충전중" ? S.warning
-                       : controller.robotState === "안내중" ? S.sky : S.success
+            // 실물 로봇 LED 와 같은 규칙 — Style.js ledColorFor() 참고
+            pillColor: S.ledColorFor(controller.robotState)
             text: controller.robotState
         }
     }

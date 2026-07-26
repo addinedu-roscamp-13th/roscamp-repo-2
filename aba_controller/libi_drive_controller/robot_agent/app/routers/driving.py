@@ -149,12 +149,39 @@ def _build_command(name: str) -> list[str]:
                 f"use_sim_time:={ust}"]
     if name == "nav2":
         ust = _detect_use_sim_time()
-        return ["bash", "-c",
-                f"source {ROS_SETUP} && "
-                "export TURTLEBOT3_MODEL=${TURTLEBOT3_MODEL:-burger} && "
-                "ros2 launch nav2_bringup navigation_launch.py "
-                f"params_file:={PROJECT_ROOT}/config/nav2_params.yaml "
-                f"use_sim_time:={ust}"]
+        # [2026-07-26] nav2 파라미터는 pinky_navigation 패키지 것 **하나만** 쓴다.
+        #
+        # 예전엔 {PROJECT_ROOT}/config/nav2_params.yaml 을 가리켰다. 그 파일은 pi.sh·pm2 가
+        # 띄우는 실제 설정과 완전히 다른 물건이었다:
+        #     API 쪽   MPPI  20 Hz  xy_tol 0.25  yaw_tol 0.25  radius 0.22  inflation 0.70
+        #     실제     RPP   10 Hz  xy_tol 0.03  yaw_tol 0.15  radius 0.06  inflation 0.08
+        # 즉 **어느 경로로 nav2 를 켰느냐에 따라 로봇이 다르게 움직였다.**
+        #
+        # 특히 xy_goal_tolerance 0.25 는 fleet_node 의 arrive_radius 0.05 보다 크다.
+        # nav2 는 25 cm 지점에서 "도착"이라며 goal 을 끝내는데 fleet_node 는 5 cm 안에
+        # 들어와야 도착으로 인정하므로, 로봇은 멈춰 서고 관제는 영원히 기다린다(교착).
+        # pinky_navigation/params/nav2_params.yaml 주석에 그 부등식과 실측 사례가 있다:
+        #     update_min_d(0.02) < xy_goal_tolerance(0.03) < arrive_radius(0.05) < 최소 레인(0.062)
+        #
+        # 경로를 하드코딩하지 않고 패키지 share 에서 찾는다 — 설치 위치가 로봇마다 달라도
+        # 따라가고, 패키지가 없으면 조용히 엉뚱한 파일을 쓰는 대신 큰 소리로 실패한다.
+        # 각 단계를 줄로 나눈다. 한 줄 `A && B && C=$(...) && [ -f ] || {…}` 형태는
+        # ① && 와 || 가 같은 우선순위라 앞 단계 실패에도 뒤 메시지가 나오고
+        # ② `C=$(...)` 의 종료상태가 명령치환 결과라, 패키지를 못 찾으면 체인이 거기서 끊겨
+        #    아래 안내 메시지가 아예 출력되지 않는다. 둘 다 디버깅을 방해한다.
+        return ["bash", "-c", "\n".join([
+            f"source {ROS_SETUP} || exit 1",
+            "export TURTLEBOT3_MODEL=${TURTLEBOT3_MODEL:-burger}",
+            'NAV2_SHARE="$(ros2 pkg prefix --share pinky_navigation 2>/dev/null || true)"',
+            'NAV2_PARAMS="$NAV2_SHARE/params/nav2_params.yaml"',
+            'if [ -z "$NAV2_SHARE" ] || [ ! -f "$NAV2_PARAMS" ]; then',
+            '  echo "[nav2] pinky_navigation 파라미터를 찾지 못했습니다: $NAV2_PARAMS" >&2',
+            '  echo "[nav2] ros_ws 에서 colcon build 후 install/setup.bash 를 source 했는지 확인" >&2',
+            "  exit 1",
+            "fi",
+            "exec ros2 launch nav2_bringup navigation_launch.py "
+            f'params_file:="$NAV2_PARAMS" use_sim_time:={ust}',
+        ])]
     return COMMANDS[name]
 
 

@@ -537,12 +537,26 @@ def _build_command(name: str) -> list[str]:
                 f"use_sim_time:={ust}"]
     if name == "nav2":
         ust = _detect_use_sim_time()
-        return ["bash", "-c",
-                f"source {ROS_SETUP} && "
-                "export TURTLEBOT3_MODEL=${TURTLEBOT3_MODEL:-burger} && "
-                "ros2 launch nav2_bringup navigation_launch.py "
-                f"params_file:={PROJECT_ROOT}/config/nav2_params.yaml "
-                f"use_sim_time:={ust}"]
+        # [2026-07-26] nav2 파라미터는 pinky_navigation 패키지 것 **하나만** 쓴다.
+        # (robot_agent/app/routers/driving.py 의 같은 자리와 동일한 이유 — 그쪽 주석 참고)
+        #
+        # 예전 {PROJECT_ROOT}/config/nav2_params.yaml 은 MPPI/xy_tol 0.25/radius 0.22 로,
+        # pi.sh·pm2 가 띄우는 실제 설정(RPP/0.03/0.06)과 달랐다. xy_goal_tolerance 0.25 는
+        # fleet_node 의 arrive_radius 0.05 보다 커서 "nav2 는 도착, fleet_node 는 미도착"
+        # 교착을 만든다.
+        return ["bash", "-c", "\n".join([
+            f"source {ROS_SETUP} || exit 1",
+            "export TURTLEBOT3_MODEL=${TURTLEBOT3_MODEL:-burger}",
+            'NAV2_SHARE="$(ros2 pkg prefix --share pinky_navigation 2>/dev/null || true)"',
+            'NAV2_PARAMS="$NAV2_SHARE/params/nav2_params.yaml"',
+            'if [ -z "$NAV2_SHARE" ] || [ ! -f "$NAV2_PARAMS" ]; then',
+            '  echo "[nav2] pinky_navigation 파라미터를 찾지 못했습니다: $NAV2_PARAMS" >&2',
+            '  echo "[nav2] ros_ws 에서 colcon build 후 install/setup.bash 를 source 했는지 확인" >&2',
+            "  exit 1",
+            "fi",
+            "exec ros2 launch nav2_bringup navigation_launch.py "
+            f'params_file:="$NAV2_PARAMS" use_sim_time:={ust}',
+        ])]
     return COMMANDS[name]
 
 _processes: dict[str, subprocess.Popen] = {}

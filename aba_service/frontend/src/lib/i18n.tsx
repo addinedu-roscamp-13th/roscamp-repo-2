@@ -63,6 +63,9 @@ export const t: Dict = {
   },
   bestseller: { KR: "베스트셀러 / 신간", EN: "Bestsellers / New", ZH: "畅销 / 新书", VI: "Bán chạy / Mới" },
   storeMap: { KR: "도서관 내부 지도", EN: "Library Map", ZH: "馆内地图", VI: "Bản đồ thư viện" },
+  // 홈 화면 퀵메뉴 카드용 — 정사각 카드 한 줄에 들어가야 해서 위 두 개보다 짧다.
+  bestsellerShort: { KR: "베스트셀러", EN: "Bestseller", ZH: "畅销书", VI: "Bán chạy" },
+  storeMapShort: { KR: "도서관 지도", EN: "Map", ZH: "馆内地图", VI: "Bản đồ" },
   navHome: { KR: "홈", EN: "Home", ZH: "首页", VI: "Trang chủ" },
   navSearch: { KR: "도서 검색", EN: "Search", ZH: "图书", VI: "Tìm sách" },
   navMap: { KR: "공간 안내", EN: "Map", ZH: "地图", VI: "Bản đồ" },
@@ -88,7 +91,6 @@ export const t: Dict = {
   catArt: { KR: "예술", EN: "Art", ZH: "艺术", VI: "Nghệ thuật" },
   catScience: { KR: "과학", EN: "Science", ZH: "科学", VI: "Khoa học" },
   catHumanities: { KR: "인문학", EN: "Humanities", ZH: "人文", VI: "Nhân văn" },
-  catKids: { KR: "유아", EN: "Kids", ZH: "幼儿", VI: "Thiếu nhi" },
   recommendFor: { KR: "이런 분께 추천해요!", EN: "Recommended for", ZH: "推荐给", VI: "Phù hợp với" },
   chatPh: {
     KR: "과학 책 추천해줘",

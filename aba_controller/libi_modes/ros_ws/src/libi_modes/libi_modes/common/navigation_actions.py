@@ -25,7 +25,6 @@
 """
 from py_trees.common import Status
 
-from libi_modes.common.driver_action import DriverAction
 from libi_modes.common.working_actions import NavigationExec
 
 
@@ -51,13 +50,13 @@ class PatrolNavigation(NavigationExec):
         return Status.RUNNING
 
 
-class SecurityPatrolNavigation(DriverAction):
-    """One night-security lap. Unlike PatrolNavigation this DOES complete — SUCCESS after
-    a single lap, which the branch turns into a return to IDLE.
-
-    Intrusion handling (record, store, notify admin — SR-19) lives inside the driver, not
-    as separate leaves, so the tree stays about sequencing rather than perception detail.
-    """
-
-    def __init__(self, driver, name: str | None = None):
-        super().__init__(driver, name or "SecurityPatrolNavigation")
+# [2026-07-26] SecurityPatrolNavigation 삭제.
+#
+# 정의만 있고 인스턴스화하는 곳이 한 군데도 없었다(테스트 포함). 그런데 docstring 은
+# "침입 처리(기록·저장·관리자 통보, SR-19)가 driver 안에 있다"고 적혀 있어서, 읽는 사람이
+# 경비순찰에 이미 침입 대응이 구현돼 있다고 오해하게 만들었다. 실제 SECURITY_PATROL 브랜치는
+# PatrolNavigation 을 쓰고(branches/security_patrol.py:38), 그 드라이버는 goal 을 쏘는
+# FleetCmdDriver 일 뿐이다(main.py:132-137). 침입 대응은 아직 존재하지 않는다.
+#
+# 없는 기능을 있는 것처럼 말하는 주석은 죽은 코드보다 나쁘다. 그래서 지운다.
+# 실제 구현 계획: docs 07-26-plan/02-security-patrol-사람감지-대응.md

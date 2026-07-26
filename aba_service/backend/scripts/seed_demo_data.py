@@ -52,11 +52,10 @@ INTRUSION_NOTES = [
 # 카테고리당 이 수만큼 채워서 인기도서 TOP·분야별 대출이 더 다양하게 보이게 한다.
 TARGET_BOOKS_PER_CATEGORY = 20
 CATEGORY_META = {
-    "literature": {"label": "문학", "zone": "문학-1", "cover": "📖", "color": "from-rose-200 to-rose-300"},
-    "art": {"label": "예술", "zone": "예술-1", "cover": "🎨", "color": "from-orange-200 to-amber-300"},
-    "science": {"label": "과학", "zone": "과학-1", "cover": "🔬", "color": "from-sky-200 to-blue-300"},
-    "humanities": {"label": "인문학", "zone": "인문학-1", "cover": "📚", "color": "from-indigo-200 to-blue-300"},
-    "kids": {"label": "유아", "zone": "유아", "cover": "🧸", "color": "from-lime-200 to-green-300"},
+    "literature": {"label": "문학", "zone": "문학서가", "cover": "📖", "color": "from-rose-200 to-rose-300"},
+    "art": {"label": "예술", "zone": "예술서가", "cover": "🎨", "color": "from-orange-200 to-amber-300"},
+    "science": {"label": "과학", "zone": "과학-인문학서가", "cover": "🔬", "color": "from-sky-200 to-blue-300"},
+    "humanities": {"label": "인문학", "zone": "과학-인문학서가", "cover": "📚", "color": "from-indigo-200 to-blue-300"},
 }
 
 
