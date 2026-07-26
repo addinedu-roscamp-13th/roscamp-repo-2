@@ -49,7 +49,7 @@ source "$LIBI_MODES_WS/install/setup.bash"
 
 # sim.sh / pi.sh 와 같은 DDS 설정을 쓴다 — 안 맞추면 같은 도메인이어도 서로 못 본다.
 if [ -f /opt/ros/jazzy/lib/librmw_cyclonedds_cpp.so ]; then
-  export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+  export RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
   export CYCLONEDDS_URI="file://$ROS_WS_DIR/cyclonedds.xml"
 fi
 

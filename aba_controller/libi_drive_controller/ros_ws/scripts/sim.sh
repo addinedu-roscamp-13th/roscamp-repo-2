@@ -102,7 +102,7 @@ echo "[sim] 브릿지 접두사 /$BRIDGE_KEY  (domain $SIM_DOMAIN_ID -> 86)"
 # DDS(ROS2/nav2)만 분리할 뿐 Gazebo 쪽(world/model pose 등)엔 적용되지 않아서, 서로 다른
 # world2 인스턴스의 로봇 위치·포즈가 뒤섞인다 — 로봇들이 "붙어다니는" 증상으로 나타난다.
 # 도메인마다 고유한 파티션을 줘서 sim 인스턴스별로 완전히 분리한다.
-ROS_SETUP="export ROS_DOMAIN_ID=$SIM_DOMAIN_ID && export GZ_PARTITION=pinky_sim_$SIM_DOMAIN_ID && source /opt/ros/jazzy/setup.bash && source '$ROS_WS_DIR/install/setup.bash' && if [ -f /opt/ros/jazzy/lib/librmw_cyclonedds_cpp.so ]; then export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp; export CYCLONEDDS_URI=file://$ROS_WS_DIR/cyclonedds.xml; fi"
+ROS_SETUP="export ROS_DOMAIN_ID=$SIM_DOMAIN_ID && export GZ_PARTITION=pinky_sim_$SIM_DOMAIN_ID && source /opt/ros/jazzy/setup.bash && source '$ROS_WS_DIR/install/setup.bash' && if [ -f /opt/ros/jazzy/lib/librmw_cyclonedds_cpp.so ]; then export RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}; export CYCLONEDDS_URI=file://$ROS_WS_DIR/cyclonedds.xml; fi"
 
 # libi_modes 는 별도 워크스페이스(aba_controller/libi_modes/ros_ws)라 그쪽 install 도 겹쳐 source 한다.
 # 도메인은 위와 같다 — FSM 은 로봇과 같은 도메인에서 돌아야 배터리·명령을 그대로 주고받는다.
