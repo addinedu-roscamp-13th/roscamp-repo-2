@@ -74,8 +74,10 @@ public:
   {
     navgraph_file_ = declare_parameter<std::string>("navgraph_file", "");
     const std::string disp_name = declare_parameter<std::string>("dispatcher_plugin", "libi_fleet::Auction");
-    // 디버깅: 교통관제 기본 OFF(GrantAllTraffic=항상 GRANT). CBS + Space-Time A* 도입 시 교체 예정.
-    const std::string traf_name = declare_parameter<std::string>("traffic_plugin", "libi_fleet::GrantAllTraffic");
+    // 기본 교통관제 = CBS + 가중 Space-Time A*. 계획이 밀리면 CbsTraffic 이 스스로
+    // ReservationDeadlock 반응형으로 강등하므로 시간표가 깨져도 멈추지 않는다.
+    // 진단용으로 끄려면 -p traffic_plugin:=libi_fleet::GrantAllTraffic.
+    const std::string traf_name = declare_parameter<std::string>("traffic_plugin", "libi_fleet::CbsTraffic");
     const std::string fleet = declare_parameter<std::string>("fleet_name", "libi");
     fleet_name_ = fleet;
 

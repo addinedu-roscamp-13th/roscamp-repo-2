@@ -23,8 +23,12 @@ router = APIRouter(prefix="/api/fleet", tags=["fleet"])
 
 # plugins.xml 에 등록된 실제 구현. SetPlugins.srv 주석의 예시 이름은 구버전이라 믿지 않는다.
 DISPATCHER_PLUGINS = ["libi_fleet::Auction"]
-# 디버깅: 교통관제 OFF(GrantAllTraffic)만. ReservationDeadlock 은 삭제됨 — CBS + Space-Time A* 로 재도입 예정.
-TRAFFIC_PLUGINS = ["libi_fleet::GrantAllTraffic"]
+# 첫 항목이 fleet_node 기본값(CBS + 가중 Space-Time A*). 뒤 둘은 폴백/진단용 수동 교체.
+TRAFFIC_PLUGINS = [
+    "libi_fleet::CbsTraffic",
+    "libi_fleet::ReservationDeadlock",
+    "libi_fleet::GrantAllTraffic",
+]
 
 
 class SubmitTaskRequest(BaseModel):

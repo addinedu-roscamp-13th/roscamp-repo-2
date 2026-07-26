@@ -193,14 +193,15 @@ async def startup():
     else:
         print("[startup] orchestrator 는 stub dispatch (LIBI_REAL_DISPATCH=1 로 실배선)", flush=True)
 
-    # 주행로봇 근접 안전 코디네이터(Phase1). fleet_node 의 ReservationDeadlock 교통 플러그인이
+    # 주행로봇 근접 안전 코디네이터(Phase1). fleet_node 의 교통 플러그인(기본 CbsTraffic =
+    # CBS + 가중 Space-Time A*, 계획이 밀리면 ReservationDeadlock 반응형으로 자동 강등)이
     # 같은 문제를 더 정교하게 풀어 이걸 대체할 예정이다(결정 완료). 다만 플러그인이 실제로
     # 뜨고 검증되기 전엔 서버쪽 분리 공백을 막으려 coordinator 를 그대로 둔다 — 기본 ON.
     # 플러그인 검증(#18) 후 은퇴: env FMS_DISABLE_COORDINATOR=1 로 끄거나 이 블록 제거.
     import os as _os
     if _os.environ.get("FMS_DISABLE_COORDINATOR") == "1":
         print("[startup] 근접 안전 코디네이터 비활성(FMS_DISABLE_COORDINATOR=1) "
-              "— 교통은 fleet_node ReservationDeadlock 이 담당한다고 가정", flush=True)
+              "— 교통은 fleet_node 교통 플러그인(기본 CbsTraffic)이 담당한다고 가정", flush=True)
     else:
         from app.fleet_coordinator import coordinator
         _asyncio.create_task(coordinator.run())

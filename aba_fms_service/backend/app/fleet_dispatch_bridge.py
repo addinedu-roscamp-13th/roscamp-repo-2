@@ -4,7 +4,7 @@
 로봇에 아무 명령도 가지 않았다. 이 모듈이 그 자리를 채운다.
 
 ## ⚠️ 알고리즘은 건드리지 않는다
-배차(`Auction`)·교통(`ReservationDeadlock`)은 pluginlib 플러그인이고 앞으로 바뀔 것이므로
+배차(`Auction`)·교통(기본 `CbsTraffic`)은 pluginlib 플러그인이고 앞으로 바뀔 것이므로
 **여기서는 연결만** 한다. 어느 로봇을 고를지는 `submit_task(robot="")` 로 넘겨 fleet_node 의
 dispatcher 플러그인이 정하게 두고, 우리는 그 결과를 받아 다리 진행만 이어붙인다.
 

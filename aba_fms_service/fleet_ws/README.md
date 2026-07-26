@@ -53,7 +53,7 @@ ros2 run libi_fleet fleet_node --ros-args \
 ## 다른 컴포넌트와의 층 구분
 
 ```
-libi_fleet (여기)          누가 할지 · 어디로 갈지    배차 Auction / 교통 ReservationDeadlock
+libi_fleet (여기)          누가 할지 · 어디로 갈지    배차 Auction / 교통 CbsTraffic
      │ Navigate / PerformAction (action)
      ▼
 libi_modes (미션 PC)       그 로봇이 어떻게 행동할지   8상태 FSM + 상태별 BT
@@ -69,7 +69,8 @@ robot_agent · ros_ws       실제 하드웨어
 | base | 플러그인 | 설명 |
 |---|---|---|
 | DispatcherBase | `libi_fleet::Auction` | 배차 — Dijkstra 최저 경로비용 입찰 승리 (기본) |
-| TrafficBase | `libi_fleet::ReservationDeadlock` | 교통 — 노드 예약 + wait-for DFS 교착감지 (기본, **실사용**) |
+| TrafficBase | `libi_fleet::CbsTraffic` | 교통 — CBS + 가중 Space-Time A* 시간표 계획 + 실행 게이트 (**기본**). 계획이 밀리면 `ReservationDeadlock` 반응형으로 자동 강등 |
+| TrafficBase | `libi_fleet::ReservationDeadlock` | 교통 — 노드 예약 + wait-for DFS 교착감지 (반응형 폴백, 단독 사용도 가능) |
 | TrafficBase | `libi_fleet::GrantAllTraffic` | ⚠️ **진단 전용** — 항상 GRANT, 충돌회피·교착감지 **없음**. 실사용 금지 |
 
 `GrantAllTraffic` 은 "명령 하나에 로봇이 다 같이 움직이는" 현상이 교통관제 셔플 때문인지
