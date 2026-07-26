@@ -78,6 +78,8 @@ public:
   virtual bool needs_replan() const { return false; }
   // 계획 도착틱을 실제 초로 바꿀 때 쓰는 환산값. 이 값의 주인은 플러그인이다.
   virtual double tick_seconds() const { return 1.0; }
+  // 마지막으로 계획을 버린 이유(사람이 읽는 문구). 재계획이 잦을 때 원인을 가른다.
+  virtual std::string last_demote_reason() const { return {}; }
 };
 
 }  // namespace libi_fleet

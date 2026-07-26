@@ -23,6 +23,7 @@ TRAFFIC="libi_fleet::CbsTraffic"
 SECONDS_RUN=110
 DELAY=1
 OPEN=1
+PATROL_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --traffic)
@@ -35,6 +36,7 @@ while [ $# -gt 0 ]; do
       shift 2 ;;
     --seconds) SECONDS_RUN="${2:?}"; shift 2 ;;
     --no-delay) DELAY=0; shift ;;
+    --patrol) PATROL_ONLY=1; DELAY=0; shift ;;
     --no-open) OPEN=0; shift ;;
     *) echo "[cbs-sim] 알 수 없는 인자: $1" >&2; exit 2 ;;
   esac
@@ -66,29 +68,62 @@ v = d["levels"]["L1"]["vertices"][int(sys.argv[2])]
 print(f"{v[0]}:{v[1]}")
 PY
 }
+# 순회 루프 — fms_service.sh 가 쓰는 실제 정점 순서(순회경로 canonical lap).
+# 배차 시나리오에서는 순회가 끼어들면 관측이 지저분해지므로 최소 2정점만 준다.
+if [ "$PATROL_ONLY" = "1" ]; then
+  PATROL_ROUTE="9 6 7 13 15 14 16 12 11 10"
+else
+  PATROL_ROUTE="9 6"
+fi
+
 R1_XY="$(coord $R1_START)"
 R2_XY="$(coord $R2_START)"
 
 echo "[cbs-sim] 도메인 $DOMAIN · 교통 $TRAFFIC"
 echo "[cbs-sim] $R1_NAME v$R1_START→v$R1_GOAL,  $R2_NAME v$R2_START→v$R2_GOAL"
 
+# 이 시나리오가 띄우는 노드에는 **고유 이름**을 준다.
+# 이게 없으면 정리할 때 로봇 관제(도메인 86)의 진짜 fleet_node 까지 잡을 위험이 있고,
+# 반대로 이름이 겹치지 않으면 이전 실행의 좀비를 골라 죽일 수가 없다.
+#
+# ⚠️ 실제로 겪은 문제: timeout 으로 스크립트가 끊기면 trap 이 안 돌아 fleet_node 가 남는다.
+#    그 상태로 다시 돌리면 **같은 도메인에 관제가 둘** 이 되어 로봇이 서로 다른 명령을 받고,
+#    로그에는 같은 시각 두 줄이 다른 내용으로 찍힌다(실측: 좀비 5개가 쌓여 있었다).
+#    그래서 기동 전에 **이전 좀비를 먼저 정리**한다.
+NODE_NAME="cbs_sim_fleet"
+SIM_TAG="cbs_sim_robots"
+
+kill_stale() {
+  local n=0
+  for p in $(pgrep -f "__node:=$NODE_NAME" 2>/dev/null) $(pgrep -f "$SIM_TAG" 2>/dev/null); do
+    [ "$p" = "$$" ] && continue
+    kill "$p" 2>/dev/null && n=$((n+1))
+  done
+  [ "$n" -gt 0 ] && { echo "[cbs-sim] 이전 실행 잔여 프로세스 $n개 정리"; sleep 1; }
+  return 0
+}
+
 cleanup() {
   [ -n "${FLEET_PID:-}" ] && kill "$FLEET_PID" 2>/dev/null || true
   [ -n "${SIM_PID:-}" ] && kill "$SIM_PID" 2>/dev/null || true
+  sleep 0.5
+  kill_stale >/dev/null 2>&1 || true    # 강제 종료로 trap 을 못 탄 경우까지
   wait 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
+kill_stale
 
 # ── ① fleet_node (진짜 관제) ────────────────────────────────────────────────
 # arrive_radius 는 fms_service.sh 와 같은 0.05. 순회는 이 시험에서 방해가 되므로 끈다
 # (patrol_route 를 최소 2정점만 줘서 자동 순회가 돌지 않게 한다 — 로봇 모드가 IDLE 이면
 #  순회는 시작되지 않는다).
 ros2 run libi_fleet fleet_node --ros-args \
+  -r __node:="$NODE_NAME" \
   -p navgraph_file:="$NAVGRAPH" \
   -p arrive_radius:=0.05 \
   -p traffic_plugin:="$TRAFFIC" \
-  -p patrol_route:="9 6" \
-  -p security_patrol_route:="9 6" \
+  -p patrol_route:="$PATROL_ROUTE" \
+  -p security_patrol_route:="$PATROL_ROUTE" \
   > "$OUT/fleet_node.log" 2>&1 &
 FLEET_PID=$!
 sleep 4
@@ -115,9 +150,13 @@ submit() {   # <robot> <goal>
     "{task_type: 'delivery', pickup: '', dropoff: '$2', requester: 'T-$1', robot: '$1', priority: 0, arm_actions: 0}" \
     2>&1 | grep -E "accepted|reason" | head -2
 }
-echo "[cbs-sim] 배차…"
-submit "$R1_NAME" "$R1_GOAL"
-submit "$R2_NAME" "$R2_GOAL"
+if [ "$PATROL_ONLY" = "1" ]; then
+  echo "[cbs-sim] 순회 모드 — 배차 없음. 루프: $PATROL_ROUTE"
+else
+  echo "[cbs-sim] 배차…"
+  submit "$R1_NAME" "$R1_GOAL"
+  submit "$R2_NAME" "$R2_GOAL"
+fi
 
 # ── ④ 대기 ──────────────────────────────────────────────────────────────────
 echo "[cbs-sim] ${SECONDS_RUN}초 주행 관측 중…"

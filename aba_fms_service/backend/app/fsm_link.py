@@ -60,6 +60,9 @@ def _empty_entry() -> dict[str, Any]:
         "tree": None,
         "transitioned_at": 0.0,
         "_last_ros_at": 0.0,
+        # 트리 수신 시각은 상태 수신 시각과 **따로** 둔다 — 상태만 계속 오고 트리만
+        # 멈추는 경우가 실제로 있고, 하나로 묶으면 낡은 트리가 fresh 로 나간다.
+        "_last_tree_at": 0.0,
     }
 
 

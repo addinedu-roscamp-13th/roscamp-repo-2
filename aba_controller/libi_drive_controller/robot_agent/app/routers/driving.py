@@ -3,6 +3,7 @@ import datetime
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import time
@@ -12,6 +13,7 @@ from typing import List, Literal, cast
 from fastapi import APIRouter, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
+from app.core import ros_env
 from app.core.bridge import bridge
 from app.drivers.driving_driver import DrivingDriver
 from app.schemas.driving import MoveRequest, RotateRequest
@@ -117,7 +119,12 @@ async def drive_ws(websocket: WebSocket):
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 LOG_DIR = PROJECT_ROOT / "logs"
-ROS_SETUP = "/opt/ros/jazzy/setup.bash"
+#: 시스템 ROS2. 리터럴을 여기서 다시 적지 않는다 — 같은 값이 두 곳에 있으면 갈라진다.
+ROS_SETUP = str(ros_env.SYSTEM_SETUP)
+
+#: bash 로 넘길 값을 한 셸 워드로 인용한다. 이름을 짧게 둔 이유는 f-string 안에서
+#  쓰이기 때문이고, 인용은 **셸에 넘기는 마지막 지점에서 한 번만** 한다.
+_q = shlex.quote
 
 MAP_DIR = PROJECT_ROOT / "maps"
 MAP_FILE = MAP_DIR / "map"
@@ -169,14 +176,23 @@ def _build_command(name: str) -> list[str]:
         # ① && 와 || 가 같은 우선순위라 앞 단계 실패에도 뒤 메시지가 나오고
         # ② `C=$(...)` 의 종료상태가 명령치환 결과라, 패키지를 못 찾으면 체인이 거기서 끊겨
         #    아래 안내 메시지가 아예 출력되지 않는다. 둘 다 디버깅을 방해한다.
+        overlay = ros_env.overlay_setup()
         return ["bash", "-c", "\n".join([
-            f"source {ROS_SETUP} || exit 1",
+            *ros_env.env_lines(),
             "export TURTLEBOT3_MODEL=${TURTLEBOT3_MODEL:-burger}",
             'NAV2_SHARE="$(ros2 pkg prefix --share pinky_navigation 2>/dev/null || true)"',
             'NAV2_PARAMS="$NAV2_SHARE/params/nav2_params.yaml"',
             'if [ -z "$NAV2_SHARE" ] || [ ! -f "$NAV2_PARAMS" ]; then',
             '  echo "[nav2] pinky_navigation 파라미터를 찾지 못했습니다: $NAV2_PARAMS" >&2',
-            '  echo "[nav2] ros_ws 에서 colcon build 후 install/setup.bash 를 source 했는지 확인" >&2',
+            # ⚠️ 진단 메시지에 경로를 실을 때 `echo "... {shlex.quote(p)} ..."` 를 쓰면 안 된다.
+            #   shlex.quote 는 값을 **하나의 셸 워드**로 만들어 줄 뿐이고, 그 결과를 다시
+            #   큰따옴표 안에 넣으면 작은따옴표가 리터럴 문자가 되면서 `$(...)` 가 그대로
+            #   전개된다 — 실측: LIBI_ROS_WS_SETUP='/tmp/x$(touch /tmp/PWNED)' 로
+            #   `echo "... '/tmp/x$(touch /tmp/PWNED)'" ` 가 되어 명령이 실행됐다.
+            #   포맷을 고정한 printf 에 **인용된 값 하나를 인자로** 넘기면 전개가 없다.
+            f"  printf '%s\\n' {_q('[nav2] ROS overlay: ' + (str(overlay) if overlay else '찾지 못함'))} >&2",
+            f"  printf '%s\\n' {_q('[nav2] overlay 후보: ' + ros_env.describe_candidates())} >&2",
+            f"  printf '%s\\n' {_q('[nav2] 다른 위치에 있으면 ' + ros_env.OVERLAY_ENV + ' 환경변수로 지정하세요')} >&2",
             "  exit 1",
             "fi",
             "exec ros2 launch nav2_bringup navigation_launch.py "

@@ -113,6 +113,13 @@ public:
     return replan_wanted_;
   }
 
+  // 마지막으로 계획을 버린 이유. 재계획이 잦을 때 원인을 가르는 유일한 단서다.
+  std::string last_demote_reason() const override
+  {
+    std::lock_guard<std::mutex> lk(mu_);
+    return last_demote_ ? last_demote_ : "";
+  }
+
   // ── 계획 ────────────────────────────────────────────────────────────────
   //
   // ⚠️ **탐색은 잠금 밖에서 한다.**
@@ -193,11 +200,19 @@ public:
     if (stale_) { return phys; }         // 폴백(반응형) 모드 — DEADLOCK 도 그대로 통과
 
     auto it = plan_.find(robot);
-    if (it == plan_.end()) { return demote(phys, "계획에 없는 로봇"); }
+    if (it == plan_.end()) {
+      // ⚠️ **강등하지 않는다.** 계획에 없는 로봇(순회 등)은 애초에 시간표의 대상이 아니다.
+      //    예전엔 여기서 강등해 전체 시간표를 버렸는데, 순회 로봇이 한 칸 움직일 때마다
+      //    배달 로봇들의 계획까지 날아갔다 — 시나리오 로그가 "계획에 없는 이동" 으로 도배됐다.
+      //    이 로봇만 반응형으로 처리하면 된다. 남의 계획은 그대로 두고,
+      //    물리 예약(안전망)이 이 로봇과 계획 로봇 사이를 막아 준다.
+      return phys;
+    }
 
     const Route & r = it->second;
     const int step = find_step(r, from, to);
-    if (step < 0) { return demote(phys, "계획에 없는 이동"); }
+    // 계획에 **있는** 로봇이 계획에 없는 칸을 요청하면 그건 진짜 이탈이다 — 그때는 강등한다.
+    if (step < 0) { return demote(phys, "계획 로봇의 경로 이탈"); }
 
     const int now = now_tick();
     const int depart = r[step].depart;
@@ -292,7 +307,14 @@ private:
     const Vertex & nv = ng.vertex(w);
     const double out = std::atan2(nv.y - pv.y, nv.x - pv.x);
 
-    double sum = 0.0;
+    // ⚠️ 평균이 아니라 **최댓값**을 쓴다.
+    //    어느 방향에서 올지는 계획 시점에 모른다. 평균으로 잡으면 실제 진입각이 평균보다
+    //    큰 경우 그만큼 늦고, 늦으면 마감 초과 → 재계획이 돈다.
+    //    (실측: 평균을 쓴 첫 시나리오에서 v7→v13 을 12초로 잡았는데 실제 22초가 걸려
+    //     3초마다 재계획이 반복됐다. 90도 회전 하나가 1.57/0.15 ≈ 10.5초다.)
+    //    최댓값은 직진 통과를 과대평가하지만, 늦는 것보다 **여유 있게 잡는 편이 안전하다** —
+    //    일찍 온 로봇은 slack 으로 통과시키면 되고, 늦은 로봇은 계획 자체를 깨뜨린다.
+    double worst = 0.0;
     int cnt = 0;
     for (int u : preds) {
       if (u == w) { continue; }              // 되돌아가기(U턴)는 아래에서 따로 센다
@@ -300,7 +322,7 @@ private:
       const double in = std::atan2(pv.y - uv.y, pv.x - uv.x);
       double diff = std::fabs(out - in);
       while (diff > M_PI) { diff = 2.0 * M_PI - diff; }
-      sum += (diff > turn_min_rad_) ? diff : 0.0;
+      if (diff > turn_min_rad_) { worst = std::max(worst, diff); }
       cnt++;
     }
     // 진입로가 **왔던 길 하나뿐**이면(막다른 정점) 되돌아 나가는 것이 유일한 선택이고,
@@ -310,7 +332,7 @@ private:
       const bool only_back = std::find(preds.begin(), preds.end(), w) != preds.end();
       return only_back ? (M_PI / turn_rad_s_) : 0.0;
     }
-    return (sum / cnt) / turn_rad_s_;
+    return worst / turn_rad_s_;
   }
 
   int now_tick() const
@@ -334,11 +356,12 @@ private:
   // 예전에는 여기서 끝이었다 — 한 번 밀리면 **영영** 반응형으로 남았다. 장애물·지체는
   // 정상 운영에서 늘 일어나므로, 그때마다 계획으로 되돌아올 길이 있어야 한다.
   // replan_wanted_ 를 세워 두면 fleet_node 가 다음 틱에 스냅샷을 새로 모아 replan() 을 부른다.
-  MoveDecision demote(MoveDecision phys, const char * /*why*/)
+  MoveDecision demote(MoveDecision phys, const char * why)
   {
     stale_ = true;
     plan_.clear();
     replan_wanted_ = true;
+    last_demote_ = why;   // 호출자가 로그로 드러낸다 — 왜 계획을 버렸는지 모르면 못 고친다
     return phys;
   }
 
@@ -348,6 +371,7 @@ private:
   std::chrono::steady_clock::time_point epoch_{};
   bool stale_{true};
   bool replan_wanted_{false};
+  const char * last_demote_{nullptr};
 
   const double tick_seconds_;
   const double speed_mps_;

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { BtGraphView } from "@/components/admin/BtGraphView";
 import type { BtNodeFlag } from "@/components/admin/BtGraphView";
@@ -15,6 +15,10 @@ import { cn } from "@/lib/utils";
  */
 
 const STATUSES: BtNodeStatus[] = ["RUNNING", "SUCCESS", "FAILURE", "INVALID"];
+
+/** 이 시간 동안 새 트리가 안 오면 브라우저가 스스로 정지로 판정한다.
+ *  서버 FRESH_SEC(10초)보다 넉넉히 잡아 정상 지연을 오탐하지 않게 한다. */
+const CLIENT_STALE_MS = 15_000;
 
 /**
  * 범례. 색이 나타내는 축이 셋이라 축을 나눠서 적는다 — 한 줄에 섞으면
@@ -105,7 +109,25 @@ export function BtFlowSection({
   // ⚠️ 트리 수신이 끊겼는데 그대로 그리면 **멈춘 트리가 살아 있는 것처럼** 보인다
   //    (RUNNING 색·halo·점선 애니메이션이 그대로 남는다). 상태(fsm_state)만 계속 오고
   //    스냅샷만 멈추는 경우가 있어서 `stale` 로는 못 잡는다 — 그래서 tree_stale 을 본다.
-  const frozen = !!snapshot && (snapshot.tree_stale ?? snapshot.stale);
+  // ⚠️ 서버가 붙여 준 tree_stale 만 믿으면 **전면 정전을 못 잡는다.** 그 값은 프레임을
+  //    보낼 때 계산되는데, ROS 가 통째로 멈추면 보낼 프레임 자체가 없다 — 브라우저는
+  //    마지막 화면을 영원히 붙들고 "실행 중"으로 계속 그린다.
+  //    그래서 **받은 시각을 여기서 직접 재고**, 둘 중 하나라도 걸리면 정지로 본다.
+  const seenAt = useRef<Record<string, number>>({});
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (picked && tree) seenAt.current[picked] = Date.now();
+  }, [picked, tree, snapshot]);
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const last = picked ? seenAt.current[picked] : undefined;
+  const frozen =
+    !!tree &&
+    ((snapshot?.tree_stale ?? snapshot?.stale ?? false) ||
+      (last !== undefined && now - last > CLIENT_STALE_MS));
   const counts = useMemo(() => tally(tree), [tree]);
   const total = STATUSES.reduce((n, s) => n + counts[s], 0);
 

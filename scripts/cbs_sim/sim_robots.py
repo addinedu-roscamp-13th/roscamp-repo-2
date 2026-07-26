@@ -102,7 +102,7 @@ class FakeRobot:
 
 class SimNode(Node):
     def __init__(self, robots: list[FakeRobot], record_path: str | None):
-        super().__init__("cbs_sim_robots")
+        super().__init__("cbs_sim_robots")  # 이름이 곧 정리 표식(run.sh SIM_TAG)
         self.robots = {r.name: r for r in robots}
         self.t0 = time.monotonic()
         self.record_path = record_path

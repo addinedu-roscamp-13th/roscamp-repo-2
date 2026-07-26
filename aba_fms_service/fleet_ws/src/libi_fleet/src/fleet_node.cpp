@@ -535,7 +535,9 @@ private:
     replan_cooldown_ = replan_cooldown_ticks_ * (1 << shift);
     replan_streak_++;
 
-    RCLCPP_INFO(get_logger(), "[traffic] 시간표 무효 → 재계획 (다음 간격 %d틱)", replan_cooldown_);
+    RCLCPP_INFO(get_logger(), "[traffic] 시간표 무효 → 재계획 (사유: %s, 다음 간격 %d틱)",
+                traffic_->last_demote_reason().empty() ? "도착 마감 초과" : traffic_->last_demote_reason().c_str(),
+                replan_cooldown_);
     replan_requested_ = false;
     replan_all_routes();
   }
