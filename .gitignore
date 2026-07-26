@@ -270,3 +270,10 @@ docs/superpowers/
 **/ollama-local/
 **/ollama-models/
 **/pinky.v1i.yolov8/
+
+# --- 일회용 측정/실험 폴더 (2026-07-26) ---
+# demo/ 아래는 "한 줄 답을 얻고 폴더째 지운다"는 전제의 일회용 도구다.
+# 예: demo/dual-cam-bench (Pi 듀얼 카메라 CPU 측정 — 계획 07-26-plan/08).
+# 측정 환경이 이 노트북이 아니라 현장(Pi + picam + USB 웹캠)이라 결과·로그가
+# 머신마다 다르고, 프로덕션 코드 변경은 0줄이다. 저장소에 남길 것이 아니다.
+demo/

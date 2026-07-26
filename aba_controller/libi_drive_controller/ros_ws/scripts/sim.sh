@@ -69,12 +69,32 @@ fi
 #    찍히고, 한쪽에 준 주행 명령을 **양쪽이 다 실행**해 두 대가 붙어 다녔다.
 #    접두사는 FMS 쪽 규칙(bridge_key: 하이픈·공백 제거 + 첫 글자 소문자)과 같아야 한다.
 #    다르면 관제가 그 로봇 상태를 영영 못 본다.
+#
+# ⚠️ [2026-07-26] 위 치환이 **정방향만** 고쳤다. `s|/pinkySim/|...|` 는 선행 슬래시가
+#    붙은 것만 바꾸는데, 역방향(reversed) 항목은 YAML **키**라 슬래시가 없다:
+#        pinkySim/fleet_cmd:        ← 안 바뀜
+#          reversed: True
+#          remap: /fleet_cmd
+#    그래서 브릿지는 `/pinkySim/fleet_cmd` 를 구독하는데 FMS 는 `/pinkysim1/fleet_cmd`
+#    로 발행했다 — **sim 에서 주행 명령이 로봇에 영영 도달하지 못했다.**
+#    실측(2026-07-26): `/pinkysim1/fleet_cmd` 구독자 0, 순찰이 GRANT 까지만 가고 멈춤.
+#    아래 두 번째 치환이 들여쓰기된 키를 잡는다.
 BRIDGE_KEY="$(printf '%s' "$FSM_ROBOT_ID" | tr -d '[:space:]_-' | sed 's/^\(.\)/\L\1/')"
 DOMAIN_BRIDGE_CONFIG="$(mktemp /tmp/domain_bridge_${BRIDGE_KEY}_XXXX.yaml)"
 sed -e "s|^from_domain: .*|from_domain: $SIM_DOMAIN_ID|" \
     -e "s|^name: .*|name: bridge_${BRIDGE_KEY}_${SIM_DOMAIN_ID}|" \
     -e "s|/pinkySim/|/${BRIDGE_KEY}/|g" \
+    -e "s|^\([[:space:]]*\)pinkySim/|\1${BRIDGE_KEY}/|g" \
     "$DOMAIN_BRIDGE_TEMPLATE" > "$DOMAIN_BRIDGE_CONFIG"
+
+# 치환이 빠짐없이 됐는지 확인한다. 하나라도 남으면 그 토픽만 조용히 안 이어져서
+# "다 되는데 하나만 안 된다" 는 가장 찾기 어려운 형태가 된다.
+if grep -q "pinkySim" "$DOMAIN_BRIDGE_CONFIG"; then
+  echo "[sim] ⚠️ 브릿지 설정에 치환되지 않은 pinkySim 항목이 남았습니다:" >&2
+  grep -n "pinkySim" "$DOMAIN_BRIDGE_CONFIG" >&2
+  echo "[sim]    이 토픽은 중계되지 않습니다. $DOMAIN_BRIDGE_TEMPLATE 의 항목 형태를 확인하세요." >&2
+  exit 1
+fi
 echo "[sim] 브릿지 접두사 /$BRIDGE_KEY  (domain $SIM_DOMAIN_ID -> 86)"
 
 # GZ_PARTITION 을 안 주면 gz-transport 기본 파티션이 "호스트명:사용자명" 이라, 이 노트북에서

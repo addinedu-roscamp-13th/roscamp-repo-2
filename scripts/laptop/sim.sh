@@ -123,14 +123,27 @@ echo "[sim] 로봇=$FSM_ROBOT_ID  도메인=$ROS_DOMAIN_ID  세션=$SIM_SESSION"
 ensure_built "$REPO_ROOT/aba_controller/libi_drive_controller/ros_ws"
 ensure_built "$REPO_ROOT/aba_controller/libi_modes/ros_ws"
 
-# 사서(libi) GUI 에 이 로봇이 잡히게 상태 어댑터를 함께 띄운다.
-#   FMS 관제 모니터링은 /pinky{key}/amcl_pose 를 직접 읽어(fleet_telemetry) sim 이 뜨면 바로 보이지만,
-#   사서 GUI 는 /robot_state(fleet_link)를 본다 — 그건 amcl_pose 를 재발행하는 이 어댑터가
-#   내야 채워진다. 없으면 관제엔 뜨는데 사서 GUI 엔 안 잡힌다.
-# 이 로봇 하나만 띄운다(백그라운드, setsid). 정리는 ./kill.sh 가 robot_state_adapter 를 함께 쓸어담는다.
+# 상태 어댑터를 함께 띄운다. **이건 선택 사항이 아니다.**
+#
+#   fleet_node 는 /robot_state(rmf_fleet_msgs/RobotState)를 구독해서 "어떤 로봇이 어디
+#   있는가"를 안다. 그런데 로봇도 sim 도 그 타입을 발행하지 않는다(amcl_pose·battery 만).
+#   이 어댑터가 /pinky{key}/amcl_pose 를 읽어 /robot_state 로 재발행하는 **유일한 경로**다.
+#   없으면 fleet_node 가 로봇을 0대로 보고 배차도 순회도 시작조차 되지 않는다.
+#
+#   ⚠️ 그런데 그 상태가 화면에는 정상으로 보인다. FMS 관제 모니터링은
+#      /pinky{key}/amcl_pose 를 직접 읽으므로(fleet_telemetry) 로봇이 그대로 뜬다.
+#      "패널에 보이니 괜찮겠지"가 2026-07-26 순찰 정지 진단을 몇 시간 늦췄다.
+#      사서(libi) GUI 는 /robot_state(fleet_link)를 보므로 여기서만 로봇이 사라진다.
+#
+#   ⚠️ 프로세스가 떠 있다고 일하고 있는 것도 아니다. amcl_pose 를 못 받으면 어댑터는
+#      /robot_state 를 한 번도 발행하지 않는다. 그 상태는 로그의 'amcl_pose 대기' 로 보인다:
+#         tail -f /tmp/libi-robot-link/<key>.log
+#
+# 이 로봇 하나만 띄운다(백그라운드, setsid). 어댑터는 창·세션 수명과 분리돼 있고,
+# 정지는 명시적 요청에만 일어난다 — ./kill.sh 또는 robot-link.sh --all --stop.
 # exec 로 넘어가면 이 셸이 사라지므로 반드시 그 전에 띄운다(어댑터는 amcl_pose 가 늦게 떠도 기다린다).
 "$REPO_ROOT/scripts/laptop/robot-link.sh" "$FSM_ROBOT_ID" \
-  || echo "[sim] ⚠️ 상태 어댑터 기동 실패 — 사서 GUI 에 로봇이 안 잡힐 수 있습니다(sim 은 계속 진행)"
+  || echo "[sim] ⚠️ 상태 어댑터 기동 실패 — fleet_node 가 이 로봇을 인식하지 못해 배차·순회가 동작하지 않습니다. 확인: pgrep -af robot_state_adapter"
 
 cd "$REPO_ROOT"
 exec "$REPO_ROOT/aba_controller/libi_drive_controller/ros_ws/scripts/sim.sh" "${ARGS[@]}"

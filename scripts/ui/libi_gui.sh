@@ -3,8 +3,11 @@
 # 추종 화면(PERCEPTION_URL)·FMS 승인(FMS_URL)·도서 검색(ABA_SERVICE_URL)이 붙을 서버
 # 주소를 .env 의 LAPTOP_IP 로 채운다.
 #
-#   ./libi_gui.sh pinky3 --domain-id 88
-#   FMS_URL=http://192.168.0.9:9001 ./libi_gui.sh pinky3 --domain-id 88   # 서버가 딴 데면 개별 오버라이드
+#   ./libi_gui.sh Pinky-3 --domain-id 88
+#   FMS_URL=http://192.168.0.9:9001 ./libi_gui.sh Pinky-3 --domain-id 88   # 서버가 딴 데면 개별 오버라이드
+#
+# robot_id 는 pi.sh --robot / sim.sh --robot 에 준 값(= DB rc_robots.name)과 **완전히 같아야**
+# 한다 — FMS 승인 요청의 키라서, 다르면 "알 수 없는 로봇"으로 거부된다(gui.sh 주석 참고).
 #
 # 실물 배포(패널이 로봇에 있음)에서는 LAPTOP_IP 대신 실제 서버 IP 로 .env 를 맞추면 된다.
 set -eo pipefail
@@ -25,7 +28,8 @@ done
 
 source "$(dirname "${BASH_SOURCE[0]}")/../_common.sh"
 
-[ -n "$ROBOT_ID_ARG" ] || die "사용법: ./libi_gui.sh <pinky1|pinky2|pinky3> --domain-id <n>"
+[ -n "$ROBOT_ID_ARG" ] || die "사용법: ./libi_gui.sh <robot_id> --domain-id <n>
+  robot_id 는 pi.sh --robot / sim.sh --robot 에 준 값과 같아야 합니다 (예: Pinky-3, Pinky-sim-1)."
 [ -n "$DOMAIN_ID" ] || die "--domain-id 가 없습니다 — sim.sh(또는 이 로봇)에 쓴 것과 같은 값을 명시하세요.
   예:  ./libi_gui.sh $ROBOT_ID_ARG --domain-id 90"
 export ROS_DOMAIN_ID="$DOMAIN_ID"
@@ -49,7 +53,8 @@ check_reachable() {
   code="$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 2 "$url" 2>/dev/null || true)"
   [ "$code" != "000" ] || die "$name 에 연결할 수 없습니다: $url
   이 머신에서 sim 만 로컬로 테스트하는 거면(로봇+서버 분리 배포가 아니면) 이렇게:
-    ${name}_URL=http://127.0.0.1:<port> ./libi_gui.sh $ROBOT_ID_ARG
+    ${name}_URL=http://127.0.0.1:<port> ./libi_gui.sh $ROBOT_ID_ARG --domain-id $DOMAIN_ID
+  .env 의 LAPTOP_IP 가 지금 이 머신 IP 와 다르면 매번 이래야 한다 — LAPTOP_IP 를 고치는 게 낫다.
   진짜 그 주소가 맞다면 서버가 떠 있는지 먼저 확인하세요."
 }
 check_reachable "FMS" "$FMS_URL"

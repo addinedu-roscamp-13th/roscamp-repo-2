@@ -23,15 +23,22 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
+import time
+import traceback
 
 import rclpy
 from geometry_msgs.msg import PoseWithCovarianceStamped
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rmf_fleet_msgs.msg import Location, RobotMode, RobotState
 from std_msgs.msg import Float32
 
 PUBLISH_HZ = 2.0
+
+#: amcl_pose 를 못 받는 상태를 몇 초마다 알릴지. 발행 주기(2 Hz)보다 훨씬 커야 로그를 안 덮는다.
+POSE_WAIT_WARN_SEC = 15.0
 
 # ⚠️ amcl_pose 는 TRANSIENT_LOCAL 로 발행된다(브릿지가 그대로 넘긴다). 기본 QoS(VOLATILE)로
 # 구독하면 **매칭 자체가 안 돼** 마지막 위치조차 못 받는다. AMCL 은 주기 발행이 아니라
@@ -67,6 +74,11 @@ class RobotStateAdapter(Node):
         self._battery = 100.0
         self._seq = 0
 
+        # 진단용 — "프로세스가 살아 있다"와 "일하고 있다"를 구별하기 위한 최소 상태.
+        self._prefix = prefix
+        self._started_at = time.monotonic()
+        self._last_wait_warn_at = 0.0
+
         self.create_subscription(
             PoseWithCovarianceStamped, f"{prefix}/amcl_pose", self._on_pose, LATCHED_QOS
         )
@@ -81,8 +93,16 @@ class RobotStateAdapter(Node):
         )
 
     def _on_pose(self, msg: PoseWithCovarianceStamped) -> None:
+        first = self._pose is None
         p = msg.pose.pose
         self._pose = (p.position.x, p.position.y, yaw_from_quat(p.orientation.z, p.orientation.w))
+        if first:
+            # "언제부터 정상이었나"를 로그에 남긴다. 이 줄이 없으면 어댑터가 일을 시작한
+            # 시각을 알 방법이 없고, 시작조차 못 한 경우와 구별되지 않는다.
+            self.get_logger().info(
+                f"첫 위치 수신 — /robot_state 발행을 시작합니다 "
+                f"(대기 {time.monotonic() - self._started_at:.1f}s)"
+            )
 
     def _on_battery(self, msg: Float32) -> None:
         self._battery = float(msg.data)
@@ -90,6 +110,20 @@ class RobotStateAdapter(Node):
     def _tick(self) -> None:
         # 위치를 아직 못 받았으면 발행하지 않는다 — 좌표 0,0 인 유령 로봇이 생기면 안 된다.
         if self._pose is None:
+            # ⚠️ 예전엔 여기서 조용히 return 했다. 그래서 이 상태가 **완전히 무증상**이었다:
+            #    프로세스는 살아 있고(pgrep 으로 보이고) 로그도 안 나오는데
+            #    /robot_state 는 한 번도 안 나가고, fleet_node 는 로봇을 0대로 본다.
+            #    → 배차·순회가 시작조차 안 되는데 관제 패널에는 로봇이 정상으로 보인다
+            #      (패널은 amcl_pose 를 직접 읽는다). 2026-07-26 순찰 정지의 유력 상류.
+            now = time.monotonic()
+            if now - self._last_wait_warn_at >= POSE_WAIT_WARN_SEC:
+                self._last_wait_warn_at = now
+                self.get_logger().warn(
+                    f"{self._prefix}/amcl_pose 대기 중 ({now - self._started_at:.0f}s) — "
+                    "/robot_state 를 발행하지 못하고 있습니다. fleet_node 는 이 로봇을 "
+                    "인식하지 못하며 배차·순회가 시작되지 않습니다. "
+                    "도메인 브릿지(domain_bridge)와 AMCL 초기 위치를 확인하세요."
+                )
             return
         x, y, yaw = self._pose
 
@@ -123,13 +157,55 @@ def main() -> None:
 
     rclpy.init()
     node = RobotStateAdapter(args.robot, prefix)
+
+    def log_shutdown(exc: BaseException | None) -> None:
+        reason = type(exc).__name__ if exc is not None else "spin 정상 반환"
+        node.get_logger().info(
+            f"종료 신호 수신({reason}) — "
+            f"pid={os.getpid()} ppid={os.getppid()} "
+            f"가동 {time.monotonic() - node._started_at:.0f}s. 어댑터를 정리합니다"
+        )
+
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
+    except KeyboardInterrupt as exc:
+        log_shutdown(exc)
+    except Exception as exc:
+        # rclpy 의 SIGINT/SIGTERM 처리 자체가 레이스다: 시그널 핸들러가 C 레벨에서
+        # 컨텍스트/전역 executor 를 비동기로 정리하는데, 그 타이밍이 spin() 내부의 어느
+        # 지점과 겹치느냐에 따라 던지는 예외 타입이 달라진다 — 실측 확인됨:
+        #   - ExternalShutdownException (rclpy 자신의 정상 종료 체크, context.ok())
+        #   - RCLError: failed to initialize wait set ... (wait set 생성이 shutdown 과 겹침)
+        #   - AttributeError: 'NoneType' object has no attribute 'add_node'
+        #     (rclpy.spin() 이 get_global_executor() 를 부르는 순간 전역 executor 가 이미
+        #     None 으로 정리된 상태 — 30회 반복 재현 중 2회 관측)
+        # 예외 타입을 나열해 잡는 건 두더지잡기라 끝이 없다. 대신 rclpy.ok() 로 "컨텍스트가
+        # 이미 죽었는가"만 본다 — 죽었으면 무슨 예외든 정상 종료의 부산물이니 삼키고, 안
+        # 죽었으면 진짜 내부 오류이므로 다시 던져 트레이스백을 남긴다.
+        if rclpy.ok():
+            raise
+        # 컨텍스트는 이미 죽었다 = 종료 경로다. 하지만 **모든** 예외를 종료 잡음으로
+        # 취급하면, 종료와 우연히 겹친 진짜 결함이 "정상 종료" 한 줄로 둔갑해 사라진다.
+        # 그래서 종료 자체는 정상으로 끝내되(재던지면 트레이스백이 사인을 덮는다),
+        # 알려진 종료 예외가 아니면 트레이스백을 남긴다 — 조용히 삼키지 않는다.
+        if not isinstance(exc, ExternalShutdownException):
+            node.get_logger().warning(
+                "종료 중 예상치 못한 예외 — 종료와 겹친 진짜 결함일 수 있습니다:\n"
+                + "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+            )
+        log_shutdown(exc)
+    else:
+        # spin() 이 예외 없이 정상 반환하는 경우도 있다. rclpy.spin() 은
+        # `while executor.context.ok(): executor.spin_once()` 라서, while 조건 검사와 다음
+        # spin_once() 호출 사이에 컨텍스트가 shutdown 되면 예외 하나 없이 루프가 끝난다.
+        # 여기서 기록을 안 남기면 사인 불명 상태가 그대로 재발한다.
+        log_shutdown(None)
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        # 이미 종료된 컨텍스트에 다시 shutdown 을 부르면
+        # `RCLError: rcl_shutdown already called` 로 죽는다. 그래서 상태를 먼저 본다.
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":
