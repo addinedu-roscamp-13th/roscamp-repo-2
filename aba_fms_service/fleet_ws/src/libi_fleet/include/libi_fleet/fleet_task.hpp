@@ -69,6 +69,14 @@ struct ActiveTask
   int wait_ticks{0};       // 일반 WAIT 지속 틱 수(타임드 우회용). 진전 시 0 리셋.
   int resend_tick{0};      // 이동 중 경로 재발행 카운터 — 아래 주석 참고
 
+  // ── 시간 계획(CBS) 전용. 반응형 교통에서는 비어 있다 ──────────────────────
+  // path 와 같은 길이. 계획상 각 정점에 도착하기로 한 틱.
+  // 이게 있어야 "언제까지 못 가면 계획이 깨진 것" 을 판정할 수 있다 — 실제 도착이 이 시각을
+  // 넘기면(장애물·지체) 시간표는 이미 남의 통과를 잘못 열어 주고 있다.
+  std::vector<int> plan_arrive;
+  double plan_epoch{0.0};        // 그 계획이 t=0 으로 잡은 시각(초, steady)
+  double plan_tick_sec{1.0};     // 틱 하나의 실제 길이(초)
+
 };
 
 }  // namespace libi_fleet
