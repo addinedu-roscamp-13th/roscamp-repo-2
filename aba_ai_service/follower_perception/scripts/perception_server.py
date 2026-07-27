@@ -92,9 +92,11 @@ def _cm(m):
 
 
 def serve_loop(conn, frames, perception, *, poll_cmd=None, jpeg_quality=80,
-               cmd_sink=None, policy=None, lidar_source=None, detection_sink=None):
+               cmd_sink=None, policy=None, lidar_source=None, detection_sink=None,
+               camera_source=None):
     last_t = time.monotonic()
     for frame in frames:
+        _sync_camera(perception, camera_source)
         cmd = poll_cmd(conn) if poll_cmd else None
         if cmd == "register":
             perception.register_from_image(frame)
@@ -250,6 +252,20 @@ def _rotate_frames(frames, deg):
         yield cv2.rotate(f, rot) if rot is not None else f
 
 
+def _sync_camera(perception, camera_source):
+    """로봇이 카메라를 바꿨으면 추적 상태를 비운다.
+
+    모르고 지나가면 ByteTrack id 가 시점이 통째로 바뀐 프레임에 그대로 이어져,
+    추적기가 엉뚱한 사람을 주인으로 붙들 수 있다. 등록 템플릿은 유지된다 —
+    사람이 바뀐 게 아니라 보는 각도가 바뀐 것이다.
+    """
+    if camera_source is None:
+        return
+    cam = camera_source.latest()
+    if cam in ("front", "back"):
+        perception.set_camera(cam)
+
+
 def _make_detection_sink(host, port):
     """로봇의 libi_perception 으로 주인 검출을 보내는 콜백.
 
@@ -274,11 +290,13 @@ def _make_detection_sink(host, port):
     return send
 
 
-def _run_local_show(frames, perception, cmd_sink=None, policy=None, detection_sink=None):
+def _run_local_show(frames, perception, cmd_sink=None, policy=None, detection_sink=None,
+                    camera_source=None):
     """Local cv2 window (no Qt, no socket). Keys: r=register, x=reset, q/ESC=quit."""
     win = "perception  [r]register [x]reset [q]quit"
     last_t = time.monotonic()
     for frame in frames:
+        _sync_camera(perception, camera_source)
         perception.run(frame)
         det = perception.get_latest()
         if detection_sink is not None:
@@ -345,6 +363,10 @@ def main():
                     choices=["front", "back"],
                     help="이 스트림이 어느 캠인지. 검출 payload 에 실려 나가고, 로봇의 "
                          "회복 BT 가 '어느 캠에서 찾았나' 를 판단하는 데 쓴다.")
+    ap.add_argument("--camera-topic", dest="camera_topic", default=None,
+                    help="로봇의 /libi/camera_select 를 구독해 카메라 전환을 따라간다. "
+                         "예: --camera-topic /libi/camera_select. ROS sourced + 같은 "
+                         "ROS_DOMAIN_ID 가 필요하다(--lidar-ros 와 같은 전제).")
     ap.add_argument("--no-pose", dest="no_pose", action="store_true",
                     help="자세 판정을 끈다(디버깅용). 끄면 누워 있어도 로봇이 다가간다.")
     ap.add_argument("--pose-every-n", dest="pose_every_n", type=int, default=None,
@@ -396,9 +418,21 @@ def main():
     if args.robot_host:
         detection_sink = _make_detection_sink(args.robot_host, args.robot_detection_port)
 
+    # 로봇이 회복 중 앞↔뒤를 바꾸면 같은 포트로 다른 시점의 영상이 온다.
+    # 그 전환을 알아야 추적 상태를 비울 수 있다.
+    camera_source = None
+    if args.camera_topic:
+        try:
+            from scripts.camera_select_source import CameraSelectSource
+            camera_source = CameraSelectSource(topic=args.camera_topic)
+            print(f"[ok] camera_select 구독 → {args.camera_topic} "
+                  f"(ROS sourced + 같은 ROS_DOMAIN_ID 필요)")
+        except Exception as e:      # noqa: BLE001 — 구독 못 해도 추론은 돌아야 한다
+            print(f"[warn] camera_select 구독 실패({e}) — 카메라 전환을 모른 채 돕니다")
+
     if args.show:
         _run_local_show(frames, perception, cmd_sink=cmd_sink, policy=policy,
-                        detection_sink=detection_sink)
+                        detection_sink=detection_sink, camera_source=camera_source)
         return
 
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -416,7 +450,7 @@ def main():
         try:
             serve_loop(conn, frames, perception, poll_cmd=make_socket_poller(),
                        cmd_sink=cmd_sink, policy=policy, lidar_source=lidar_source,
-                       detection_sink=detection_sink)
+                       detection_sink=detection_sink, camera_source=camera_source)
         finally:
             conn.close()
             print("[..] viewer disconnected; waiting again")
