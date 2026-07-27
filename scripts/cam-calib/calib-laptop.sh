@@ -14,9 +14,10 @@
 #
 # 키:  SPACE 수집 · a 자동 · u 취소 · c 계산+저장 · q 종료
 #
-# 저장 위치(자동):
-#   picam → aba_controller/.../robot_agent/config/camera_calib.npz       (aruco_dock 이 읽는 그 경로)
-#   usb   → aba_controller/.../robot_agent/config/camera_calib_usb.npz   (읽으려면 코드 1줄 필요, README 참고)
+# 저장 위치(자동):  config/camera/<카메라>_<실제해상도>.npz
+#   picam → config/camera/picam_640x480.npz      usb → config/camera/usb_640x480.npz
+#   해상도는 스트림에서 받아 채우므로 이름과 내용이 어긋날 수 없다.
+#   다른 곳에 두려면 CALIB_DIR=... 또는 OUT=<파일경로>
 set -eo pipefail
 
 SRC="${1:-}"; HOST="${2:-}"; SQUARE="${3:-}"; PATTERN="${4:-auto}"
@@ -37,12 +38,14 @@ fi
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
-CFG="$REPO_ROOT/aba_controller/libi_drive_controller/robot_agent/config"
+# 캘리브 결과는 서비스 밖 공용 위치에 둔다 — robot_agent 뿐 아니라 새 도킹 코드·AI 서비스도
+# 읽는다. 파일명의 {res} 는 calib_client 가 **실제 스트림 해상도**로 채운다(K 는 해상도 전용).
+CFG="${CALIB_DIR:-$REPO_ROOT/config/camera}"
 
 case "$SRC" in
-  picam) OUT="${OUT:-$CFG/camera_calib.npz}" ;;
-  usb)   OUT="${OUT:-$CFG/camera_calib_usb.npz}" ;;
-  test)  OUT="${OUT:-/tmp/camera_calib_test.npz}" ;;
+  picam) OUT="${OUT:-$CFG/picam_{res}.npz}" ;;
+  usb)   OUT="${OUT:-$CFG/usb_{res}.npz}" ;;
+  test)  OUT="${OUT:-/tmp/camera_calib_test_{res}.npz}" ;;
 esac
 
 # 레포 .venv 에 cv2 가 있으면 그걸 쓴다(노트북 표준). 없으면 시스템 python3.
@@ -58,7 +61,7 @@ if [ "${BOARD:-charuco}" = "charuco" ]; then
 else
   echo "[calib] $SRC @ $HOST  ·  체커보드 패턴 ${PATTERN}  ·  한 칸 ${SQUARE}m  ·  저장 → $OUT"
 fi
-[ "$SRC" = "picam" ] && echo "[calib] ⚠ 기존 camera_calib.npz 를 덮어씁니다(계산 성공 시에만)."
+echo "[calib] 같은 카메라·해상도 결과가 있으면 덮어씁니다(계산 성공 시에만)."
 
 ARGS=(--host "$HOST" --port "${CALIB_PORT:-8099}"
       --square-m "$SQUARE" --num "${NUM:-40}" --out "$OUT"

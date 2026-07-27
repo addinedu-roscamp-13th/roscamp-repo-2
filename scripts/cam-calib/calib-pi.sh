@@ -18,6 +18,7 @@ esac
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 PORT="${CALIB_PORT:-8099}"
+RES="${RES:-}"          # 예: RES=640x480 ./calib-pi.sh picam — 런타임을 그 해상도로 짤 때만
 USB_INDEX="${USB_INDEX:-1}"
 
 # ── 카메라 경합 확인 ─────────────────────────────────────────────
@@ -39,6 +40,7 @@ check_busy() {
 }
 
 ARGS=(--source "$SRC" --port "$PORT")
+[ -n "$RES" ] && ARGS+=(--res "$RES")
 case "$SRC" in
   picam)
     check_busy /dev/video0 "CSI"
@@ -60,7 +62,7 @@ echo
 echo "────────────────────────────────────────────────────────────"
 echo " 노트북에서 이걸 치세요 (한 칸 실측 크기 m 를 자로 재서):"
 echo
-echo "   ./calib-laptop.sh $SRC $IP 0.035"
+echo "   ${RES:+RES=$RES }./calib-laptop.sh $SRC $IP 0.035"
 echo "                                 ^^^^^ ← 실측값으로 바꿀 것"
 echo "────────────────────────────────────────────────────────────"
 echo

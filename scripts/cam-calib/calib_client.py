@@ -169,9 +169,14 @@ def find_charuco(gray: np.ndarray, board, dictionary, min_corners: int = 6):
         _, c_corners, c_ids = cv2.aruco.interpolateCornersCharuco(m_corners, m_ids, gray, board)
     if c_ids is None or len(c_ids) < min_corners:
         return False, None, None, None
+    # ⚠️ 버전마다 모양이 다르다 — 4.6 은 (N,1,2)/(N,1), 5.0 은 (N,2)/(N,).
+    # 그대로 두면 drawDetectedCornersCharuco 가 total() 불일치로 죽는다(5.0 실측).
+    # 여기서 (N,1,2)/(N,1) 로 통일한다 — calibrateCamera·draw 둘 다 이 모양을 받는다.
+    c_corners = np.asarray(c_corners, np.float32).reshape(-1, 1, 2)
+    c_ids = np.asarray(c_ids, np.int32).reshape(-1, 1)
     objp_all = charuco_obj_points(board)
     objp = objp_all[c_ids.ravel()].reshape(-1, 3).astype(np.float32)
-    return True, c_corners.astype(np.float32), objp, c_ids
+    return True, c_corners, objp, c_ids
 
 
 def calibrate_and_report(obj_pts, img_pts, size, out_path: str, meta: dict) -> bool:
@@ -208,7 +213,10 @@ def calibrate_and_report(obj_pts, img_pts, size, out_path: str, meta: dict) -> b
     if rms >= 1.0:
         print("  ★ RMS 1.0 초과 — 촬영이 부족하거나 보드가 휘었습니다. 다시 찍으세요.")
 
-    out = pathlib.Path(out_path)
+    # `{res}` 는 **실제 스트림 해상도**로 채운다. 파일명을 호출자가 미리 정하면, 로봇 쪽
+    # 스크립트가 옛 버전이라 --res 가 무시된 경우처럼 "이름은 640x480, 내용은 480x360"인
+    # 파일이 만들어진다(2026-07-27 실제로 겪음). 이름은 저장 시점의 사실에서 나와야 한다.
+    out = pathlib.Path(out_path.replace("{res}", f"{size[0]}x{size[1]}"))
     out.parent.mkdir(parents=True, exist_ok=True)
     np.savez(out, camera_matrix=K, dist_coeffs=dist,
              image_size=np.array(size), rms=np.array(rms))
