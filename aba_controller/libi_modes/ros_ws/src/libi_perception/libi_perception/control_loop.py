@@ -21,12 +21,17 @@ class ControlLoop:
     the whole follow behaviour be tested without a robot.
     """
 
-    def __init__(self, get_detection, get_scan, publish, cfg, now=time.monotonic):
+    def __init__(self, get_detection, get_scan, publish, cfg, now=time.monotonic,
+                 select_camera=None, peek_people=None, role="follow"):
         self.get_detection = get_detection
         self.get_scan = get_scan
         self.publish = publish
         self.cfg = cfg
         self.now = now
+        #: 회복 BT 가 반대 캠을 보려고 요청할 통로. 주입 안 하면 예전처럼 회전만으로 찾는다.
+        self.select_camera = select_camera
+        self.peek_people = peek_people
+        self.role = role
         self.switch = FollowSwitch()
         self.tracker = TrackingController(publish, cfg)
         self.miss = 0
@@ -50,7 +55,10 @@ class ControlLoop:
     def _start_search(self):
         lkd = self.tracker.last_direction or 1.0
         self._search_ctx = SearchContext(self.get_detection, self.publish,
-                                         self.cfg, self.now, lkd=lkd)
+                                         self.cfg, self.now, lkd=lkd,
+                                         select_camera=self.select_camera,
+                                         peek_people=self.peek_people,
+                                         role=self.role)
         # Stamp the search start when SEARCHING begins, not on the tree's first tick —
         # those can be ticks apart, which would understate elapsed search time.
         self._search_ctx.start = self.now()

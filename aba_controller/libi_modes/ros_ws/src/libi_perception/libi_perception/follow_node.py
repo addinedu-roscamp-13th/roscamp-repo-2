@@ -169,6 +169,16 @@ class RemoteControl:
         """감시(guide/watch) 세션이 볼 검출 조회기. 없으면 가시성을 발행하지 않는다."""
         self._get_detection = get_detection
 
+    def request_camera(self, name):
+        """회복 BT 가 탐색 중 반대 캠을 보고 싶을 때 부른다.
+
+        **여기서 직접 발행하지 않는다.** 세션의 카메라만 바꾸고, 다음 발행 주기에
+        그 값이 실려 나간다. 발행자가 하나라는 규칙(`camera_select` 는 이 클래스만
+        낸다)을 지키기 위해서다 — 회복 BT 가 직접 내면 발행자가 둘이 되어 서로 덮어쓴다.
+        """
+        self._sessions.override_camera(name)
+        self._publish_camera(force=True)
+
     # ── 명령 수신 ────────────────────────────────────────────────────────
     def _on_cmd(self, msg):
         import json
@@ -357,7 +367,24 @@ def main(args=None):
                 publish=self._cmd.publish,
                 cfg=config,
                 now=lambda: self.get_clock().now().nanoseconds / 1e9,
+                # 회복 BT 가 반대 캠을 보려면 세션의 카메라를 잠시 바꿔야 한다.
+                # 발행은 여전히 RemoteControl 한 곳에서만 나간다 — 여기서는 세션
+                # 상태만 바꾸고, 다음 발행 주기에 그 값이 실려 나간다.
+                select_camera=self.remote.request_camera,
+                peek_people=self._peek_people,
+                role='follow',
             )
+
+        def _peek_people(self):
+            """반대 캠에 사람이 몇 명 보이나.
+
+            지금은 검출 채널이 owner 하나만 실어 보내므로 "보이면 1, 아니면 0"이다.
+            여러 명을 세려면 AI 서버가 후보 수를 같이 보내야 한다 — 그때 여기만 고친다.
+            (한 명일 때만 반응한다는 규칙은 이미 트리 쪽에 있으므로, 이 근사는
+             '여럿이면 무반응'을 못 지킬 뿐 위험한 쪽으로 틀리지는 않는다.)
+            """
+            det = self._get_detection()
+            return 1 if det is not None else 0
 
         def _get_detection(self):
             self._receiver.update()

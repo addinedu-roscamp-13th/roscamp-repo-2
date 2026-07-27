@@ -236,3 +236,20 @@ def test_lease_expiry_turns_camera_off(rc):
     rc.clock.t += 61.0
     rc.ctl.tick()
     assert rc.cam()[-1] == 'none'
+
+
+# ── 회복 BT 의 카메라 요청 ───────────────────────────────────────────────────
+
+def test_recovery_camera_request_goes_through_the_single_publisher(rc):
+    """회복 BT 가 직접 발행하면 발행자가 둘이 되어 서로 덮어쓴다.
+    세션 상태만 바꾸고 발행은 여기 한 곳에서 나가야 한다."""
+    rc.send(action='follow_admin', id='f1')
+    assert rc.cam()[-1] == 'front'
+    rc.ctl.request_camera('back')             # 탐색 중 반대 캠 관찰
+    assert rc.cam()[-1] == 'back'
+
+
+def test_camera_request_without_session_is_ignored(rc):
+    """세션이 없는데 카메라가 켜지면 아무도 안 보는 영상이 나간다."""
+    rc.ctl.request_camera('back')
+    assert rc.cam()[-1] == 'none'
