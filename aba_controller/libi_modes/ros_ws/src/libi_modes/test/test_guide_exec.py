@@ -41,11 +41,16 @@ class _Clock:
 
 @pytest.fixture
 def leaf(seed):
-    def _make(*, clock=None, stop=None, **blackboard):
+    def _make(*, clock=None, stop=None, watch=None, far_area_min=0.0,
+              near_area_max=0.0, junctions=None, junction_hold_sec=0.0,
+              **blackboard):
         clock = clock or _Clock()
         seed(**blackboard)
         node = GuideExec(FakeDriver(), TOLERANCE, RESEND, TIMEOUT, GRACE, LOST,
-                         stop_driver=stop, now_fn=clock)
+                         stop_driver=stop, watch_driver=watch,
+                         far_area_min=far_area_min, near_area_max=near_area_max,
+                         junctions=junctions, junction_hold_sec=junction_hold_sec,
+                         now_fn=clock)
         node.setup()
         node.initialise()
         node.test_clock = clock
@@ -278,3 +283,174 @@ def test_no_watcher_means_drive_anyway(leaf):
                    Keys.REQUESTER_SEEN_AT: 0.0})
     assert node.update() == Status.RUNNING
     assert stop.start_count == 0
+
+
+# ── 감시 세션 (2026-07-27) ───────────────────────────────────────────────────
+# 이게 없으면 `/libi/requester_visible` 발행자가 아예 없어, 아래 판단이 전부
+# "감시 없음 → 그냥 주행" 으로 흘러간다.
+
+def test_starts_watch_session_on_first_tick(leaf):
+    watch = FakeDriver()
+    node = leaf(watch=watch, **{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+                                Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: True})
+    node.update()
+    assert watch.started is True
+
+
+def test_stops_watch_session_on_arrival(leaf):
+    watch = FakeDriver()
+    node = leaf(watch=watch, **{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(0, 0),
+                                Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: True})
+    node.update()
+    assert watch.stopped is True
+
+
+def test_watch_started_only_once(leaf):
+    watch = FakeDriver()
+    node = leaf(watch=watch, **{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+                                Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: True})
+    node.update()
+    node.update()
+    assert watch.start_count == 1
+
+
+# ── 거리 게이트 ─────────────────────────────────────────────────────────────
+
+def test_far_requester_halts(leaf):
+    """보이지만 너무 멀다 — VISIBLE 만 보면 10m 뒤에 있어도 계속 간다."""
+    stop = FakeDriver()
+    node = leaf(stop=stop, far_area_min=500.0,
+                **{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+                   Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: True,
+                   Keys.REQUESTER_AREA: 100.0})
+    assert node.update() == Status.RUNNING
+    assert stop.started is True
+
+
+def test_near_requester_drives(leaf):
+    stop = FakeDriver()
+    node = leaf(stop=stop, far_area_min=500.0,
+                **{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+                   Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: True,
+                   Keys.REQUESTER_AREA: 900.0})
+    node.update()
+    assert stop.started is False
+
+
+def test_far_gate_off_by_default(leaf):
+    """실측 전에는 꺼져 있어야 한다 — 근거 없는 임계로 멈추면 원인을 못 찾는다."""
+    stop = FakeDriver()
+    node = leaf(stop=stop,
+                **{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+                   Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: True,
+                   Keys.REQUESTER_AREA: 1.0})
+    node.update()
+    assert stop.started is False
+
+
+def test_unknown_area_does_not_halt(leaf):
+    """면적을 모르면(옛 payload / 감시 없음) 거리 게이트를 걸지 않는다."""
+    stop = FakeDriver()
+    node = leaf(stop=stop, far_area_min=500.0,
+                **{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+                   Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: True})
+    node.update()
+    assert stop.started is False
+
+
+def test_near_obstacle_halts(leaf):
+    """앞을 막을 만큼 가까우면 멈춘다(기본 꺼짐)."""
+    stop = FakeDriver()
+    node = leaf(stop=stop, near_area_max=5000.0,
+                **{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+                   Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: True,
+                   Keys.REQUESTER_AREA: 9000.0})
+    assert node.update() == Status.RUNNING
+    assert stop.started is True
+
+
+def test_near_gate_off_by_default(leaf):
+    stop = FakeDriver()
+    node = leaf(stop=stop,
+                **{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+                   Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: True,
+                   Keys.REQUESTER_AREA: 999999.0})
+    node.update()
+    assert stop.started is False
+
+
+def test_resumes_after_requester_comes_closer(leaf):
+    stop, clock = FakeDriver(), _Clock()
+    node = leaf(clock=clock, stop=stop, far_area_min=500.0,
+                **{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+                   Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: True,
+                   Keys.REQUESTER_AREA: 100.0})
+    import py_trees
+    node.update()
+    before = node.driver.start_count
+    # provider 가 다음 tick 에 새 값을 올린 것과 같다(GuideExec 은 READ 전용이다).
+    py_trees.blackboard.Blackboard.set(Keys.REQUESTER_AREA, 900.0)
+    assert node.update() == Status.RUNNING
+    assert node.driver.start_count > before   # goal 을 다시 낸다
+
+
+# ── 갈림길 확인 ─────────────────────────────────────────────────────────────
+
+class _Junctions:
+    def __init__(self, pts):
+        self.pts = pts
+
+    def __len__(self):
+        return len(self.pts)
+
+    def contains(self, t):
+        return t is not None and (round(t["x"], 3), round(t["y"], 3)) in self.pts
+
+
+def test_junction_holds_briefly(leaf):
+    """갈림길에서만 선다. 모든 노드에서 서면 arte2 는 1~5초마다 멈춘다."""
+    stop, clock = FakeDriver(), _Clock()
+    node = leaf(clock=clock, stop=stop, junctions=_Junctions({(5.0, 5.0)}),
+                junction_hold_sec=1.0,
+                **{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+                   Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: True})
+    assert node.update() == Status.RUNNING
+    assert stop.started is True
+    clock.t += 2.0
+    node.update()
+    assert node.driver.started is True         # 유지 시간이 지나면 다시 간다
+
+
+def test_non_junction_does_not_hold(leaf):
+    stop = FakeDriver()
+    node = leaf(stop=stop, junctions=_Junctions({(9.0, 9.0)}), junction_hold_sec=1.0,
+                **{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+                   Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: True})
+    node.update()
+    assert stop.started is False
+
+
+def test_same_junction_does_not_hold_twice(leaf):
+    """goal 을 다시 내도 목적지는 그대로다 — 제한이 없으면 그 자리에서 영원히 선다."""
+    stop, clock = FakeDriver(), _Clock()
+    node = leaf(clock=clock, stop=stop, junctions=_Junctions({(5.0, 5.0)}),
+                junction_hold_sec=1.0,
+                **{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+                   Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: True})
+    node.update()
+    clock.t += 2.0
+    node.update()
+    before = stop.start_count
+    clock.t += 2.0
+    node.update()
+    assert stop.start_count == before
+
+
+def test_junction_hold_off_when_no_navgraph(leaf):
+    """navgraph 를 못 읽으면 확인 동작이 그냥 꺼진다 — 안내는 계속된다."""
+    stop = FakeDriver()
+    node = leaf(stop=stop, junctions=None, junction_hold_sec=1.0,
+                **{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+                   Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: True})
+    node.update()
+    assert stop.started is False

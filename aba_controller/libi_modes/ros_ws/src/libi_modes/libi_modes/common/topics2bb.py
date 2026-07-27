@@ -15,6 +15,7 @@ _KEY_BY_PROVIDER = {
     "robot_pose": Keys.ROBOT_POSE,
     "requester_visible": Keys.REQUESTER_VISIBLE,
     "requester_seen_at": Keys.REQUESTER_SEEN_AT,
+    "requester_area": Keys.REQUESTER_AREA,
 }
 
 

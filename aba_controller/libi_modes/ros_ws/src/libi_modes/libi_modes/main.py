@@ -35,6 +35,7 @@ from std_msgs.msg import String
 from libi_modes import blackboard as bb
 from libi_modes import tree as tree_mod
 from libi_modes.blackboard import Keys
+from libi_modes.common.junctions import JunctionSet, load_junctions
 from libi_modes.registry import BRANCH_ORDER
 from libi_modes.ros.fleet_cmd_driver import ArmHomeDriver, FleetCmdDriver
 from libi_modes.ros.providers import RosProviders
@@ -160,6 +161,11 @@ class FsmNode(Node):
             # 요청자를 놓쳤을 때 **실제로 멈추는** 수단. mission_stop → ros_bridge.cancel_nav().
             # 이게 없으면 GuideExec 은 "기다리는 중"만 표시하고 로봇은 계속 달린다.
             "guide_stop": FleetCmdDriver(self, "mission_stop").bind(cmd_pub),
+            # 뒷캠 감시 세션. 이게 없으면 `/libi/requester_visible` 발행자가 없어
+            # GuideExec 이 "감시 없음 → 그냥 주행"으로 읽고, 사람을 놓쳐도 계속 간다.
+            "guide_watch": FleetCmdDriver(self, "guide_watch",
+                                          args_fn=lambda: {"camera": "back"},
+                                          timeout_sec=3600.0).bind(cmd_pub),
             # 사람 추종 — libi_perception 의 RemoteControl 이 같은 /fleet_cmd 를 구독해
             # FollowSession 을 켜고 끈다. 세션은 스스로 안 끝나므로(관리자가 멈추거나
             # 회복이 소진될 때까지) 응답 타임아웃을 길게 준다 — 기본 120초면 추종 중에
@@ -177,6 +183,18 @@ class FsmNode(Node):
         }
         self._drivers["return_arm"] = ArmHomeDriver(
             FleetCmdDriver(self, "arm_home").bind(cmd_pub))
+
+        # 갈림길 정점 — 길잡이가 여기서만 잠깐 서서 사람을 확인한다. 모든 노드에서 서면
+        # arte2 레인이 0.151~0.601m 라 1~5초마다 멈춰 안내가 계속 끊긴다.
+        # 파일이 없으면 빈 목록이고 확인 동작이 그냥 꺼진다.
+        navgraph_file = self.declare_parameter("navgraph_file", "").value
+        junction_pts = load_junctions(navgraph_file) if navgraph_file else []
+        self._drivers["junctions"] = JunctionSet(
+            junction_pts, tolerance=params["working"]["arrive_tolerance_m"])
+        self.get_logger().info(
+            f"갈림길 확인: {len(junction_pts)}개 정점"
+            if junction_pts else
+            "갈림길 확인 off — navgraph_file 파라미터가 없거나 읽지 못했습니다")
 
         self.create_subscription(String, result_topic, self._on_result, 10)
 

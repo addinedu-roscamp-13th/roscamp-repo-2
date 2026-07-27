@@ -30,6 +30,10 @@ class Keys:
     #    정지/포기를 가르는 값이라 시각을 함께 둔다(추종 회복 BT 가 Hold 를 먼저 두는 것과 같은 이유).
     REQUESTER_VISIBLE = "requester_visible"
     REQUESTER_SEEN_AT = "requester_seen_at"
+    # 요청자 bbox 면적(px^2). `/libi/requester_area` 에서 온다. 감시가 없거나 안 보이면 None.
+    # ⚠️ VISIBLE 만으로는 "보이지만 10m 뒤"를 못 가른다 — 보이기만 하면 계속 가버린다.
+    #    안 보일 때 0 을 싣지 않는 것이 계약이다(0 을 실으면 소실과 원거리가 같아진다).
+    REQUESTER_AREA = "requester_area"
     COMMAND_RECEIVED_AT = "command_received_at"
     DOCK_RETRY_COUNT = "dock_retry_count"
     ERROR_CODE = "error_code"

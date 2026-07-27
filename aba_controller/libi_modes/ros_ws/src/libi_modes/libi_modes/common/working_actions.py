@@ -214,7 +214,10 @@ class GuideExec(NavigationExec):
 
     def __init__(self, driver, arrive_tolerance: float, arrive_resend_sec: float,
                  arrive_timeout_sec: float, lost_grace_sec: float, lost_timeout_sec: float,
-                 stop_driver=None, name: str | None = None, now_fn=time.monotonic):
+                 stop_driver=None, watch_driver=None, far_area_min: float = 0.0,
+                 near_area_max: float = 0.0, junctions=None,
+                 junction_hold_sec: float = 0.0,
+                 name: str | None = None, now_fn=time.monotonic):
         super().__init__(driver, arrive_tolerance, arrive_resend_sec, arrive_timeout_sec,
                          name=name or "GuideExec", now_fn=now_fn)
         self.handles = {"guide"}
@@ -222,12 +225,26 @@ class GuideExec(NavigationExec):
         self.lost_timeout_sec = lost_timeout_sec
         #: 없으면 멈출 수단이 없다 — 그 경우 멈추는 척하지 않고 로그로 드러낸다.
         self.stop_driver = stop_driver
+        #: 뒷캠 감시 세션을 켜고 끈다. 없으면 감시가 안 돌아 요청자 가시성이 None 이 되고,
+        #: 그러면 아래 판단이 전부 "감시 없음 → 그냥 주행"으로 흘러간다.
+        self.watch_driver = watch_driver
+        #: 요청자가 이보다 작게 보이면(= 멀면) 멈춰 기다린다. 0 이면 끔.
+        self.far_area_min = far_area_min
+        #: 앞을 막은 사람이 이보다 크게 보이면(= 가까우면) 멈춘다. 0 이면 끔(기본).
+        self.near_area_max = near_area_max
+        #: 갈림길 좌표 집합. 여기 닿으면 잠깐 서서 확인한다.
+        self.junctions = junctions
+        self.junction_hold_sec = junction_hold_sec
         self._halted = False
+        self._watching = False
+        self._junction_until = None
+        self._junction_done = set()
 
     def setup(self, **kwargs):
         super().setup(**kwargs)
         self.blackboard.register_key(key=Keys.REQUESTER_VISIBLE, access=Access.READ)
         self.blackboard.register_key(key=Keys.REQUESTER_SEEN_AT, access=Access.READ)
+        self.blackboard.register_key(key=Keys.REQUESTER_AREA, access=Access.READ)
         self.blackboard.register_key(key=Keys.NEXT_MODE, access=Access.WRITE)
 
     def _release(self, status: Status) -> Status:
@@ -249,12 +266,15 @@ class GuideExec(NavigationExec):
 
         성공도 실패도 PATROL 이다 — `CommandListener` 의 task_done/task_failed 매핑과 같다.
         """
+        self._release_watch()
         self.blackboard.set(Keys.NEXT_MODE, "PATROL")
         return super()._release(status)
 
     def initialise(self):
         super().initialise()
         self._halted = False
+        self._junction_until = None
+        self._junction_done = set()
 
     def _lost_for(self) -> float:
         """요청자가 안 보인 지 몇 초인가. 보이거나 감시가 없으면 0."""
@@ -270,8 +290,15 @@ class GuideExec(NavigationExec):
 
     def update(self) -> Status:
         if bb.get(self.blackboard, Keys.ACTIVE_COMMAND) not in self.handles:
+            self._release_watch()
             self._halted = False
             return super().update()
+
+        # 감시 세션을 켠다. 이게 없으면 requester_visible 발행자가 없어 아래 판단이
+        # 전부 "감시 없음 → 그냥 주행"으로 흘러간다.
+        if not self._watching and self.watch_driver is not None:
+            self.watch_driver.start()
+            self._watching = True
 
         lost = self._lost_for()
         if lost >= self.lost_timeout_sec:
@@ -282,10 +309,58 @@ class GuideExec(NavigationExec):
             # 목적지는 그대로 두고 기다린다. 다시 보이면 아래에서 goal 을 새로 낸다.
             return Status.RUNNING
 
+        area = bb.get(self.blackboard, Keys.REQUESTER_AREA)
+        if self._too_far(area) or self._too_near(area):
+            self._halt()
+            return Status.RUNNING
+
+        if self._junction_hold_active():
+            self._halt()
+            return Status.RUNNING
+
         if self._halted:
             self._halted = False
             self._sent_at = None     # 취소된 주행을 다시 낸다
         return super().update()
+
+    # ── 거리 게이트 ──────────────────────────────────────────────────────
+    def _too_far(self, area) -> bool:
+        """보이지만 너무 멀다. `VISIBLE` 만 보면 10m 뒤에 있어도 계속 간다."""
+        return self.far_area_min > 0 and area is not None and area < self.far_area_min
+
+    def _too_near(self, area) -> bool:
+        """앞을 막을 만큼 가깝다. **기본은 꺼져 있다**(near_area_max=0).
+
+        조종하지 않고 **멈추기만** 한다. 우회는 nav2 가 costmap 으로 하고, 여기서
+        같이 조종하면 제어 주체가 둘이 되어 어느 쪽이 이겼는지 로그로 못 가린다.
+        """
+        return self.near_area_max > 0 and area is not None and area > self.near_area_max
+
+    # ── 갈림길 확인 ──────────────────────────────────────────────────────
+    def _junction_hold_active(self) -> bool:
+        if self.junction_hold_sec <= 0 or not self.junctions:
+            return False
+        now = self._now()
+        if self._junction_until is None:
+            target = bb.get(self.blackboard, Keys.NAV_TARGET)
+            key = (round(target["x"], 3), round(target["y"], 3)) if target else None
+            # 같은 갈림길에서 두 번 서지 않는다 — goal 을 다시 내면 같은 목적지가
+            # 그대로 남아 있어, 제한이 없으면 그 자리에서 영원히 선다.
+            if key is None or key in self._junction_done:
+                return False
+            if not self.junctions.contains(target):
+                return False
+            self._junction_done.add(key)
+            self._junction_until = now + self.junction_hold_sec
+        if now >= self._junction_until:
+            self._junction_until = None
+            return False
+        return True
+
+    def _release_watch(self):
+        if self._watching and self.watch_driver is not None:
+            self.watch_driver.stop()
+        self._watching = False
 
     def _halt(self):
         if self._halted:
