@@ -22,6 +22,14 @@ class Keys:
     # "주문 받았다"는 뜻일 뿐 도착과 아무 상관이 없다. 위치를 모르면 None 이고,
     # 그때는 도착하지 않은 것으로 본다 (모르는 걸 도착으로 치지 않는다).
     ROBOT_POSE = "robot_pose"
+    # 길잡이(GuideExec)가 "안내받는 사람이 아직 따라오는가"를 판단하는 근거.
+    #   REQUESTER_VISIBLE  : 지금 보이나 (True/False). 감시 자체가 안 돌면 None.
+    #   REQUESTER_SEEN_AT  : 마지막으로 보인 monotonic 시각. 한 번도 못 봤으면 0.0.
+    # 둘 다 `/libi/requester_visible`(Bool) 에서 온다 — libi_perception 이 발행한다.
+    # ⚠️ VISIBLE 만으로는 "잠깐 가렸다"와 "가버렸다"를 못 가른다. 얼마나 오래 안 보였는지가
+    #    정지/포기를 가르는 값이라 시각을 함께 둔다(추종 회복 BT 가 Hold 를 먼저 두는 것과 같은 이유).
+    REQUESTER_VISIBLE = "requester_visible"
+    REQUESTER_SEEN_AT = "requester_seen_at"
     COMMAND_RECEIVED_AT = "command_received_at"
     DOCK_RETRY_COUNT = "dock_retry_count"
     ERROR_CODE = "error_code"

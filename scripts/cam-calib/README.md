@@ -2,6 +2,7 @@
 
 노트북에서 **보면서** 찍는다. 로봇은 캡처만, 계산·저장은 노트북.
 핸드아이 아님. `camera_matrix` / `dist_coeffs` 만 구한다.
+보드는 **ChArUco**(체커보드 + ArUco 마커)가 기본이다.
 
 ```
 로봇(Pi)                                   노트북
@@ -10,12 +11,33 @@ picam: rpicam-vid 480x360 -q80  ┐         화면 보며 배치 → SPACE 수�
 USB  : V4L2 640x480             ┴MJPEG/HTTP→ calibrateCamera → npz 저장
 ```
 
+## 보드 인쇄
+
+```bash
+python3 make_board.py       # → ~/Pictures/charuco_7x5_35mm_DICT_4X4_50.pdf
+```
+
+**A4 가로 · 100%(실제 크기) · "페이지에 맞춤" 끄기.** 하단 100mm 눈금자로 배율을 확인하고,
+**한 칸을 자로 재서** 그 실측값을 촬영 명령에 넣는다. 딱딱한 판에 붙일 것.
+
+기본값 7x5칸 · 35mm · 마커 26.25mm · `DICT_4X4_50` 은 **A4 에 들어가면서 picam
+480x360 에서 0.8m 까지 마커가 잡히는 선**이다. 30mm 로 줄이면 0.5m 부터 마커를 놓치기
+시작하고(합성 시험 실측), 더 키우면 A4 를 넘는다.
+
+### 왜 ChArUco 인가
+
+마커마다 ID 가 있어 **보드가 화면 밖으로 잘려도 남은 코너의 정체가 확정된다.**
+480x360 에 보드를 화면 구석까지 밀어 넣어야 하는 작업이라, 체커보드는 한 귀퉁이만 나가도
+그 장면을 통째로 버린다. 그런데 **주점(cx,cy)을 잡아 주는 게 바로 그 가장자리 장면들**이다
+(`test_calib.py` 의 test 3: 가장자리 자세를 빼면 주점 오차가 0.6px → 2.0px 로 벌어진다).
+방향 모호성(180° 뒤집힘)도 없다. 예전 체커보드 인쇄물은 `BOARD=chess` 로 그대로 쓴다.
+
 ## 딸깍 순서
 
 ```bash
 # 0) 리허설 — 카메라 안 건드리고 노트북 화면이 뜨는지만 확인 (권장)
 [Pi]   ./calib-pi.sh test
-[노트북] ./calib-laptop.sh test <PI_IP> 0.038
+[노트북] ./calib-laptop.sh test <PI_IP> 0.035
 
 # 1) picam (CSI)
 [Pi]   ./calib-pi.sh picam
@@ -30,16 +52,16 @@ USB  : V4L2 640x480             ┴MJPEG/HTTP→ calibrateCamera → npz 저장
 
 키: `SPACE` 수집 · `a` 자동수집 · `u` 취소 · `c` 계산+저장 · `q` 종료
 
-**내부 코너 개수는 셀 필요 없다** — 보드를 화면에 통째로 보여주면 자동으로 감지해서
-`내부 코너 5x5 (= 인쇄 칸 6x6)` 처럼 찍어준다. 틀리게 잡히면 직접 준다:
+보드를 기본값과 다르게 뽑았으면 **촬영 쪽도 같이 맞춘다.** 기하가 다르면 검출은 되는데
+값이 조용히 틀린다:
 
 ```bash
-./calib-laptop.sh picam <PI_IP> 0.025 5x5     # 4번째 인자 = 내부 코너 가로x세로
+SQUARES=11x7 DICT=DICT_5X5_100 ./calib-laptop.sh picam <PI_IP> 0.025
+BOARD=chess ./calib-laptop.sh picam <PI_IP> 0.038 8x5    # 예전 체커보드(내부 코너 지정)
 ```
 
-> 내부 코너 = **사각형 4개가 만나는 점**. 칸 개수보다 가로·세로 각각 1 적다.
-> 칸 개수와 헷갈려 잘못 넣으면 검출이 안 되거나, 더 나쁘게는 '부분 격자'가 잡혀
-> 조용히 틀린 캘리브가 나온다. 그래서 자동 감지를 기본으로 뒀다.
+> `--squares` 는 **칸 개수**다(내부 코너가 아니다). 체커보드 모드의 `--pattern` 만
+> 내부 코너 = 사각형 4개가 만나는 점 = 칸 개수보다 가로·세로 각각 1 적은 수다.
 
 ## 저장 위치
 
@@ -223,5 +245,9 @@ curl -s -o /tmp/o.jpg http://localhost:8099/snapshot
 ## 자체 검증 (카메라 불필요)
 
 ```bash
-python3 test_calib.py     # 알려진 K 를 되찾는지 — 투영 + 렌더링·검출 2단계
+python3 test_calib.py     # 알려진 K 를 되찾는지 — 투영 / 체커보드 렌더 / ChArUco 렌더 3단계
 ```
+
+test 3 은 실제 촬영에 쓰는 경로(`build_charuco` → `find_charuco`)를 그대로 태운다.
+보드 기본값(`CH_SQUARES`/`CH_SQ_M`)을 `make_board.py` 와 맞춰 둘 것 — 어긋나면
+시험은 통과해도 인쇄물과 안 맞는다.

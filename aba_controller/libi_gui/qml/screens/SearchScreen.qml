@@ -19,6 +19,31 @@ Item {
     property bool serviceError: false   // 네트워크/타임아웃 — "결과 없음"과 다른 문구
     property int pendingId: 0           // 0 = 대기 중인 도서 요청 없음
 
+    // 상세 모달 — 도서 1권 / 구역 1곳. 구역 모달의 책 목록은 검색 결과와 **다른 요청**이라
+    // 응답 id 를 따로 들고 갈라 받는다(같은 신호를 쓰지만 목록을 서로 덮어쓰면 안 된다).
+    property var pickedBook: null
+    property var pickedZone: null
+    property var zoneBooks: []
+    property bool zoneLoading: false
+    property bool zoneFailed: false
+    property int zonePendingId: 0
+
+    function openZone(name) {
+        var list = controller.facilities();
+        for (var i = 0; i < list.length; i++) {
+            if (list[i].name !== name) continue;
+            root.pickedZone = list[i];
+            root.selectedHighlight = name;
+            root.zoneBooks = []; root.zoneFailed = false;
+            if (list[i].category === "") { root.zoneLoading = false; root.zonePendingId = 0; return; }
+            // 과학 서가·인문학서가는 정점이 "과학-인문학서가" 하나라 zone 만으로는 안 갈린다
+            // — 분야까지 함께 줘야 그 서가에 실제로 꽂힌 책만 나온다.
+            root.zoneLoading = true;
+            root.zonePendingId = controller.searchBooksAsync("", list[i].category, false, list[i].waypoint);
+            return;
+        }
+    }
+
     function requestNow() {
         if (root.tab !== "book") {
             // 로컬 동기 계산이라 로딩/에러 상태가 있을 수 없다 — 도서 탭에서 넘어오며
@@ -36,6 +61,10 @@ Item {
     Connections {
         target: controller
         function onSearchBooksReady(id, res, ok) {
+            if (id === root.zonePendingId) {     // 구역 모달의 서가 조회
+                root.zoneLoading = false; root.zoneFailed = !ok; root.zoneBooks = ok ? res : [];
+                return;
+            }
             if (id !== root.pendingId) return;   // stale 응답 — 이미 다른 요청을 기다리는 중
             root.loading = false; root.serviceError = !ok; root.results = ok ? res : [];
         }
@@ -45,6 +74,13 @@ Item {
     // 도서 카테고리 → 실제 지도 구역 이름(RobotController::facilities() 와 동일해야
     // 지도에서 하이라이트된다). 서가 이름 규칙이 분야마다 달라(" 서가" 공백 유무)
     // 단순 접미사 이어붙이기로는 안 맞는다.
+    // 진열 상태 색 — 회원 앱과 같은 세 갈래(배치중/대출 중/대출 불가).
+    function statusColor(status) {
+        if (status === "배치중") return S.success;
+        if (status === "대출 중") return S.textMuted;
+        return S.danger;
+    }
+
     function categoryZone(category) {
         switch (category) {
         case "과학": return "과학 서가";
@@ -96,7 +132,10 @@ Item {
             Chip { text: "예술"; selected: root.category === "예술"; onClicked: { root.category = "예술"; root.requestNow() } }
             Chip { text: "문학"; selected: root.category === "문학"; onClicked: { root.category = "문학"; root.requestNow() } }
             Chip { text: "인문학"; selected: root.category === "인문학"; onClicked: { root.category = "인문학"; root.requestNow() } }
-            Chip { text: "대여 가능만"; selected: root.onlyAvail; onClicked: { root.onlyAvail = !root.onlyAvail; root.requestNow() } }
+            // 패널은 정보 조회 전용이라 "대여"라는 말을 쓰지 않는다 — 여기서 대여를 못 한다.
+            // 거르는 기준도 **서가에 있는가**(inStock)다. 대출 가능 여부(available)로 거르면
+            // 훼손 처리된 책이 서가에 꽂혀 있는데도 목록에서 사라져 문구와 어긋난다.
+            Chip { text: "지금 서가에 있는 책"; selected: root.onlyAvail; onClicked: { root.onlyAvail = !root.onlyAvail; root.requestNow() } }
         }
     }
 
@@ -154,10 +193,11 @@ Item {
                     id: rightCol
                     anchors { right: parent.right; rightMargin: 16; verticalCenter: parent.verticalCenter }
                     spacing: 6
+                    // 진열 여부까지 한 낱말로 — 대출 중이거나 사서가 막아둔 책은 서가에 없다.
                     StatusPill {
                         visible: root.tab === "book"
-                        pillColor: modelData.available ? S.success : S.textMuted
-                        text: modelData.available ? "대여 가능" : "대여 중"
+                        pillColor: root.statusColor(modelData.status)
+                        text: root.tab === "book" ? modelData.status : ""
                     }
                 }
 
@@ -167,9 +207,10 @@ Item {
                         if (root.tab === "book") {
                             root.selectedDetail = modelData.title;
                             root.selectedHighlight = root.categoryZone(modelData.category);
+                            root.pickedBook = modelData;
                         } else {
                             root.selectedDetail = modelData.name;
-                            root.selectedHighlight = modelData.name;
+                            root.openZone(modelData.name);
                         }
                     }
                 }
@@ -200,48 +241,130 @@ Item {
             color: root.serviceError ? S.danger : S.textMuted
         }
 
-        // 지도 + 상세
-        MapView {
-            id: map
-            anchors { left: listView.right; right: parent.right; top: parent.top; leftMargin: 20 }
-            height: parent.height * 0.62
-            highlight: root.selectedHighlight
-            // 목록에서 고르지 않고 지도의 알약을 바로 탭해도 같은 상세가 뜬다.
-            onFacilityClicked: (name) => { root.selectedDetail = name; root.selectedHighlight = name }
-        }
+        // 지도 — 도면 비율 그대로 잡아야 위아래 빈 띠가 안 생긴다. 남는 세로 공간에
+        // 붕 뜨지 않게 오른쪽 칸 가운데에 둔다.
+        // 지도는 맨 위에 고정하고, 그 아래 설명은 **남는 높이 안에서** 스크롤한다.
+        // 가운데 정렬로 두면 설명이 길어질 때 아래가 화면 밖으로 잘린다(실측).
+        Item {
+            id: rightCol2
+            anchors { left: listView.right; right: parent.right; top: parent.top; bottom: parent.bottom
+                      leftMargin: 20 }
 
-        Card {
-            anchors { left: listView.right; right: parent.right; top: map.bottom; bottom: parent.bottom; leftMargin: 20; topMargin: 16 }
+            MapView {
+                id: map
+                anchors { left: parent.left; right: parent.right; top: parent.top }
+                // 도면 비율이 기본이지만, 구역을 고르면 아래 설명이 들어갈 자리를 남긴다.
+                // 안 그러면 책 알약이 화면 밖으로 잘린다(실측). 높이가 줄면 그림은
+                // PreserveAspectFit 이라 가운데로 좁아질 뿐 탭 영역과 어긋나지 않는다.
+                height: Math.min(width / mapAspect,
+                                 parent.height - (root.pickedZone ? 200 : 40))
+                highlight: root.selectedHighlight
+                // 목록에서 고르지 않고 지도의 구역을 바로 탭해도 같은 설명이 뜬다.
+                onFacilityClicked: (name) => { root.selectedDetail = name; root.openZone(name) }
+            }
+
+            Flickable {
+                anchors { left: parent.left; right: parent.right; top: map.bottom; bottom: parent.bottom
+                          topMargin: 16 }
+                contentHeight: belowMap.height
+                clip: true
+
             Column {
-                anchors.centerIn: parent
-                width: parent.width - 40
+                id: belowMap
+                width: parent.width
                 spacing: 8
-                visible: root.selectedDetail !== ""
-                Text {
-                    text: root.selectedHighlight
-                    font.family: S.fontFamily; font.pixelSize: 20; font.bold: true; color: S.primary
-                    anchors.horizontalCenter: parent.horizontalCenter
-                }
-                Text {
-                    text: "선택: " + root.selectedDetail
-                    font.family: S.fontFamily; font.pixelSize: 16; color: S.textSoft
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    wrapMode: Text.WordWrap; width: parent.width; horizontalAlignment: Text.AlignHCenter
-                }
-                BigButton {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    text: "여기로 안내"; icon: "🧭"; color: S.primary
-                    implicitWidth: 200; implicitHeight: 64
-                    onClicked: controller.startGuide(root.selectedHighlight)
-                }
-            }
+            // 아직 아무것도 안 골랐을 때
             Text {
-                visible: root.selectedDetail === ""
-                anchors.centerIn: parent
-                text: "결과를 선택하면\n위치를 지도에 표시합니다"
+                width: parent.width
+                visible: root.pickedZone === null
                 horizontalAlignment: Text.AlignHCenter
-                font.family: S.fontFamily; font.pixelSize: 16; color: S.textMuted
+                text: "지도의 구역을 누르면 안내와 그 서가의 책이 나와요"
+                font.family: S.fontFamily; font.pixelSize: 15; color: S.textMuted
+                wrapMode: Text.WordWrap
             }
+
+            // 구역 설명 — **모달로 덮지 않는다.** 구역을 고르는 일은 지도를 보면서 하는
+            // 일이라, 화면을 가리면 방금 누른 자리와 설명을 같이 볼 수 없다.
+            // 도서 상세만 모달로 남긴다(그건 지도와 상관없는 한 권짜리 정보다).
+            Column {
+                id: zonePanel
+                width: parent.width
+                spacing: 8
+                visible: root.pickedZone !== null
+
+                Row {
+                    spacing: 10
+                    Text {
+                        text: root.pickedZone ? root.pickedZone.icon : ""
+                        font.pixelSize: 20
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                    Text {
+                        text: root.pickedZone ? root.pickedZone.name : ""
+                        font.family: S.fontFamily; font.pixelSize: 20; font.bold: true; color: S.text
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                    BigButton {
+                        text: "여기로 안내"; color: S.primary
+                        implicitWidth: 150; implicitHeight: 40
+                        anchors.verticalCenter: parent.verticalCenter
+                        onClicked: controller.startGuide(root.pickedZone.name)
+                    }
+                }
+                Text {
+                    width: parent.width
+                    text: root.pickedZone ? root.pickedZone.desc : ""
+                    font.family: S.fontFamily; font.pixelSize: 15; color: S.textSoft
+                    wrapMode: Text.WordWrap
+                }
+
+                // 서가면 꽂힌 책까지. 서가가 아닌 구역(테이블·화장실)은 여기서 끝난다.
+                Text {
+                    visible: root.pickedZone && root.pickedZone.category !== ""
+                    text: root.zoneLoading ? "이 서가의 책 불러오는 중…"
+                         : root.zoneFailed ? "도서 목록을 불러오지 못했습니다"
+                         : "이 서가의 책 (" + root.zoneBooks.length + ")"
+                    font.family: S.fontFamily; font.pixelSize: 15; font.bold: true
+                    color: root.zoneFailed ? S.danger : S.text
+                }
+                Flow {
+                    width: parent.width
+                    spacing: 8
+                    visible: root.pickedZone && root.pickedZone.category !== "" && !root.zoneLoading
+                    Repeater {
+                        model: root.zoneBooks
+                        // 제목 알약 하나로 줄인다 — 여기서 책을 고르는 게 아니라 "무엇이
+                        // 꽂혀 있나"를 훑는 자리다. 자세한 건 눌러서 상세 모달로 본다.
+                        delegate: Rectangle {
+                            height: 34; radius: 17; width: bookChip.width + 26
+                            color: chipMa.pressed ? S.primaryDim : S.surfaceSoft
+                            border.color: root.statusColor(modelData.status); border.width: 1.5
+                            Text {
+                                id: bookChip
+                                anchors.centerIn: parent
+                                text: modelData.cover + " " + modelData.title
+                                font.family: S.fontFamily; font.pixelSize: 14; color: S.text
+                            }
+                            MouseArea {
+                                id: chipMa
+                                anchors.fill: parent
+                                onClicked: root.pickedBook = modelData
+                            }
+                        }
+                    }
+                }
+            }
+            }
+            }
+        }
+    }
+
+    BookDetailModal {
+        book: root.pickedBook
+        onClosed: root.pickedBook = null
+        onGuideRequested: {
+            controller.startGuide(root.categoryZone(root.pickedBook.category));
+            root.pickedBook = null; root.pickedZone = null;
         }
     }
 }

@@ -158,14 +158,15 @@ sudo apt install -y ros-jazzy-domain-bridge        # ros-domain-bridge.sh / sim.
 | `fms.sh` | 관제(FMS) 백엔드(:9001) + 프론트(:9002). 콘솔 `http://<ip>:9002/` (로그인 후 `/admin/…`). |
 | `library.sh` | 도서관 웹 백엔드(:8000) + 프론트(:3000). **회원 `/`, 사서 `/admin`**. |
 | `libi_gui.sh <pinky>` | libi_gui 를 그 로봇 것으로. `PERCEPTION_URL`/`FMS_URL` 을 `LAPTOP_IP` 로 채움. |
-| `kill.sh [fms\|library]` | 인자 없으면 둘 다, 주면 그것만. (FMS 백엔드 데몬은 공유라 안 건드림) |
+| `kill.sh [fms\|library\|gui]` | 인자 없으면 셋 다(관제·도서관·터치패널), 주면 그것만. (FMS 백엔드 데몬은 공유라 안 건드림) |
 
 ```bash
 ./fms.sh                  # 관제 UI
 ./library.sh              # 도서관 웹 (회원/사서)
 ./libi_gui.sh pinky3      # 터치패널 (테스트)
-./kill.sh                 # 둘 다 정리
+./kill.sh                 # 전부 정리 (터치패널 포함)
 ./kill.sh library         # 도서관만
+./kill.sh gui             # 터치패널만
 ```
 
 관제 백엔드/프론트(:9001/:9002)는 `laptop/fms_service.sh` 가 아니라 이 `fms.sh` 가 띄운다 —

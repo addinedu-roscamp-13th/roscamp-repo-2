@@ -40,6 +40,20 @@ class RobotController : public QObject {
     Q_PROPERTY(bool charging READ charging NOTIFY chargingChanged)
     Q_PROPERTY(QString robotState READ robotState NOTIFY robotStateChanged)   // 대기/순찰/안내중/작업중/에러/충전중
     Q_PROPERTY(int interactingRemaining READ interactingRemaining NOTIFY interactingRemainingChanged)
+    // 로봇 FSM 과 실제로 붙어 있는가(= /libi/fsm_state 를 한 번이라도 받았는가).
+    // 화면이 "화면을 누르면 계속 응대해요" 같은 **로봇이 해줘야 하는 약속**을 말하기 전에
+    // 이걸 봐야 한다 — 목 모드에서는 터치를 발행할 상대가 없어 그 말이 거짓이 된다
+    // (onScreenTouch 는 m_ros 가 없으면 그냥 돌아간다).
+    Q_PROPERTY(bool rosConnected READ rosConnected NOTIFY rosConnectedChanged)
+
+    // 지도 위 로봇 위치 — 안내판 그림 안의 0..1 비율과, 위를 향한 마커에 줄 회전각[도].
+    // `poseValid` 가 false 면 화면은 마커를 **안 그린다**: 위치를 모를 때 마지막으로 알던
+    // 자리를 계속 보여주면 "로봇이 저기 있다"는 거짓말이 된다. AMCL 이 죽어도 마지막 값은
+    // 남으므로 도착 여부가 아니라 **수신 신선도**로 판정한다(POSE_TTL_MS).
+    Q_PROPERTY(bool poseValid READ poseValid NOTIFY poseChanged)
+    Q_PROPERTY(double mapX READ mapX NOTIFY poseChanged)          // 그림 가로 0..1
+    Q_PROPERTY(double mapY READ mapY NOTIFY poseChanged)          // 그림 세로 0..1
+    Q_PROPERTY(double mapHeadingDeg READ mapHeadingDeg NOTIFY poseChanged)
     Q_PROPERTY(bool patrolActive READ patrolActive NOTIFY patrolActiveChanged)
     Q_PROPERTY(bool following READ following NOTIFY followingChanged)   // 관리자 추종 중
     Q_PROPERTY(QString emotion READ emotion WRITE setEmotion NOTIFY emotionChanged)
@@ -69,6 +83,15 @@ public:
     bool charging() const { return m_charging; }
     QString robotState() const { return m_robotState; }
     int interactingRemaining() const { return m_interactingRemaining; }
+    bool rosConnected() const { return m_rosConnected; }
+    bool poseValid() const { return m_poseValid; }
+    double mapX() const { return m_mapX; }
+    double mapY() const { return m_mapY; }
+    double mapHeadingDeg() const { return m_mapHeadingDeg; }
+    /** 현재 pose 와 목적지 정점(map 좌표) 사이 거리[m]. pose 가 없으면 -1. */
+    double distanceTo(double x, double y) const;
+    /** 화면 표시명("과학 서가") → 실제 정점 이름("과학-인문학서가"). 없으면 빈 문자열. */
+    QString waypointOf(const QString &displayName) const;
     bool patrolActive() const { return m_patrol; }
     bool following() const { return m_following; }
     QString emotion() const { return m_emotion; }
@@ -108,6 +131,12 @@ public:
     Q_INVOKABLE void startGuide(const QString &destination);
     Q_INVOKABLE void cancelGuide();
 
+private:
+    bool destinationXY(const QString &displayName, double *x, double *y) const;
+    void updateGuideDistance();
+
+public:
+
     // 친밀감(SR-17) / 표정
     Q_INVOKABLE void setEmotion(const QString &e);
     Q_INVOKABLE void waveHand();                     // 손인사
@@ -135,7 +164,10 @@ public:
     // RobotController 수명 전체에서 유일하다(QML 쪽 Loader 가 화면을 파괴·재생성해도 화면별
     // 카운터가 아니라 이 값을 그대로 비교하면 되므로, 화면 재진입 시 재사용되는 화면-로컬
     // id와 옛 응답의 id가 우연히 같아 stale 데이터를 받아들이는 사고를 막는다).
-    Q_INVOKABLE int searchBooksAsync(const QString &query, const QString &category, bool onlyAvailable);
+    // zone 을 주면 그 서가 정점에 꽂힌 책만 서버가 걸러 준다(`/api/books?zone=`) —
+    // 지도에서 서가를 탭했을 때 쓰는 경로다. 비우면 기존 검색 그대로.
+    Q_INVOKABLE int searchBooksAsync(const QString &query, const QString &category, bool onlyAvailable,
+                                     const QString &zone = QString());
     Q_INVOKABLE int recommendAsync(const QString &purpose, const QString &interest);
 
 signals:
@@ -149,6 +181,8 @@ signals:
     void chargingChanged();
     void robotStateChanged();
     void interactingRemainingChanged();
+    void rosConnectedChanged();
+    void poseChanged();
     void patrolActiveChanged();
     void followingChanged();
     void emotionChanged();
@@ -194,6 +228,15 @@ private:
     RosLink *m_ros = nullptr;
     int m_interactingRemaining = 0;
     bool m_rosConnected = false;
+    bool m_poseValid = false;
+    double m_mapX = 0.5, m_mapY = 0.5, m_mapHeadingDeg = 0.0;
+    double m_poseWorldX = 0.0, m_poseWorldY = 0.0;   // map 프레임 원본(거리 계산용)
+    QTimer m_poseFreshness;
+    QTimer m_fsmFreshness;   // 상태 수신이 끊기면 rosConnected 를 되돌린다
+    // FMS 가 알려준 목적지 정점 좌표(map 프레임). 남은 거리는 이것과 현재 pose 로 잰다.
+    bool m_guideTargetValid = false;
+    double m_guideTargetX = 0.0, m_guideTargetY = 0.0;
+    QString m_guideTargetWaypoint;
     bool m_patrol = true;
     bool m_following = false;
     QString m_emotion = QStringLiteral("happy");

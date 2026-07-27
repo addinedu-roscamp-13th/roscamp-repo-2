@@ -456,7 +456,9 @@ WorkingBranch (Sequence, memory=False)
 ├── Parallel(SuccessOnOne)
 │   ├── Selector(memory=False)                  # 커맨드 실행부
 │   │   ├── NavigationExec                      # navigate / dock
+│   │   ├── GuideExec                           # guide — 요청자를 보며 주행
 │   │   ├── ArmExec                             # perform_action
+│   │   ├── FollowExec                          # follow_admin
 │   │   └── Running("AwaitingCommand")          # 커맨드 없음 — 대기
 │   └── exit_watchdog(...)
 │       ├── FaultDetected
@@ -490,6 +492,54 @@ RMF에 잔존하여 재배차되지 않는다. (보고 자체는 이 트리 밖 
 **신규 leaf: `NavigationExec`, `ArmExec`, `CommandTimeout`**
 
 > `ArmExec` 내부의 파지·적재 서브트리는 **작성 예정**이다. 현재는 `driver`가 그 자리를 대신한다.
+
+#### 길잡이 — `GuideExec` (2026-07-27)
+
+터치패널에서 이용자가 목적지를 고르면 로봇이 **데려다 준다**. 주행 자체는 `NavigationExec`과
+같지만, 안내는 **혼자 도착하면 실패**라는 점이 다르다 — 안내받는 사람을 두고 먼저 가버리면
+목적지에 닿아도 아무것도 안내하지 못한 것이다.
+
+```
+액션 계층 (기존 navigate 와 같은 규칙)
+  FMS  →  /fleet_cmd {action:"guide", args:{x,y,yaw}}   ← BT 층. GuideExec 소유
+            providers: active_command="guide", nav_target={x,y,yaw}
+  BT   →  /fleet_cmd {action:"goal",  args:{x,y,yaw}}   ← 실행 층. fleet_link → nav2
+```
+
+`guide`를 `navigate`로 뭉뚱그리면 **안 된다.** Selector 앞의 `NavigationExec`이 먼저 집어가
+`GuideExec`은 한 번도 안 돌고, 요청자를 놓쳐도 아무도 멈추지 않는다.
+
+**세 갈래**
+
+| 요청자 | 동작 |
+|---|---|
+| 보인다 | 평소대로 주행 |
+| 잠깐 안 보인다 (`guide_lost_grace_sec` 이내) | 계속 주행 — 서가 뒤로 한 발 들어간 정도로 끊기면 못 쓴다 |
+| 유예를 넘겨 안 보인다 | **멈추고 기다린다.** `mission_stop` → `ros_bridge.cancel_nav()` |
+| `guide_lost_timeout_sec` 을 넘겨도 안 온다 | FAILURE — 안내 종료 |
+
+멈출 때 `mission_stop`을 **실제로 보내야 한다**. 안 보내고 RUNNING 만 돌려주면 화면은
+"기다리는 중"인데 nav2는 계속 달려 로봇이 사람을 두고 간다.
+
+**요청자 가시성 계약** — `/libi/requester_visible` (`std_msgs/Bool`).
+`providers`가 구독해 `requester_visible` / `requester_seen_at`(마지막으로 보인 monotonic 시각)로
+내보낸다. 시각은 **보였을 때만** 갱신한다 — 안 보이는 동안 계속 덮으면 "얼마나 오래 안 보였나"가
+항상 0이 되어 영영 멈추지 않는다.
+
+> ⚠️ **정지가 실제로는 안 먹는다 (확인된 결함, 길잡이만의 문제 아님).**
+> `mission_stop` → `mission.stop_mission()` → `ros_bridge.cancel_nav()` 까지는 가지만,
+> `cancel_nav()` 가 취소하는 `_active_goal_handle` 은 채워지지 않는다 — `send_nav_goal()` 이
+> `send_goal_async()` 결과에 `_on_goal_response` 콜백을 달지 않기 때문이다
+> (`ros_bridge.py:486` vs `:494,512`). 그래서 `goal` 로 나가는 **모든 주행**(배달·순회·복귀)이
+> 취소되지 않는다. `robot_agent` 소유라 실기 확인 없이 손대지 않았다 — 고칠 때 한 줄이다:
+> `send_goal_async(...).add_done_callback(self._on_goal_response)`.
+
+> ⚠️ **아직 이 토픽을 발행하는 쪽이 없다.** 값이 `None`이면 `GuideExec`은 "감시 없음"으로 읽고
+> 그냥 주행한다(감시 없는 배포에서 길잡이가 통째로 죽는 것보다 낫다). 즉 **지금은 사람을
+> 놓쳐도 계속 간다.** 발행할 쪽은 `libi_perception`이다 — `DetectionReceiver.latest()`가 이미
+> "지금 보이나"를 알고 있다. 그래서 `btNodeFlags.ts`에 `GuideExec: "partial"`로 적혀 있다.
+
+테스트: `test/test_guide_exec.py` (분류 분리·유예·실제 정지·재개·포기·도착·감시없음)
 
 ### 7. RETURNING
 

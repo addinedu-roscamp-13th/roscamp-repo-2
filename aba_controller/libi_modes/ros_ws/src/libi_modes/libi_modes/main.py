@@ -148,6 +148,12 @@ class FsmNode(Node):
             "nav": FleetCmdDriver(self, "goal",
                                   args_fn=lambda: self._nav_args(home_location)).bind(cmd_pub),
             "arm": FleetCmdDriver(self, "perform_action").bind(cmd_pub),
+            # 길잡이 주행 — nav 와 같은 실행 층 `goal` 이다. 다른 건 BT 층에서 누가 받느냐뿐.
+            "guide": FleetCmdDriver(self, "goal",
+                                    args_fn=lambda: self._nav_args(home_location)).bind(cmd_pub),
+            # 요청자를 놓쳤을 때 **실제로 멈추는** 수단. mission_stop → ros_bridge.cancel_nav().
+            # 이게 없으면 GuideExec 은 "기다리는 중"만 표시하고 로봇은 계속 달린다.
+            "guide_stop": FleetCmdDriver(self, "mission_stop").bind(cmd_pub),
             # 사람 추종 — libi_perception 의 RemoteControl 이 같은 /fleet_cmd 를 구독해
             # FollowSession 을 켜고 끈다. 세션은 스스로 안 끝나므로(관리자가 멈추거나
             # 회복이 소진될 때까지) 응답 타임아웃을 길게 준다 — 기본 120초면 추종 중에

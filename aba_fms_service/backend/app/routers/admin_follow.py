@@ -36,7 +36,11 @@ FOLLOW_COMMAND = "follow_admin"
 
 # 추종을 시작할 수 있는 상태 — 유휴하거나 순찰 중일 때만 받는다. WORKING 은 이미 다른
 # 태스크를 수행 중이므로 가로채지 않는다.
-ACCEPTING_STATES = frozenset({"IDLE", "PATROL"})
+# ⚠️ INTERACTING 이 빠져 있으면 **패널에서는 추종을 시작할 수 없다.** 관리자 화면에 가려면
+#    화면을 눌러야 하고, 그 터치가 곧바로 PATROL → INTERACTING 을 만든다(registry.py:44).
+#    그래서 요청이 도착할 때 로봇은 거의 항상 INTERACTING 이다.
+#    전이표에도 INTERACTING → WORKING(task_assigned) 간선이 있다(registry.py:47).
+ACCEPTING_STATES = frozenset({"IDLE", "PATROL", "INTERACTING"})
 
 # 승인되면 로봇을 이 상태로 옮긴다. IDLE/PATROL -> WORKING 은 전이표의 정식 간선
 # (task_assigned)이라 force 가 필요 없다 — ACCEPTING_STATES 가 딱 그 둘인 이유이기도 하다.

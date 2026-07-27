@@ -65,7 +65,7 @@ def _save_locations(locs: dict | None) -> None:
 
 #: libi_modes BT 가 소유하는 명령. 이 실행기는 수락만 하고 실행하지 않는다.
 #  (BT 가 처리한 뒤 실행 층 액션 goal/arm_home/... 으로 되돌아온다)
-BT_LAYER_ACTIONS = frozenset({"navigate"})
+BT_LAYER_ACTIONS = frozenset({"navigate", "guide"})
 
 
 def _dispatch(action: str, args: dict) -> tuple[bool, int, Any, str]:

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # 로봇(Pi)에서 딸깍 — 캘리브레이션용 카메라 스트림을 띄우고, 노트북에서 칠 명령을 알려준다.
+# 보드는 노트북에서 make_board.py 로 뽑은 ChArUco(기본 7x5칸 35mm)를 쓴다.
 #
 #   ./calib-pi.sh picam     # CSI  (rpicam-vid 480x360 = robot_agent 런타임과 동일)
 #   ./calib-pi.sh usb       # USB  (V4L2 640x480      = perception_server 와 동일)
@@ -59,7 +60,7 @@ echo
 echo "────────────────────────────────────────────────────────────"
 echo " 노트북에서 이걸 치세요 (한 칸 실측 크기 m 를 자로 재서):"
 echo
-echo "   ./calib-laptop.sh $SRC $IP 0.038"
+echo "   ./calib-laptop.sh $SRC $IP 0.035"
 echo "                                 ^^^^^ ← 실측값으로 바꿀 것"
 echo "────────────────────────────────────────────────────────────"
 echo

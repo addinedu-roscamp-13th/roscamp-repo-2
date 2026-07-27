@@ -180,6 +180,131 @@ class NavigationExec(CommandDrivenAction):
         return self._release(Status.FAILURE)
 
 
+class GuideExec(NavigationExec):
+    """guide() — 목적지까지 몰되, **요청자가 따라오는지 보면서** 몬다.
+
+    ## 왜 NavigationExec 을 그대로 못 쓰나
+
+    주행 자체는 똑같다(목적지로 goal, 도착은 실좌표로 판정). 다른 건 하나뿐이다 —
+    **안내는 혼자 도착하면 실패다.** 안내받는 사람을 두고 먼저 가버리면 목적지에 닿아도
+    아무것도 안내하지 못한 것이다. 그래서 요청자가 안 보이면 멈추고 기다린다.
+
+    ## 세 갈래
+
+        보인다              → 평소대로 몬다
+        잠깐 안 보인다       → **멈춘다**(nav 취소) 그리고 기다린다. 다시 보이면 이어서 몬다
+        오래 안 보인다       → FAILURE (안내 종료)
+
+    잠깐 안 보이는 걸 곧바로 실패로 치지 않는 이유는 회복 BT 가 Hold 를 맨 앞에 두는
+    이유와 같다 — 사람이 서가 뒤로 한 발 들어가는 것만으로 안내가 끊기면 못 쓴다.
+
+    ## 멈추는 방법
+
+    `mission_stop` 을 실행 층에 한 번 보낸다 → `fleet_link` → `ros_bridge.cancel_nav()`.
+    보내지 않고 그냥 RUNNING 으로 있으면 **nav2 는 계속 달린다** — 화면만 "기다리는 중"이고
+    로봇은 사람을 두고 가버린다. 다시 보이면 `_sent_at=None` 으로 되돌려 goal 을 새로 낸다.
+
+    ## 감시가 아예 안 돌 때 (requester_visible=None)
+
+    libi_perception 이 없거나 감시를 안 켠 로봇에서는 판단 근거가 없다. 그때는 **그냥
+    주행한다** — 근거 없이 멈춰 서 있는 것보다 낫고, 감시 없는 배포에서 길잡이가 통째로
+    죽는 것도 막는다. 화면에는 요청자 감시가 없다는 게 phase 로 드러나지 않으므로,
+    감시 없는 배포에서 이 브랜치를 쓸지는 운영 결정이다.
+    """
+
+    def __init__(self, driver, arrive_tolerance: float, arrive_resend_sec: float,
+                 arrive_timeout_sec: float, lost_grace_sec: float, lost_timeout_sec: float,
+                 stop_driver=None, name: str | None = None, now_fn=time.monotonic):
+        super().__init__(driver, arrive_tolerance, arrive_resend_sec, arrive_timeout_sec,
+                         name=name or "GuideExec", now_fn=now_fn)
+        self.handles = {"guide"}
+        self.lost_grace_sec = lost_grace_sec
+        self.lost_timeout_sec = lost_timeout_sec
+        #: 없으면 멈출 수단이 없다 — 그 경우 멈추는 척하지 않고 로그로 드러낸다.
+        self.stop_driver = stop_driver
+        self._halted = False
+
+    def setup(self, **kwargs):
+        super().setup(**kwargs)
+        self.blackboard.register_key(key=Keys.REQUESTER_VISIBLE, access=Access.READ)
+        self.blackboard.register_key(key=Keys.REQUESTER_SEEN_AT, access=Access.READ)
+        self.blackboard.register_key(key=Keys.NEXT_MODE, access=Access.WRITE)
+
+    def _release(self, status: Status) -> Status:
+        """안내가 끝났음을 **스스로 알린다.**
+
+        배달은 FMS 가 다리 완료를 알고 `task_done` 을 보내주지만, 길잡이를 시킨 건 패널이고
+        FMS 는 로봇이 도착했는지 모른다. 그래서 여기서 안 내보내면 `active_command` 만 비고
+        dispatch Selector 가 `AwaitingCommand` 로 떨어져 **WORKING 에 그대로 남는다** —
+        120초 뒤 `CommandTimeout` 이 ERROR 로 보낼 때까지. (화면은 그 ERROR 도 "안내 종료"로
+        보여준다.)
+
+        ⚠️ `LAST_COMMAND` 에 `task_done` 을 쓰는 방법은 **안 통한다.** 두 번 막힌다:
+          1. 이 leaf 가 SUCCESS 를 내면 `Parallel(SuccessOnOne)` 이 거기서 끝나 같은 tick 에
+             `CommandListener` 가 안 돈다.
+          2. 다음 tick 에는 `Topics2BB` 가 provider 값(None)으로 덮어써 쓴 값이 사라진다.
+        `NEXT_MODE` 는 Sequence 의 마지막 `RequestTransition` 이 **같은 tick 에** 읽으므로
+        둘 다 피한다. (test_guide_exec 의 브랜치 통합 시험 두 개가 이걸 붙들고 있다 —
+        LAST_COMMAND 방식으로 되돌리면 바로 빨개진다.)
+
+        성공도 실패도 PATROL 이다 — `CommandListener` 의 task_done/task_failed 매핑과 같다.
+        """
+        self.blackboard.set(Keys.NEXT_MODE, "PATROL")
+        return super()._release(status)
+
+    def initialise(self):
+        super().initialise()
+        self._halted = False
+
+    def _lost_for(self) -> float:
+        """요청자가 안 보인 지 몇 초인가. 보이거나 감시가 없으면 0."""
+        visible = bb.get(self.blackboard, Keys.REQUESTER_VISIBLE)
+        if visible is None or visible:
+            return 0.0
+        seen_at = bb.get(self.blackboard, Keys.REQUESTER_SEEN_AT) or 0.0
+        if not seen_at:
+            # 감시는 도는데 **한 번도 못 봤다**. 시작부터 아무도 없었다는 뜻이라
+            # 유예를 줄 기준 시각이 없다 — 명령 접수 시각을 기준으로 삼는다.
+            seen_at = bb.get(self.blackboard, Keys.COMMAND_RECEIVED_AT) or self._now()
+        return max(0.0, self._now() - seen_at)
+
+    def update(self) -> Status:
+        if bb.get(self.blackboard, Keys.ACTIVE_COMMAND) not in self.handles:
+            self._halted = False
+            return super().update()
+
+        lost = self._lost_for()
+        if lost >= self.lost_timeout_sec:
+            self._halt()
+            return self._give_up()
+        if lost >= self.lost_grace_sec:
+            self._halt()
+            # 목적지는 그대로 두고 기다린다. 다시 보이면 아래에서 goal 을 새로 낸다.
+            return Status.RUNNING
+
+        if self._halted:
+            self._halted = False
+            self._sent_at = None     # 취소된 주행을 다시 낸다
+        return super().update()
+
+    def _halt(self):
+        if self._halted:
+            return                   # 취소는 한 번만 — 매 tick 보내면 실행 층이 막힌다
+        self._halted = True
+        self._sent_at = None
+        if self.stop_driver is None:
+            logging.getLogger(__name__).error(
+                "GuideExec: 요청자를 놓쳤는데 정지 수단(stop_driver)이 없어 nav 를 취소하지 못했다 — "
+                "로봇은 계속 달린다. registry.build_branches(drivers={'guide_stop': ...}) 로 꽂아라.")
+            return
+        self.stop_driver.start()
+
+    def terminate(self, new_status):
+        # 안내가 어떻게 끝나든(성공·실패·상위 취소) 취소 상태를 남기지 않는다.
+        self._halted = False
+        super().terminate(new_status)
+
+
 class ArmExec(CommandDrivenAction):
     """perform_action() — delegated to the arm.
 

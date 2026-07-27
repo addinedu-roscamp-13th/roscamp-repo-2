@@ -51,6 +51,42 @@ FMS_URL=http://192.168.0.9:9001 ./gui.sh pinky3   # 관제 서버가 원격일 �
 ./build/libi_gui --shots /tmp/libi_shots
 ```
 
+## 지도 — 그림을 갈아끼울 때
+
+지도는 사서·관제팀이 그린 안내판 도면(`qml/assets/artemap.png`)을 **그대로 띄운다**.
+구역 이름·아이콘은 그림 안에 이미 있으므로 화면은 알약을 다시 그리지 않는다 — 같은 것을
+두 곳에서 그리면 반드시 어긋난다. 화면이 얹는 건 셋뿐이다: **탭 영역 · 목적지 강조 ·
+로봇 위치**.
+
+그래서 그림에 딸린 **좌표 상수 두 벌**이 있고, 둘 다 그림에서 실측한 값이다.
+
+| 상수 | 어디 | 무엇 |
+|---|---|---|
+| `IMG_LEFT/RIGHT/TOP/BOTTOM` | `src/domain.h` | 남색 벽 **안쪽** 사각형. 실좌표→그림 변환의 기준 |
+| `bx, by, bw, bh` | `RobotController::facilities()` | 구역별 탭 영역·강조 테두리 |
+
+로봇 위치는 `/amcl_pose`(map 프레임 m)를 이 사각형에 대응시켜 찍는다. 대응 근거는 **방의
+외벽 하나**다 — 안내판은 점유격자를 보고 그린 양식화된 그림이라 가구가 1:1 로 맞지 않는다.
+점유격자(`pinky_navigation/map/arte2.pgm`)의 벽 경계상자를 그림의 방 사각형에 그대로 맞춘다.
+
+```
+벽 실좌표  x -0.144..0.876 (1.020m)   y -1.909..0.111 (2.020m)   비율 1.980
+그림 방    x 53..1285px               y 58..698px                비율 1.925
+축은 90° 돌아 있다:  그림 가로 = -map_y,  그림 세로 = -map_x
+```
+
+**그림이나 지도를 바꿨다면** — 값을 다시 재고, 시험으로 확인한다. 안 하면 알약은 그대로
+보이는데 탭이 엉뚱한 곳에서 먹고 로봇 마커가 벽을 뚫는다.
+
+```bash
+python3 tools/measure_map_boxes.py qml/assets/artemap.png   # 새 상수 출력
+# → src/domain.h 와 facilities() 에 붙여 넣고, 골든 좌표도 다시 만든 뒤
+cmake -S . -B build -DLIBI_GUI_TESTS=ON && cmake --build build -j && ./build/test_domain
+```
+
+`test_domain` 이 정점 골든 좌표·축 방향·yaw 부호·벽 끝 정합을 붙들고 있다.
+"정점이 방 안에 있다" 만으로는 **부족하다** — x·y 를 둘 다 뒤집어도 여전히 방 안이다.
+
 ### 테스트
 승인 응답에 따라 추종을 시작할지 가르는 코드와, 영상 스트림 파싱은 눈으로 읽고 넘길 수
 없어 별도 테스트가 있다.
@@ -58,9 +94,14 @@ FMS_URL=http://192.168.0.9:9001 ./gui.sh pinky3   # 관제 서버가 원격일 �
 ```bash
 cmake -S . -B build -DLIBI_GUI_TESTS=ON && cmake --build build -j
 
+./build/test_domain                                      # 서버 불필요 — 순수 변환
 ./build/test_admin_follow_client http://127.0.0.1:9001   # FMS 가 떠 있어야 함
 ./build/test_perception_client 127.0.0.1:5007            # perception_server 가 떠 있어야 함
 ```
+
+`test_domain` 은 **조용히 틀리는 것들**만 붙든다: 도서 상태 세 갈래(배치중/대출 중/대출 불가),
+분야 한↔영 변환(한때 `QLatin1String` 비교라 필터가 통째로 무시됐다), 지도 좌표 골든값·축
+방향·yaw 부호. 화면도 ROS 도 없이 도므로 `QtCore` 하나만 링크한다.
 
 `LIBI_GUI_TESTS` 는 기본 OFF라, 로봇에 올리는 빌드에는 포함되지 않는다.
 

@@ -50,8 +50,10 @@ class RosProviders:
     def __init__(self, node, *, battery_topic="battery/percent", docked_topic="is_docked",
                  fault_topic="fault", cmd_topic="fleet_cmd", ui_touch_topic="ui_last_touch_at",
                  pose_topic="/amcl_pose",
+                 requester_topic="/libi/requester_visible",
                  mission_actions=("goal", "goto", "home", "mission_start"),
                  nav_actions=("navigate",),
+                 guide_actions=("guide",),
                  arm_actions=("perform_action",),
                  follow_actions=("follow_admin",)):
         self._node = node
@@ -62,6 +64,11 @@ class RosProviders:
         #                     "주행 중이구나" 로만 표시한다 (인자는 안 본다)
         #   nav_actions     : FMS 가 BT 에게 직접 주는 명령 — args 의 목적지를 저장한다
         self._nav_actions = set(nav_actions)
+        # 길잡이도 **BT 층 명령**이다 — 목적지를 싣고 오는 건 navigate 와 같고, 다른 건
+        # active_command 를 액션 이름 그대로 둔다는 점뿐이다(GuideExec.handles={"guide"}).
+        # navigate 로 뭉뚱그리면 앞에 있는 NavigationExec 이 먼저 집어가 GuideExec 은
+        # 영영 안 돈다 — 요청자를 잃어도 아무도 안 멈춘다는 뜻이다.
+        self._guide_actions = set(guide_actions)
         # 팔 명령은 이름을 그대로 active_command 로 쓴다 — ArmExec 의 handles 와 맞춰야 한다
         # (working_actions.ArmExec: handles={"perform_action"}).
         self._arm_actions = set(arm_actions)
@@ -80,6 +87,8 @@ class RosProviders:
         self._robot_pose = None
         self._command_received_at = 0.0
         self._ui_last_touch_at = 0.0
+        self._requester_visible = None      # None = 감시가 안 돌고 있다
+        self._requester_seen_at = 0.0
 
         node.create_subscription(Float32, battery_topic, self._on_battery, 10)
         node.create_subscription(Bool, docked_topic, self._on_docked, 10)
@@ -87,6 +96,7 @@ class RosProviders:
         node.create_subscription(String, cmd_topic, self._on_cmd, 10)
         node.create_subscription(Float64, ui_touch_topic, self._on_ui_touch, 10)
         node.create_subscription(PoseWithCovarianceStamped, pose_topic, self._on_pose, _LATCHED)
+        node.create_subscription(Bool, requester_topic, self._on_requester, 10)
 
     # ── 콜백 (캐시에 담기만 한다) ──────────────────────────────────────────────
 
@@ -98,6 +108,13 @@ class RosProviders:
 
     def _on_fault(self, msg):
         self._fault = bool(msg.data)
+
+    def _on_requester(self, msg):
+        # 시각은 **보였을 때만** 갱신한다. 안 보이는 동안 계속 덮으면 "얼마나 오래
+        # 안 보였나"가 항상 0 이 되어 GuideExec 이 영영 정지하지 않는다.
+        self._requester_visible = bool(msg.data)
+        if self._requester_visible:
+            self._requester_seen_at = time.monotonic()
 
     def _on_ui_touch(self, msg):
         # payload 값은 신뢰하지 않는다 — libi_gui 가 다른 머신(노트북/sim)이면 monotonic 시계가
@@ -127,7 +144,7 @@ class RosProviders:
         #    (실측: monotonic 24,328 vs epoch 1,785,051,205).
         #    바로 위 _on_ui_touch 가 같은 이유로 이미 monotonic 을 쓴다.
         self._command_received_at = time.monotonic()
-        if action in self._nav_actions:
+        if action in self._nav_actions or action in self._guide_actions:
             # FMS 가 준 BT 층 주행 명령 — 목적지를 함께 저장한다.
             # NavigationExec 의 드라이버가 이 값을 읽어 실행 층(goal)으로 내려보낸다.
             args = cmd.get("args") or {}
@@ -138,11 +155,22 @@ class RosProviders:
                     "yaw": float(args.get("yaw", 0.0)),
                 }
             except (KeyError, TypeError, ValueError):
-                self._log.warning(f"navigate 명령에 좌표가 없다: {args!r}")
+                self._log.warning(f"{action} 명령에 좌표가 없다: {args!r}")
                 return
-            self._active_command = "navigate"
+            # guide 는 이름을 그대로 둔다 — GuideExec.handles 와 같아야 잡힌다.
+            self._active_command = action if action in self._guide_actions else "navigate"
         elif action in self._mission_actions:
-            self._active_command = "navigate"      # WorkingBranch 의 NavigationExec 이 받는다
+            # ⚠️ **자기 메아리를 조심한다.** BT 드라이버도 같은 `/fleet_cmd` 로 실행 층
+            #    액션(`goal`)을 발행하고, 이 노드가 그걸 도로 구독한다. 그때 무조건
+            #    "navigate" 로 덮으면 진행 중인 다른 BT 층 명령을 **가로챈다**:
+            #      guide 수신 → active_command="guide" → GuideExec 이 goal 발행
+            #      → 그 goal 을 여기서 받아 active_command="navigate" 로 덮음
+            #      → 다음 tick 부터 앞에 있는 NavigationExec 이 가져감
+            #      → 요청자 감시가 사라지고, 사람을 놓쳐도 아무도 안 멈춘다
+            #    이미 다른 BT 층 명령이 살아 있으면 건드리지 않는다. navigate 자신이
+            #    돌고 있을 때는 같은 값이라 덮어도 무해하므로 기존 동작 그대로다.
+            if self._active_command in (None, "navigate"):
+                self._active_command = "navigate"  # WorkingBranch 의 NavigationExec 이 받는다
         elif action in self._follow_actions:
             self._active_command = action
         elif action in self._arm_actions:
@@ -187,5 +215,7 @@ class RosProviders:
             "active_command": lambda: self._active_command,
             "nav_target": lambda: self._nav_target,
             "robot_pose": lambda: self._robot_pose,
+            "requester_visible": lambda: self._requester_visible,
+            "requester_seen_at": lambda: self._requester_seen_at,
             "command_received_at": lambda: self._command_received_at,
         }

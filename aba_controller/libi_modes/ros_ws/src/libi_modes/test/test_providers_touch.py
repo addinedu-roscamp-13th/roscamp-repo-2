@@ -31,6 +31,7 @@ def test_command_received_at_is_monotonic_not_epoch():
     p = RosProviders.__new__(RosProviders)          # __init__ 우회 (ROS 노드 불필요)
     p._command_received_at = 0.0
     p._nav_actions = set()
+    p._guide_actions = set()
     p._mission_actions = set()
     p._arm_actions = set()
     p._follow_actions = set()

@@ -21,6 +21,8 @@ public slots:
 signals:
     void fsmStateReceived(QString currentState, double remainingSec,
                           QString errorCode, double batteryPercent, bool docked);
+    /** /amcl_pose — map 프레임 좌표[m]와 yaw[rad]. 그림 좌표 변환은 RobotController 가 한다. */
+    void poseReceived(double x, double y, double yawRad);
 
 private:
     struct Impl;

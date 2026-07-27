@@ -46,7 +46,8 @@ PARAMS = {
     # 도착 판정 값은 config/params.yaml 과 같은 뜻이지만, 시험에서는 계산이 눈에
     # 보이도록 딱 떨어지는 값을 쓴다 (0.1m / 10초 / 60초).
     "working": {"command_timeout_sec": 120, "arrive_tolerance_m": 0.1,
-                "arrive_resend_sec": 10, "arrive_timeout_sec": 60},
+                "arrive_resend_sec": 10, "arrive_timeout_sec": 60,
+                "guide_lost_grace_sec": 3, "guide_lost_timeout_sec": 45},
     "returning": {"dock_retry_max": 3},
 }
 
@@ -58,6 +59,8 @@ def all_drivers():
         "nav": FakeDriver(),
         "arm": FakeDriver(),
         "follow": FakeDriver(),
+        "guide": FakeDriver(),
+        "guide_stop": FakeDriver(),
         "return_arm": FakeArmDriver(),
         "return_dock": FakeDriver(),
     }

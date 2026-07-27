@@ -72,23 +72,8 @@ ApplicationWindow {
         }
     }
 
-    // INTERACTING 안내: 남은초 표시, 5초 이하면 "곧 이동합니다" 상단 경고 모달
-    Rectangle {
-        id: interactBanner
-        visible: controller.robotState === "응대중"
-        anchors { top: parent.top; left: parent.left; right: parent.right }
-        height: 72
-        // 응대중은 위험 상태가 아니다 — LED 규칙(빨강=위험)과 맞춰 남은시간과 무관하게 초록 유지.
-        color: S.success
-        z: 90
-        Text {
-            anchors.centerIn: parent
-            color: "white"; font.pixelSize: 26; font.bold: true
-            text: controller.interactingRemaining <= 5
-                  ? "곧 이동합니다 (" + controller.interactingRemaining + "초)"
-                  : "응대 중 · " + controller.interactingRemaining + "초 후 순찰 재개"
-        }
-    }
+    // INTERACTING 안내는 화면을 덮지 않는다 — 상단바(TopBar.qml)의 알약이 남은 시간을
+    // 보여준다. 여기 있던 배너/모달은 그 자리에서 상단바와 화면을 가려서 없앴다.
 
     // 비상정지 오버레이 (관리자 로그인/조작 화면에서는 숨겨 해제 흐름 허용)
     Rectangle {

@@ -105,9 +105,11 @@ Item {
                 Row {
                     spacing: 10
                     Text { text: modelData.title; font.family: S.fontFamily; font.pixelSize: 21; font.bold: true; color: S.text }
+                    // 검색 화면과 같은 세 갈래 표기 — 같은 책을 화면마다 다르게 말하지 않는다.
                     StatusPill {
-                        pillColor: modelData.available ? S.success : S.textMuted
-                        text: modelData.available ? "대여 가능" : "대여 중"
+                        pillColor: modelData.status === "배치중" ? S.success
+                                 : (modelData.status === "대출 중" ? S.textMuted : S.danger)
+                        text: modelData.status
                         anchors.verticalCenter: parent.verticalCenter
                     }
                 }

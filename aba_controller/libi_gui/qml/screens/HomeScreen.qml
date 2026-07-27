@@ -98,11 +98,26 @@ Item {
                 font.family: S.fontFamily; font.pixelSize: 32; font.bold: true; color: S.text
             }
 
+            // 로봇이 **지금 무슨 상태인지** 그대로 말한다. 예전엔 `patrolActive`(목 플래그)만
+            // 보고 "순찰 중"을 하드코딩해서, 상단바가 "응대중"인데 여기만 "순찰 중"이라고
+            // 하는 상황이 났다(실측). 같은 화면이 같은 것을 두 가지로 말하면 안 된다.
             StatusPill {
                 anchors.horizontalCenter: parent.horizontalCenter
-                visible: controller.patrolActive
-                pillColor: S.sky
-                text: "순찰 중 · 도움이 필요하면 불러주세요"
+                visible: text !== ""
+                pillColor: S.ledColorFor(controller.robotState)
+                text: {
+                    switch (controller.robotState) {
+                    case "순찰":
+                    case "보안순찰":   return controller.robotState + " 중 · 도움이 필요하면 불러주세요";
+                    case "응대중":     return "도와드릴게요 · 무엇을 찾으세요?";
+                    case "대기":       return "대기 중 · 화면을 눌러 불러주세요";
+                    case "작업중":
+                    case "안내중":     return controller.robotState + " · 잠시만요";
+                    case "충전중":     return "충전 중 · 조금 뒤에 도와드릴게요";
+                    case "복귀중":     return "복귀 중 · 잠시만요";
+                    default:           return "";   // 에러 등 — 여기서 안내할 말이 없다
+                    }
+                }
             }
         }
     }

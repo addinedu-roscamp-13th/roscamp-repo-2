@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""노트북에서 실행 — Pi 스트림을 보면서 체커보드를 수집하고 intrinsic 을 계산한다.
+"""노트북에서 실행 — Pi 스트림을 보면서 보드를 수집하고 intrinsic 을 계산한다.
+
+기본은 **ChArUco**(체커보드 + ArUco 마커). 체커보드도 `--board chess` 로 그대로 쓴다.
 
 로봇(Pi):   python3 calib_stream_pi.py --source picam
-노트북:     python3 calib_client.py --host 172.30.1.83 --square-m 0.0382 \
+노트북:     python3 calib_client.py --host 172.30.1.83 --square-m 0.035 \
                 --out <repo>/aba_controller/libi_drive_controller/robot_agent/config/camera_calib.npz
 
 키:
@@ -12,6 +14,10 @@
 
 화면 우상단 3x3 격자는 보드 중심이 지나간 칸이다. **가장자리 칸을 안 채우면 왜곡계수가
 0 근처로 나온다** — 중앙에서만 찍는 것이 이 작업의 가장 흔한 실패다.
+
+ChArUco 가 기본인 이유: 마커마다 ID 가 있어 **보드가 잘려도(부분만 보여도) 그 자리에
+어느 코너인지 확정된다.** 480x360 픽셀에 보드를 화면 끝까지 밀어 넣어야 하는 이 작업에서,
+체커보드는 한 귀퉁이만 나가도 그 장면을 통째로 버린다. 방향 모호성(180° 뒤집힘)도 없다.
 
 ⚠️ 이 결과는 스트림 해상도 전용이다. 런타임 해상도가 바뀌면 K 는 무효다.
 """
@@ -118,6 +124,56 @@ def find_corners(gray: np.ndarray, pattern: tuple[int, int]):
     return True, c
 
 
+# ── ChArUco ───────────────────────────────────────────────────────────────────
+# OpenCV 는 4.7 에서 aruco API 를 갈아엎었다(생성자·검출기 모두). 로봇과 노트북의 cv2
+# 버전이 다를 수 있으므로 양쪽을 다 받는다 — aruco_dock.py:76 이 쓰는 방식과 같다.
+
+def build_charuco(dict_name: str, squares: tuple[int, int], square_m: float, marker_m: float):
+    """(board, dictionary) 를 만든다. squares 는 **칸 개수**(내부 코너가 아니다)."""
+    dict_id = getattr(cv2.aruco, dict_name, None)
+    if dict_id is None:
+        sys.exit(f"--dict 를 모르겠습니다: {dict_name!r} (예: DICT_4X4_50)")
+    if hasattr(cv2.aruco, "getPredefinedDictionary"):
+        dictionary = cv2.aruco.getPredefinedDictionary(dict_id)     # 4.7+
+    else:
+        dictionary = cv2.aruco.Dictionary_get(dict_id)              # 4.6
+    if hasattr(cv2.aruco, "CharucoBoard_create"):
+        board = cv2.aruco.CharucoBoard_create(squares[0], squares[1], square_m, marker_m, dictionary)
+    else:
+        board = cv2.aruco.CharucoBoard(squares, square_m, marker_m, dictionary)
+    return board, dictionary
+
+
+def charuco_obj_points(board) -> np.ndarray:
+    """보드 좌표계의 체스 코너 전체(내부 코너 수 x 3). 검출된 id 로 인덱싱해서 쓴다."""
+    if hasattr(board, "getChessboardCorners"):
+        return np.asarray(board.getChessboardCorners(), np.float32)  # 4.7+
+    return np.asarray(board.chessboardCorners, np.float32)           # 4.6
+
+
+def find_charuco(gray: np.ndarray, board, dictionary, min_corners: int = 6):
+    """(found, img_corners Nx1x2, obj_points Nx3, ids Nx1).
+
+    체커보드와 달리 **장면마다 코너 개수가 다르다** — 보이는 만큼만 온다. 그래서 물체점도
+    장면마다 따로 만들어 돌려준다(calibrateCamera 는 장면별 길이가 달라도 받는다).
+    """
+    if hasattr(cv2.aruco, "CharucoDetector"):                        # 4.7+
+        c_corners, c_ids, _, _ = cv2.aruco.CharucoDetector(board).detectBoard(gray)
+    else:                                                            # 4.6
+        params = (cv2.aruco.DetectorParameters_create()
+                  if hasattr(cv2.aruco, "DetectorParameters_create")
+                  else cv2.aruco.DetectorParameters())
+        m_corners, m_ids, _ = cv2.aruco.detectMarkers(gray, dictionary, parameters=params)
+        if m_ids is None or len(m_ids) == 0:
+            return False, None, None, None
+        _, c_corners, c_ids = cv2.aruco.interpolateCornersCharuco(m_corners, m_ids, gray, board)
+    if c_ids is None or len(c_ids) < min_corners:
+        return False, None, None, None
+    objp_all = charuco_obj_points(board)
+    objp = objp_all[c_ids.ravel()].reshape(-1, 3).astype(np.float32)
+    return True, c_corners.astype(np.float32), objp, c_ids
+
+
 def calibrate_and_report(obj_pts, img_pts, size, out_path: str, meta: dict) -> bool:
     if len(obj_pts) < 8:
         print(f"[!] 수집 {len(obj_pts)}장 — 너무 적습니다(최소 8, 권장 30~40).")
@@ -157,7 +213,10 @@ def calibrate_and_report(obj_pts, img_pts, size, out_path: str, meta: dict) -> b
     np.savez(out, camera_matrix=K, dist_coeffs=dist,
              image_size=np.array(size), rms=np.array(rms))
     pts = out.with_suffix(".points.npz")          # 재촬영 없이 다시 계산할 수 있게 남긴다
-    np.savez(pts, obj_pts=np.array(obj_pts), img_pts=np.array(img_pts), image_size=np.array(size))
+    # ChArUco 는 장면마다 코너 개수가 달라 배열이 들쭉날쭉하다 → object dtype.
+    # (다시 읽을 때는 np.load(..., allow_pickle=True))
+    np.savez(pts, obj_pts=np.array(obj_pts, dtype=object),
+             img_pts=np.array(img_pts, dtype=object), image_size=np.array(size))
     print(f"\n저장: {out}\n원본 점: {pts}")
     print("★ 합격선은 RMS 가 아니라 실측 거리 오차 < 5% 입니다 (계획서 §5.2). 반드시 재세요.")
     print(f"{'='*58}")
@@ -165,11 +224,19 @@ def calibrate_and_report(obj_pts, img_pts, size, out_path: str, meta: dict) -> b
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="체커보드 캘리브레이션 (노트북 측)")
+    ap = argparse.ArgumentParser(description="카메라 intrinsic 캘리브레이션 (노트북 측)")
     ap.add_argument("--host", required=True, help="로봇 IP")
     ap.add_argument("--port", type=int, default=8099)
+    ap.add_argument("--board", default="charuco", choices=("charuco", "chess"),
+                    help="기본 charuco. 예전 체커보드 인쇄물을 쓸 때만 chess")
+    ap.add_argument("--squares", default="7x5",
+                    help="[charuco] **칸 개수** 가로x세로 (make_board.py 기본 7x5)")
+    ap.add_argument("--dict", default="DICT_4X4_50",
+                    help="[charuco] 마커 딕셔너리 — 인쇄한 보드와 같아야 한다")
+    ap.add_argument("--marker-m", type=float, default=None,
+                    help="[charuco] 마커 한 변(m). 생략하면 한 칸의 0.75 (make_board.py 비율)")
     ap.add_argument("--pattern", default="auto",
-                    help="내부 코너 '가로x세로' (예: 9x6). 기본 auto = 화면에서 자동 감지")
+                    help="[chess] 내부 코너 '가로x세로' (예: 9x6). 기본 auto = 화면에서 자동 감지")
     ap.add_argument("--square-m", type=float, required=True,
                     help="인쇄물 한 칸 실측 크기(m). 자로 재서 넣는다 — 여기가 틀리면 "
                          "재투영오차는 멀쩡한데 거리만 그 비율로 전부 틀어진다")
@@ -179,19 +246,30 @@ def main() -> None:
 
     pattern: tuple[int, int] | None = None
     objp: np.ndarray | None = None
-    if a.pattern != "auto":
-        try:
-            c, r = (int(x) for x in a.pattern.lower().split("x"))
-            pattern = (c, r)
-        except Exception:
-            sys.exit(f"--pattern 형식이 잘못됐습니다: {a.pattern!r} (예: 9x6 또는 auto)")
+    board = dictionary = None
 
     def make_objp(pat: tuple[int, int]) -> np.ndarray:
         p = np.zeros((pat[1] * pat[0], 3), np.float32)
         p[:, :2] = np.mgrid[0:pat[0], 0:pat[1]].T.reshape(-1, 2)
         return p * a.square_m
 
-    if pattern is not None:
+    if a.board == "charuco":
+        try:
+            sq = tuple(int(x) for x in a.squares.lower().split("x"))
+            assert len(sq) == 2
+        except Exception:
+            sys.exit(f"--squares 형식이 잘못됐습니다: {a.squares!r} (예: 9x6)")
+        marker_m = a.marker_m if a.marker_m else a.square_m * 0.75
+        board, dictionary = build_charuco(a.dict, sq, a.square_m, marker_m)
+        pattern = (sq[0] - 1, sq[1] - 1)          # 내부 코너 = 칸 - 1 (표시·오버레이용)
+        print(f"[ok] ChArUco {sq[0]}x{sq[1]}칸 · 칸 {a.square_m*1000:.1f}mm · "
+              f"마커 {marker_m*1000:.1f}mm · {a.dict} → 내부 코너 {pattern[0]}x{pattern[1]}")
+    elif a.pattern != "auto":
+        try:
+            c, r = (int(x) for x in a.pattern.lower().split("x"))
+            pattern = (c, r)
+        except Exception:
+            sys.exit(f"--pattern 형식이 잘못됐습니다: {a.pattern!r} (예: 9x6 또는 auto)")
         objp = make_objp(pattern)
 
     base = f"http://{a.host}:{a.port}"
@@ -225,7 +303,7 @@ def main() -> None:
         elif gray.shape[::-1] != size:
             sys.exit(f"해상도가 도중에 바뀌었습니다 {size} → {gray.shape[::-1]}. 처음부터 다시.")
 
-        if pattern is None:                       # 첫 프레임들에서 패턴 자동 감지
+        if a.board == "chess" and pattern is None:   # 첫 프레임들에서 패턴 자동 감지
             # 훑는 데 1초 안팎 걸린다 → 화면을 '먼저' 그려서 얼어 보이지 않게 하고,
             # 1초에 한 번만 훑는다.
             view = frame.copy()
@@ -247,15 +325,23 @@ def main() -> None:
                       f"틀리면 Ctrl-C 후 --pattern 5x5 처럼 직접 주세요.")
             continue
 
-        found, corners = find_corners(gray, pattern)
+        if a.board == "charuco":
+            found, corners, objp_view, ids = find_charuco(gray, board, dictionary)
+        else:
+            found, corners = find_corners(gray, pattern)
+            objp_view, ids = objp, None
         view = frame.copy()
         if found:
-            cv2.drawChessboardCorners(view, pattern, corners, True)
+            if ids is not None:
+                cv2.aruco.drawDetectedCornersCharuco(view, corners, ids, (0, 255, 0))
+            else:
+                cv2.drawChessboardCorners(view, pattern, corners, True)
 
         # ── 오버레이 (cv2 는 한글을 못 그린다 — ASCII 만) ──────────────────
         h, w = view.shape[:2]
+        seen = f"{len(corners)}pt" if found else "-"   # charuco 는 장면마다 보이는 코너 수가 다르다
         cv2.putText(view, f"{len(obj_pts)}/{a.num}  {pattern[0]}x{pattern[1]}"
-                          f"  {'AUTO' if auto else 'MANUAL'}  {'BOARD' if found else '-'}",
+                          f"  {'AUTO' if auto else 'MANUAL'}  {seen}",
                     (8, 20), _FONT, 0.5, (0, 255, 0) if found else (0, 0, 255), 1, cv2.LINE_AA)
         cv2.putText(view, "SPACE grab  a auto  u undo  c calc  q quit",
                     (8, h - 8), _FONT, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
@@ -275,9 +361,12 @@ def main() -> None:
             # 중복 판정은 '코너 전체의 평균 이동량'으로 한다. 중심+폭으로 재면 같은 자리에서
             # 기울이기만 한 장면(= 캘리브에 꼭 필요한 장면)을 중복으로 버린다.
             for prev in img_pts:
-                if float(np.linalg.norm(c - prev.reshape(-1, 2), axis=1).mean()) < 12.0:
+                p = prev.reshape(-1, 2)
+                if p.shape != c.shape:       # charuco: 코너 수가 다르면 다른 장면이다
+                    continue
+                if float(np.linalg.norm(c - p, axis=1).mean()) < 12.0:
                     return "too similar"
-            obj_pts.append(objp.copy())
+            obj_pts.append(objp_view.copy())
             img_pts.append(corners)
             cxr, cyr = c.mean(0)
             coverage[min(2, int(cyr / (size[1] / 3))), min(2, int(cxr / (size[0] / 3)))] = True

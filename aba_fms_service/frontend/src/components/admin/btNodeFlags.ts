@@ -50,6 +50,31 @@ export const BT_NODE_FLAGS: Record<string, BtNodeFlag> = {
   // (추종은 real 전용 — libi_perception + image_sender 가 있어야 한다).
   FollowExec: "unwired",
 
+  // ⚠️ **길잡이 주행은 동작한다.** 흐린 건 "요청자를 보고 있는가" 한 가지다.
+  //
+  // 도는 것:
+  //   providers 가 `guide` 를 active_command 로 분류하고 목적지를 싣는다 (providers.py:147,161)
+  //   GuideExec 이 목적지로 몰고 실좌표로 도착을 판정한다 (working_actions.py:GuideExec)
+  //   요청자를 놓치면 mission_stop → ros_bridge.cancel_nav() 로 **실제로 멈춘다**
+  //     (main.py "guide_stop" · fleet_link.py:125 · mission.py:128)
+  //   test_guide_exec.py 가 유예·정지·재개·포기·도착을 전부 붙들고 있다
+  //
+  // 안 도는 것 ① 정지가 실제로 안 먹는다.
+  //   `mission_stop` → `mission.stop_mission()` → `ros_bridge.cancel_nav()` 까지는 가는데,
+  //   `cancel_nav()` 가 취소하는 `_active_goal_handle` 은 **채워지지 않는다** —
+  //   `send_nav_goal()` 이 `send_goal_async()` 결과에 `_on_goal_response` 콜백을 안 달기
+  //   때문이다(ros_bridge.py:486 vs :494,512). 그래서 요청자를 놓쳐 정지를 보내도 nav2 는
+  //   계속 달린다. ⚠️ 이건 길잡이만의 문제가 아니다 — `goal` 로 나가는 **모든 주행**
+  //   (배달·순회·복귀)이 취소되지 않는다. robot_agent 소유라 실기 확인 없이 손대지 않았다.
+  //
+  // 안 도는 것 ② `/libi/requester_visible` 을 **아무도 발행하지 않는다**.
+  //   providers 는 구독하고 있고(providers.py:89), 발행자가 없으면 값이 None 이다.
+  //   GuideExec 은 None 을 "감시 없음"으로 읽고 **그냥 주행한다**(멈추지 않는다) —
+  //   즉 지금 배포에서 길잡이는 사람을 놓쳐도 계속 간다. 이게 partial 인 이유다.
+  //   발행할 쪽은 libi_perception 이다(DetectionReceiver 가 이미 "지금 보이나"를 안다:
+  //   detection_receiver.py:latest). 붙이면 이 플래그를 지운다.
+  GuideExec: "partial",
+
   // ── 2026-07-26 수정 완료 (플래그 해제) ────────────────────────────────────
   // UiSessionTimer[20s] : "인터록을 소유한다"는 주석이 거짓이었다. 락을 읽는 production
   //   코드가 없고, BT 안에 검사를 넣어도 죽은 코드다(Priorities 가 Selector 라 락이 켜진
