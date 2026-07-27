@@ -264,31 +264,48 @@ void RobotController::startAdminFollow() {
     requestFollowGrant();
 }
 
+// FMS 요청의 단일 통로. ROS2 링크가 살아 있으면 `/panel_request` 로, 아니면 HTTP 로 간다.
+// 둘은 같은 핸들러에 닿는다(FMS app/panel_bridge.py 가 라우터 코루틴을 그대로 부른다) —
+// 그래서 아래 호출부들은 어느 통로로 갔는지 몰라도 되고, 응답 파싱도 한 벌뿐이다.
+void RobotController::fmsCall(const QString &op, const QString &httpPath,
+                              const QJsonObject &body,
+                              std::function<void(bool, QJsonObject)> cb) {
+    if (m_ros && m_ros->panelLinkUp()) {
+        m_ros->panelRequest(op, body, cb);
+        return;
+    }
+    QNetworkRequest req{QUrl(m_fmsUrl + httpPath)};
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    QNetworkReply *reply = m_net->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [reply, cb]() {
+        reply->deleteLater();
+        if (!cb) return;
+        if (reply->error() != QNetworkReply::NoError) { cb(false, QJsonObject()); return; }
+        cb(true, QJsonDocument::fromJson(reply->readAll()).object());
+    });
+}
+
 void RobotController::requestFollowGrant() {
     m_followPending = true;
     log(QStringLiteral("관리자 추종 — FMS 승인 요청 (robot_id=%1)").arg(m_robotId));
 
-    QNetworkRequest req{QUrl(m_fmsUrl + QStringLiteral("/api/robot/admin-follow/request"))};
-    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
-
     QJsonObject body;
     body[QStringLiteral("robot_id")] = m_robotId;
 
-    QNetworkReply *reply = m_net->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() { onFollowGrantReply(reply); });
+    fmsCall(QStringLiteral("follow.request"),
+            QStringLiteral("/api/robot/admin-follow/request"), body,
+            [this](bool ok, QJsonObject res) { onFollowGrantReply(ok, res); });
 }
 
-void RobotController::onFollowGrantReply(QNetworkReply *reply) {
-    reply->deleteLater();
+void RobotController::onFollowGrantReply(bool ok, const QJsonObject &body) {
     m_followPending = false;
 
-    if (reply->error() != QNetworkReply::NoError) {
-        log(QStringLiteral("추종 승인 실패 — FMS 통신 오류: %1").arg(reply->errorString()));
+    if (!ok) {
+        log(QStringLiteral("추종 승인 실패 — FMS 통신 오류/무응답"));
         emit toast(QStringLiteral("관제 서버에 연결할 수 없어 추종을 시작하지 않았습니다."));
         return;
     }
 
-    const QJsonObject body = QJsonDocument::fromJson(reply->readAll()).object();
     if (!body.value(QStringLiteral("accepted")).toBool()) {
         // reason 은 FMS 가 판단 근거를 담아 보내준다(상태·중복 등). 그대로 보여준다.
         const QString reason = body.value(QStringLiteral("reason")).toString();
@@ -329,6 +346,11 @@ void RobotController::stopAdminFollow() {
 //
 // stopAdminFollow() 를 못 쓰는 이유: 그건 비동기라 요청이 나가기 전에 이벤트 루프가 끝난다.
 // 여기서는 응답까지 짧게 기다린다(종료가 몇 초씩 늘어지면 안 되므로 상한을 둔다).
+//
+// ⚠️ 여기만 ROS2 통로를 쓰지 않고 HTTP 로 남는다. 종료 경로라 이벤트 루프를 돌릴 수 없어
+//    아래처럼 QEventLoop 로 짧게 막고 기다리는데, ROS2 통로의 응답은 spin 스레드 →
+//    큐잉 시그널로 오므로 이 지역 루프에서는 도착을 보장할 수 없다. FMS 의 HTTP 라우터는
+//    그대로 살아 있으므로(폴백 경로) 이대로 동작한다.
 void RobotController::releaseFollowOnExit() {
     if (!m_following || m_robotId.isEmpty()) return;
     m_following = false;
@@ -350,19 +372,15 @@ void RobotController::releaseFollowOnExit() {
 void RobotController::reportFollowRelease() {
     if (m_robotId.isEmpty()) return;   // 승인 자체를 받은 적이 없다
 
-    QNetworkRequest req{QUrl(m_fmsUrl + QStringLiteral("/api/robot/admin-follow/release"))};
-    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
-
     QJsonObject body;
     body[QStringLiteral("robot_id")] = m_robotId;
 
-    QNetworkReply *reply = m_net->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
-        reply->deleteLater();
-        if (reply->error() != QNetworkReply::NoError)
-            log(QStringLiteral("추종 종료 보고 실패 — 관제에 추종 중으로 남을 수 있습니다: %1")
-                    .arg(reply->errorString()));
-    });
+    fmsCall(QStringLiteral("follow.release"),
+            QStringLiteral("/api/robot/admin-follow/release"), body,
+            [this](bool ok, QJsonObject) {
+                if (!ok)
+                    log(QStringLiteral("추종 종료 보고 실패 — 관제에 추종 중으로 남을 수 있습니다."));
+            });
 }
 
 // 관리자 전이 요청. 검증·감사는 FMS /api/fsm/transition 이 한다(로컬은 optimistic,
@@ -378,21 +396,18 @@ void RobotController::requestTransition(const QString &target, bool force) {
     //   · 관리자가 에러를 해제해도 로봇은 ERROR 인 채 → 다음 상태 수신에 화면이 도로 에러
     //   · 비상정지가 로봇에 전달되지 않음 → 화면만 ⛔ 이고 로봇은 계속 굴러감
     // 패널 전용 통로(허용 상태 ERROR/IDLE/PATROL)로 보낸다. 근거: app/routers/panel.py
-    QNetworkRequest req{QUrl(m_fmsUrl + QStringLiteral("/api/robot/panel/transition"))};
-    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
     QJsonObject body;
     body[QStringLiteral("robot_id")] = m_robotId;
     body[QStringLiteral("target_state")] = target;
     body[QStringLiteral("force")] = force;
-    QNetworkReply *reply = m_net->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
-    connect(reply, &QNetworkReply::finished, this, [this, reply, target]() {
-        reply->deleteLater();
-        if (reply->error() != QNetworkReply::NoError) {
-            log(QStringLiteral("전이 실패(%1) — %2").arg(target, reply->errorString()));
+    fmsCall(QStringLiteral("panel.transition"),
+            QStringLiteral("/api/robot/panel/transition"), body,
+            [this, target](bool ok, QJsonObject o) {
+        if (!ok) {
+            log(QStringLiteral("전이 실패(%1) — 관제 무응답").arg(target));
             return;
         }
         // 거절도 실패다. 조용히 넘어가면 화면만 바뀌고 로봇은 그대로인 상태가 다시 생긴다.
-        const QJsonObject o = QJsonDocument::fromJson(reply->readAll()).object();
         if (!o.value(QStringLiteral("accepted")).toBool()) {
             const QString why = o.value(QStringLiteral("reason")).toString();
             log(QStringLiteral("전이 거절(%1) — %2").arg(target, why));
@@ -437,22 +452,20 @@ void RobotController::startGuide(const QString &destination) {
     if (m_mode != QLatin1String("guide")) setMode(QStringLiteral("guide"));
     log(QStringLiteral("길잡이 요청 → ") + destination + QStringLiteral(" (") + waypoint + QStringLiteral(")"));
 
-    QNetworkRequest req{QUrl(m_fmsUrl + QStringLiteral("/api/robot/guide/request"))};
-    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
     QJsonObject body{{"robot_id", m_robotId}, {"waypoint", waypoint}};
-    QNetworkReply *reply = m_net->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
-
-    connect(reply, &QNetworkReply::finished, this, [this, reply, destination, waypoint]() {
-        reply->deleteLater();
+    fmsCall(QStringLiteral("guide.request"),
+            QStringLiteral("/api/robot/guide/request"), body,
+            [this, destination, waypoint](bool ok, QJsonObject o) {
         // 승인 없이는 시작하지 않는다(fail-closed) — 관제가 모르는 주행이 도는 것이
         // 이 승인 절차가 막으려는 상황이다. 관리자 추종과 같은 원칙.
-        if (reply->error() != QNetworkReply::NoError) {
+        // ROS2 통로에서는 **무응답도 여기로 온다**(RosLink 의 타임아웃) — 토픽은 아무도
+        // 안 듣고 있어도 발행이 성공하므로, 그게 없으면 여기 도달을 못 한다.
+        if (!ok) {
             setGuidePhase(QStringLiteral("failed"));
             emit toast(QStringLiteral("관제에 연결할 수 없어 안내를 시작하지 못했습니다."));
-            log(QStringLiteral("길잡이 요청 실패 — ") + reply->errorString());
+            log(QStringLiteral("길잡이 요청 실패 — 관제 무응답"));
             return;
         }
-        const QJsonObject o = QJsonDocument::fromJson(reply->readAll()).object();
         if (!o.value("granted").toBool()) {
             setGuidePhase(QStringLiteral("failed"));
             const QString reason = o.value("reason").toString();
@@ -488,11 +501,10 @@ void RobotController::cancelGuide() {
     // **먼저 멈추라고 보내고** 화면을 정리한다(fail-open). 응답을 기다렸다가 화면을 바꾸면
     // 관제가 죽었을 때 "취소를 눌렀는데 아무 일도 안 일어나는" 상태가 된다.
     if (!m_robotId.isEmpty()) {
-        QNetworkRequest req{QUrl(m_fmsUrl + QStringLiteral("/api/robot/guide/release"))};
-        req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
         QJsonObject body{{"robot_id", m_robotId}};
-        QNetworkReply *reply = m_net->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
-        connect(reply, &QNetworkReply::finished, reply, &QNetworkReply::deleteLater);
+        // 콜백이 없다 — 응답을 기다리지 않는 게 fail-open 의 요점이다.
+        fmsCall(QStringLiteral("guide.release"),
+                QStringLiteral("/api/robot/guide/release"), body, nullptr);
     }
     setGuidePhase(QStringLiteral("cancelled"));
     setTaskStatus(QStringLiteral("명령 대기"));

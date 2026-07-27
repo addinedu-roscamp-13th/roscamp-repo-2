@@ -65,6 +65,12 @@ if(LIBI_GUI_TESTS)
     target_link_libraries(test_admin_follow_client PRIVATE
         Qt5::Core Qt5::Network rclcpp::rclcpp std_msgs::std_msgs geometry_msgs::geometry_msgs)
 
+    # 패널 요청 통로(RosLink::panelRequest) — id 상관과 타임아웃만 본다. RobotController 는
+    # 안 넣는다: 여기서 보려는 건 통로 자체지 화면 로직이 아니다.
+    add_executable(test_panel_link tests/test_panel_link.cpp src/RosLink.cpp src/RosLink.h)
+    target_link_libraries(test_panel_link PRIVATE
+        Qt5::Core rclcpp::rclcpp std_msgs::std_msgs geometry_msgs::geometry_msgs)
+
     # Gui — QImage 디코딩에 필요 (QCoreApplication 으로 돌지만 이미지 타입은 QtGui 소속)
     add_executable(test_perception_client
         tests/test_perception_client.cpp

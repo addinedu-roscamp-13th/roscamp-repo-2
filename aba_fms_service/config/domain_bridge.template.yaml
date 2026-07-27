@@ -76,3 +76,16 @@ topics:
     type: std_msgs/msg/String
     reversed: True
     remap: /libi/fsm_transition_request
+
+  # ── 패널 요청 통로 (libi_gui ↔ FMS, 2026-07-27) ──────────────────────────────
+  # 길잡이·관리자추종·패널전이를 HTTP 대신 ROS2 로 보낸다(app/panel_bridge.py).
+  # 방향이 fleet_cmd 와 반대다 — 여기선 **로봇이 요청하고 서버가 승인/거부**한다.
+  # 위 fsm_transition 과 같은 이유로 서비스가 아니라 id 를 실은 요청/결과 토픽 쌍이다.
+  # HTTP(:9001) 경로는 그대로 남아 있다 — 이 브릿지가 없으면 GUI 가 그쪽으로 폴백한다.
+  panel_request:
+    type: std_msgs/msg/String
+    remap: /{KEY}/panel_request
+  {KEY}/panel_result:
+    type: std_msgs/msg/String
+    reversed: True
+    remap: /panel_result

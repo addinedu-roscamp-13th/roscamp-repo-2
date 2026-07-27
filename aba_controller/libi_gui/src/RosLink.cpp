@@ -1,6 +1,9 @@
 #include "RosLink.h"
+#include <QHash>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QTimer>
+#include <QUuid>
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/string.hpp>
@@ -11,8 +14,15 @@ struct RosLink::Impl {
     std::shared_ptr<rclcpp::Node> node;
     rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr touchPub;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr cmdPub;
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr panelReqPub;
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr stateSub;
+    rclcpp::Subscription<std_msgs::msg::String>::SharedPtr panelResSub;
     rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr poseSub;
+
+    // 상관 상태는 **패널 쪽에** 있다 — FMS 는 받은 id 를 되돌려 주기만 한다.
+    // 둘 다 UI 스레드에서만 건드린다(수신은 시그널로 넘어온 뒤에 처리).
+    QHash<QString, std::function<void(bool, QJsonObject)>> pending;
+    QHash<QString, QTimer *> timers;
 };
 
 RosLink::RosLink(QObject *parent) : QObject(parent), d_(new Impl) {
@@ -50,6 +60,20 @@ RosLink::RosLink(QObject *parent) : QObject(parent), d_(new Impl) {
             });
     }
 
+    // ── 패널 요청 통로 (FMS app/panel_bridge.py) ──────────────────────────────
+    // 방향이 fleet_cmd 와 반대다: 여기서는 **로봇이 요청하고 서버가 승인**한다.
+    // 브릿지가 88↔86 을 중계하므로 로봇 쪽 토픽 이름에는 접두사가 없다.
+    d_->panelReqPub = d_->node->create_publisher<std_msgs::msg::String>("panel_request", 10);
+    d_->panelResSub = d_->node->create_subscription<std_msgs::msg::String>(
+        "panel_result", 10,
+        [this](std_msgs::msg::String::SharedPtr msg) {
+            const auto o = QJsonDocument::fromJson(QByteArray::fromStdString(msg->data)).object();
+            // 여긴 ROS spin 스레드다. 콜백을 여기서 부르면 UI 를 다른 스레드에서 만지게
+            // 되므로 시그널로 넘긴다(수신자가 UI 스레드라 자동으로 큐잉 연결).
+            emit panelResultArrived(o.value(QStringLiteral("id")).toString(), o);
+        });
+    connect(this, &RosLink::panelResultArrived, this, &RosLink::onPanelResult);
+
     spin_ = std::thread([this]() { rclcpp::spin(d_->node); });
 }
 
@@ -66,4 +90,38 @@ void RosLink::publishTouch() {
 void RosLink::publishFleetCmd(const QString &json) {
     std_msgs::msg::String m; m.data = json.toStdString();
     d_->cmdPub->publish(m);
+}
+
+bool RosLink::panelLinkUp() const {
+    return d_->panelReqPub && d_->panelReqPub->get_subscription_count() > 0;
+}
+
+void RosLink::panelRequest(const QString &op, QJsonObject args,
+                           std::function<void(bool, QJsonObject)> cb, int timeoutMs) {
+    const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    args.insert(QStringLiteral("id"), id);
+    args.insert(QStringLiteral("op"), op);
+
+    if (cb) {
+        d_->pending.insert(id, cb);
+        // 타임아웃은 선택이 아니다 — 토픽은 구독자가 없어도 발행이 성공하므로, 이게 없으면
+        // 응답 없는 요청이 콜백을 영영 붙잡고 화면이 "요청 중" 에서 안 빠져나온다.
+        auto *t = new QTimer(this);
+        t->setSingleShot(true);
+        t->setInterval(timeoutMs);
+        connect(t, &QTimer::timeout, this, [this, id]() { onPanelResult(id, QJsonObject()); });
+        d_->timers.insert(id, t);
+        t->start();
+    }
+
+    std_msgs::msg::String m;
+    m.data = QJsonDocument(args).toJson(QJsonDocument::Compact).toStdString();
+    d_->panelReqPub->publish(m);
+}
+
+void RosLink::onPanelResult(QString id, QJsonObject body) {
+    if (QTimer *t = d_->timers.take(id)) { t->stop(); t->deleteLater(); }
+    const auto cb = d_->pending.take(id);
+    if (!cb) return;   // 타임아웃 뒤 늦게 도착한 응답 — 이미 실패로 처리했다
+    cb(body.value(QStringLiteral("ok")).toBool(false), body);
 }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QJsonObject>
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -206,7 +207,14 @@ private:
     void requestFollowGrant();
     void reportFollowRelease();
     void requestTransition(const QString &target, bool force = false);
-    void onFollowGrantReply(QNetworkReply *reply);
+    void onFollowGrantReply(bool ok, const QJsonObject &body);
+
+    // FMS 요청 — ROS2(`/panel_request`) 우선, 링크가 없으면 HTTP 로 폴백한다.
+    // cb(ok, body): ok=false 는 **통신 실패/타임아웃**이고, 거절은 ok=true + body 안의
+    // granted/accepted=false 다. 둘을 섞으면 "관제가 죽음" 과 "관제가 거절함" 이 같은
+    // 화면으로 보여 원인을 못 찾는다.
+    void fmsCall(const QString &op, const QString &httpPath, const QJsonObject &body,
+                 std::function<void(bool, QJsonObject)> cb);
     void beginFollowing();
     void setRobotState(const QString &s);
     static QString mapState(const QString &canonical);   // ROS FSM canonical(EN) → 패널 한글 표시어휘
