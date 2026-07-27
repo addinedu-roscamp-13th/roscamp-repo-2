@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # 노트북 쪽 정리 — 관제(aba_fms_service) 백엔드·프론트엔드는 건드리지 않는다.
 #   1) tmux 세션 libi_fms (fms_service.sh — fleet_node · 브릿지 · 어댑터)
-#   2) 나머지(sim 세션 pinky_sim*, domain_bridge, launch 고아 노드)는 기존 kill.sh 에 위임
+#   2) AI 추종 서버(perception_server) · 릴레이 stub(aba_ai_service/main.py)
+#   3) 나머지(sim 세션 pinky_sim*, domain_bridge, launch 고아 노드)는 기존 kill.sh 에 위임
 #
 #   ./kill.sh                  정리
 #
@@ -27,6 +28,16 @@ fi
 # 아래 ros_ws/kill.sh 의 `pkill -f "robot_state_adapter.py"` 는 2차 그물이다 —
 # 프로세스는 그것도 죽이지만, **pid 파일 정리와 신원 검증은 여기서만 한다.**
 "$REPO_ROOT/scripts/laptop/robot-link.sh" --all --stop || true
+
+# AI 추종 서버 정리 — ai-server.sh / ai_follower_service.sh 가 띄우는 perception_server 와
+# relay-stub.sh 가 띄우는 aba_ai_service/main.py.
+#
+# ⚠️ 이 둘은 tmux 없이 포그라운드로 뜨는 경우가 많아 **세션 정리로는 안 잡힌다.** 창을 닫아도
+#    살아남고, 그러면 UDP:6001 / TCP:5007 을 계속 물고 있어 다음 ai-server.sh 가 바인드
+#    실패로 바로 죽는다. 증상은 "왜 영상이 안 뜨지"로 나타나 원인을 찾기 어렵다.
+#
+# TERM→KILL 과 생존 확인은 _common.sh 의 kill_patterns 가 한다(drive-pi/handy-pi kill.sh 와 공유).
+kill_patterns "perception_server.py" "aba_ai_service/main.py"
 
 # sim 세션·domain_bridge·ROS 고아 노드 정리 (domain_bridge 패턴 포함).
 exec "$REPO_ROOT/aba_controller/libi_drive_controller/ros_ws/scripts/kill.sh"

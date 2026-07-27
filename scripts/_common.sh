@@ -111,6 +111,46 @@ lan_ip() { hostname -I 2>/dev/null | awk '{print $1}'; }
 # 127.0.0.1:<port> 에 누가 듣고 있으면 0. 백엔드 중복 기동 방지에 쓴다.
 port_open() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
 
+# cmdline 패턴으로 프로세스를 종료한다. TERM → 최대 4초 대기 → KILL.
+#
+# TERM 을 먼저 주는 이유: 소켓(UDP:6001·TCP:5007 등)을 닫고 나가야 포트가 즉시 풀린다.
+# 곧바로 -9 로 죽이면 포트가 잠시 물려 있어 다음 기동이 바인드 실패로 즉사한다.
+# ROS 노드라면 DDS 정상 탈퇴까지 겸한다(안 그러면 `ros2 node list` 에 유령이 남는다).
+#
+# ⚠️ `pgrep/pkill -f` 는 **cmdline 전체**를 본다. 패턴이 넓으면 무관한 프로세스까지
+#    잡으므로 반드시 파일명 이상으로 좁힌다(예: "main.py" ✗ / "aba_ai_service/main.py" ✓).
+#    호출한 셸의 argv 에 패턴 문자열이 들어 있으면 **그 셸까지 죽는다** — 실측으로 겪었다.
+#
+# ⚠️ `|| true` 가 붙은 이유: 호출부가 `set -e` 라, 매칭이 사라진 순간의 pkill 실패(1)로
+#    스크립트 전체가 조용히 끝나버린다.
+kill_pattern() {
+  local pattern="$1"
+  pgrep -f "$pattern" >/dev/null 2>&1 || return 0
+
+  pkill -TERM -f "$pattern" 2>/dev/null || true
+  echo "SIGTERM: $pattern"
+
+  for _ in $(seq 1 8); do
+    pgrep -f "$pattern" >/dev/null 2>&1 || return 0
+    sleep 0.5
+  done
+
+  pkill -KILL -f "$pattern" 2>/dev/null || true
+  echo "SIGKILL(잔여): $pattern"
+}
+
+# kill_pattern 을 여러 개 돌리고, **정말 사라졌는지 확인한다.**
+# "죽였다" 와 "포트가 비었다" 는 다르고, 다음 기동이 실패하는 건 후자다.
+kill_patterns() {
+  local p
+  for p in "$@"; do kill_pattern "$p"; done
+  for p in "$@"; do
+    if pgrep -f "$p" >/dev/null 2>&1; then
+      echo "[kill] ⚠ '$p' 가 아직 살아 있습니다 — 확인: pgrep -af '$p'"
+    fi
+  done
+}
+
 # tmux 세션에 붙는다 — 단, 인터랙티브(TTY)일 때만. 백그라운드(비-TTY)로 실행하면
 # 'tmux attach' 가 "not a terminal" 로 죽으므로, 세션은 그대로 두고 안내만 한다.
 # 세션·서비스는 이 함수 전에 이미 new-session -d 로 떠 있어 백그라운드에서도 정상 동작한다.
