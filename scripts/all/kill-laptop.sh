@@ -31,6 +31,44 @@ for a in "$@"; do
   esac
 done
 
+# ── 관리자 추종 승인 기록 해제 ─────────────────────────────────────────────
+# ⚠️ 세션을 지우기 **전에** 한다. :9001 이 아직 살아 있어야 하고, GUI 도 아직 떠 있어야 한다.
+#
+# libi_gui 는 정상 종료 때 releaseFollowOnExit() 로 해제를 보낸다(RobotController.cpp).
+# 그런데 tmux 세션을 통째로 지우면 그게 못 돈다. 그러면 FMS 에 승인 기록만 살아남아,
+# 다음에 패널에서 추종을 누르면 이렇게 거부당한다:
+#
+#     추종 승인 거부 — 관제에 이 로봇의 추종 승인 기록이 남아 있습니다. 먼저 해제하세요.
+#
+# 2026-07-27 하루에 두 번 겪었다. 로봇 이름을 인자로 받지 않으려고 status 를 읽어 남은 걸
+# 전부 해제한다 — 어차피 노트북 스택을 통째로 내리는 중이라 남겨둘 이유가 없다.
+# :9001 이 안 떠 있으면 조용히 건너뛴다(해제할 대상 자체가 없다).
+release_follow_grants() {
+  port_open 9001 || return 0
+  command -v curl >/dev/null 2>&1 || return 0
+
+  local ids
+  ids="$(curl -s --max-time 3 http://127.0.0.1:9001/api/robot/admin-follow/status 2>/dev/null \
+    | python3 -c 'import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+for r in d.get("following", []):
+    rid = r.get("robot_id")
+    if rid:
+        print(rid)' 2>/dev/null)" || return 0
+
+  local rid
+  for rid in $ids; do
+    curl -s --max-time 5 -X POST -H 'Content-Type: application/json' \
+      -d "{\"robot_id\":\"$rid\"}" \
+      http://127.0.0.1:9001/api/robot/admin-follow/release >/dev/null 2>&1 \
+      && echo "released admin-follow grant: $rid"
+  done
+}
+release_follow_grants
+
 if tmux has-session -t libi_laptop 2>/dev/null; then
   tmux kill-session -t libi_laptop
   echo "killed tmux session: libi_laptop (ai · gui)"

@@ -2,11 +2,12 @@
 # 로봇(Pi) 한 방 기동 — 주행 스택 + 앞/뒤 카메라 송출 + 추종 cmd 브리지.
 # 창을 네 개 열어 손으로 치던 걸 하나로 묶는다.
 #
-#   ./pi-all.sh --robot Pinky-3
+#   ./pi-all.sh --robot Pinky-3                       # 앞캠만 (기본)
+#   ./pi-all.sh --robot Pinky-3 --back 4              # 뒷캠 /dev/video4 도 함께
 #   ./pi-all.sh --robot Pinky-3 --ai 192.168.1.10     # AI 서버 IP 직접 지정
-#   ./pi-all.sh --robot Pinky-3 --no-back             # 뒷캠 없이 (앞캠만)
-#   ./pi-all.sh --robot Pinky-3 --back-cam 1          # 뒷캠 /dev/video1
 #   ./pi-all.sh --robot Pinky-3 --no-fsm              # 모르는 플래그는 pi.sh 로 그대로 넘어간다
+#
+# 뒷캠 인덱스는 로봇마다 다르다. 목록:  v4l2-ctl --list-devices
 #
 # 정리: ./kill-pi.sh (같은 폴더)
 #
@@ -14,18 +15,18 @@
 #
 #   pi.sh 가 만드는 창들   hw · nav2 · fleet-link · fsm · led   (주행 스택)
 #   cam-front             picam  → UDP:6001  추종 영상
-#   cam-back              USB캠  → UDP:6003  길잡이 감시 영상
+#   cam-back              USB캠  → UDP:6003  길잡이 감시 영상  (--back 줬을 때만)
 #   follow-drive          UDP:6002 → /cmd_vel  (cmd_bridge)
 #
 # 같은 세션에 얹는 이유: 정리 경로를 하나로 유지한다. 세션을 지우면 전부 같이 죽고,
 # 창만 닫아 살아남는 경우까지 drive-pi/kill.sh 가 이름으로 다시 쓸어담는다.
 #
-# ## 뒷캠은 왜 fps 를 낮추나
+# ## 뒷캠은 왜 fps 가 낮나 (BACK_FPS=10, 앞캠은 15)
 #
 # 앞캠 출력은 cmd_vel 이라 지연이 곧 주행 품질이지만, 뒷캠 출력은 Bool 하나다
 # (`/libi/requester_visible` → BT `GuideExec`). "사람이 뒤에 있나"만 보면 되므로
-# 앞캠(15fps)보다 낮춰도 되고, Pi 가 JPEG 인코딩을 두 벌 돌리는 부담이 그만큼 준다.
-# CPU 가 기준을 넘으면 BACK_FPS 를 먼저 내려라 — 여기가 제일 싸게 버는 자리다.
+# 낮춰도 되고, Pi 가 JPEG 인코딩을 두 벌 돌리는 부담이 그만큼 준다.
+# 더 줄이려면:  BACK_FPS=5 ./pi-all.sh --robot Pinky-3
 #
 # ## 카메라 인자를 왜 env 로 주나
 #
@@ -35,24 +36,23 @@
 set -eo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../_common.sh"
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SESSION="pinky_pi"          # 안쪽 ros_ws/scripts/pi.sh:28 이 만드는 세션 이름
 BACK_PORT="${BACK_PORT:-6003}"
 BACK_FPS="${BACK_FPS:-10}"
-BACK_CAM="${BACK_CAM:-0}"
-#: CPU 여유 기준. nav2(코스트맵·플래너)가 이미 무거워서, 카메라 두 벌을 얹고도 이 밑이면
-#: 진행할 만하다고 본다. 넘으면 막지는 않고 경고만 한다 — 판단은 사람이 한다.
-CPU_BUDGET_PCT="${CPU_BUDGET_PCT:-70}"
 
 ROBOT=""
 AI_IP=""
-WITH_BACK=true
+# 뒷캠은 **명시할 때만** 뜬다(opt-in). 기본값을 두면 안 되는 이유는 아래 장치 검사 주석 참고 —
+# 인덱스는 로봇마다 다르고, 틀린 값은 조용히 실패하지 않고 **앞캠을 죽인다.**
+# laptop-all.sh 의 --back 과 같은 결이다.
+WITH_BACK=false
 ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --robot)    ROBOT="${2:-}"; shift 2 ;;
     --ai)       AI_IP="${2:-}"; shift 2 ;;
-    --back-cam) BACK_CAM="${2:-}"; shift 2 ;;
-    --no-back)  WITH_BACK=false; shift ;;
+    --back)     WITH_BACK=true; BACK_CAM="${2:?--back 뒤에 USB 캠 인덱스가 필요합니다 (예: --back 4).  목록: v4l2-ctl --list-devices}"; shift 2 ;;
     *)          ARGS+=("$1"); shift ;;     # --no-fsm 등은 pi.sh 로 그대로
   esac
 done
@@ -65,12 +65,51 @@ ROBOT="${ROBOT:-${FSM_ROBOT_ID:-}}"
 AI_IP="${AI_IP:-${LAPTOP_IP:-}}"
 [ -n "$AI_IP" ] || die "AI 서버 IP 가 필요합니다 — --ai 로 주거나 .env 의 LAPTOP_IP 를 채우세요."
 
-# 이미 떠 있으면 창이 중복으로 쌓인다. 안쪽 pi.sh 도 같은 이유로 여기서 멈춘다.
-if tmux has-session -t "$SESSION" 2>/dev/null; then
-  die "'$SESSION' 세션이 이미 떠 있습니다. 먼저 정리하세요:  $(dirname "${BASH_SOURCE[0]}")/kill-pi.sh"
+# ── 뒷캠 장치 검사 ──────────────────────────────────────────────────────────
+# ⚠️ 실제로 당한 사고(2026-07-27): `--back-cam 0` 으로 띄웠더니 **앞캠이 죽었다.**
+#
+#     /dev/video0[16:cap]: Unable to set format: Device or resource busy
+#     RuntimeError: Failed to configure camera: Device or resource busy
+#
+# Pi 에서 /dev/video0 은 USB 웹캠이 아니라 **CSI 카메라(picam)의 unicam/ISP 캡처 노드**다.
+# 뒷캠이 OpenCV 로 그걸 열면 앞캠의 libcamera 가 장치를 못 잡고 죽는다. 그러면 추종 영상이
+# 통째로 안 나가는데, 죽는 건 앞캠 창이라 원인이 뒷캠이라는 게 안 보인다.
+#
+# 그래서 띄우기 전에 막는다. 장치 이름은 /sys 에서 읽으므로 v4l2-utils 가 없어도 된다.
+list_cams() {
+  local f n
+  for f in /sys/class/video4linux/video*/name; do
+    [ -r "$f" ] || continue
+    n="$(basename "$(dirname "$f")")"
+    echo "    /dev/$n  $(cat "$f")"
+  done
+}
+if [ "$WITH_BACK" = true ]; then
+  [ -e "/dev/video$BACK_CAM" ] || die "/dev/video$BACK_CAM 이 없습니다.
+  이 로봇의 영상 장치:
+$(list_cams)
+  USB 캠 인덱스를 골라 주세요:  ./pi-all.sh --robot $ROBOT --back <n>"
+
+  BACK_NAME=""
+  [ -r "/sys/class/video4linux/video$BACK_CAM/name" ] \
+    && BACK_NAME="$(cat "/sys/class/video4linux/video$BACK_CAM/name")"
+  case "$BACK_NAME" in
+    *unicam*|*bcm2835*|*rp1-cfe*|*isp*|*pisp*)
+      die "/dev/video$BACK_CAM 는 CSI 카메라(앞캠) 장치입니다 — '$BACK_NAME'
+  여기에 뒷캠을 물리면 **앞캠(picam)이 'Device or resource busy' 로 죽어** 추종 영상이 끊깁니다.
+  이 로봇의 영상 장치:
+$(list_cams)
+  USB 캠 인덱스를 골라 주세요:  ./pi-all.sh --robot $ROBOT --back <n>" ;;
+  esac
+  echo "[pi-all] 뒷캠 장치 확인: /dev/video$BACK_CAM  '${BACK_NAME:-이름 미상}'"
 fi
 
-echo "[pi-all] 로봇=$ROBOT  AI=$AI_IP  뒷캠=$([ "$WITH_BACK" = true ] && echo "/dev/video$BACK_CAM → UDP:$BACK_PORT @${BACK_FPS}fps" || echo "없음")"
+# 이미 떠 있으면 창이 중복으로 쌓인다. 안쪽 pi.sh 도 같은 이유로 여기서 멈춘다.
+if tmux has-session -t "$SESSION" 2>/dev/null; then
+  die "'$SESSION' 세션이 이미 떠 있습니다. 먼저 정리하세요:  $HERE/kill-pi.sh"
+fi
+
+echo "[pi-all] 로봇=$ROBOT  AI=$AI_IP  뒷캠=$([ "$WITH_BACK" = true ] && echo "/dev/video$BACK_CAM → UDP:$BACK_PORT @${BACK_FPS}fps" || echo "없음(--back <n> 으로 켬)")"
 
 # ── 1) 주행 스택 ────────────────────────────────────────────────────────────
 # ⚠️ 파이프를 태우는 게 핵심이다. 안쪽 pi.sh 는 `[ -t 1 ]` 이면 세션에 **attach 해서
@@ -100,26 +139,13 @@ fi
 tmux new-window -t "$SESSION" -n follow-drive \
   bash -c "cd '$REPO_ROOT' && echo '[follow-drive] UDP:6002 → /cmd_vel' && ./scripts/drive-pi/follow-drive.sh; exec bash"
 
-# ── 4) CPU 여유 확인 ────────────────────────────────────────────────────────
-# nav2 가 코스트맵을 돌리기 시작한 뒤를 봐야 의미가 있어서 잠깐 기다렸다 잰다.
-# /proc/stat 델타라 top/mpstat 같은 외부 도구가 없어도 된다(Pi 최소 설치 대비).
-_cpu_sample() { awk '/^cpu /{idle=$5+$6; tot=0; for(i=2;i<=NF;i++) tot+=$i; print tot, idle}' /proc/stat; }
+echo "[pi-all] 정리: $HERE/kill-pi.sh"
 
-echo "[pi-all] CPU 측정 중 (nav2 가 자리잡을 때까지 12초 대기)..."
-sleep 12
-read -r t0 i0 < <(_cpu_sample)
-sleep 5
-read -r t1 i1 < <(_cpu_sample)
-BUSY="$(awk -v t0="$t0" -v i0="$i0" -v t1="$t1" -v i1="$i1" \
-  'BEGIN{ dt=t1-t0; di=i1-i0; if (dt<=0) print -1; else printf "%.0f", (dt-di)*100/dt }')"
-
-echo "[pi-all] CPU 사용률 ≈ ${BUSY}%  (코어 $(nproc)개, 기준 ${CPU_BUDGET_PCT}%)"
-if [ "$BUSY" -ge 0 ] 2>/dev/null && [ "$BUSY" -gt "$CPU_BUDGET_PCT" ]; then
-  echo "[pi-all] ⚠ 기준을 넘었습니다. 줄일 수 있는 것들:"
-  echo "         · 뒷캠 fps:   BACK_FPS=3 ./pi-all.sh --robot $ROBOT"
-  echo "         · 뒷캠 끄기:  ./pi-all.sh --robot $ROBOT --no-back"
-  echo "         · 앞캠 fps:   FPS 는 image-sender.sh 가 읽습니다 (기본 15)"
-fi
-
-echo "[pi-all] 완료. 붙으려면: tmux attach -t $SESSION"
-echo "[pi-all] 정리:          $(dirname "${BASH_SOURCE[0]}")/kill-pi.sh"
+# 세션에 붙여서 끝낸다 — 창을 눈으로 보며 디버깅하는 게 목적이다.
+# (비-TTY 면 tmux_attach 가 안내만 찍고 넘어간다 — _common.sh)
+#
+# 창 이동: Ctrl+b 0..8   ·  분리: Ctrl+b d
+# 처음 볼 곳은 fleet-link 다 — ros_bridge 가 죽으면 여기에만 사유가 찍히고,
+# 그게 죽으면 모든 goal 이 "ROS 브리지가 활성화되지 않았습니다" 로 실패한다.
+tmux select-window -t "$SESSION:fleet-link" 2>/dev/null || true
+tmux_attach "$SESSION"

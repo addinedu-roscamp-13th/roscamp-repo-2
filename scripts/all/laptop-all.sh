@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # 노트북 한 방 기동 — 관제 ROS + 관제 UI + 도서관 웹 + AI 추종 서버 + 터치패널.
 #
-#   ./laptop-all.sh --robot Pinky-3 --domain-id 119
-#   ./laptop-all.sh                                  # 빠진 값은 물어본다(대화형일 때)
-#   ./laptop-all.sh --robot Pinky-3 --domain-id 119 --no-gui   # 패널 빼고
-#   ./laptop-all.sh --robot Pinky-3 --domain-id 119 --no-ai    # AI 서버 빼고
+#   ./laptop-all.sh --robot Pinky-3               # pi-all.sh 와 같은 결
+#   ./laptop-all.sh --robot Pinky-3 --back        # 뒷캠(UDP:6003)도 받기
+#   ./laptop-all.sh --robot Pinky-3 --no-gui      # 패널 빼고
+#   ./laptop-all.sh --robot Pinky-3 --no-ai       # AI 서버 빼고
+#   ./laptop-all.sh --robot Pinky-3 --domain-id 88   # 도메인을 명시적으로 덮어쓸 때
+#   ./laptop-all.sh                               # 로봇 이름은 대화형으로 물어본다
+#
+# 도메인은 안 주면 셸/.env 의 ROS_DOMAIN_ID 를 쓴다(지금 .env 는 119). 어느 값을 어디서
+# 가져왔는지 기동 첫 줄에 찍히므로, 딴 도메인으로 붙었으면 바로 눈에 띈다.
 #
 # 정리: ./kill-laptop.sh (같은 폴더)
 #
@@ -50,19 +55,24 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SESSION="libi_laptop"
 #: :9001 / :8000 이 열릴 때까지 기다리는 상한(초). vite·uvicorn 첫 기동이 느릴 수 있다.
 PORT_WAIT_SEC="${PORT_WAIT_SEC:-90}"
+#: 뒷캠(--back). pi-all.sh 의 BACK_PORT 와 같아야 한다(기본 6003).
+BACK_VIDEO_PORT="${BACK_VIDEO_PORT:-6003}"
+BACK_VIEWER_PORT="${BACK_VIEWER_PORT:-5008}"
 
 ROBOT=""
 DOMAIN_ID=""
 WITH_AI=true
 WITH_GUI=true
+WITH_BACK=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --robot)     ROBOT="${2:-}"; shift 2 ;;
     --domain-id) DOMAIN_ID="${2:-}"; shift 2 ;;
     --no-ai)     WITH_AI=false; shift ;;
     --no-gui)    WITH_GUI=false; shift ;;
+    --back)      WITH_BACK=true; shift ;;
     *) die "모르는 인자: $1
-  사용법: ./laptop-all.sh --robot <이름> --domain-id <n> [--no-ai] [--no-gui]" ;;
+  사용법: ./laptop-all.sh --robot <이름> [--back] [--no-ai] [--no-gui] [--domain-id <n>]" ;;
   esac
 done
 
@@ -83,12 +93,24 @@ if [ -z "$ROBOT" ]; then
 fi
 [ -n "$ROBOT" ] || die "로봇 이름이 비어 있습니다."
 
+# 도메인은 pi-all.sh 와 같은 결로 간다 — 인자를 안 줘도 셸/.env 의 ROS_DOMAIN_ID 로 뜬다.
+#
+# ⚠️ 단, **어디서 온 값인지 반드시 찍는다.** libi_gui.sh 가 --domain-id 를 인자로 강제한
+#    이유가 "안 적었는데 조용히 딴 도메인으로 붙는" 사고였다(그 파일 주석). 문제는 기본값
+#    자체가 아니라 **조용한 것**이었으므로, 기본값을 쓰되 화면에 드러내서 막는다.
+DOMAIN_SRC="--domain-id"
 if [ -z "$DOMAIN_ID" ]; then
-  DOMAIN_ID="$(ask "ROS_DOMAIN_ID (이 로봇의 도메인, 예: 119): " \
-    "--domain-id 가 없습니다. pi.sh 를 띄운 셸의 ROS_DOMAIN_ID 와 같은 값을 주세요 — 예: --domain-id 119")"
+  if [ -n "${ROS_DOMAIN_ID:-}" ]; then
+    DOMAIN_ID="$ROS_DOMAIN_ID"
+    DOMAIN_SRC="셸/.env 의 ROS_DOMAIN_ID"
+  else
+    DOMAIN_ID="$(ask "ROS_DOMAIN_ID (이 로봇의 도메인, 예: 119): " \
+      "--domain-id 가 없고 셸/.env 에도 ROS_DOMAIN_ID 가 없습니다 — 예: --domain-id 119")"
+    DOMAIN_SRC="직접 입력"
+  fi
 fi
 case "$DOMAIN_ID" in
-  ''|*[!0-9]*) die "--domain-id 는 숫자여야 합니다: '$DOMAIN_ID'" ;;
+  ''|*[!0-9]*) die "도메인은 숫자여야 합니다: '$DOMAIN_ID' (출처: $DOMAIN_SRC)" ;;
 esac
 
 [ -n "${LAPTOP_IP:-}" ] || die "LAPTOP_IP 가 .env 에 없습니다 (이 머신 IP — 패널이 붙을 주소)."
@@ -97,8 +119,8 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
   die "'$SESSION' 세션이 이미 떠 있습니다. 먼저 정리하세요:  $HERE/kill-laptop.sh"
 fi
 
-echo "[laptop-all] 로봇=$ROBOT  도메인=$DOMAIN_ID  LAPTOP_IP=$LAPTOP_IP"
-echo "[laptop-all] AI=$WITH_AI  GUI=$WITH_GUI"
+echo "[laptop-all] 로봇=$ROBOT  도메인=$DOMAIN_ID ($DOMAIN_SRC)  LAPTOP_IP=$LAPTOP_IP"
+echo "[laptop-all] AI=$WITH_AI  뒷캠=$WITH_BACK  GUI=$WITH_GUI"
 
 # ── 0) DB — 나머지 전부의 전제 ──────────────────────────────────────────────
 ensure_mariadb
@@ -126,9 +148,28 @@ tmux new-session -d -s "$SESSION" -n urls \
   추종 뷰어   $LAPTOP_IP:5007  (패널 PERCEPTION_URL)'; exec bash"
 
 if [ "$WITH_AI" = true ]; then
-  echo "[laptop-all] ── AI 추종 서버 (:5007 → $ROBOT)"
+  echo "[laptop-all] ── AI 추종 서버 (앞캠 UDP:6001 → 뷰어 :5007 → $ROBOT 주행)"
   tmux new-window -t "$SESSION" -n ai \
     bash -c "cd '$REPO_ROOT' && ./scripts/laptop/ai_follower_service.sh '$ROBOT'; exec bash"
+fi
+
+# ── 4b) 뒷캠 수신 (--back) ─────────────────────────────────────────────────
+# pi-all.sh 의 cam-back 이 UDP:6003 으로 쏘는 걸 받는다. **주행은 안 붙인다**(--drive-host 없음)
+#
+# ⚠️ 왜 별도 프로세스인가: perception_server.py 는 소스가 하나다(argparse 상호배타 그룹
+#    `src`, 그리고 perception/policy/cmd_sink 가 각각 한 벌). 그래서 앞뒤를 한 프로세스로
+#    합치려면 그 파일을 고쳐야 하고, 그 전까지는 프로세스를 나누는 게 유일한 방법이다.
+#
+# ⚠️ 그리고 지금은 **미리보기·부하측정용이다.** 길잡이 감시의 진짜 출력은 cmd_vel 이 아니라
+#    `/libi/requester_visible`(Bool) → BT GuideExec 인데, 그 발행부가 아직 없다.
+#    지금 이 창은 뒷캠 영상이 도착하는지와 CPU 를 얼마나 먹는지만 보여준다.
+#
+# ⚠️ 절대 --drive-host 를 붙이지 마라. 로봇 cmd_bridge 는 UDP:6002 하나만 열고 보낸 사람을
+#    구분하지 않는다(cmd_channel.py 의 latest-wins). 앞캠 명령을 덮어써서 로봇이 떨린다.
+if [ "$WITH_BACK" = true ]; then
+  echo "[laptop-all] ── 뒷캠 수신 (UDP:$BACK_VIDEO_PORT → 뷰어 :$BACK_VIEWER_PORT, 주행 없음)"
+  tmux new-window -t "$SESSION" -n ai-back \
+    bash -c "cd '$REPO_ROOT' && VIDEO_PORT='$BACK_VIDEO_PORT' VIEWER_PORT='$BACK_VIEWER_PORT' ./aba_ai_service/scripts/ai-server.sh; exec bash"
 fi
 
 # ── 5) 터치패널 — 맨 마지막 ────────────────────────────────────────────────
@@ -147,7 +188,12 @@ if [ "$WITH_GUI" = true ]; then
     bash -c "cd '$REPO_ROOT' && ./scripts/ui/libi_gui.sh '$ROBOT' --domain-id '$DOMAIN_ID'; exec bash"
 fi
 
-echo "[laptop-all] 완료."
-echo "  세션:  libi_fms · libi_ui_fms · libi_ui_lib · $SESSION"
-echo "  붙기:  tmux attach -t $SESSION"
-echo "  정리:  $HERE/kill-laptop.sh"
+echo "[laptop-all] 세션: libi_fms · libi_ui_fms · libi_ui_lib · $SESSION"
+echo "[laptop-all] 정리: $HERE/kill-laptop.sh"
+
+# 세션에 붙여서 끝낸다 — 창을 눈으로 보며 디버깅하는 게 목적이다.
+# (비-TTY 면 tmux_attach 가 안내만 찍고 넘어간다 — _common.sh)
+#
+# 다른 세션으로 건너가기: Ctrl+b s (세션 목록) 또는 tmux attach -t libi_ui_fms
+tmux select-window -t "$SESSION:$([ "$WITH_GUI" = true ] && echo gui || echo urls)" 2>/dev/null || true
+tmux_attach "$SESSION"
