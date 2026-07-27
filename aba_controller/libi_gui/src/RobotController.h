@@ -64,6 +64,10 @@ class RobotController : public QObject {
     Q_PROPERTY(QString guidePhase READ guidePhase NOTIFY guidePhaseChanged)   // idle/guiding/requesterLost/completed/failed/cancelled
     Q_PROPERTY(QString guideDestination READ guideDestination NOTIFY guideDestinationChanged)
     Q_PROPERTY(double distanceToGoal READ distanceToGoal NOTIFY distanceToGoalChanged)
+    // 등록 단계: idle / registering(영상 보고 탭) / calibrating(자세 측정) / ready
+    Q_PROPERTY(QString guideRegPhase READ guideRegPhase NOTIFY guideRegPhaseChanged)
+    // 지금 패널에 보이는 카메라. 전환하면 시점이 뒤집혀 보이므로 화면에 라벨로 띄운다.
+    Q_PROPERTY(QString currentCamera READ currentCamera NOTIFY currentCameraChanged)
 
     // 관리자 수동조작 텔레메트리
     Q_PROPERTY(double linVel READ linVel NOTIFY linVelChanged)
@@ -98,6 +102,8 @@ public:
     QString emotion() const { return m_emotion; }
     QString taskStatus() const { return m_taskStatus; }
     QString guidePhase() const { return m_guidePhase; }
+    QString guideRegPhase() const { return m_guideRegPhase; }
+    QString currentCamera() const { return m_currentCamera; }
     QString guideDestination() const { return m_guideDest; }
     double distanceToGoal() const { return m_distance; }
     double linVel() const { return m_lin; }
@@ -131,6 +137,14 @@ public:
     // 길잡이
     Q_INVOKABLE void startGuide(const QString &destination);
     Q_INVOKABLE void cancelGuide();
+    // 등록 화면 감시 세션 — **패널이 직접 연다.**
+    //
+    // 등록하려면 카메라 영상이 필요한데, 카메라는 세션이 켜고 세션은 등록이 끝나야
+    // 시작된다. 게다가 등록 시점의 미션 상태는 INTERACTING 이라 WORKING 브랜치의
+    // GuideExec 은 tick 되지도 않는다. 그래서 여기서 `/fleet_cmd{watch}` 를 낸다.
+    Q_INVOKABLE void startGuideRegistration();
+    Q_INVOKABLE void cancelGuideRegistration();
+    Q_INVOKABLE void confirmGuideRegistration();   // 이용자를 탭해 등록이 끝났다
 
 private:
     bool destinationXY(const QString &displayName, double *x, double *y) const;
@@ -189,6 +203,8 @@ signals:
     void emotionChanged();
     void taskStatusChanged();
     void guidePhaseChanged();
+    void guideRegPhaseChanged();
+    void currentCameraChanged();
     void guideDestinationChanged();
     void distanceToGoalChanged();
     void linVelChanged();
@@ -220,6 +236,9 @@ private:
     static QString mapState(const QString &canonical);   // ROS FSM canonical(EN) → 패널 한글 표시어휘
     void setTaskStatus(const QString &s);
     void setGuidePhase(const QString &p);
+    void setGuideRegPhase(const QString &p);
+    void setCurrentCamera(const QString &c);
+    void publishWatch(const QString &camera);
     QJsonDocument httpGetJson(const QString &path, const QUrlQuery &query) const;
     // GET 을 던지고 즉시 새 id 를 반환. onReady(ok, doc) 는 성공/실패/타임아웃 어느 경로든
     // 정확히 한 번, reply->deleteLater() 이후 불린다.
@@ -250,6 +269,10 @@ private:
     QString m_emotion = QStringLiteral("happy");
     QString m_taskStatus = QStringLiteral("명령 대기");
     QString m_guidePhase = "idle";
+    QString m_guideRegPhase = "idle";
+    QString m_currentCamera = "none";
+    QString m_watchSessionId;      // 우리가 연 감시 세션. stop 은 이 id 로만 낸다
+    QTimer m_watchLease;           // 패널이 살아 있음을 알린다(죽으면 세션이 스스로 닫힌다)
     QString m_guideDest;
     double m_distance = 0.0;
     double m_lin = 0.0, m_ang = 0.0;

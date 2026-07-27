@@ -15,7 +15,9 @@ Item {
         anchors { left: parent.left; top: parent.top; margins: 28 }
         width: parent.width - 56
         emoji: "🧭"; title: "길잡이"
-        onBack: { if (root.guiding) controller.cancelGuide(); controller.setMode("home") }
+        // 화면을 나가면 감시 세션도 닫는다 — 안 닫으면 아무도 안 보는데 카메라가 켜져 있다.
+        onBack: { if (root.guiding) controller.cancelGuide();
+                  controller.cancelGuideRegistration(); controller.setMode("home") }
     }
 
     // 왼쪽: 지도
@@ -27,7 +29,12 @@ Item {
         height: width / mapAspect
         highlight: root.guiding ? controller.guideDestination : root.picked
         // 탭은 **선택만** 한다. 출발은 아래 버튼.
-        onFacilityClicked: (name) => { if (!root.guiding) root.picked = name }
+        onFacilityClicked: (name) => {
+            if (root.guiding) return
+            root.picked = name
+            controller.startGuideRegistration()      // 등록 화면 = 카메라 켜기
+            perception.start()                       // 추종 화면과 같은 영상 통로를 쓴다
+        }
     }
 
     // 오른쪽 패널
@@ -64,22 +71,80 @@ Item {
                             icon: modelData.icon
                             text: modelData.name
                             selected: root.picked === modelData.name
-                            onClicked: root.picked = modelData.name
+                            onClicked: {
+                    root.picked = modelData.name
+                    controller.startGuideRegistration()
+                    perception.start()
+                }
                         }
                     }
                 }
             }
 
+            // 목적지를 고른 뒤 **이용자 등록**을 거친다. 로봇이 누구를 안내하는지
+            // 모르면 뒷캠으로 확인할 대상이 없어, 안내 중 아무나 따라와도 알 수 없다.
+            //
+            // 등록은 **앞캠**이다 — 이용자는 지금 이 패널을 누르고 있으므로 로봇 앞에
+            // 있다. 뒷캠으로 바뀌는 건 출발해서 로봇이 앞장서기 시작할 때다.
+            Column {
+                id: regCol
+                visible: root.picked !== "" && controller.guideRegPhase !== "ready"
+                anchors { left: parent.left; right: parent.right; bottom: startBtn.top
+                          bottomMargin: 14 }
+                spacing: 10
+
+                Text {
+                    text: controller.guideRegPhase === "calibrating"
+                          ? "자세를 재고 있어요 — 잠시 그대로 서 주세요"
+                          : "안내받으실 분을 화면에서 눌러 주세요"
+                    font.family: S.fontFamily; font.pixelSize: 18; font.bold: true; color: S.text
+                }
+
+                Rectangle {
+                    width: parent.width; height: 180; radius: 12; color: S.bgAlt
+                    clip: true
+                    Image {
+                        anchors.fill: parent
+                        fillMode: Image.PreserveAspectFit
+                        cache: false
+                        source: controller.guideRegPhase === "idle"
+                                ? "" : "image://perception/frame?" + perception.frameCounter
+                    }
+                    // 어느 캠을 보고 있는지 항상 보여준다. 전환하면 시점이 통째로
+                    // 뒤집혀 보이는데, 라벨이 없으면 보는 사람이 무엇이 잘못됐는지 모른다.
+                    Rectangle {
+                        anchors { left: parent.left; top: parent.top; margins: 8 }
+                        width: camLabel.width + 16; height: camLabel.height + 8
+                        radius: 6; color: "#000000"; opacity: 0.55
+                        Text {
+                            id: camLabel; anchors.centerIn: parent
+                            text: controller.currentCamera === "front" ? "앞 카메라"
+                                : controller.currentCamera === "back"  ? "뒤 카메라" : "카메라 꺼짐"
+                            font.family: S.fontFamily; font.pixelSize: 14; color: "#ffffff"
+                        }
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        enabled: controller.guideRegPhase === "registering"
+                        onClicked: { perception.registerTarget(); controller.confirmGuideRegistration() }
+                    }
+                }
+            }
+
             BigButton {
+                id: startBtn
                 anchors { horizontalCenter: parent.horizontalCenter; bottom: parent.bottom }
-                enabledLook: root.picked !== "" && !root.requesting
+                enabledLook: controller.guideRegPhase === "ready" && !root.requesting
                 text: root.requesting ? "관제 승인 기다리는 중…"
-                                      : (root.picked === "" ? "목적지를 골라주세요"
-                                                            : root.picked + " (으)로 안내 시작")
-                color: root.picked === "" ? S.bgAlt : S.primary
-                textColor: root.picked === "" ? S.textMuted : S.onPrimary
+                    : root.picked === "" ? "목적지를 골라주세요"
+                    : controller.guideRegPhase === "calibrating" ? "자세 측정 중…"
+                    : controller.guideRegPhase !== "ready" ? "안내받으실 분을 등록해 주세요"
+                    : root.picked + " (으)로 안내 시작"
+                color: controller.guideRegPhase === "ready" ? S.primary : S.bgAlt
+                textColor: controller.guideRegPhase === "ready" ? S.onPrimary : S.textMuted
                 implicitWidth: parent.width; implicitHeight: 88
-                onClicked: if (root.picked !== "" && !root.requesting) controller.startGuide(root.picked)
+                onClicked: if (controller.guideRegPhase === "ready" && !root.requesting)
+                               controller.startGuide(root.picked)
             }
         }
 
@@ -91,7 +156,36 @@ Item {
                 anchors.centerIn: parent
                 width: parent.width - 48
                 spacing: 18
-                RobotFace { anchors.horizontalCenter: parent.horizontalCenter; width: 150; height: 150 }
+                // 안내 중에는 로봇 얼굴 대신 **뒷캠 미니뷰**를 보여준다.
+                // 사람을 놓쳐 로봇이 멈췄을 때 "왜 멈췄지"가 화면에 바로 드러난다.
+                Item {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    width: 260; height: 150
+                    RobotFace {
+                        anchors.fill: parent
+                        visible: controller.currentCamera === "none"
+                    }
+                    Rectangle {
+                        anchors.fill: parent; radius: 12; color: S.bgAlt; clip: true
+                        visible: controller.currentCamera !== "none"
+                        Image {
+                            anchors.fill: parent
+                            fillMode: Image.PreserveAspectFit
+                            cache: false
+                            source: "image://perception/frame?" + perception.frameCounter
+                        }
+                        Rectangle {
+                            anchors { left: parent.left; top: parent.top; margins: 6 }
+                            width: guideCamLabel.width + 14; height: guideCamLabel.height + 6
+                            radius: 6; color: "#000000"; opacity: 0.55
+                            Text {
+                                id: guideCamLabel; anchors.centerIn: parent
+                                text: controller.currentCamera === "front" ? "앞 카메라" : "뒤 카메라"
+                                font.family: S.fontFamily; font.pixelSize: 13; color: "#ffffff"
+                            }
+                        }
+                    }
+                }
                 Text {
                     anchors.horizontalCenter: parent.horizontalCenter
                     width: parent.width; horizontalAlignment: Text.AlignHCenter

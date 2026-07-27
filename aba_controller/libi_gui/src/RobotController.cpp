@@ -3,6 +3,7 @@
 #include "domain.h"
 
 #include <QVariantMap>
+#include <QDateTime>
 #include <QTime>
 #include <QEventLoop>
 #include <QJsonArray>
@@ -114,6 +115,75 @@ void RobotController::setRobotState(const QString &s) {
 void RobotController::setTaskStatus(const QString &s) {
     if (m_taskStatus == s) return;
     m_taskStatus = s; emit taskStatusChanged();
+}
+
+void RobotController::setGuideRegPhase(const QString &p) {
+    if (m_guideRegPhase == p) return;
+    m_guideRegPhase = p; emit guideRegPhaseChanged();
+}
+
+void RobotController::setCurrentCamera(const QString &c) {
+    if (m_currentCamera == c) return;
+    m_currentCamera = c; emit currentCameraChanged();
+}
+
+// 감시 세션을 연다/갱신한다.
+//
+// 카메라 선택의 **발행자는 로봇의 follow_node 하나뿐**이다. 패널은 세션만 열고,
+// 어느 캠을 켤지는 그 세션의 역할/인자에서 나온다 — 여기서 camera_select 를 직접
+// 내면 발행자가 둘이 되어 회복 중 서로 덮어쓴다.
+void RobotController::publishWatch(const QString &camera) {
+    if (!m_ros || m_watchSessionId.isEmpty()) return;
+    m_ros->publishFleetCmd(QStringLiteral(
+        "{\"action\":\"watch\",\"id\":\"%1\",\"args\":{\"camera\":\"%2\"}}")
+        .arg(m_watchSessionId, camera));
+}
+
+// 등록 화면에 들어간다 — **앞캠**이다.
+//
+// 이용자는 패널을 손으로 누르고 있으므로 등록 시점에는 로봇 **앞**에 있다.
+// 뒷캠으로 등록하려 하면 그 화면에는 아무도 안 나온다. 뒷캠으로 넘어가는 건
+// 출발 후 로봇이 앞장서기 시작할 때다.
+void RobotController::startGuideRegistration() {
+    if (!m_ros) { emit toast(QStringLiteral("ROS 연결이 없어 카메라를 켤 수 없습니다.")); return; }
+    if (m_watchSessionId.isEmpty())
+        m_watchSessionId = QStringLiteral("panel-%1")
+            .arg(QDateTime::currentMSecsSinceEpoch());
+    publishWatch(QStringLiteral("front"));
+    setCurrentCamera(QStringLiteral("front"));
+    setGuideRegPhase(QStringLiteral("registering"));
+    // 패널이 죽으면 stop 이 영영 안 온다. 로봇 쪽 lease 보다 촘촘히 갱신해서,
+    // 살아 있는 동안만 카메라가 켜져 있게 한다.
+    if (!m_watchLease.isActive()) {
+        m_watchLease.setInterval(10000);
+        connect(&m_watchLease, &QTimer::timeout, this,
+                [this] { publishWatch(m_currentCamera); });
+        m_watchLease.start();
+    }
+    log(QStringLiteral("길잡이 등록 화면 — 감시 세션 ") + m_watchSessionId);
+}
+
+void RobotController::confirmGuideRegistration() {
+    // 자세 기준 비율을 다시 재는 동안(약 4초)에는 로봇이 안 움직인다.
+    // 그 사실을 화면에 드러내지 않으면 "왜 안 가지"가 된다.
+    setGuideRegPhase(QStringLiteral("calibrating"));
+    QTimer::singleShot(4000, this, [this] {
+        if (m_guideRegPhase == QLatin1String("calibrating"))
+            setGuideRegPhase(QStringLiteral("ready"));
+    });
+}
+
+void RobotController::cancelGuideRegistration() {
+    if (m_watchSessionId.isEmpty()) return;
+    // **자기 세션만** 닫는다. 공용 stop 으로 닫으면 관리자 추종까지 끊길 수 있다.
+    if (m_ros)
+        m_ros->publishFleetCmd(QStringLiteral(
+            "{\"action\":\"stop\",\"id\":\"stop-%1\",\"args\":{\"session_id\":\"%1\"}}")
+            .arg(m_watchSessionId));
+    m_watchLease.stop();
+    m_watchSessionId.clear();
+    setCurrentCamera(QStringLiteral("none"));
+    setGuideRegPhase(QStringLiteral("idle"));
 }
 
 void RobotController::setGuidePhase(const QString &p) {
@@ -479,6 +549,9 @@ void RobotController::startGuide(const QString &destination) {
         m_guideTargetWaypoint = waypoint;
         m_guideTargetValid = true;
         setGuidePhase(QStringLiteral("guiding"));
+        // 출발하면 로봇이 앞장서고 이용자는 뒤에 남는다 — 감시 캠이 뒤로 넘어간다.
+        // (실제 전환은 로봇의 follow_node 가 한다. 여기는 화면 라벨만 맞춘다.)
+        setCurrentCamera(QStringLiteral("back"));
         setTaskStatus(QStringLiteral("사용자 명령 수행 중"));
         updateGuideDistance();
         log(QStringLiteral("길잡이 승인 — 안내 시작"));
