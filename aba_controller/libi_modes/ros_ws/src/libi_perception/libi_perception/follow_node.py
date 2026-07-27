@@ -163,7 +163,18 @@ class RemoteControl:
         self._Bool, self._Float32, self._String = Bool, Float32, String
         self._last_cam_pub_at = 0.0
         self._get_detection = None             # 감시 역할일 때 쓰는 검출 조회
+        self._start_session_fn = None          # 역할을 실어 세션을 켜는 콜백
         node.create_subscription(String, cmd_topic, self._on_cmd, 10)
+
+    def bind_session_starter(self, start_session):
+        """역할을 실어 세션을 켜는 콜백. 노드가 주입한다(여기는 rclpy 를 모른다)."""
+        self._start_session_fn = start_session
+
+    def _start_session(self, role):
+        if self._start_session_fn is not None:
+            self._start_session_fn(role)
+        else:
+            self._session.start()
 
     def bind_detection(self, get_detection):
         """감시(guide/watch) 세션이 볼 검출 조회기. 없으면 가시성을 발행하지 않는다."""
@@ -219,9 +230,13 @@ class RemoteControl:
                 self._reply(self._active_id, False, '새 세션 요청으로 대체됨')
                 self._active_id = None
             self._sessions.start(cmd_id, role, now, camera=args.get('camera'))
+            # 세션은 **역할과 무관하게** 켠다. 감시 역할도 회복 트리가 돌아야
+            # 사람을 놓쳤을 때 반대 캠으로 바꿔 볼 수 있기 때문이다 —
+            # 안 켜면 길잡이는 놓친 뒤 아무것도 안 하고 유예만 센다.
+            # 대신 감시 역할에서는 속도를 **삼킨다**(아래 _start_session).
+            self._start_session(role)
             if role in sess.DRIVING_ROLES:
                 self._active_id = cmd_id
-                self._session.start()
             else:
                 # 감시 세션은 스스로 끝나지 않고 주행도 안 한다. 붙들고 있으면
                 # 보낸 쪽이 타임아웃까지 기다린다.
@@ -356,6 +371,8 @@ def main(args=None):
             self._scan = ScanProvider(self, scan_topic)
             self._cmd = CmdPublisher(self, cmd_topic)
             self._receiver = DetectionReceiver(TcpDetectionSource(host, port))
+            #: 지금 세션의 역할. `_make_loop` 과 `_publish_for_role` 이 읽는다.
+            self._session_role = sess.FOLLOW
             self.session = FollowSession(self._make_loop, publish=self._cmd.publish)
             self.remote = RemoteControl(
                 self, self.session,
@@ -366,6 +383,7 @@ def main(args=None):
             # 이게 없으면 `/libi/requester_visible` 발행자가 여전히 없는 셈이라
             # GuideExec 이 '감시 없음' 으로 읽고 사람을 놓쳐도 계속 간다.
             self.remote.bind_detection(self._get_detection)
+            self.remote.bind_session_starter(self._start_session_for)
             if self.get_parameter('autostart').value:
                 self.session.start()
             self.create_timer(1.0 / config.TICK_HZ, self._tick)
@@ -380,11 +398,27 @@ def main(args=None):
             self.session.tick()
             self.remote.tick()
 
+        def _start_session_for(self, role):
+            """역할을 기억해 두고 세션을 켠다. `_make_loop` 이 그 값을 읽는다."""
+            self._session_role = role
+            self.session.start()
+
+        def _publish_for_role(self, lin, ang):
+            """감시 역할(guide/watch)에서는 속도를 **삼킨다.**
+
+            회복 트리는 감시 세션에서도 돌아야 한다 — 사람을 놓쳤을 때 반대 캠으로
+            바꿔 보는 일을 그 트리가 하기 때문이다. 하지만 길잡이 주행은 nav2 가
+            하므로, 여기서 속도를 내면 **두 주체가 같은 `/cmd_vel` 을 민다.**
+            그래서 트리는 돌리되 바퀴는 안 돌린다(회전 구간은 그냥 기다림이 된다).
+            """
+            if getattr(self, '_session_role', sess.FOLLOW) in sess.DRIVING_ROLES:
+                self._cmd.publish(lin, ang)
+
         def _make_loop(self):
             return ControlLoop(
                 get_detection=self._get_detection,
                 get_scan=self._scan.get,
-                publish=self._cmd.publish,
+                publish=self._publish_for_role,
                 cfg=config,
                 now=lambda: self.get_clock().now().nanoseconds / 1e9,
                 # 회복 BT 가 반대 캠을 보려면 세션의 카메라를 잠시 바꿔야 한다.
@@ -392,7 +426,8 @@ def main(args=None):
                 # 상태만 바꾸고, 다음 발행 주기에 그 값이 실려 나간다.
                 select_camera=self.remote.request_camera,
                 peek_people=self._peek_people,
-                role='follow',
+                # 정위치 캠이 역할에서 나온다 — 추종은 앞, 길잡이·등록감시는 뒤.
+                role=getattr(self, '_session_role', sess.FOLLOW),
             )
 
         def _peek_people(self):

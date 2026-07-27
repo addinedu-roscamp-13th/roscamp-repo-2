@@ -124,10 +124,14 @@ def test_follow_admin_starts_control_loop(rc):
     assert rc.cam()[-1] == 'front'
 
 
-def test_guide_watch_does_not_start_control_loop(rc):
-    """감시 세션이 제어 루프를 켜면 nav2 와 /cmd_vel 을 다툰다."""
+def test_guide_watch_starts_a_motion_free_session(rc):
+    """감시 세션도 회복 트리는 돌아야 한다 — 사람을 놓쳤을 때 반대 캠으로 바꿔 보는
+    일을 그 트리가 하기 때문이다. 안 켜면 길잡이는 놓친 뒤 유예만 세고 아무것도 안 한다.
+
+    /cmd_vel 경합은 세션을 안 켜서가 아니라 **속도를 삼켜서** 막는다
+    (FollowNode._publish_for_role). 여기서는 세션이 켜지는지만 본다."""
     rc.send(action='guide_watch', id='g1')
-    assert rc.session.started == 0
+    assert rc.session.started == 1
     assert rc.cam()[-1] == 'back'
 
 
