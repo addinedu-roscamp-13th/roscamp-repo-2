@@ -49,5 +49,16 @@ echo "[image-sender] rotate=${ROT}° → 이 스트림에 맞는 캘리브: ${CA
 [ -f "$CALIB" ] || echo "[image-sender] ⚠ 그 파일이 없습니다. rotate_calib.py 로 만드세요:
     python3 scripts/cam-calib/rotate_calib.py config/camera/picam_640x480.npz $ROT"
 
+# camera_sender 는 이제 `/libi/camera_select` 를 구독해 어느 캠을 내보낼지 정한다.
+# ROS 를 source 하지 않으면 rclpy import 가 실패해 **구독 없이** 뜨고, 그러면 BT 가
+# 카메라를 켜고 끄지 못한다(스크립트는 계속 돌기 때문에 조용히 어긋난다).
+# 시스템 python3 로 돌아야 하는 제약(picamera2)과 충돌하지 않는다 — ROS 도 시스템 파이썬이다.
+if [ -f /opt/ros/jazzy/setup.bash ]; then
+  # shellcheck disable=SC1091
+  source /opt/ros/jazzy/setup.bash
+else
+  echo "[image-sender] ⚠ /opt/ros/jazzy 가 없습니다 — camera_select 구독 없이 돕니다."
+fi
+
 cd "$FOLLOWER_DIR"
 exec python3 scripts/camera_sender.py --host "$AI_IP" --port "$PORT" --fps "$FPS" $CAM_ARGS
