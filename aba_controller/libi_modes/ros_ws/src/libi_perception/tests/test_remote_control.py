@@ -273,3 +273,19 @@ def test_follow_session_is_not_swept_by_lease(rc):
     rc.ctl.tick()
     assert rc.session.stopped == 0
     assert rc.cam()[-1] == 'front'
+
+
+def test_watch_cannot_preempt_a_running_follow(rc):
+    """움직이던 로봇의 제어 루프가 이용자 터치 한 번에 꺼지면 안 된다."""
+    rc.send(action='follow_admin', id='f1')
+    rc.send(action='watch', id='w1', args={'camera': 'front'})
+    assert rc.session.stopped == 0
+    assert rc.cam()[-1] == 'front'            # 추종이 그대로 살아 있다
+    assert json.loads(rc.result()[-1])['ok'] is False   # 패널에 이유가 간다
+
+
+def test_guide_watch_may_replace_a_follow(rc):
+    """BT 가 보내는 길잡이 감시는 미션 전이의 결과라 정당하게 대체한다."""
+    rc.send(action='follow_admin', id='f1')
+    rc.send(action='guide_watch', id='g1')
+    assert rc.session.stopped == 1

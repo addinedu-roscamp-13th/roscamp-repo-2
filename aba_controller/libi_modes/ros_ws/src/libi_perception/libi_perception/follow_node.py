@@ -198,6 +198,16 @@ class RemoteControl:
 
         role = self.START_ACTIONS.get(action)
         if role is not None:
+            # 주행 중인 세션은 감시 요청에 밀리지 않는다.
+            #
+            # 관리자가 추종으로 로봇을 몰고 있는데 이용자가 패널에서 길잡이 목적지를
+            # 고르면 등록 화면이 `watch` 를 연다. 그걸 그대로 받으면 **움직이던 로봇의
+            # 제어 루프가 그 자리에서 꺼진다.** 사람을 따라가던 로봇이 이유 없이 서는
+            # 것은 조작하던 관리자에게 설명되지 않는다.
+            # 거절 이유를 돌려주면 패널이 "관리자 추종 중" 이라고 말할 수 있다.
+            if role == sess.WATCH and self._sessions.driving:
+                self._reply(cmd_id, False, '관리자 추종 중이라 등록 화면을 열 수 없습니다')
+                return
             # 이미 주행 세션이 돌고 있으면 **실제로 멈추고** 갈아탄다.
             #
             # ⚠️ 결과만 실패로 돌려주고 제어 루프를 안 세우면, 그 루프가 계속 20Hz 로
