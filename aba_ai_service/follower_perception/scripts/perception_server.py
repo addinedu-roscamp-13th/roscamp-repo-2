@@ -92,7 +92,7 @@ def _cm(m):
 
 
 def serve_loop(conn, frames, perception, *, poll_cmd=None, jpeg_quality=80,
-               cmd_sink=None, policy=None, lidar_source=None):
+               cmd_sink=None, policy=None, lidar_source=None, detection_sink=None):
     last_t = time.monotonic()
     for frame in frames:
         cmd = poll_cmd(conn) if poll_cmd else None
@@ -102,6 +102,11 @@ def serve_loop(conn, frames, perception, *, poll_cmd=None, jpeg_quality=80,
             perception.reset()
         perception.run(frame)
         det = perception.get_latest()
+        # 로봇의 libi_perception 으로 주인 검출을 직접 보낸다(선택). 이 채널이 없으면
+        # 로봇 쪽 제어 루프는 더미 스텁만 받는다 — 회복 BT 가 진짜 검출을 한 번도
+        # 못 본다는 뜻이다. 안 보이는 프레임은 null 을 보내는 것이 계약이다.
+        if detection_sink is not None:
+            detection_sink(det)
         cands = perception.last_cands
         # before registration, highlight which candidate the 등록 button would pick
         pick = None if perception.matcher.is_registered \
@@ -196,12 +201,31 @@ def _camera_frames(index):
         cap.release()
 
 
+def _build_pose(args):
+    """자세 추정기. 실패해도 서버를 죽이지 않는다 — 자세 판정 없이도 추종은 돌아야 한다.
+
+    검출 가중치(best.pt)는 task=detect 라 키포인트를 못 낸다. 그래서 owner bbox crop 에만
+    yolo11n-pose 를 2차로 돌린다(전체 프레임이 아니라 crop 이라 비용이 작다).
+    """
+    if getattr(args, "no_pose", False) or args.test_pattern:
+        return None
+    try:
+        from follower_perception.pose_estimator import PoseEstimator
+        est = PoseEstimator(every_n=args.pose_every_n)
+        print(f"[pose] 자세 판정 on — 매 {args.pose_every_n} 프레임")
+        return est
+    except Exception as e:      # noqa: BLE001 — 자세 없이도 추종은 계속돼야 한다
+        print(f"[pose] 자세 판정 off ({type(e).__name__}: {e})")
+        return None
+
+
 def _build_perception(args):
     from follower_perception.reid_engine import ReIDEngine
     from follower_perception.pipeline import FollowerPerception
+    pose = _build_pose(args)
     if args.test_pattern:
         reid = ReIDEngine(backend="colour")
-        p = FollowerPerception(detector=_AlwaysBox(), reid=reid)
+        p = FollowerPerception(detector=_AlwaysBox(), reid=reid, pose=pose)
     else:
         try:
             from follower_perception.detector import Detector
@@ -209,7 +233,7 @@ def _build_perception(args):
             print(f"[error] ultralytics/torch not installed ({e}). Use "
                   f"--test-pattern or run in your model venv."); raise SystemExit(2)
         reid = ReIDEngine(device=args.device)
-        p = FollowerPerception(detector=Detector(device=args.device), reid=reid)
+        p = FollowerPerception(detector=Detector(device=args.device), reid=reid, pose=pose)
     if args.no_hsv:
         p.matcher.hsv_threshold = None
     elif args.hsv_threshold is not None:
@@ -226,13 +250,39 @@ def _rotate_frames(frames, deg):
         yield cv2.rotate(f, rot) if rot is not None else f
 
 
-def _run_local_show(frames, perception, cmd_sink=None, policy=None):
+def _make_detection_sink(host, port):
+    """로봇의 libi_perception 으로 주인 검출을 보내는 콜백.
+
+    링크가 끊겨도 추론 루프를 죽이지 않는다(`RobotDetectionSink.send` 가 예외를 삼키고
+    다음 send 에서 재연결한다). 주인이 안 보이는 프레임은 **null 을 보낸다** —
+    받는 쪽 `detection_from_dict(None)` 이 None 을 그대로 통과시키는 계약이다.
+    """
+    import os
+    import sys
+    # detection_sink.py 는 aba_ai_service 루트에 있다(이 스크립트의 조부모).
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from detection_sink import RobotDetectionSink, detection_to_dict
+
+    sink = RobotDetectionSink(host, port)
+    print(f"[ok] 로봇 검출 채널 → {host}:{port}")
+
+    def send(det):
+        sink.send(detection_to_dict(det))
+
+    return send
+
+
+def _run_local_show(frames, perception, cmd_sink=None, policy=None, detection_sink=None):
     """Local cv2 window (no Qt, no socket). Keys: r=register, x=reset, q/ESC=quit."""
     win = "perception  [r]register [x]reset [q]quit"
     last_t = time.monotonic()
     for frame in frames:
         perception.run(frame)
         det = perception.get_latest()
+        if detection_sink is not None:
+            detection_sink(det)
         cands = perception.last_cands
         pick = None if perception.matcher.is_registered \
             else perception._pick_central(cands, frame)
@@ -283,7 +333,26 @@ def main():
     ap.add_argument("--scan-topic", dest="scan_topic", default="/scan")
     ap.add_argument("--lidar-flip", dest="lidar_flip", action="store_true",
                     help="LiDAR mounted rotated 180 deg (front<->back, left<->right)")
+    ap.add_argument("--robot-host", dest="robot_host", default=None,
+                    help="로봇 libi_perception 으로 주인 검출을 직접 보낼 주소. "
+                         "생략하면 안 보낸다(뷰어 전용). 이 채널이 없으면 로봇의 회복 BT 가 "
+                         "진짜 검출을 한 번도 못 본다.")
+    ap.add_argument("--robot-detection-port", dest="robot_detection_port",
+                    type=int, default=6000)
+    # ⚠️ 이름을 `--camera` 로 하면 안 된다 — 소스 선택용 `--camera <index>` 가 이미 있다
+    #    (argparse 가 중복 옵션으로 죽는다).
+    ap.add_argument("--camera-label", dest="camera_label", default=None,
+                    choices=["front", "back"],
+                    help="이 스트림이 어느 캠인지. 검출 payload 에 실려 나가고, 로봇의 "
+                         "회복 BT 가 '어느 캠에서 찾았나' 를 판단하는 데 쓴다.")
+    ap.add_argument("--no-pose", dest="no_pose", action="store_true",
+                    help="자세 판정을 끈다(디버깅용). 끄면 누워 있어도 로봇이 다가간다.")
+    ap.add_argument("--pose-every-n", dest="pose_every_n", type=int, default=None,
+                    help="자세 추론 주기(프레임). 프레임 예산을 넘기면 3 정도로 올린다.")
     args = ap.parse_args()
+    if args.pose_every_n is None:
+        from follower_perception.constants import POSE_EVERY_N_FRAMES
+        args.pose_every_n = POSE_EVERY_N_FRAMES
 
     if args.udp:
         from scripts.udp_video import UdpVideoReceiver
@@ -320,8 +389,16 @@ def main():
         except Exception as e:
             print(f"[warn] --lidar-ros failed ({e}); continuing WITHOUT LiDAR display")
 
+    if args.camera_label:
+        perception.set_camera(args.camera_label)
+
+    detection_sink = None
+    if args.robot_host:
+        detection_sink = _make_detection_sink(args.robot_host, args.robot_detection_port)
+
     if args.show:
-        _run_local_show(frames, perception, cmd_sink=cmd_sink, policy=policy)
+        _run_local_show(frames, perception, cmd_sink=cmd_sink, policy=policy,
+                        detection_sink=detection_sink)
         return
 
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -338,7 +415,8 @@ def main():
         print(f"[ok] viewer connected: {addr}")
         try:
             serve_loop(conn, frames, perception, poll_cmd=make_socket_poller(),
-                       cmd_sink=cmd_sink, policy=policy, lidar_source=lidar_source)
+                       cmd_sink=cmd_sink, policy=policy, lidar_source=lidar_source,
+                       detection_sink=detection_sink)
         finally:
             conn.close()
             print("[..] viewer disconnected; waiting again")

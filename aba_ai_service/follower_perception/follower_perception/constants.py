@@ -1,4 +1,5 @@
 # All values are reference starting points for tuning — not hard requirements.
+import os as _os
 
 # Detection
 MIN_CONFIDENCE = 0.42          # YOLO person confidence floor
@@ -36,11 +37,14 @@ UNKNOWN_STOP_FRAMES = 10
 # 자세 추론 주기(프레임). 1 = 매 프레임. 프레임 예산(15fps → 66ms)을 넘기면 3 으로
 # 올린다 — 자세는 프레임 단위로 바뀌지 않으므로 직전 판정을 유지해도 손실이 작다.
 POSE_EVERY_N_FRAMES = 1
-# 자세 전용 2차 모델. 검출 가중치(weights/best.pt)는 task=detect 라 키포인트를 못 낸다.
-POSE_WEIGHTS = "yolo11n-pose.pt"
 # yolo_pose 는 이 저장소 **밖**의 별개 저장소다. 상대경로로 짚으면 안 된다
 # (aba_project/yolo_pose 를 가리켜 import 가 실패한다). 환경변수로 덮어쓸 수 있다.
-YOLO_POSE_DIR = "/home/ane/personal_repo/yolo_pose"
+YOLO_POSE_DIR = _os.environ.get("LIBI_YOLO_POSE_DIR", "/home/ane/personal_repo/yolo_pose")
+# 자세 전용 2차 모델. 검출 가중치(weights/best.pt)는 task=detect 라 키포인트를 못 낸다.
+# 이미 받아져 있는 파일을 기본값으로 둔다 — 이름만 주면 ultralytics 가 네트워크에서
+# 받으려 하고, 로봇·서버가 오프라인이면 거기서 멈춘다.
+POSE_WEIGHTS = _os.environ.get(
+    "LIBI_POSE_WEIGHTS", _os.path.join(YOLO_POSE_DIR, "yolo11n-pose.pt"))
 
 # ── 소실 방향 게이트 ────────────────────────────────────────────────────────
 EXIT_EDGE_MARGIN_RATIO = 0.08   # 프레임 가장자리로 볼 비율(폭·높이 각각)
