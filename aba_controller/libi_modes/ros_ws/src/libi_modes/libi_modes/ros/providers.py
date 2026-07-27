@@ -51,6 +51,9 @@ class RosProviders:
                  fault_topic="fault", cmd_topic="fleet_cmd", ui_touch_topic="ui_last_touch_at",
                  pose_topic="/amcl_pose",
                  requester_topic="/libi/requester_visible",
+                 requester_area_topic="/libi/requester_area",
+                 requester_ttl_sec=2.0,
+                 now_fn=time.monotonic,
                  mission_actions=("goal", "goto", "home", "mission_start"),
                  nav_actions=("navigate",),
                  guide_actions=("guide",),
@@ -89,6 +92,12 @@ class RosProviders:
         self._ui_last_touch_at = 0.0
         self._requester_visible = None      # None = 감시가 안 돌고 있다
         self._requester_seen_at = 0.0
+        #: 마지막 가시성 수신 시각. None = 한 번도 안 왔다(= 감시 자체가 없다).
+        self._requester_stamp = None
+        self._requester_area = None
+        self._requester_area_stamp = None
+        self._requester_ttl = float(requester_ttl_sec)
+        self._now = now_fn
 
         node.create_subscription(Float32, battery_topic, self._on_battery, 10)
         node.create_subscription(Bool, docked_topic, self._on_docked, 10)
@@ -97,6 +106,10 @@ class RosProviders:
         node.create_subscription(Float64, ui_touch_topic, self._on_ui_touch, 10)
         node.create_subscription(PoseWithCovarianceStamped, pose_topic, self._on_pose, _LATCHED)
         node.create_subscription(Bool, requester_topic, self._on_requester, 10)
+        # 거리 게이트(보이지만 너무 멀다)의 입력. Bool 하나로는 "보이나"만 알 수 있어
+        # 10m 뒤에 있어도 계속 간다. 커스텀 msg 를 새로 만들지 않는 이유는 실을 값이
+        # float 하나뿐이고, msg 를 더하면 colcon 재빌드가 따라붙기 때문이다.
+        node.create_subscription(Float32, requester_area_topic, self._on_requester_area, 10)
 
     # ── 콜백 (캐시에 담기만 한다) ──────────────────────────────────────────────
 
@@ -113,8 +126,38 @@ class RosProviders:
         # 시각은 **보였을 때만** 갱신한다. 안 보이는 동안 계속 덮으면 "얼마나 오래
         # 안 보였나"가 항상 0 이 되어 GuideExec 이 영영 정지하지 않는다.
         self._requester_visible = bool(msg.data)
+        self._requester_stamp = self._now()      # 신선도는 보이든 안 보이든 갱신한다
         if self._requester_visible:
-            self._requester_seen_at = time.monotonic()
+            self._requester_seen_at = self._requester_stamp
+
+    def _on_requester_area(self, msg):
+        self._requester_area = float(msg.data)
+        self._requester_area_stamp = self._now()
+
+    # ── 신선도 ────────────────────────────────────────────────────────────
+    def _fresh_requester_visible(self):
+        """신선하지 않으면 **False**(정지)다. **None 이 아니다.**
+
+        ⚠️ 이 구분이 안전을 가른다. `None` 은 "감시가 아예 안 돈다"는 뜻이라
+        `GuideExec` 이 "감시 없음 → 그냥 주행"으로 읽는다. AI 서버나 follow_node 가
+        죽어 발행이 끊겼을 때 그렇게 읽으면 **로봇이 사람 없이 계속 몰고 간다.**
+        한 번이라도 받은 적이 있으면, 끊긴 것은 "모른다"가 아니라 "확인 불가"이므로
+        멈추는 쪽으로 판정한다.
+        """
+        if self._requester_stamp is None:
+            return None                          # 한 번도 안 왔다 — 감시 자체가 없다
+        if self._stale(self._requester_stamp):
+            return False
+        return self._requester_visible
+
+    def _fresh_requester_area(self):
+        """stale 한 면적으로 거리 판정을 하면 안 된다 — 지나간 크기로 지금을 잰다."""
+        if self._requester_area_stamp is None or self._stale(self._requester_area_stamp):
+            return None
+        return self._requester_area
+
+    def _stale(self, stamp) -> bool:
+        return self._requester_ttl > 0 and (self._now() - stamp) > self._requester_ttl
 
     def _on_ui_touch(self, msg):
         # payload 값은 신뢰하지 않는다 — libi_gui 가 다른 머신(노트북/sim)이면 monotonic 시계가
@@ -215,7 +258,8 @@ class RosProviders:
             "active_command": lambda: self._active_command,
             "nav_target": lambda: self._nav_target,
             "robot_pose": lambda: self._robot_pose,
-            "requester_visible": lambda: self._requester_visible,
+            "requester_visible": self._fresh_requester_visible,
             "requester_seen_at": lambda: self._requester_seen_at,
+            "requester_area": self._fresh_requester_area,
             "command_received_at": lambda: self._command_received_at,
         }

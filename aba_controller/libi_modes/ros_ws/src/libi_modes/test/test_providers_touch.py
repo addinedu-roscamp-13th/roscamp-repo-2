@@ -47,3 +47,87 @@ def test_command_received_at_is_monotonic_not_epoch():
     assert p._command_received_at < time.time() / 2, (
         "epoch 시계로 찍혔다 — CommandTimeout 이 영원히 안 걸리는 회귀"
     )
+
+
+# ── 요청자 가시성 신선도 ─────────────────────────────────────────────────────
+# AI 서버나 follow_node 가 죽어 발행이 끊기면, 마지막 True 가 영원히 남아
+# 로봇이 "요청자가 계속 보인다"고 믿고 nav2 를 계속 몬다.
+
+class _Clock:
+    def __init__(self, t=0.0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
+
+
+def _providers(ttl=2.0):
+    """__init__ 을 우회해 콜백·조회만 검증한다(ROS 노드 불필요)."""
+    from libi_modes.ros.providers import RosProviders
+    p = RosProviders.__new__(RosProviders)
+    p._requester_visible = None
+    p._requester_seen_at = 0.0
+    p._requester_stamp = None
+    p._requester_area = None
+    p._requester_area_stamp = None
+    p._requester_ttl = ttl
+    p._now = _Clock()
+    return p
+
+
+def test_requester_visible_none_when_never_published():
+    """한 번도 안 왔으면 None — '감시 없음'이라 길잡이는 그냥 주행한다(기존 계약)."""
+    from libi_modes.ros.providers import RosProviders
+    p = _providers()
+    assert RosProviders._fresh_requester_visible(p) is None
+
+
+def test_requester_visible_true_while_fresh():
+    from libi_modes.ros.providers import RosProviders
+    p = _providers()
+    RosProviders._on_requester(p, SimpleNamespace(data=True))
+    p._now.t = 1.0
+    assert RosProviders._fresh_requester_visible(p) is True
+
+
+def test_requester_visible_goes_false_when_stale():
+    """stale 을 None 으로 내리면 '감시 없음 → 그냥 주행'이 되어 정반대로 간다."""
+    from libi_modes.ros.providers import RosProviders
+    p = _providers(ttl=2.0)
+    RosProviders._on_requester(p, SimpleNamespace(data=True))
+    p._now.t = 10.0
+    assert RosProviders._fresh_requester_visible(p) is False
+
+
+def test_requester_seen_at_updates_only_when_visible():
+    """안 보이는 동안에도 갱신하면 '얼마나 오래 안 보였나'가 항상 0 이 된다."""
+    from libi_modes.ros.providers import RosProviders
+    p = _providers()
+    RosProviders._on_requester(p, SimpleNamespace(data=True))
+    seen = p._requester_seen_at
+    p._now.t = 1.0
+    RosProviders._on_requester(p, SimpleNamespace(data=False))
+    assert p._requester_seen_at == seen
+
+
+def test_requester_area_expires():
+    from libi_modes.ros.providers import RosProviders
+    p = _providers(ttl=2.0)
+    RosProviders._on_requester_area(p, SimpleNamespace(data=900.0))
+    p._now.t = 0.5
+    assert RosProviders._fresh_requester_area(p) == 900.0
+    p._now.t = 10.0
+    assert RosProviders._fresh_requester_area(p) is None
+
+
+def test_requester_area_none_when_never_published():
+    from libi_modes.ros.providers import RosProviders
+    assert RosProviders._fresh_requester_area(_providers()) is None
+
+
+def test_ttl_zero_disables_expiry():
+    from libi_modes.ros.providers import RosProviders
+    p = _providers(ttl=0.0)
+    RosProviders._on_requester(p, SimpleNamespace(data=True))
+    p._now.t = 10_000.0
+    assert RosProviders._fresh_requester_visible(p) is True

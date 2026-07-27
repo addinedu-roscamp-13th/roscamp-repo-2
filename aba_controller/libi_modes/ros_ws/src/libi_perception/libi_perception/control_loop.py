@@ -76,7 +76,18 @@ class ControlLoop:
             det = self.get_detection()
             if det is not None:
                 self.miss = 0
-                self.tracker.step(det, self.get_scan(), self._dt())
+                if not getattr(det, 'motion_ok', True):
+                    # 보이지만 가면 안 된다 — 누워 있거나, 로봇 코앞이거나, 자세를
+                    # 재는 중이다. **miss 를 올리지 않는다**: 올리면 눈앞에 멀쩡히
+                    # 보이는 대상을 두고 탐색 회전을 시작한다. 놓친 게 아니라
+                    # 가지 않기로 한 것이다.
+                    self.publish(0.0, 0.0)
+                    # PID 도 리셋한다. 정지 구간 동안 적분항이 쌓이면 재개하는 순간
+                    # 튀어 나간다.
+                    self.tracker.reset()
+                    self._last_tick = None
+                else:
+                    self.tracker.step(det, self.get_scan(), self._dt())
             else:
                 self.miss += 1
                 self.publish(0.0, 0.0)

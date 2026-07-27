@@ -45,6 +45,12 @@ libi_modes:
     # 그렇게 멈춰 기다렸는데도 끝내 안 오면 안내를 끝낸다(FAILURE).
     #   없으면 요청자가 그냥 가버렸을 때 로봇이 목적지 앞에서 영원히 서 있는다.
     guide_lost_timeout_sec: 45
+    # 요청자 가시성(`/libi/requester_visible`)의 신선도. 이보다 오래 갱신이 없으면
+    # **False(정지)** 로 본다.
+    #   ⚠️ None(감시 없음)으로 내리면 안 된다 — GuideExec 이 "감시 없음 → 그냥 주행"으로
+    #      읽어서, AI 서버가 죽었을 때 로봇이 사람 없이 계속 몰고 간다.
+    #   카메라 15fps + 발행 주기를 감안해 몇 초를 준다.
+    requester_ttl_sec: 2.0
   returning:
     dock_retry_max: 3
   security_patrol:

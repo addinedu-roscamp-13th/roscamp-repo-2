@@ -92,3 +92,56 @@ def test_search_timeout_ends():
     clock.t = 10_000.0
     loop2.tick()          # search exhausted -> ENDED
     assert loop2.state == 'ENDED'
+
+
+# ── motion_ok 게이트 ─────────────────────────────────────────────────────────
+# "보이지만 가면 안 된다"(누움 / 코앞 / 자세 측정 중)와 "놓쳤다"는 다르다.
+# 전자를 후자로 처리하면 눈앞에 멀쩡히 보이는 대상을 두고 탐색 회전을 시작한다.
+
+def _blocked_det():
+    return Detection(cx=320.0, cy=240.0, area=100.0, bbox=(0, 0, 10, 10),
+                     track_id=1, is_owner=True, confidence=0.9, is_predicted=False,
+                     posture="Lying", motion_ok=False)
+
+
+def test_motion_blocked_publishes_zero():
+    pub = _Pub()
+    loop = ControlLoop(lambda: _blocked_det(), lambda: [], pub, _cfg(), now=_Clock())
+    loop.tick()
+    assert pub.calls[-1] == (0.0, 0.0)
+
+
+def test_motion_blocked_stays_tracking():
+    pub = _Pub()
+    cfg = _cfg(N_MISS_FRAMES=3)
+    loop = ControlLoop(lambda: _blocked_det(), lambda: [], pub, cfg, now=_Clock())
+    for _ in range(cfg.N_MISS_FRAMES + 5):
+        loop.tick()
+    assert loop.state == 'TRACKING'          # 정지일 뿐 소실이 아니다
+
+
+def test_motion_blocked_does_not_count_as_miss():
+    pub = _Pub()
+    loop = ControlLoop(lambda: _blocked_det(), lambda: [], pub, _cfg(), now=_Clock())
+    for _ in range(10):
+        loop.tick()
+    assert loop.miss == 0
+
+
+def test_motion_allowed_again_resumes_tracking():
+    pub = _Pub()
+    dets = [_blocked_det(), _blocked_det(), _det()]
+    loop = ControlLoop(lambda: dets.pop(0) if dets else _det(),
+                       lambda: [], pub, _cfg(), now=_Clock())
+    loop.tick(); loop.tick()
+    assert pub.calls[-1] == (0.0, 0.0)
+    loop.tick()
+    assert pub.calls[-1] != (0.0, 0.0)         # 다시 몰기 시작한다
+
+
+def test_missing_motion_ok_field_does_not_block():
+    """옛 payload(필드 없음)에서 로봇이 영영 안 움직이면 안 된다."""
+    pub = _Pub()
+    loop = ControlLoop(lambda: _det(), lambda: [], pub, _cfg(), now=_Clock())
+    loop.tick()
+    assert pub.calls[-1] != (0.0, 0.0)

@@ -120,7 +120,13 @@ class FsmNode(Node):
         params = self._load_params(params_file)
 
         cmd_pub = _CmdPublisher(self, cmd_topic)
-        self._providers = RosProviders(self, cmd_topic=cmd_topic)
+        self._providers = RosProviders(
+            self, cmd_topic=cmd_topic,
+            # 요청자 가시성이 이 시간 갱신되지 않으면 False(정지)로 본다.
+            # 감시하던 쪽이 죽었을 때 마지막 True 가 영원히 남아 로봇이 사람 없이
+            # 계속 몰고 가는 것을 막는다.
+            requester_ttl_sec=float(
+                params.get("working", {}).get("requester_ttl_sec", 2.0)))
 
         # 액션별 드라이버. 전부 같은 /fleet_cmd 통로를 쓰고 결과는 id 로 갈린다.
         self._drivers = {
