@@ -31,6 +31,12 @@ def detection_to_dict(det):
         "cx": det.cx, "cy": det.cy, "area": det.area, "bbox": list(det.bbox),
         "track_id": det.track_id, "is_owner": det.is_owner,
         "confidence": det.confidence, "is_predicted": det.is_predicted,
+        # 아래 넷은 optional 이다 — 받는 쪽(detection_from_dict)이 없으면 기본값을 쓴다.
+        # getattr 로 읽는 이유: 이 함수는 테스트 대역 객체도 받는다.
+        "posture": getattr(det, "posture", None),
+        "motion_ok": bool(getattr(det, "motion_ok", True)),
+        "camera": getattr(det, "camera", None),
+        "camera_epoch": int(getattr(det, "camera_epoch", 0) or 0),
     }
 
 

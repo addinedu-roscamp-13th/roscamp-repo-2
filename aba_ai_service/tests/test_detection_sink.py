@@ -47,9 +47,15 @@ class _Det:
 
 
 def test_detection_to_dict_matches_robot_contract():
+    """받는 쪽(libi_perception.detection_from_dict)이 읽는 키와 정확히 같아야 한다.
+
+    키를 더할 때 이 테스트가 빨개지는 건 정상이다 — 계약이 바뀌었다는 뜻이므로
+    **양쪽 dataclass 를 같이 고쳤는지** 확인하고 나서 여기를 갱신한다.
+    """
     d = detection_to_dict(_Det())
     assert set(d) == {"cx", "cy", "area", "bbox", "track_id",
-                      "is_owner", "confidence", "is_predicted"}
+                      "is_owner", "confidence", "is_predicted",
+                      "posture", "motion_ok", "camera", "camera_epoch"}
 
 
 def test_bbox_is_a_list_so_it_survives_json():
@@ -97,3 +103,38 @@ def test_sink_recovers_after_the_robot_comes_back():
     robot.wait()
     sink._close_locked()                          # simulate a dropped link
     assert sink.send({"cx": 2.0}) is True         # reconnects on the next send
+
+
+# ── 신규 필드 (자세·주행가부·카메라·epoch) ────────────────────────────────────
+
+class _RichDet(_Det):
+    posture, motion_ok, camera, camera_epoch = "Standing", True, "back", 7
+
+
+def test_new_fields_are_serialised():
+    d = detection_to_dict(_RichDet())
+    assert d["posture"] == "Standing"
+    assert d["motion_ok"] is True
+    assert d["camera"] == "back"
+    assert d["camera_epoch"] == 7
+
+
+def test_old_producer_without_new_fields_still_serialises():
+    """이 함수는 테스트 대역도 받는다 — 없는 속성으로 죽으면 안 된다."""
+    d = detection_to_dict(_Det())
+    assert d["posture"] is None
+    assert d["motion_ok"] is True
+    assert d["camera"] is None
+    assert d["camera_epoch"] == 0
+
+
+def test_motion_ok_false_survives_serialisation():
+    class _Stopped(_Det):
+        motion_ok = False
+    assert detection_to_dict(_Stopped())["motion_ok"] is False
+
+
+def test_new_fields_survive_json_roundtrip():
+    """생산자 → JSON → 소비자 계약이 실제로 이어지는지. 한쪽만 고치면 여기서 깨진다."""
+    payload = json.loads(json.dumps(detection_to_dict(_RichDet())))
+    assert payload["camera"] == "back" and payload["camera_epoch"] == 7
