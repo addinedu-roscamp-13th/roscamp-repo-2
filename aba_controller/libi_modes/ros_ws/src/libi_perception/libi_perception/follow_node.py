@@ -246,8 +246,12 @@ class RemoteControl:
         elif action in self.STOP_ACTIONS:
             target = sess.target_session_id(cmd_id, args)
             if self._sessions.stop(target):
-                if self._active_id is not None:
-                    self._session.stop()
+                # 세션은 역할과 무관하게 켜므로(감시도 회복 트리가 돌아야 한다)
+                # **닫을 때도 역할과 무관하게** 멈춘다. `_active_id` 로 감싸면
+                # guide/watch 의 루프가 세션이 닫힌 뒤에도 계속 tick 되어,
+                # 이미 끝난 안내가 카메라 전환을 계속 요청한다.
+                self._session.stop()
+                self._active_id = None
                 self._publish_camera(force=True)
                 self._log.info(f'세션 종료 (id={target})')
 
@@ -315,8 +319,8 @@ class RemoteControl:
             # 패널이 죽어 stop 이 안 왔다. 카메라를 끄지 않으면 아무도 안 보는데
             # 계속 켜져 있고, 그 사실을 아무도 모른다.
             self._log.info('세션 lease 만료 — 닫습니다')
-            if self._active_id is not None:
-                self._session.stop()
+            self._session.stop()
+            self._active_id = None
         self._publish_camera()
         self._publish_requester()
         self.publish_snapshot()

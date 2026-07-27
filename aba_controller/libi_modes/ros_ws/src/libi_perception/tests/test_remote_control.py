@@ -293,3 +293,19 @@ def test_guide_watch_may_replace_a_follow(rc):
     rc.send(action='follow_admin', id='f1')
     rc.send(action='guide_watch', id='g1')
     assert rc.session.stopped == 1
+
+
+def test_stopping_a_watch_session_also_stops_the_loop(rc):
+    """세션을 역할과 무관하게 켜므로 닫을 때도 그래야 한다 — 안 그러면 이미 끝난
+    안내의 회복 트리가 계속 tick 되어 카메라 전환을 요청한다."""
+    rc.send(action='watch', id='w1', args={'camera': 'front'})
+    assert rc.session.started == 1
+    rc.send(action='stop', id='stop-w1')
+    assert rc.session.stopped == 1
+    assert rc.cam()[-1] == 'none'
+
+
+def test_stopping_a_guide_watch_session_also_stops_the_loop(rc):
+    rc.send(action='guide_watch', id='g1')
+    rc.send(action='stop', id='stop-g1')
+    assert rc.session.stopped == 1
