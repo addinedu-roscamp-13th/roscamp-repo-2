@@ -142,6 +142,21 @@ tmux has-session -t "$SESSION" 2>/dev/null \
   || die "'$SESSION' 세션이 뜨지 않았습니다 — 위 [pi] 출력을 확인하세요."
 
 # ── 2) 추종·길잡이 감시 노드 ────────────────────────────────────────────────
+# ⚠️ ensure_built 는 `install/` 이 **아예 없을 때만** 빌드한다. 새 노드가 추가되거나
+#    소스가 바뀌면 install 트리는 남아 있으면서 내용만 낡는다 — 그러면 런처가 **조용히
+#    옛 코드를 돌린다.** 진입점이 없으면 빌드하고, 소스가 더 새로우면 크게 경고한다.
+LIBI_WS="$REPO_ROOT/aba_controller/libi_modes/ros_ws"
+FOLLOW_BIN="$LIBI_WS/install/libi_perception/lib/libi_perception/follow_node"
+if [ ! -x "$FOLLOW_BIN" ]; then
+  echo "[pi-all] libi_perception 진입점이 없습니다 → colcon build (한 번만)"
+  ( source /opt/ros/jazzy/setup.bash && cd "$LIBI_WS" \
+    && colcon build --symlink-install --packages-select libi_perception ) \
+    || die "colcon build 실패: $LIBI_WS"
+elif [ -n "$(find "$LIBI_WS/src/libi_perception" -name '*.py' -newer "$FOLLOW_BIN" -print -quit 2>/dev/null)" ]; then
+  echo "[pi-all] ⚠️  libi_perception 소스가 빌드보다 새롭습니다 — **옛 코드가 돕니다.**"
+  echo "         cd $LIBI_WS && colcon build --symlink-install --packages-select libi_perception"
+fi
+
 # ⚠️ 이 창이 없으면 **추종도 길잡이도 통째로 안 돈다.** 이 노드가 소유하는 것:
 #      /libi/camera_select        발행 — 없으면 카메라가 영원히 none 이라 영상이 안 나간다
 #      TCP:6000 검출 수신          — AI 서버가 고른 주인 검출을 받는다
