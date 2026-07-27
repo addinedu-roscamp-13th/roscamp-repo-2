@@ -14,19 +14,23 @@
 # ## 무엇을 띄우나 (전부 tmux 세션 `pinky_pi` 안)
 #
 #   pi.sh 가 만드는 창들   hw · nav2 · fleet-link · fsm · led   (주행 스택)
-#   cam-front             picam  → UDP:6001  추종 영상
-#   cam-back              USB캠  → UDP:6003  길잡이 감시 영상  (--back 줬을 때만)
-#   follow-drive          UDP:6002 → /cmd_vel  (cmd_bridge)
+#   cam                   앞/뒤 카메라 한 프로세스 → UDP:6001
+#   keepout               통행 금지 마스크 발행            (--dyn-obstacle 줬을 때만)
 #
 # 같은 세션에 얹는 이유: 정리 경로를 하나로 유지한다. 세션을 지우면 전부 같이 죽고,
 # 창만 닫아 살아남는 경우까지 drive-pi/kill.sh 가 이름으로 다시 쓸어담는다.
 #
-# ## 뒷캠은 왜 fps 가 낮나 (BACK_FPS=10, 앞캠은 15)
+# ## [2026-07-27] 창 두 개가 사라졌다
 #
-# 앞캠 출력은 cmd_vel 이라 지연이 곧 주행 품질이지만, 뒷캠 출력은 Bool 하나다
-# (`/libi/requester_visible` → BT `GuideExec`). "사람이 뒤에 있나"만 보면 되므로
-# 낮춰도 되고, Pi 가 JPEG 인코딩을 두 벌 돌리는 부담이 그만큼 준다.
-# 더 줄이려면:  BACK_FPS=5 ./pi-all.sh --robot Pinky-3
+# **cam-front / cam-back → cam 하나.** camera_sender 가 앞뒤를 한 프로세스로 잡고
+# `/libi/camera_select`(BT 가 발행)에 따라 **선택된 것만** 인코딩·송출한다. 장치를 여는
+# 주체가 하나로 모여, 두 프로세스가 같은 장치를 열어 앞캠이 죽던 사고가 구조적으로
+# 불가능해진다. JPEG 인코딩도 한 벌만 돌아 Pi 부담이 준다. 포트도 6001 하나로 합쳤다.
+#
+# **follow-drive 제거.** 추종 제어가 AI 서버에서 로봇 쪽 libi_perception 으로 옮겨가
+# UDP:6002 경로가 은퇴했다. 남겨 두면 그 브리지가 명령이 없을 때도 20Hz 로 정지 명령을
+# 계속 쏴서, 새 PID 와 `/cmd_vel` 을 다툰다 — 이 시스템에는 중재자(twist_mux)가 없어
+# **마지막에 도착한 메시지가 이긴다.**
 #
 # ## 카메라 인자를 왜 env 로 주나
 #
@@ -38,8 +42,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/../_common.sh"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SESSION="pinky_pi"          # 안쪽 ros_ws/scripts/pi.sh:28 이 만드는 세션 이름
-BACK_PORT="${BACK_PORT:-6003}"
-BACK_FPS="${BACK_FPS:-10}"
+# [2026-07-27] BACK_PORT/BACK_FPS 는 없앴다. 앞뒤가 한 프로세스라 포트도 fps 도 하나다
+# (선택된 캠만 인코딩하므로, 예전에 뒷캠 fps 를 낮춰 아끼려던 비용 자체가 사라졌다).
 
 ROBOT=""
 AI_IP=""
@@ -47,12 +51,19 @@ AI_IP=""
 # 인덱스는 로봇마다 다르고, 틀린 값은 조용히 실패하지 않고 **앞캠을 죽인다.**
 # laptop-all.sh 의 --back 과 같은 결이다.
 WITH_BACK=false
+# 동적 장애물 회피는 **기본 꺼짐**이다. 켜고 끄기가 쉬워야, 좁은 통로가 통째로 막히는
+# 상황이 났을 때 즉시 되돌릴 수 있다(맵이 1.26×2.16m 라 실제로 그럴 수 있다).
+WITH_DYN_OBSTACLE=false
+DYN_OBSTACLE_FAN_DEG="${DYN_OBSTACLE_FAN_DEG:-60}"
+DYN_OBSTACLE_TTL="${DYN_OBSTACLE_TTL:-20.0}"
+DYN_OBSTACLE_NEAR_AREA="${DYN_OBSTACLE_NEAR_AREA:-0}"   # 0 = 정책 자체가 꺼짐
 ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --robot)    ROBOT="${2:-}"; shift 2 ;;
     --ai)       AI_IP="${2:-}"; shift 2 ;;
     --back)     WITH_BACK=true; BACK_CAM="${2:?--back 뒤에 USB 캠 인덱스가 필요합니다 (예: --back 4).  목록: v4l2-ctl --list-devices}"; shift 2 ;;
+    --dyn-obstacle) WITH_DYN_OBSTACLE=true; shift ;;
     *)          ARGS+=("$1"); shift ;;     # --no-fsm 등은 pi.sh 로 그대로
   esac
 done
@@ -109,7 +120,7 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
   die "'$SESSION' 세션이 이미 떠 있습니다. 먼저 정리하세요:  $HERE/kill-pi.sh"
 fi
 
-echo "[pi-all] 로봇=$ROBOT  AI=$AI_IP  뒷캠=$([ "$WITH_BACK" = true ] && echo "/dev/video$BACK_CAM → UDP:$BACK_PORT @${BACK_FPS}fps" || echo "없음(--back <n> 으로 켬)")"
+echo "[pi-all] 로봇=$ROBOT  AI=$AI_IP  뒷캠=$([ "$WITH_BACK" = true ] && echo "/dev/video$BACK_CAM" || echo "없음(--back <n> 으로 켬)")  동적장애물=$([ "$WITH_DYN_OBSTACLE" = true ] && echo "ON" || echo "OFF(--dyn-obstacle 로 켬)")"
 
 # ── 1) 주행 스택 ────────────────────────────────────────────────────────────
 # ⚠️ 파이프를 태우는 게 핵심이다. 안쪽 pi.sh 는 `[ -t 1 ]` 이면 세션에 **attach 해서
@@ -127,17 +138,21 @@ tmux has-session -t "$SESSION" 2>/dev/null \
   || die "'$SESSION' 세션이 뜨지 않았습니다 — 위 [pi] 출력을 확인하세요."
 
 # ── 2) 카메라 송출 ──────────────────────────────────────────────────────────
-tmux new-window -t "$SESSION" -n cam-front \
-  bash -c "cd '$REPO_ROOT' && echo '[cam-front] picam → $AI_IP:6001 (추종)' && ./scripts/drive-pi/image-sender.sh '$AI_IP'; exec bash"
+# 앞뒤를 **한 프로세스**가 잡는다. 뒷캠 인덱스를 주면 `--back-camera` 로 넘어간다.
+# 어느 캠을 내보낼지는 BT 가 `/libi/camera_select` 로 정한다 — 아무 세션도 없으면
+# `none` 이라 아무것도 안 나간다(캡처와 생프레임 탭은 계속 돈다).
+CAM_ARGS="--picamera"
+[ "$WITH_BACK" = true ] && CAM_ARGS="$CAM_ARGS --back-camera $BACK_CAM"
+tmux new-window -t "$SESSION" -n cam \
+  bash -c "cd '$REPO_ROOT' && echo '[cam] 앞/뒤 → $AI_IP:6001 (BT 가 camera_select 로 고름)' && CAM_ARGS='$CAM_ARGS' ./scripts/drive-pi/image-sender.sh '$AI_IP'; exec bash"
 
-if [ "$WITH_BACK" = true ]; then
-  tmux new-window -t "$SESSION" -n cam-back \
-    bash -c "cd '$REPO_ROOT' && echo '[cam-back] /dev/video$BACK_CAM → $AI_IP:$BACK_PORT @${BACK_FPS}fps (길잡이 감시)' && CAM_ARGS='--camera $BACK_CAM' VIDEO_PORT='$BACK_PORT' FPS='$BACK_FPS' ./scripts/drive-pi/image-sender.sh '$AI_IP'; exec bash"
+# ── 3) 동적 장애물 (기본 꺼짐) ──────────────────────────────────────────────
+# 켜면 nav2 가 필터 포함 파라미터로 뜨고 마스크 발행 노드가 함께 돈다.
+# 끄면 이 기능이 없던 때와 **완전히 같은 경로**다 — 문제가 나면 플래그만 빼면 된다.
+if [ "$WITH_DYN_OBSTACLE" = true ]; then
+  tmux new-window -t "$SESSION" -n keepout \
+    bash -c "cd '$REPO_ROOT' && echo '[keepout] 통행 금지 마스크 발행 (부채꼴 ${DYN_OBSTACLE_FAN_DEG}° / TTL ${DYN_OBSTACLE_TTL}s)' && source /opt/ros/jazzy/setup.bash && source '$REPO_ROOT/aba_controller/libi_modes/ros_ws/install/setup.bash' && ros2 run libi_perception keepout_node --ros-args -p fan_deg:=$DYN_OBSTACLE_FAN_DEG -p ttl_sec:=$DYN_OBSTACLE_TTL -p near_area_max:=$DYN_OBSTACLE_NEAR_AREA; exec bash"
 fi
-
-# ── 3) 추종 명령 수신 ───────────────────────────────────────────────────────
-tmux new-window -t "$SESSION" -n follow-drive \
-  bash -c "cd '$REPO_ROOT' && echo '[follow-drive] UDP:6002 → /cmd_vel' && ./scripts/drive-pi/follow-drive.sh; exec bash"
 
 echo "[pi-all] 정리: $HERE/kill-pi.sh"
 

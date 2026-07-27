@@ -28,9 +28,12 @@ ROBOT_AGENT_DIR="$ROS_WS_DIR/../robot_agent"
 SESSION="pinky_pi"
 WITH_FSM=true
 WITH_LED=true
+# 통행 금지 필터(동적 장애물). 기본 꺼짐 — pi-all.sh 가 --dyn-obstacle 을 받으면 넘겨준다.
+WITH_KEEPOUT=false
 for arg in "$@"; do
   [ "$arg" = "--no-fsm" ] && WITH_FSM=false
   [ "$arg" = "--no-led" ] && WITH_LED=false
+  [ "$arg" = "--keepout" ] && WITH_KEEPOUT=true
 done
 
 MAP_PATH="$ROS_WS_DIR/src/pinky_pro/pinky_navigation/map/arte3.yaml"
@@ -77,8 +80,16 @@ LIBI_MODES_SETUP="$ROS_SETUP && source '$LIBI_MODES_WS/install/setup.bash'"
 tmux new-session -d -s "$SESSION" -n hw \
   bash -c "$ROS_SETUP && ros2 launch pinky_bringup bringup_robot.launch.xml; exec bash"
 
+# 동적 장애물(통행 금지 필터)을 켤 때만 필터 포함 파라미터를 쓴다. 기본은 예전 그대로다 —
+# 필터가 `/costmap_filter_info` 를 기다리므로, 발행 노드 없이 켜 두면 어떻게 구는지에
+# 의존하게 된다. 그래서 파일을 갈라 두고 런처가 고른다.
+NAV2_PARAMS_ARG=""
+if [ "$WITH_KEEPOUT" = true ]; then
+  NAV2_PARAMS_ARG="params_file:=$ROS_WS_DIR/src/pinky_pro/pinky_navigation/params/nav2_params_keepout.yaml"
+  echo "[pi] 통행 금지 필터 ON — nav2_params_keepout.yaml 사용"
+fi
 tmux new-window -t "$SESSION" -n nav2 \
-  bash -c "$ROS_SETUP && echo '[nav2] 하드웨어(/scan) 대기 중...' && for i in \$(seq 1 30); do ros2 topic list 2>/dev/null | grep -q '/scan' && break; sleep 1; done && ros2 launch pinky_navigation bringup_launch.xml map:='$MAP_PATH'; exec bash"
+  bash -c "$ROS_SETUP && echo '[nav2] 하드웨어(/scan) 대기 중...' && for i in \$(seq 1 30); do ros2 topic list 2>/dev/null | grep -q '/scan' && break; sleep 1; done && ros2 launch pinky_navigation bringup_launch.xml map:='$MAP_PATH' $NAV2_PARAMS_ARG; exec bash"
 
 if [ -f "$INIT_POSE" ] && [ -n "$INIT_DOCK" ]; then
   tmux new-window -t "$SESSION" -n init-pose \
