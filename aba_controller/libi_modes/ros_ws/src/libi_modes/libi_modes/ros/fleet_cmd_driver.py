@@ -91,3 +91,42 @@ class ArmHomeDriver:
 
     def go_home(self):
         self._driver.start()
+
+
+class YawGoalDriver:
+    """제자리 회전을 `goal` 하나로 표현한다. `start(target_yaw)` 로 부른다.
+
+    ## 왜 /cmd_vel 을 직접 안 쓰나
+
+    libi_modes 는 지금 `/cmd_vel` 을 발행하지 않는다. 회전 때문에 발행자를 하나 더
+    만들면, 중재자(twist_mux)가 없는 이 시스템에서 **조용한 경합 창이 하나 늘어난다** —
+    마지막에 도착한 명령이 이기므로 누가 이겼는지 로그로 가릴 수도 없다.
+
+    같은 x·y 에 목표 yaw 만 다른 `goal` 을 보내면 nav2 가 제자리 회전으로 처리한다.
+    실행 경로도 기존 주행과 완전히 같아진다(같은 통로, 같은 결과 상관).
+
+    현재 위치를 모르면 회전 명령을 보내지 않는다 — 좌표 없이 goal 을 내면 실행 층이
+    `args["x"]` 에서 죽는다.
+    """
+
+    def __init__(self, cmd_driver, pose_fn):
+        self._driver = cmd_driver
+        self._pose_fn = pose_fn
+        self._target_yaw = 0.0
+        self._driver._args_fn = self._args
+
+    def _args(self):
+        pose = self._pose_fn() or {}
+        return {"x": pose.get("x", 0.0), "y": pose.get("y", 0.0), "yaw": self._target_yaw}
+
+    def start(self, target_yaw=0.0):
+        if not self._pose_fn():
+            return                      # 위치를 모른다 — 보내지 않는다
+        self._target_yaw = float(target_yaw)
+        self._driver.start()
+
+    def poll(self):
+        return self._driver.poll()
+
+    def stop(self):
+        self._driver.stop()

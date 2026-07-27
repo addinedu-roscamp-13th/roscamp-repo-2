@@ -65,6 +65,12 @@ libi_modes:
     guide_junction_hold_sec: 1.0
   returning:
     dock_retry_max: 3
+    # 회전 단계(FaceParking/TurnAround)의 각도 허용오차(rad). 약 8.6도.
+    yaw_tolerance_rad: 0.15
+    # 정렬 후 `is_docked`(실제 도킹 확인)를 기다리는 시간(초).
+    #   이 확인을 빼면 로봇이 충전소에 닿지도 않은 채 CHARGING 을 선언한다 —
+    #   화면은 멀쩡한데 배터리는 계속 떨어진다.
+    dock_confirm_sec: 90.0
   security_patrol:
     # 15분 야간 루프 — Topics2BB/외부 스케줄러가 security_patrol_request 를 넣어주는 주기.
     # 이 패키지가 타이머 자체를 소유하지 않는다 (IdleBranch 에 타이머 leaf 없음).

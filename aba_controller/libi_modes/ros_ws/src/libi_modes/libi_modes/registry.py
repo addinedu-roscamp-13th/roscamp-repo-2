@@ -65,7 +65,13 @@ def build_branches(params: dict, drivers: dict) -> dict:
     and dispatching follow_admin without it raises a named error rather than hanging."""
     return {
         "ERROR": error.create(params),
-        "RETURNING": returning.create(params, drivers["return_arm"], drivers["return_dock"]),
+        "RETURNING": returning.create(
+            params,
+            entrance_driver=drivers["return_entrance"],
+            dock_driver=drivers["return_dock"],
+            rotate_driver=drivers["return_rotate"],
+            entrance_xy=drivers["return_entrance_xy"],
+            parking_xy=drivers["return_parking_xy"]),
         "CHARGING": charging.create(params),
         "WORKING": working.create(params, drivers["nav"], drivers["arm"],
                                   drivers.get("follow"),

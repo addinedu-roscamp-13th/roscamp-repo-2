@@ -61,8 +61,14 @@ def all_drivers():
         "follow": FakeDriver(),
         "guide": FakeDriver(),
         "guide_stop": FakeDriver(),
-        "return_arm": FakeArmDriver(),
+        # 복귀 5단계. `return_arm` 은 없앴다(이 로봇에 팔이 없다).
+        "return_entrance": FakeDriver(),
         "return_dock": FakeDriver(),
+        "return_rotate": FakeYawDriver(),
+        "return_entrance_xy": (0.6, 0.0),
+        "return_parking_xy": (0.0, 0.0),
+        "guide_watch": FakeDriver(),
+        "junctions": None,
     }
 
 
@@ -76,3 +82,15 @@ def all_providers(**overrides):
     }
     base.update(overrides)
     return base
+
+
+class FakeYawDriver(FakeDriver):
+    """`start(target_yaw)` 를 받는 회전 드라이버 대역. 마지막 목표 각도를 기록한다."""
+
+    def __init__(self, poll_sequence=("running",)):
+        super().__init__(poll_sequence)
+        self.last_yaw = None
+
+    def start(self, target_yaw=0.0):
+        self.last_yaw = target_yaw
+        self.start_count += 1

@@ -37,7 +37,7 @@ from libi_modes import tree as tree_mod
 from libi_modes.blackboard import Keys
 from libi_modes.common.junctions import JunctionSet, load_junctions
 from libi_modes.registry import BRANCH_ORDER
-from libi_modes.ros.fleet_cmd_driver import ArmHomeDriver, FleetCmdDriver
+from libi_modes.ros.fleet_cmd_driver import FleetCmdDriver, YawGoalDriver
 from libi_modes.ros.providers import RosProviders
 from libi_modes.ros.state_io import StateIO
 
@@ -101,18 +101,23 @@ class FsmNode(Node):
         # yaw 0 = +x 방향 = 입구·안내데스크 쪽(관제 화면에서 위쪽). waypoint.yaml 의
         # `주차장` 자세와 같은 값이다.
         #
-        # ⚠️ 주차는 원래 네 단계다. 지금은 그중 둘이 빠져 **goal 하나로 압축**돼 있다:
+        # [2026-07-27] 복귀가 **5단계로 쪼개졌다.** 예전에는 goal 하나로 압축돼 있었다.
         #
-        #   ① 특정 위치(입구) 이동   nav2 주행           → 지금은 주차장 정점으로 직접
-        #   ② 각도 틀기              주차장 방향 180°     → **없음**
-        #   ③ 이동 로직              테이프 추종 미세조정 → **그냥 주행** (nav2 가 데려다 준다)
-        #   ④ 도착 후 yaw 회전       주차 자세            → nav2 의 goal yaw 로 대신
+        #   ① 주차장 입구 이동   nav2 주행                    GoToParkingEntrance
+        #   ② 주차장 쪽 회전     지금은 좌표 기반             FaceParking   ← 앞캠 ArUco 자리
+        #   ③ 주차장 이동        nav2 주행                    GoToParking
+        #   ④ 180° 회전          충전 단자가 뒤에 있다         TurnAround
+        #   ⑤ 정렬               지금은 자리만                AlignDock     ← 뒷캠 ArUco 자리
         #
-        #    ②③을 붙이려면 park_dock 을 불러야 하는데 그 경로가 아직 배선돼 있지 않다.
-        #    누가 무엇을 부르는지와 미결 네 가지: scripts/drive-pi/dock/README.md
+        # ②⑤에 마커를 붙일 때 트리 배선은 안 바뀐다 — leaf 구현만 갈아끼우면 된다.
+        # (park_dock 연결은 여전히 미결: scripts/drive-pi/dock/README.md)
         return_x = float(self.declare_parameter("return_x", -0.001).value)
         return_y = float(self.declare_parameter("return_y", -0.033).value)
         return_yaw = float(self.declare_parameter("return_yaw", 0.0).value)
+        # 주차장 **입구** 정점. arte2 navgraph 의 `주차장입구`.
+        entrance_x = float(self.declare_parameter("entrance_x", 0.6005).value)
+        entrance_y = float(self.declare_parameter("entrance_y", -0.0333).value)
+        entrance_yaw = float(self.declare_parameter("entrance_yaw", 3.1415).value)
 
         # [디버그] 잠글 상태 브랜치 — 콤마구분. ROS param `disabled_branches` 또는
         # env `LIBI_DISABLED_BRANCHES` (fsm-bt.sh --disable 가 env 로 넘긴다). 기본 빈 값.
@@ -181,8 +186,18 @@ class FsmNode(Node):
                 args_fn=lambda: {"x": return_x, "y": return_y, "yaw": return_yaw},
             ).bind(cmd_pub),
         }
-        self._drivers["return_arm"] = ArmHomeDriver(
-            FleetCmdDriver(self, "arm_home").bind(cmd_pub))
+        # 복귀 5단계가 쓰는 것들.
+        #   ⚠️ 팔 홈복귀(return_arm)는 뺐다 — 이 로봇에 팔이 없다(사용자 결정 2026-07-27).
+        #      ArmHomeDriver 클래스는 남겨 둔다. 팔 로봇이 붙는 날 되살릴 자리다.
+        self._drivers["return_entrance"] = FleetCmdDriver(
+            self, "goal",
+            args_fn=lambda: {"x": entrance_x, "y": entrance_y, "yaw": entrance_yaw},
+        ).bind(cmd_pub)
+        self._drivers["return_rotate"] = YawGoalDriver(
+            FleetCmdDriver(self, "goal").bind(cmd_pub),
+            pose_fn=lambda: bb.get(self._bb, Keys.ROBOT_POSE))
+        self._drivers["return_entrance_xy"] = (entrance_x, entrance_y)
+        self._drivers["return_parking_xy"] = (return_x, return_y)
 
         # 갈림길 정점 — 길잡이가 여기서만 잠깐 서서 사람을 확인한다. 모든 노드에서 서면
         # arte2 레인이 0.151~0.601m 라 1~5초마다 멈춰 안내가 계속 끊긴다.
@@ -231,6 +246,11 @@ class FsmNode(Node):
 
         결과를 기다리지 않는다 — 기다리면 노드 기동이 막힌다. 팔이 없으면(지금이 그렇다)
         실행기가 400 을 돌려주고 끝이며, 그건 정상이다.
+
+        ⚠️ [2026-07-27] `return_arm` 드라이버를 **의도적으로 안 꽂았다**(사용자 결정 —
+        이 로봇에 팔이 없다). 그래서 지금 이 함수는 아무 일도 안 한다. **팔이 달린
+        로봇을 붙일 때 여기 드라이버를 되살려야 한다** — 함수를 지우지 않고 남겨 둔 것은
+        그 자리를 잃지 않기 위해서다.
         """
         driver = self._drivers.get("return_arm")
         if driver is None:
