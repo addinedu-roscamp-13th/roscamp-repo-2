@@ -65,7 +65,19 @@ class SessionManager:
         return True
 
     def expired(self, now: float) -> bool:
+        """lease 는 **패널이 연 `watch` 세션에만** 적용된다.
+
+        ⚠️ 여기에 `follow`/`guide` 까지 넣으면 안 된다. 그 둘은 BT 가 열고 BT 가 닫으며,
+        수십 분씩 이어지는 것이 정상이다. lease 를 걸면 갱신 경로가 없어 **정확히
+        lease_sec 만에 강제 종료**된다 — 멀쩡히 따라가던 추종이 60초에 실패한다.
+
+        `watch` 만 다른 이유는 그것을 여는 주체가 **패널 프로세스**이기 때문이다.
+        패널이 죽으면 `stop` 이 영영 안 오고, 아무도 안 보는데 카메라가 계속 켜져 있다.
+        패널이 살아 있는 동안에는 같은 `watch` 를 주기적으로 재발행해 갱신한다.
+        """
         if self._cur is None or self.lease_sec <= 0:
+            return False
+        if self._cur.role != WATCH:
             return False
         return (now - self._cur.touched_at) > self.lease_sec
 

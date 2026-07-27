@@ -113,3 +113,38 @@ def test_clear_drops_handle_and_pending():
     gh = FakeHandle()
     t.on_response(gh, gen)               # clear 후에도 같은 세대면 다시 받는다
     assert t.active_handle is gh
+
+
+# ── codex 리뷰(2026-07-27)에서 나온 결함 ────────────────────────────────────
+
+def test_stale_accepted_response_is_cancelled_not_just_dropped():
+    """그냥 버리면 **고아가 된다** — nav2 는 그 목표를 받아들였으므로,
+    우리가 잊는다고 로봇이 멈추지 않는다."""
+    t = NavGoalTracker()
+    g1 = t.begin()
+    t.begin()                            # 새 목표가 이전 세대를 대체
+    late = FakeHandle()
+    t.on_response(late, g1)              # 늦게 도착한 옛 세대의 수락 응답
+    assert late.canceled is True
+    assert t.active_handle is None
+
+
+def test_cancel_before_response_then_new_goal_still_cancels_the_old():
+    """begin() 이 pending 을 지우므로, 옛 응답은 세대 불일치 경로로 취소돼야 한다."""
+    t = NavGoalTracker()
+    g1 = t.begin()
+    t.cancel()                           # 아직 핸들 없음 → 대기
+    t.begin()                            # 새 목표
+    old = FakeHandle()
+    t.on_response(old, g1)
+    assert old.canceled is True
+
+
+def test_is_current_distinguishes_generations():
+    """결과 콜백이 자기 목표의 결과인지 가리는 근거."""
+    t = NavGoalTracker()
+    g1 = t.begin()
+    g2 = t.begin()
+    assert t.is_current(g1) is False
+    assert t.is_current(g2) is True
+    assert t.is_current(None) is True     # 세대를 안 실어 보낸 옛 호출부 호환

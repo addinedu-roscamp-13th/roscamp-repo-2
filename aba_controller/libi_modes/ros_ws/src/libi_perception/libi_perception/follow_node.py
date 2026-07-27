@@ -198,9 +198,14 @@ class RemoteControl:
 
         role = self.START_ACTIONS.get(action)
         if role is not None:
-            # 이미 주행 세션이 돌고 있으면 실패로 닫고 갈아탄다 — 두 세션이 같은
-            # cmd_vel 을 동시에 밀면 로봇이 떨린다.
+            # 이미 주행 세션이 돌고 있으면 **실제로 멈추고** 갈아탄다.
+            #
+            # ⚠️ 결과만 실패로 돌려주고 제어 루프를 안 세우면, 그 루프가 계속 20Hz 로
+            #    PID 속도를 발행한다. 새 세션이 길잡이면 nav2 와 옛 추종 PID 가 동시에
+            #    `/cmd_vel` 을 밀어 로봇이 떨거나 엉뚱하게 움직인다 — 중재자가 없어
+            #    마지막에 도착한 메시지가 이긴다.
             if self._active_id is not None:
+                self._session.stop()
                 self._reply(self._active_id, False, '새 세션 요청으로 대체됨')
                 self._active_id = None
             self._sessions.start(cmd_id, role, now, camera=args.get('camera'))

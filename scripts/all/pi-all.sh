@@ -14,6 +14,7 @@
 # ## 무엇을 띄우나 (전부 tmux 세션 `pinky_pi` 안)
 #
 #   pi.sh 가 만드는 창들   hw · nav2 · fleet-link · fsm · led   (주행 스택)
+#   follow                libi_perception — 세션·카메라선택·추종제어·요청자감시
 #   cam                   앞/뒤 카메라 한 프로세스 → UDP:6001
 #   keepout               통행 금지 마스크 발행            (--dyn-obstacle 줬을 때만)
 #
@@ -126,6 +127,9 @@ echo "[pi-all] 로봇=$ROBOT  AI=$AI_IP  뒷캠=$([ "$WITH_BACK" = true ] && ech
 # ⚠️ 파이프를 태우는 게 핵심이다. 안쪽 pi.sh 는 `[ -t 1 ]` 이면 세션에 **attach 해서
 #    돌아오지 않는다**(그 파일 마지막). 그러면 아래 카메라 창들이 영영 안 뜬다.
 #    stdout 을 파이프로 만들면 attach 를 건너뛰고 안내만 찍고 끝난다.
+# 필터 포함 nav2 파라미터를 고르라고 안쪽 런처에 알린다. 이걸 빼면 마스크 발행 노드만
+# 뜨고 nav2 는 기본 params 로 기동해 **기능이 조용히 무효가 된다.**
+[ "$WITH_DYN_OBSTACLE" = true ] && ARGS+=("--keepout")
 "$REPO_ROOT/scripts/drive-pi/pi.sh" --robot "$ROBOT" "${ARGS[@]}" 2>&1 | sed 's/^/[pi] /'
 
 # 세션이 실제로 생겼는지 확인하고 나서 창을 얹는다. ensure_built 가 colcon build 를
@@ -137,7 +141,20 @@ done
 tmux has-session -t "$SESSION" 2>/dev/null \
   || die "'$SESSION' 세션이 뜨지 않았습니다 — 위 [pi] 출력을 확인하세요."
 
-# ── 2) 카메라 송출 ──────────────────────────────────────────────────────────
+# ── 2) 추종·길잡이 감시 노드 ────────────────────────────────────────────────
+# ⚠️ 이 창이 없으면 **추종도 길잡이도 통째로 안 돈다.** 이 노드가 소유하는 것:
+#      /libi/camera_select        발행 — 없으면 카메라가 영원히 none 이라 영상이 안 나간다
+#      TCP:6000 검출 수신          — AI 서버가 고른 주인 검출을 받는다
+#      ControlLoop(PID+LiDAR)     — 추종 주행
+#      /libi/requester_visible|area 발행 — 길잡이가 사람을 보는 근거
+#      /fleet_cmd{follow_admin|guide_watch|watch|stop} 수신 — 세션을 켜고 끈다
+#
+# 예전 `follow-drive`(UDP:6002 → cmd_bridge)를 대신한다. 그쪽은 AI 서버가 주행을
+# 만들었고, 이제는 로봇이 만든다.
+tmux new-window -t "$SESSION" -n follow \
+  bash -c "source /opt/ros/jazzy/setup.bash && source '$REPO_ROOT/aba_controller/libi_modes/ros_ws/install/setup.bash' && echo '[follow] libi_perception — 세션·카메라선택·추종제어' && ros2 run libi_perception follow_node; exec bash"
+
+# ── 3) 카메라 송출 ──────────────────────────────────────────────────────────
 # 앞뒤를 **한 프로세스**가 잡는다. 뒷캠 인덱스를 주면 `--back-camera` 로 넘어간다.
 # 어느 캠을 내보낼지는 BT 가 `/libi/camera_select` 로 정한다 — 아무 세션도 없으면
 # `none` 이라 아무것도 안 나간다(캡처와 생프레임 탭은 계속 돈다).
@@ -146,7 +163,7 @@ CAM_ARGS="--picamera"
 tmux new-window -t "$SESSION" -n cam \
   bash -c "cd '$REPO_ROOT' && echo '[cam] 앞/뒤 → $AI_IP:6001 (BT 가 camera_select 로 고름)' && CAM_ARGS='$CAM_ARGS' ./scripts/drive-pi/image-sender.sh '$AI_IP'; exec bash"
 
-# ── 3) 동적 장애물 (기본 꺼짐) ──────────────────────────────────────────────
+# ── 4) 동적 장애물 (기본 꺼짐) ──────────────────────────────────────────────
 # 켜면 nav2 가 필터 포함 파라미터로 뜨고 마스크 발행 노드가 함께 돈다.
 # 끄면 이 기능이 없던 때와 **완전히 같은 경로**다 — 문제가 나면 플래그만 빼면 된다.
 if [ "$WITH_DYN_OBSTACLE" = true ]; then

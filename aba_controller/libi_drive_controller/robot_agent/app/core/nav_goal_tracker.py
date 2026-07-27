@@ -39,9 +39,13 @@ class NavGoalTracker:
 
     def on_response(self, handle, generation=None) -> None:
         """goal 응답이 왔을 때. `handle` 이 None 이거나 거절이면 아무것도 보관하지 않는다."""
-        if generation is not None and generation != self._generation:
-            return                      # 이미 대체된 목표의 응답 — 버린다
         if handle is None or not getattr(handle, "accepted", True):
+            return
+        if generation is not None and generation != self._generation:
+            # 이미 대체된 목표의 응답이다. **그냥 버리면 고아가 된다** — nav2 는 그
+            # 목표를 받아들였으므로, 우리가 잊는다고 로봇이 멈추지 않는다.
+            # 새 목표가 선점하더라도 취소를 명시적으로 보내는 편이 결정적이다.
+            _safe_cancel(handle)
             return
         if self._cancel_pending:
             self._cancel_pending = False
@@ -60,6 +64,14 @@ class NavGoalTracker:
             return False
         _safe_cancel(handle)
         return True
+
+    def is_current(self, generation) -> bool:
+        """이 세대가 아직 살아 있는 목표인가.
+
+        결과 콜백이 **자기 목표의 결과인지** 가릴 때 쓴다. 안 가리면 이전 목표의
+        결과가 새 목표의 완료로 보고돼, 아직 도착하지도 않았는데 다음 단계로 넘어간다.
+        """
+        return generation is None or generation == self._generation
 
     def clear(self) -> None:
         """목표가 자연 종료됐을 때."""

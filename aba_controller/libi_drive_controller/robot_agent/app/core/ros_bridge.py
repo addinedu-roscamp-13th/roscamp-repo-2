@@ -522,13 +522,20 @@ def _bridge_thread() -> None:
                         self._goal_result = False
                         self._goal_done.set()
                     return
-                gh.get_result_async().add_done_callback(self._on_goal_result)
+                gh.get_result_async().add_done_callback(
+                    lambda f, g=generation: self._on_goal_result(f, g))
 
-            def _on_goal_result(self, future):
+            def _on_goal_result(self, future, generation=None):
+                # ⚠️ 세대를 안 가리면 **이전 목표의 결과가 새 목표의 완료로 보고된다.**
+                #    fire-and-forget 로 A 를 보낸 뒤 nav_to(B) 가 대기에 들어갔을 때
+                #    A 의 결과가 도착하면, B 는 아직 출발도 안 했는데 A 의 성공/실패를
+                #    자기 결과로 받는다 — 도착하지 않았는데 다음 단계로 넘어간다.
+                if not self._goals.is_current(generation):
+                    return
                 try:
                     self._goal_result = (
                         future.result().status == self._GoalStatus.STATUS_SUCCEEDED)
-                except Exception:
+                except Exception:      # noqa: BLE001 — 콜백 예외가 executor 를 죽인다
                     self._goal_result = False
                 self._goals.clear()
                 self._goal_done.set()

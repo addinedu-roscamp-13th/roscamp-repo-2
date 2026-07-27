@@ -253,3 +253,23 @@ def test_camera_request_without_session_is_ignored(rc):
     """세션이 없는데 카메라가 켜지면 아무도 안 보는 영상이 나간다."""
     rc.ctl.request_camera('back')
     assert rc.cam()[-1] == 'none'
+
+
+# ── codex 리뷰(2026-07-27) ───────────────────────────────────────────────────
+
+def test_new_session_actually_stops_the_running_follow(rc):
+    """결과만 실패로 돌려주고 제어 루프를 안 세우면, 그 루프가 계속 20Hz 로 PID
+    속도를 발행한다 — 새 세션이 길잡이면 nav2 와 동시에 /cmd_vel 을 민다."""
+    rc.send(action='follow_admin', id='f1')
+    assert rc.session.stopped == 0
+    rc.send(action='guide_watch', id='g1')
+    assert rc.session.stopped == 1
+
+
+def test_follow_session_is_not_swept_by_lease(rc):
+    """추종은 수십 분씩 이어진다. lease 로 끊으면 멀쩡한 추종이 죽는다."""
+    rc.send(action='follow_admin', id='f1')
+    rc.clock.t += 10_000.0
+    rc.ctl.tick()
+    assert rc.session.stopped == 0
+    assert rc.cam()[-1] == 'front'

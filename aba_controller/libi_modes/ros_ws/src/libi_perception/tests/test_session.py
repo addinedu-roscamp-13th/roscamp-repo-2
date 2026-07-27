@@ -120,3 +120,28 @@ def test_explicit_session_id_wins():
 
 def test_missing_id_is_empty_string():
     assert target_session_id(None) == ""
+
+
+# ── codex 리뷰(2026-07-27) — lease 는 watch 에만 걸린다 ──────────────────────
+
+def test_follow_session_never_expires():
+    """추종은 수십 분씩 이어지는 것이 정상이다. lease 를 걸면 갱신 경로가 없어
+    정확히 lease_sec 만에 멀쩡한 추종이 강제 종료된다."""
+    m = SessionManager(lease_sec=10)
+    m.start("f1", "follow", now=0.0)
+    assert m.expired(now=10_000.0) is False
+    assert m.sweep(now=10_000.0) is False
+
+
+def test_guide_session_never_expires():
+    """길잡이 감시도 BT 가 열고 BT 가 닫는다."""
+    m = SessionManager(lease_sec=10)
+    m.start("g1", "guide", now=0.0)
+    assert m.expired(now=10_000.0) is False
+
+
+def test_only_watch_expires():
+    """패널이 여는 watch 만 lease 를 탄다 — 패널이 죽으면 stop 이 영영 안 온다."""
+    m = SessionManager(lease_sec=10)
+    m.start("w1", "watch", now=0.0, camera="front")
+    assert m.expired(now=11.0) is True
