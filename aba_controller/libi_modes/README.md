@@ -526,6 +526,10 @@ RMF에 잔존하여 재배차되지 않는다. (보고 자체는 이 트리 밖 
 내보낸다. 시각은 **보였을 때만** 갱신한다 — 안 보이는 동안 계속 덮으면 "얼마나 오래 안 보였나"가
 항상 0이 되어 영영 멈추지 않는다.
 
+> **[2026-07-27 수정됨]** 아래 결함은 고쳤다 — `send_nav_goal()` 에 응답 콜백을 달고,
+> 응답보다 취소가 먼저 오는 경우와 새 goal 이 이전 핸들을 덮는 경우까지 다룬다
+> (`robot_agent/app/core/nav_goal_tracker.py`). 원래 설명은 아래에 남겨 둔다.
+>
 > ⚠️ **정지가 실제로는 안 먹는다 (확인된 결함, 길잡이만의 문제 아님).**
 > `mission_stop` → `mission.stop_mission()` → `ros_bridge.cancel_nav()` 까지는 가지만,
 > `cancel_nav()` 가 취소하는 `_active_goal_handle` 은 채워지지 않는다 — `send_nav_goal()` 이
@@ -534,10 +538,19 @@ RMF에 잔존하여 재배차되지 않는다. (보고 자체는 이 트리 밖 
 > 취소되지 않는다. `robot_agent` 소유라 실기 확인 없이 손대지 않았다 — 고칠 때 한 줄이다:
 > `send_goal_async(...).add_done_callback(self._on_goal_response)`.
 
-> ⚠️ **아직 이 토픽을 발행하는 쪽이 없다.** 값이 `None`이면 `GuideExec`은 "감시 없음"으로 읽고
-> 그냥 주행한다(감시 없는 배포에서 길잡이가 통째로 죽는 것보다 낫다). 즉 **지금은 사람을
-> 놓쳐도 계속 간다.** 발행할 쪽은 `libi_perception`이다 — `DetectionReceiver.latest()`가 이미
-> "지금 보이나"를 알고 있다. 그래서 `btNodeFlags.ts`에 `GuideExec: "partial"`로 적혀 있다.
+> **[2026-07-27] 발행자가 생겼다.** `libi_perception` 의 `follow_node` 가 `guide`/`watch`
+> 역할일 때 `/libi/requester_visible`(Bool)과 `/libi/requester_area`(Float32)를 낸다.
+> `btNodeFlags.ts` 의 `GuideExec: "partial"` 도 해제했다.
+>
+> 값이 `None`이면 여전히 "감시 없음"으로 읽고 그냥 주행한다(감시 없는 배포에서 길잡이가
+> 통째로 죽는 것보다 낫다). 다만 **한 번이라도 받은 뒤 끊기면 `False`(정지)로 내린다** —
+> `None`으로 내리면 AI 서버가 죽었을 때 로봇이 사람 없이 계속 몰고 간다.
+>
+> 그리고 `GuideExec` 은 이제 셋을 더 본다:
+>   · **거리 게이트** — 보이지만 너무 멀면(`guide_far_area_min`) 멈춰 기다린다
+>   · **근접 정지** — 앞을 막을 만큼 가까우면 멈춘다(`guide_near_area_max`, 기본 꺼짐)
+>   · **갈림길 확인** — 레인 3개 이상 붙은 정점에서만 잠깐 선다. 모든 노드에서 서면
+>     arte2 레인이 0.151~0.601m 라 1~5초마다 멈춰 안내가 계속 끊긴다
 
 테스트: `test/test_guide_exec.py` (분류 분리·유예·실제 정지·재개·포기·도착·감시없음)
 
@@ -547,12 +560,44 @@ RMF에 잔존하여 재배차되지 않는다. (보고 자체는 이 트리 밖 
 ReturningBranch (Sequence, memory=False)
 ├── IsMode("RETURNING")
 ├── Parallel(SuccessOnOne)
-│   ├── Sequence(memory=True)                   # 복귀 1회
-│   │   ├── ReturnNavigation                    # 팔 홈 복귀 → 충전소 주행 → 도킹 (3회 재시도)
+│   ├── ReturnSteps (Sequence, memory=True)
+│   │   ├── ReturnOrSkip (Selector, memory=False)
+│   │   │   ├── AlreadyDocked                   # 충전소에 놓인 채 부팅 → 전부 건너뜀
+│   │   │   └── ReturnDriveSteps (Sequence, memory=True)
+│   │   │       ├── Absorb[GoToParkingEntrance] # ① 주차장 입구로 주행
+│   │   │       ├── Absorb[FaceParking]         # ② 주차장 쪽 회전   ← 앞캠 ArUco 자리
+│   │   │       ├── Absorb[GoToParking]         # ③ 주차장으로 주행
+│   │   │       ├── Absorb[TurnAround]          # ④ 180° 회전 (후면 도킹)
+│   │   │       └── Absorb[AlignDock]           # ⑤ 정렬 + is_docked 대기 ← 뒷캠 ArUco 자리
 │   │   └── SetNextMode("CHARGING")
 │   └── exit_watchdog([FaultDetected])
 └── RequestTransition()
 ```
+
+### [2026-07-27] 한 leaf → 5단계
+
+예전에는 `ReturnNavigation` 하나가 팔 홈복귀·주행·도킹을 통째로 했다. 어디서 실패했는지
+화면에 안 보였고, 정밀 정렬(ArUco)을 붙일 자리도 없었다.
+
+**각 단계는 `AbsorbFailure` 로 감싼다.** `Parallel` 은 자식 하나가 FAILURE 를 내면
+**정책과 무관하게** 즉시 실패하므로, 감싸지 않으면 형제 `FaultDetected` 가 그 fault 를
+ERROR 전이로 바꿀 tick 조차 없이 브랜치가 죽는다. 재시도를 다 쓰면 fault 를 세우고
+그래도 RUNNING 을 낸다(기존 `ReturnNavigation` 이 지키던 성질 그대로다).
+
+**`AlignDock` 은 정렬 동작이 아직 없지만 `is_docked`(실제 도킹 확인)는 그대로 요구한다.**
+즉시 SUCCESS 로 두면 로봇이 충전소에 닿지도 않은 채 CHARGING 을 선언한다 — 화면은
+멀쩡한데 배터리는 계속 떨어진다.
+
+**`AlreadyDocked`** — 부팅 상태가 `RETURNING` 이라, 충전소에 놓인 채 켜면 5단계가 그대로
+돌아 입구까지 나갔다 되돌아온다. 15% 미만이면 도달 못 할 수도 있다.
+
+**회전은 새 `/cmd_vel` 발행자를 만들지 않는다.** 같은 좌표에 목표 yaw 만 다른 `goal` 을
+보내면 nav2 가 제자리 회전으로 처리한다. 이 시스템에는 `/cmd_vel` 중재자(twist_mux)가
+없어서 **발행자를 늘리는 것 자체가 위험**이다.
+
+⚠️ **로봇팔 홈 복귀는 없앴다**(사용자 결정 2026-07-27 — 이 로봇에 팔이 없다).
+**팔이 달린 로봇을 복귀시키기 전에 이 결정을 재검토해야 한다** — 팔이 펼쳐진 채
+주행하면 서가에 부딪힌다. `ArmHomeDriver` 와 `main._boot_arm_home()` 자리는 남겨 뒀다.
 
 **`CommandListener`를 두지 않는 이유** — 복귀 중인 로봇은 배터리가 15% 미만이다. 이 상태에서
 `stop_request`로 세우면 충전소에 도달하지 못하고 방전된다.
