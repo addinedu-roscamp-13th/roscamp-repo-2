@@ -43,8 +43,27 @@ SEARCH_TURN_ANGLE = 3.14159   # phase 2: ~180 deg turn (radians)
 TICK_HZ = 20.0
 FRAME_DT = 0.05               # nominal seconds per tick
 
+# ---- 회복 중 반대 캠 관찰 ----
+# 뒤를 보려고 몸을 9초 돌리는 대신 카메라를 바꿔 2초 본다. 전환은 공짜다.
+# ⚠️ 앞뒤 장치를 동시에 못 열어 '장치를 열고 닫으며 전환' 으로 폴백하면, 초기화에
+#    1~2초가 걸리므로 이 값을 4.0 으로 올려야 한다.
+SEARCH_PEEK_SEC = 2.0
+
+# ---- 세션 ----
+# 이 시간 갱신이 없으면 세션을 닫는다. 패널이 죽어 stop 이 안 오는 경우 대비.
+SESSION_LEASE_SEC = 60.0
+# camera_select 재발행 주기(Hz). 송출기 쪽 만료(CAMERA_SELECT_EXPIRY_SEC)보다
+# **촘촘해야** 한다 — 안 그러면 정상 세션 중에 카메라가 깜빡인다.
+CAMERA_SELECT_HZ = 2.0
+# 송출기가 이 시간 갱신을 못 받으면 스스로 none 으로 떨어진다(참고용 — 실제 값은
+# camera_sender 쪽 --select-expiry 다). 여기 적어두는 이유는 둘의 관계가 규칙이기 때문.
+CAMERA_SELECT_EXPIRY_SEC = 3.0
+
 # ---- transport ----
 DETECTION_TCP_HOST = '0.0.0.0'
 DETECTION_TCP_PORT = 6000
 SCAN_TOPIC = '/scan'
 CMD_VEL_TOPIC = '/cmd_vel'
+CAMERA_SELECT_TOPIC = '/libi/camera_select'
+REQUESTER_VISIBLE_TOPIC = '/libi/requester_visible'
+REQUESTER_AREA_TOPIC = '/libi/requester_area'
