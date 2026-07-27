@@ -65,7 +65,16 @@ def _save_locations(locs: dict | None) -> None:
 
 #: libi_modes BT 가 소유하는 명령. 이 실행기는 수락만 하고 실행하지 않는다.
 #  (BT 가 처리한 뒤 실행 층 액션 goal/arm_home/... 으로 되돌아온다)
-BT_LAYER_ACTIONS = frozenset({"navigate", "guide"})
+BT_LAYER_ACTIONS = frozenset({
+    "navigate", "guide",
+    # 세션 명령 — libi_perception(follow_node)과 터치패널이 처리한다. 여기서 실행하지 않는다.
+    #
+    # ⚠️ 이 집합에 없으면 아래 폴스루가 "알 수 없는 action" **실패 결과**를 곧바로 발행하고,
+    #    libi_modes 의 FleetCmdDriver 가 같은 id 로 그걸 먼저 집어 세션이 **시작 즉시 끝난다.**
+    #    (실측: follow_admin 이 이 목록에 없어 관리자 추종이 눌러도 안 됐다.)
+    #    `stop` 도 마찬가지다 — FleetCmdDriver.stop() 이 보내는 액션이 바로 이것이다.
+    "follow_admin", "guide_watch", "watch", "stop", "follow_stop",
+})
 
 
 def _dispatch(action: str, args: dict) -> tuple[bool, int, Any, str]:

@@ -15,6 +15,8 @@ import threading
 import time
 from typing import Any
 
+from app.core.nav_goal_tracker import NavGoalTracker
+
 # ── 공유 상태 (스레드 세이프 읽기/쓰기) ──────────────────────
 _lock = threading.Lock()
 _state: dict[str, Any] = {
@@ -336,7 +338,9 @@ def _bridge_thread() -> None:
                 self._nav_action = ActionClient(self, NavigateToPose, "navigate_to_pose")
                 self._goal_done = threading.Event()
                 self._goal_result = False
-                self._active_goal_handle = None
+                #: 목표 핸들의 수명(보관·세대·선취소)을 다루는 순수 상태기.
+                #: 여기 두면 ROS 없이 단위테스트가 된다 — tests/test_nav_goal_tracker.py
+                self._goals = NavGoalTracker()
 
                 # slam_toolbox 서비스 클라이언트
                 self._save_map_client = self.create_client(SaveMap, "/slam_toolbox/save_map")
@@ -484,20 +488,40 @@ def _bridge_thread() -> None:
                     return False
 
             def send_nav_goal(self, x, y, yaw) -> bool:
+                """완료를 기다리지 않고 목표만 던진다(BT 의 `goal` 명령이 쓰는 경로).
+
+                ⚠️ **응답 콜백을 반드시 달아야 한다.** 예전엔 `send_goal_async()` 의 future 를
+                그냥 버렸다. 그러면 `_on_goal_response` 가 영영 안 불려 `_active_goal_handle`
+                이 채워지지 않고, 결국 `cancel_active_goal()` 이 **어떤 주행도 취소하지
+                못한다** — 배달·순회·복귀·길잡이 전부. 길잡이의 "사람을 놓치면 멈춘다" 가
+                화면에만 뜨고 로봇은 계속 달리던 원인이 이것이다.
+                (반면 블로킹 경로인 `nav_to()` 는 처음부터 콜백을 달고 있었다.)
+                """
                 if not self._ensure_nav_action(2.0):
                     self.get_logger().error("navigate_to_pose 액션서버 없음")
                     return False
-                self._nav_action.send_goal_async(self._make_goal(x, y, yaw))
+                gen = self._goals.begin()
+                self._nav_action.send_goal_async(self._make_goal(x, y, yaw)) \
+                    .add_done_callback(lambda f, g=gen: self._on_goal_response(f, g))
                 self.get_logger().info(f"[WEB] send goal: x={x:.2f}, y={y:.2f}, yaw={yaw:.2f}")
                 return True
 
-            def _on_goal_response(self, future):
-                gh = future.result()
-                if not gh.accepted:
+            def _on_goal_response(self, future, generation=None):
+                try:
+                    gh = future.result()
+                except Exception as e:      # noqa: BLE001 — 콜백 예외가 executor 를 죽인다
+                    self.get_logger().error(f"goal 응답 처리 실패: {e}")
                     self._goal_result = False
                     self._goal_done.set()
                     return
-                self._active_goal_handle = gh
+                self._goals.on_response(gh, generation)
+                if self._goals.active_handle is not gh:
+                    # 거절됐거나, 낡은 세대이거나, 응답보다 취소가 먼저 왔다.
+                    # 어느 쪽이든 이 목표는 진행하지 않는다.
+                    if gh is None or not getattr(gh, "accepted", True):
+                        self._goal_result = False
+                        self._goal_done.set()
+                    return
                 gh.get_result_async().add_done_callback(self._on_goal_result)
 
             def _on_goal_result(self, future):
@@ -506,16 +530,13 @@ def _bridge_thread() -> None:
                         future.result().status == self._GoalStatus.STATUS_SUCCEEDED)
                 except Exception:
                     self._goal_result = False
-                self._active_goal_handle = None
+                self._goals.clear()
                 self._goal_done.set()
 
             def cancel_active_goal(self) -> None:
-                gh = self._active_goal_handle
-                if gh is not None:
-                    try:
-                        gh.cancel_goal_async()
-                    except Exception:
-                        pass
+                # 핸들이 아직 없으면 취소 의사만 남는다(응답 시점에 갚는다).
+                # 그냥 돌아가면 잠시 뒤 핸들이 도착해 로봇이 계속 달린다.
+                self._goals.cancel()
 
             def nav_to(self, x, y, yaw, stop_event=None, wait_action_sec: float = None) -> bool:
                 """완료까지 블로킹(미션 워커 스레드용).
@@ -531,9 +552,12 @@ def _bridge_thread() -> None:
                     return False
                 self._goal_done.clear()
                 self._goal_result = False
+                # 블로킹 경로도 같은 추적기를 지난다. begin() 을 빼면 세대가 안 올라가서
+                # 직전 목표의 응답이 이 목표의 것으로 오인된다.
+                gen = self._goals.begin()
                 self._nav_action.send_goal_async(
                     self._make_goal(x, y, yaw)
-                ).add_done_callback(self._on_goal_response)
+                ).add_done_callback(lambda f, g=gen: self._on_goal_response(f, g))
                 while not self._goal_done.is_set():
                     if stop_event is not None and stop_event.is_set():
                         self.cancel_active_goal()
