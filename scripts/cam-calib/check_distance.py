@@ -101,6 +101,9 @@ def main() -> None:
     ap.add_argument("--npz", default=str(DEFAULT_NPZ))
     ap.add_argument("--truth-m", type=float, default=None, help="자로 잰 실제 거리(m). 주면 오차%%를 찍는다")
     ap.add_argument("--n", type=int, default=5, help="평균낼 프레임 수 (기본 5)")
+    ap.add_argument("--show", action="store_true",
+                    help="창을 띄워 조준한다 — 마커가 화면에 있는지 눈으로 보고 SPACE 로 측정. "
+                         "이게 없으면 '마커를 못 찾았습니다'가 조준 실패인지 검출 실패인지 모른다")
     a = ap.parse_args()
 
     K, dist, size = load_calib(pathlib.Path(a.npz))
@@ -109,6 +112,34 @@ def main() -> None:
 
     dictionary = get_dictionary(a.dict)
     url = f"http://{a.host}:{a.port}/snapshot"
+
+    if a.show:
+        print("창에서 마커가 보이게 맞춘 뒤 SPACE — q 로 종료")
+        while True:
+            frame = grab(url)
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            corners, ids = detect_markers(gray, dictionary)
+            view = frame.copy()
+            if len(ids):
+                cv2.aruco.drawDetectedMarkers(view, corners, ids.reshape(-1, 1))
+                for c, i in zip(corners, ids):
+                    p = pose(c, K, dist, a.marker_m)
+                    if p:
+                        cv2.putText(view, f"id{i} z={p['z_m']*100:.1f}cm",
+                                    tuple(np.int32(np.asarray(c).reshape(4, 2).mean(0)) + [-40, -12]),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
+            cv2.putText(view, f"{len(ids)} marker(s)  {a.dict}   SPACE=measure  q=quit",
+                        (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                        (0, 255, 0) if len(ids) else (0, 0, 255), 1, cv2.LINE_AA)
+            cv2.imshow("check_distance", view)
+            k = cv2.waitKey(30) & 0xFF
+            if k == ord('q'):
+                cv2.destroyAllWindows()
+                return
+            if k == ord(' ') and len(ids):
+                break
+        cv2.destroyAllWindows()
+
     acc: dict[int, list[dict]] = {}
     for _ in range(a.n):
         frame = grab(url)

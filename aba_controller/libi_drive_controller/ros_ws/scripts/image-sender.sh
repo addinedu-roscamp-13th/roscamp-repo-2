@@ -32,5 +32,22 @@ if [ ! -d "$FOLLOWER_DIR" ]; then
   exit 1
 fi
 
+# 이 전송 경로는 **캘리브 보정을 하지 않는다** — 픽셀만 보낸다. 거리(solvePnP)를 쓰는 쪽이
+# K 를 읽어야 하고, 그 K 는 **이 스크립트가 내보내는 프레임과 같은 기하**여야 한다.
+# camera_sender 는 --picamera 일 때 --rotate 180 이 기본이라(카메라가 거꾸로 달려 YOLO 가
+# 사람을 똑바로 보게 하려는 것) 회전 없는 캘리브 파일을 그대로 쓰면 주점이 반대쪽이 된다.
+# 어느 파일을 써야 하는지 여기서 찍어 둔다 — 받는 쪽에서 헷갈릴 일이 없게.
+case " $CAM_ARGS " in
+  *" --rotate 0 "*) ROT=0 ;;
+  *" --rotate "*)   ROT="$(printf '%s\n' "$CAM_ARGS" | sed -n 's/.*--rotate \([0-9]*\).*/\1/p')" ;;
+  *" --picamera "*|*"--picamera") ROT=180 ;;    # camera_sender.py:79 기본값
+  *) ROT=0 ;;
+esac
+CALIB_BASE="$REPO_ROOT/config/camera"
+if [ "$ROT" = "0" ]; then CALIB="$CALIB_BASE/picam_640x480.npz"; else CALIB="$CALIB_BASE/picam_640x480_rot${ROT}.npz"; fi
+echo "[image-sender] rotate=${ROT}° → 이 스트림에 맞는 캘리브: ${CALIB#$REPO_ROOT/}"
+[ -f "$CALIB" ] || echo "[image-sender] ⚠ 그 파일이 없습니다. rotate_calib.py 로 만드세요:
+    python3 scripts/cam-calib/rotate_calib.py config/camera/picam_640x480.npz $ROT"
+
 cd "$FOLLOWER_DIR"
 exec python3 scripts/camera_sender.py --host "$AI_IP" --port "$PORT" --fps "$FPS" $CAM_ARGS

@@ -42,11 +42,15 @@ REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 # 읽는다. 파일명의 {res} 는 calib_client 가 **실제 스트림 해상도**로 채운다(K 는 해상도 전용).
 CFG="${CALIB_DIR:-$REPO_ROOT/config/camera}"
 
-case "$SRC" in
-  picam) OUT="${OUT:-$CFG/picam_{res}.npz}" ;;
-  usb)   OUT="${OUT:-$CFG/usb_{res}.npz}" ;;
-  test)  OUT="${OUT:-/tmp/camera_calib_test_{res}.npz}" ;;
-esac
+# ⚠️ 기본값을 ${OUT:-...} 안에 두지 않는다 — bash 는 첫 '}' 에서 확장을 닫아 "{res}" 가
+# 잘린다(실제로 usb_{res.npz}.npz 라는 파일이 만들어졌다). 평범한 대입으로 만든다.
+if [ -z "${OUT:-}" ]; then
+  case "$SRC" in
+    picam) OUT="$CFG/picam_{res}.npz" ;;
+    usb)   OUT="$CFG/usb_{res}.npz" ;;
+    test)  OUT="/tmp/camera_calib_test_{res}.npz" ;;
+  esac
+fi
 
 # 레포 .venv 에 cv2 가 있으면 그걸 쓴다(노트북 표준). 없으면 시스템 python3.
 PY="python3"
@@ -63,7 +67,7 @@ else
 fi
 echo "[calib] 같은 카메라·해상도 결과가 있으면 덮어씁니다(계산 성공 시에만)."
 
-ARGS=(--host "$HOST" --port "${CALIB_PORT:-8099}"
+ARGS=(--host "$HOST" --port "${CALIB_PORT:-8099}" --expect-source "$SRC"
       --square-m "$SQUARE" --num "${NUM:-40}" --out "$OUT"
       --board "${BOARD:-charuco}")
 if [ "${BOARD:-charuco}" = "charuco" ]; then

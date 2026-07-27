@@ -176,14 +176,52 @@ def find_charuco(gray: np.ndarray, board, dictionary, min_corners: int = 6):
     c_ids = np.asarray(c_ids, np.int32).reshape(-1, 1)
     objp_all = charuco_obj_points(board)
     objp = objp_all[c_ids.ravel()].reshape(-1, 3).astype(np.float32)
+    if degenerate(objp):        # 한 줄짜리 장면은 담아 봐야 계산에서 버려진다 — 여기서 막는다
+        return False, None, None, None
     return True, c_corners, objp, c_ids
+
+
+def degenerate(objp: np.ndarray) -> bool:
+    """한 줄로 늘어선 코너인가 — 그런 장면은 호모그래피가 안 나온다.
+
+    ChArUco 는 보드가 반쯤 잘려도 코너를 주는데, 그게 **한 행(또는 한 열)만** 남으면
+    점들이 일직선이라 `initIntrinsicParams2D` 가 그 자리에서 죽는다:
+        (-215) matH0.size() == Size(3, 3)  (2026-07-27, 40장 찍고 계산에서 터짐)
+    개수만 보면 못 거른다 — 6x4 보드의 한 행이 정확히 6점이다. 그래서 2차원으로
+    퍼졌는지(고유 x·y 가 각각 2개 이상)를 본다.
+    """
+    if len(objp) < 6:
+        return True
+    xs = np.unique(np.round(objp[:, 0], 6))
+    ys = np.unique(np.round(objp[:, 1], 6))
+    return len(xs) < 2 or len(ys) < 2
 
 
 def calibrate_and_report(obj_pts, img_pts, size, out_path: str, meta: dict) -> bool:
     if len(obj_pts) < 8:
         print(f"[!] 수집 {len(obj_pts)}장 — 너무 적습니다(최소 8, 권장 30~40).")
         return False
-    print(f"\n계산 중... ({len(obj_pts)}장, {size[0]}x{size[1]})")
+
+    out = pathlib.Path(out_path.replace("{res}", f"{size[0]}x{size[1]}"))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    pts = out.with_suffix(".points.npz")
+    # ⚠️ 계산보다 **먼저** 저장한다. 계산이 죽으면 40장이 통째로 날아가기 때문이다(실제로 겪음).
+    # ChArUco 는 장면마다 코너 개수가 달라 배열이 들쭉날쭉하다 → object dtype.
+    # (다시 읽을 때는 np.load(..., allow_pickle=True))
+    np.savez(pts, obj_pts=np.array(obj_pts, dtype=object),
+             img_pts=np.array(img_pts, dtype=object), image_size=np.array(size))
+    print(f"\n원본 점 저장: {pts}  (계산이 실패해도 재촬영 없이 다시 계산 가능)")
+
+    keep = [i for i in range(len(obj_pts)) if not degenerate(obj_pts[i])]
+    if len(keep) < len(obj_pts):
+        print(f"[!] 일직선 장면 {len(obj_pts) - len(keep)}장 제외 (한 행/열만 보인 프레임)")
+        obj_pts = [obj_pts[i] for i in keep]
+        img_pts = [img_pts[i] for i in keep]
+    if len(obj_pts) < 8:
+        print(f"[!] 쓸 수 있는 장면이 {len(obj_pts)}장뿐입니다. 보드를 더 크게 잡고 다시 찍으세요.")
+        return False
+
+    print(f"계산 중... ({len(obj_pts)}장, {size[0]}x{size[1]})")
     rms, K, dist, rvecs, tvecs = cv2.calibrateCamera(obj_pts, img_pts, size, None, None)
 
     per_view = []
@@ -213,18 +251,11 @@ def calibrate_and_report(obj_pts, img_pts, size, out_path: str, meta: dict) -> b
     if rms >= 1.0:
         print("  ★ RMS 1.0 초과 — 촬영이 부족하거나 보드가 휘었습니다. 다시 찍으세요.")
 
-    # `{res}` 는 **실제 스트림 해상도**로 채운다. 파일명을 호출자가 미리 정하면, 로봇 쪽
-    # 스크립트가 옛 버전이라 --res 가 무시된 경우처럼 "이름은 640x480, 내용은 480x360"인
-    # 파일이 만들어진다(2026-07-27 실제로 겪음). 이름은 저장 시점의 사실에서 나와야 한다.
-    out = pathlib.Path(out_path.replace("{res}", f"{size[0]}x{size[1]}"))
-    out.parent.mkdir(parents=True, exist_ok=True)
+    # `{res}` 치환은 위에서 이미 했다 — 이름은 **실제 스트림 해상도**에서 나온다. 호출자가
+    # 미리 정하면, 로봇 스크립트가 옛 버전이라 --res 가 무시된 경우처럼 "이름은 640x480,
+    # 내용은 480x360"인 파일이 만들어진다(2026-07-27 실제로 겪음).
     np.savez(out, camera_matrix=K, dist_coeffs=dist,
              image_size=np.array(size), rms=np.array(rms))
-    pts = out.with_suffix(".points.npz")          # 재촬영 없이 다시 계산할 수 있게 남긴다
-    # ChArUco 는 장면마다 코너 개수가 달라 배열이 들쭉날쭉하다 → object dtype.
-    # (다시 읽을 때는 np.load(..., allow_pickle=True))
-    np.savez(pts, obj_pts=np.array(obj_pts, dtype=object),
-             img_pts=np.array(img_pts, dtype=object), image_size=np.array(size))
     print(f"\n저장: {out}\n원본 점: {pts}")
     print("★ 합격선은 RMS 가 아니라 실측 거리 오차 < 5% 입니다 (계획서 §5.2). 반드시 재세요.")
     print(f"{'='*58}")
@@ -248,6 +279,9 @@ def main() -> None:
     ap.add_argument("--square-m", type=float, required=True,
                     help="인쇄물 한 칸 실측 크기(m). 자로 재서 넣는다 — 여기가 틀리면 "
                          "재투영오차는 멀쩡한데 거리만 그 비율로 전부 틀어진다")
+    ap.add_argument("--expect-source", default=None, choices=("picam", "usb", "test"),
+                    help="로봇 스트림이 이 소스가 아니면 중단한다 — usb 를 찍는다고 하고 picam "
+                         "스트림에 붙는 사고가 실제로 있었다(파일 이름만 usb, 내용은 picam)")
     ap.add_argument("--num", type=int, default=40, help="목표 장수")
     ap.add_argument("--out", required=True, help="저장할 npz 경로")
     a = ap.parse_args()
@@ -286,6 +320,12 @@ def main() -> None:
     except Exception as e:
         sys.exit(f"로봇 스트림에 붙지 못했습니다: {e}\n"
                  f"  로봇에서: python3 calib_stream_pi.py --source picam|usb")
+    got = meta.get("source")
+    if a.expect_source and got != a.expect_source:
+        sys.exit(f"⚠ 스트림이 {got!r} 인데 {a.expect_source!r} 로 찍으려 합니다.\n"
+                 f"  로봇에서 ./calib-pi.sh {a.expect_source} 로 다시 띄우거나, 이 명령의 소스를 "
+                 f"{got} 로 바꾸세요.\n  (그대로 두면 이름만 {a.expect_source}, 내용은 {got} 인 "
+                 f"파일이 만들어집니다)")
     print(f"[ok] {base}  {meta}")
 
     reader = MjpegReader(f"{base}/stream")
