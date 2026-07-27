@@ -172,10 +172,15 @@ class RemoteControl:
     def request_camera(self, name):
         """회복 BT 가 탐색 중 반대 캠을 보고 싶을 때 부른다.
 
-        **여기서 직접 발행하지 않는다.** 세션의 카메라만 바꾸고, 다음 발행 주기에
-        그 값이 실려 나간다. 발행자가 하나라는 규칙(`camera_select` 는 이 클래스만
-        낸다)을 지키기 위해서다 — 회복 BT 가 직접 내면 발행자가 둘이 되어 서로 덮어쓴다.
+        발행자가 하나라는 규칙(`camera_select` 는 이 클래스만 낸다)을 지키려고, 회복
+        BT 는 여기에 **요청만** 한다 — 직접 내면 발행자가 둘이 되어 서로 덮어쓴다.
+
+        ⚠️ 탐색 구간 노드는 **매 tick** 이걸 부른다(20Hz). 그때마다 발행하면 latched
+        토픽에 초당 20개가 쌓인다. 값이 실제로 바뀔 때만 즉시 내고, 나머지는 평소
+        주기(`CAMERA_SELECT_HZ`)에 맡긴다.
         """
+        if name == self._sessions.camera_for():
+            return
         self._sessions.override_camera(name)
         self._publish_camera(force=True)
 

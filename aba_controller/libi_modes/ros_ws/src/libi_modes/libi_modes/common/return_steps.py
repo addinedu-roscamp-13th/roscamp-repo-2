@@ -129,6 +129,16 @@ class _GoalStep(py_trees.behaviour.Behaviour):
             return Status.FAILURE
         return Status.RUNNING
 
+    def terminate(self, new_status):
+        """상위가 이 단계를 끊었으면(예: fault → ERROR) 진행 중인 주행도 끊는다.
+
+        안 끊으면 브랜치는 죽었는데 nav2 는 계속 달린다 — 화면상 ERROR 인 로봇이
+        주차장으로 계속 가는 상태가 된다.
+        """
+        if new_status == Status.INVALID and self._sent_at is not None:
+            self.driver.stop()
+        self._sent_at = None
+
 
 class _YawStep(py_trees.behaviour.Behaviour):
     """제자리 yaw 회전. 같은 좌표에 목표 yaw 만 다른 goal 을 보낸다.
@@ -182,6 +192,12 @@ class _YawStep(py_trees.behaviour.Behaviour):
         if now - self._started_at >= self.timeout_sec:
             return Status.FAILURE
         return Status.RUNNING
+
+    def terminate(self, new_status):
+        """회전도 마찬가지다 — 끊긴 뒤에도 goal 이 살아 있으면 계속 돈다."""
+        if new_status == Status.INVALID and self._sent:
+            self.driver.stop()
+        self._sent = False
 
 
 class AlreadyDocked(py_trees.behaviour.Behaviour):

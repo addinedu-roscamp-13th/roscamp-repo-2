@@ -242,3 +242,41 @@ def test_wrap_angle_keeps_the_short_way():
     """안 감으면 179° 와 -179° 가 358° 차이로 보인다."""
     assert abs(wrap_angle(math.radians(358))) < math.radians(3)
     assert abs(wrap_angle(-math.radians(358))) < math.radians(3)
+
+
+# ── 선점 시 주행 취소 ────────────────────────────────────────────────────────
+
+def test_goal_step_stops_the_drive_when_preempted(seed):
+    """상위가 이 단계를 끊었는데 nav2 가 계속 달리면, 화면상 ERROR 인 로봇이
+    주차장으로 계속 간다."""
+    seed(**{Keys.ROBOT_POSE: {"x": 5.0, "y": 5.0}})
+    driver = FakeDriver()
+    step = _steps(entrance_driver=driver)[0].decorated
+    step.setup()
+    step.initialise()
+    step.tick_once()
+    step.stop(Status.INVALID)
+    assert driver.stopped is True
+
+
+def test_goal_step_does_not_stop_when_it_succeeded(seed):
+    """정상 종료까지 stop 을 보내면 다음 단계의 주행을 끊을 수 있다."""
+    seed(**{Keys.ROBOT_POSE: {"x": ENTRANCE[0], "y": ENTRANCE[1]}})
+    driver = FakeDriver()
+    step = _steps(entrance_driver=driver)[0].decorated
+    step.setup()
+    step.initialise()
+    step.tick_once()
+    step.stop(Status.SUCCESS)
+    assert driver.stopped is False
+
+
+def test_yaw_step_stops_the_rotation_when_preempted(seed):
+    seed(**{Keys.ROBOT_POSE: {"x": PARKING[0], "y": PARKING[1], "yaw": 0.0}})
+    rot = FakeYawDriver()
+    step = _steps(rotate_driver=rot)[3].decorated
+    step.setup()
+    step.initialise()
+    step.tick_once()
+    step.stop(Status.INVALID)
+    assert rot.stopped is True
