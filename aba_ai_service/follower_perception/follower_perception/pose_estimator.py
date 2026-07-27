@@ -97,10 +97,6 @@ class PoseEstimator:
         """(모은 프레임, 필요한 프레임). 패널의 "자세 측정 중 23/60" 표시에 쓴다."""
         return self._calibrator.progress
 
-    @property
-    def reference_ratio(self):
-        return self._calibrator.reference
-
     # ── 판정 ────────────────────────────────────────────────────────────
     def _ensure_model(self):
         if self._model is None:

@@ -52,20 +52,6 @@ def test_lease_expiry_closes_session():
     assert m.camera_for() == "none"
 
 
-def test_touch_extends_lease():
-    m = SessionManager(lease_sec=10)
-    m.start("w", "watch", now=0.0, camera="back")
-    m.touch("w", now=8.0)
-    assert m.expired(now=15.0) is False
-
-
-def test_touch_requires_matching_id():
-    m = SessionManager(lease_sec=10)
-    m.start("w", "watch", now=0.0, camera="back")
-    assert m.touch("other", now=8.0) is False
-    assert m.expired(now=15.0) is True
-
-
 def test_lease_zero_never_expires():
     m = SessionManager(lease_sec=0)
     m.start("w", "watch", now=0.0, camera="back")
@@ -91,15 +77,23 @@ def test_only_follow_drives():
     assert m.driving is False
 
 
-def test_override_and_restore_camera():
+def test_override_camera_keeps_the_role():
     """회복 BT 가 탐색 중 반대 캠을 본다. 역할은 그대로다."""
     m = SessionManager(lease_sec=60)
     m.start("a", "follow", now=0.0)
     m.override_camera("back")
     assert m.camera_for() == "back"
     assert m.role == "follow"
-    m.restore_camera()
+    m.override_camera("front")          # 되돌리는 것도 같은 함수다
     assert m.camera_for() == "front"
+
+
+def test_restarting_the_same_session_renews_the_lease():
+    """패널은 같은 watch 를 주기적으로 재발행해 살아 있음을 알린다."""
+    m = SessionManager(lease_sec=10)
+    m.start("w", "watch", now=0.0, camera="back")
+    m.start("w", "watch", now=8.0, camera="back")
+    assert m.expired(now=15.0) is False
 
 
 def test_override_without_session_is_ignored():

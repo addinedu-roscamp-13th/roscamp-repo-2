@@ -50,6 +50,9 @@ class SessionManager:
 
     # ── 수명 ────────────────────────────────────────────────────────────
     def start(self, session_id, role: str, now: float, camera=None) -> Session:
+        """세션을 연다. **같은 id 로 다시 부르면 lease 갱신이 된다** — 패널이 살아 있는
+        동안 주기적으로 같은 `watch` 를 재발행하는 것이 곧 갱신이다. 갱신 전용 경로를
+        따로 두면 "무엇이 세션을 살려두는가"가 두 곳으로 갈린다."""
         cam = camera if camera in ("front", "back") else ROLE_CAMERA.get(role, NONE)
         self._cur = Session(str(session_id), role, cam, now)
         return self._cur
@@ -59,12 +62,6 @@ class SessionManager:
         if self._cur is None or self._cur.session_id != str(session_id):
             return False
         self._cur = None
-        return True
-
-    def touch(self, session_id, now: float) -> bool:
-        if self._cur is None or self._cur.session_id != str(session_id):
-            return False
-        self._cur.touched_at = now
         return True
 
     def expired(self, now: float) -> bool:
@@ -101,13 +98,15 @@ class SessionManager:
 
     # ── 회복 BT 가 탐색 중 반대 캠을 요청할 때 ─────────────────────────────
     def override_camera(self, camera: str) -> None:
-        """역할은 그대로 두고 보는 캠만 바꾼다. 세션이 없으면 무시한다."""
+        """역할은 그대로 두고 보는 캠만 바꾼다. 세션이 없으면 무시한다.
+
+        정위치 캠으로 되돌리는 것도 이 함수로 한다(`AlignHeading` 이 회전을 마치며
+        `ctx.home_camera` 를 요청한다). 되돌리기 전용 함수를 따로 두지 않는 이유는,
+        그러면 "누가 되돌릴 책임인가"가 두 곳으로 갈리기 때문이다.
+        """
         if self._cur is not None and camera in ("front", "back"):
             self._cur.camera = camera
 
-    def restore_camera(self) -> None:
-        if self._cur is not None:
-            self._cur.camera = ROLE_CAMERA.get(self._cur.role, self._cur.camera)
 
 
 def target_session_id(cmd_id, args=None) -> str:

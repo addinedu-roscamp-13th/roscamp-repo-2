@@ -34,8 +34,3 @@ class CameraSelect:
         if self.expiry_sec > 0 and now - self._stamp > self.expiry_sec:
             return NONE                      # 갱신이 끊겼다
         return self._value
-
-    @property
-    def raw(self) -> str:
-        """만료를 무시한 마지막 수신값. 진단용."""
-        return self._value
