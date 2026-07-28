@@ -51,8 +51,13 @@ export const BT_NODE_FLAGS: Record<string, BtNodeFlag> = {
   // 기다리는 것뿐이다. 그 확인까지 빼면 로봇이 충전소에 닿지도 않은 채 CHARGING 을
   // 선언하므로 남겨 뒀다 — 화면은 멀쩡한데 배터리는 계속 떨어지는 상태가 된다.
   // **뒷캠 ArUco** 가 들어갈 자리이며, 그때 트리 배선은 안 바뀐다.
-  //   return_steps.py AlignDock
-  AlignDock: "unwired",
+  //
+  // [2026-07-28] `unwired` → `partial`. `unwired` 는 "부를 통로가 없다"는 뜻인데,
+  // 이 노드는 `create_return_steps` 에 들어가 `ReturningBranch` 가 **실제로 실행한다**
+  // (is_docked 대기 + timeout → AbsorbFailure 재시도 → 소진 시 fault). 통로는 있고
+  // 정렬 동작만 비어 있으니 `partial` 이 맞다 — `FaceParking` 과 같은 성격이다.
+  //   return_steps.py AlignDock · returning.py create_return_steps
+  AlignDock: "partial",
 
   // ── 2026-07-27 해제 ───────────────────────────────────────────────────────
   // FollowExec: "unwired"  → fleet_link.BT_LAYER_ACTIONS 에 세션 명령 추가로 해제
