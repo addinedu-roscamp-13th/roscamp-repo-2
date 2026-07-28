@@ -377,7 +377,10 @@ def main(args=None):
             self._receiver = DetectionReceiver(TcpDetectionSource(host, port))
             #: 지금 세션의 역할. `_make_loop` 과 `_publish_for_role` 이 읽는다.
             self._session_role = sess.FOLLOW
-            self.session = FollowSession(self._make_loop, publish=self._cmd.publish)
+            # 종료 정지도 **역할을 거쳐** 나간다. `_cmd.publish` 를 직접 주면 길잡이·감시
+            # 세션이 끝날 때(stop 명령·WATCH lease 만료)도 (0,0) 이 나가서, nav2 가 몰고
+            # 있는 주행을 한 번 밟는다 — 연속 경합은 아니지만 그 순간 로봇이 움찔한다.
+            self.session = FollowSession(self._make_loop, publish=self._publish_for_role)
             self.remote = RemoteControl(
                 self, self.session,
                 cmd_topic=self.get_parameter('cmd_topic').value,
