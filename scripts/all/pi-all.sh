@@ -5,7 +5,27 @@
 #   ./pi-all.sh --robot Pinky-3                       # 앞캠만 (기본)
 #   ./pi-all.sh --robot Pinky-3 --back 4              # 뒷캠 /dev/video4 도 함께
 #   ./pi-all.sh --robot Pinky-3 --ai 192.168.1.10     # AI 서버 IP 직접 지정
+#   ./pi-all.sh --robot Pinky-3 --no-battery          # [디버그] 배터리 자동 전이 OFF
+#   ./pi-all.sh --robot Pinky-3 --battery             # 물어보지 말고 켠 채로
 #   ./pi-all.sh --robot Pinky-3 --no-fsm              # 모르는 플래그는 pi.sh 로 그대로 넘어간다
+#
+# ## 배터리 자동 전이 — 안 정하면 **물어본다**
+#
+# 배터리가 튀면 로봇이 순회 도중 제멋대로 RETURNING 으로 빠진다. 그러면 추종·길잡이·
+# 동적 장애물 **무엇을 검증하든 중간에 로봇이 사라진다.** 플래그를 외우게 하지 않으려고
+# 기동할 때 물어본다(20초 후 기본 켜짐). `--battery`/`--no-battery` 를 주면 안 묻는다.
+#
+# **터미널이 아니면 안 묻는다** — pm2·ssh 스크립트·CI 에서 입력을 기다리며 멈추면 기동
+# 자체가 실패한다. 그 경우는 켜진 채로 간다(안전 방향).
+#
+# 끄면 배터리 임계를 닿지 않는 값으로 바꾼다. **BT 노드는 그대로**라 관제 화면
+# (/admin/fsm)의 그림이 안 바뀐다 — 노드를 지우면 딴 그림이 된다.
+#
+#   · 저전력 → RETURNING      low=-1     안 뜸 (배터리가 음수일 수 없다)
+#   · IDLE 에서 자동 PATROL    charged=1e9 안 뜸
+#   · CHARGING → IDLE          ready=-1   **항상 통과** — 여기까지 막으면 도킹 순간 갇힌다
+#
+# 복귀는 관제 UI 에서 직접 명령해서 검증한다. `pi.sh --no-battery` 로 그대로 넘어간다.
 #
 # 뒷캠 인덱스는 로봇마다 다르다. 목록:  v4l2-ctl --list-devices
 #
@@ -58,16 +78,49 @@ WITH_DYN_OBSTACLE=false
 DYN_OBSTACLE_FAN_DEG="${DYN_OBSTACLE_FAN_DEG:-60}"
 DYN_OBSTACLE_TTL="${DYN_OBSTACLE_TTL:-20.0}"
 DYN_OBSTACLE_NEAR_AREA="${DYN_OBSTACLE_NEAR_AREA:-0}"   # 0 = 정책 자체가 꺼짐
+# 배터리 자동 전이. "" = 미지정 → 아래에서 물어본다. true/false = 플래그로 명시됨.
+BATTERY_AUTO=""
 ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --robot)    ROBOT="${2:-}"; shift 2 ;;
     --ai)       AI_IP="${2:-}"; shift 2 ;;
-    --back)     WITH_BACK=true; BACK_CAM="${2:?--back 뒤에 USB 캠 인덱스가 필요합니다 (예: --back 4).  목록: v4l2-ctl --list-devices}"; shift 2 ;;
+    --back)     WITH_BACK=true; BACK_CAM="${2:?--back 뒤에 USB 캠 인덱스가 필요합니다 (예: --back 1).  목록: v4l2-ctl --list-devices}"; shift 2 ;;
     --dyn-obstacle) WITH_DYN_OBSTACLE=true; shift ;;
+    --no-battery)   BATTERY_AUTO=false; shift ;;
+    --battery)      BATTERY_AUTO=true;  shift ;;
     *)          ARGS+=("$1"); shift ;;     # --no-fsm 등은 pi.sh 로 그대로
   esac
 done
+
+# ── 배터리 자동 전이 — 안 정했으면 물어본다 ────────────────────────────────
+# 플래그를 외우게 하지 않는다. 배터리 센서가 튀는 동안에는 이걸 매번 꺼야 하는데,
+# 기억에 의존하면 검증 중간에 로봇이 RETURNING 으로 사라지고 그 원인을 한참 찾는다.
+#
+# **터미널이 아니면 안 묻는다** — pm2·ssh 스크립트·CI 에서 입력을 기다리며 멈추면
+# 기동 자체가 실패한다. 그런 경우는 기본값(켜짐, = 안전 방향)으로 간다.
+if [ -z "$BATTERY_AUTO" ]; then
+  if [ -t 0 ] && [ -t 1 ]; then
+    echo
+    echo "  배터리로 인한 자동 상태 전이 (저전력→복귀 / 충전완료→순회)"
+    echo "    끄면: 배터리 값이 튀어도 로봇이 제멋대로 복귀하지 않는다."
+    echo "          복귀·순회는 관제 UI 에서 직접 눌러 검증한다."
+    echo "    켜면: 평소 운영 동작. 배터리 15% 이하에서 스스로 충전소로 간다."
+    read -r -t 20 -p "  배터리 자동 전이를 켤까요? [Y/n] (20초 후 Y) " _ans || _ans=""
+    echo
+    case "$_ans" in
+      [nN]*) BATTERY_AUTO=false ;;
+      *)     BATTERY_AUTO=true  ;;
+    esac
+  else
+    BATTERY_AUTO=true
+  fi
+fi
+if [ "$BATTERY_AUTO" = false ]; then
+  ARGS+=("--no-battery")
+  echo "[pi-all] ⚠️  배터리 자동 전이 OFF — 저전력 복귀·자동 순회가 뜨지 않습니다."
+  echo "         복귀는 관제 UI 에서 직접 명령하세요."
+fi
 
 ROBOT="${ROBOT:-${FSM_ROBOT_ID:-}}"
 [ -n "$ROBOT" ] || die "로봇 이름이 필요합니다.  예: ./pi-all.sh --robot Pinky-3

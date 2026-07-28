@@ -124,6 +124,7 @@ class FsmNode(Node):
         disabled_branches = self._resolve_disabled_branches()
 
         params = self._load_params(params_file)
+        self._apply_battery_auto(params)
 
         cmd_pub = _CmdPublisher(self, cmd_topic)
         self._providers = RosProviders(
@@ -300,6 +301,33 @@ class FsmNode(Node):
                 f"[디버그] 잠긴 브랜치: {sorted(disabled)}"
                 + (f"  ⚠️ 안전 브랜치 포함: {sorted(safety)}" if safety else ""))
         return frozenset(disabled)
+
+    def _apply_battery_auto(self, params) -> None:
+        """[디버그] 배터리로 인한 **자동 상태 전이를 끈다.**
+        param(`battery_auto:=false`) 또는 env(`LIBI_BATTERY_AUTO=0`).
+
+        배터리 값이 못 믿을 상태(센서 이상·미배선)일 때 쓴다. 값이 튀면 로봇이 순회
+        도중 제멋대로 RETURNING 으로 빠지고, 그러면 다른 어떤 기능도 검증할 수 없다.
+        끄면 복귀·순회 시작을 관제 UI 에서 직접 눌러 돌린다.
+
+        임계를 지우지 않고 **닿지 않는 값으로 바꾼다** — `BatteryCheck` 는 비교만 하므로
+        트리 구조도 화면(BT 뷰)도 그대로다. 노드가 사라지면 관제 화면이 다른 그림이 된다.
+
+          low(<=)     -1     : 배터리가 음수일 수 없으니 → RETURNING 안 뜸
+          charged(>=) 1e9    : 도달 불가 → IDLE 에서 자동 PATROL 안 나감
+          ready(>=)   -1     : **항상 참** → CHARGING 에 갇히지 않고 바로 IDLE 로 나온다
+                               (여기까지 막으면 도킹하는 순간 아무것도 못 하게 된다)
+        """
+        raw = self.declare_parameter("battery_auto", True).value
+        env = os.environ.get("LIBI_BATTERY_AUTO")
+        if env is not None:
+            raw = env.strip().lower() not in ("0", "false", "no", "off", "")
+        if raw:
+            return
+        params.setdefault("battery", {}).update(low=-1.0, charged=1e9, ready=-1.0)
+        self.get_logger().warning(
+            "[디버그] 배터리 자동 전이 OFF — 저전력 복귀·자동 순회 시작이 뜨지 않는다. "
+            "복귀는 관제 UI 에서 직접 명령할 것.")
 
     def _on_result(self, msg):
         try:

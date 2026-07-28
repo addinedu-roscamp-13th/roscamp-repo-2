@@ -10,8 +10,12 @@
 # 창 전환: Ctrl+b 0/1..(hw/nav2/[init-pose]/fleet-link/fsm/led), 또는 Ctrl+b n / Ctrl+b p
 #   (init-pose 창은 FSM_ROBOT_ID 가 Pinky-1/2/3 일 때만 뜬다 — 로봇 번호별 시작 waypoint 주입)
 #   ./pi.sh
-#   ./pi.sh --no-fsm   → fsm 창 없이 (FSM 은 ./fsm-bt.sh 로 따로 띄울 때)
-#   ./pi.sh --no-led   → led 창 없이 (LED 상태 표시 코드 안 쓸 때)
+#   ./pi.sh --no-fsm       → fsm 창 없이 (FSM 은 ./fsm-bt.sh 로 따로 띄울 때)
+#   ./pi.sh --no-led       → led 창 없이 (LED 상태 표시 코드 안 쓸 때)
+#   ./pi.sh --no-battery   → [디버그] 배터리 자동 전이 OFF. 배터리 값을 못 믿을 때
+#                            (센서 이상·미배선) 쓴다. 값이 튀면 로봇이 순회 도중 제멋대로
+#                            RETURNING 으로 빠져 다른 기능을 아무것도 검증할 수 없다.
+#                            끄면 복귀·순회 시작을 관제 UI 에서 직접 눌러 돌린다.
 #
 # ⚠️ aba_ai_service/follower_perception/pi.sh 와 이름이 같지만 다른 스크립트다. 그쪽은
 #    추종용(bringup + 카메라 + cmd_bridge)이고 이건 주행용(bringup + nav2 + FSM + LED)이다.
@@ -30,10 +34,13 @@ WITH_FSM=true
 WITH_LED=true
 # 통행 금지 필터(동적 장애물). 기본 꺼짐 — pi-all.sh 가 --dyn-obstacle 을 받으면 넘겨준다.
 WITH_KEEPOUT=false
+# [디버그] 배터리로 인한 자동 상태 전이. 기본 켜짐.
+BATTERY_AUTO=true
 for arg in "$@"; do
   [ "$arg" = "--no-fsm" ] && WITH_FSM=false
   [ "$arg" = "--no-led" ] && WITH_LED=false
   [ "$arg" = "--keepout" ] && WITH_KEEPOUT=true
+  [ "$arg" = "--no-battery" ] && BATTERY_AUTO=false
 done
 
 MAP_PATH="$ROS_WS_DIR/src/pinky_pro/pinky_navigation/map/arte3.yaml"
@@ -100,8 +107,14 @@ tmux new-window -t "$SESSION" -n fleet-link \
   bash -c "$ROS_SETUP && cd '$ROBOT_AGENT_DIR' && echo '[fleet-link] robot_agent 없이 fleet_link 단독 실행 (costmap 제외 경량 버전)...' && python3 scripts/run_fleet_link-tunning.py; exec bash"
 
 if [ "$WITH_FSM" = true ]; then
+  # --no-battery: 배터리 값이 못 믿을 때 저전력 복귀·자동 순회 시작을 끈다. 임계를
+  # 닿지 않는 값으로 바꿀 뿐이라 BT 구조·관제 화면은 그대로다(main.py `_apply_battery_auto`).
+  FSM_BATTERY_ARG=""
+  [ "$BATTERY_AUTO" = false ] && FSM_BATTERY_ARG=" -p battery_auto:=false"
+  FSM_BATTERY_NOTE=""
+  [ "$BATTERY_AUTO" = false ] && FSM_BATTERY_NOTE="  ⚠️ 배터리 자동 전이 OFF (복귀는 관제 UI 에서 직접)"
   tmux new-window -t "$SESSION" -n fsm \
-    bash -c "$LIBI_MODES_SETUP && echo '[fsm] libi_modes 미션 FSM (robot_id=$FSM_ROBOT_ID)...' && ros2 run libi_modes fsm_node --ros-args -p robot_id:=$FSM_ROBOT_ID; exec bash"
+    bash -c "$LIBI_MODES_SETUP && echo '[fsm] libi_modes 미션 FSM (robot_id=$FSM_ROBOT_ID)...$FSM_BATTERY_NOTE' && ros2 run libi_modes fsm_node --ros-args -p robot_id:=$FSM_ROBOT_ID$FSM_BATTERY_ARG; exec bash"
 fi
 
 if [ "$WITH_LED" = true ]; then
