@@ -208,6 +208,26 @@ def _dispatch(action: str, args: dict) -> tuple[bool, int, Any, str]:
 
         return True, 200, {"success": True, "name": name, "path": path}, ""
 
+    if action == "stop":
+        # ── 유일한 예외: `stop` 은 여기서도 **주행을 끊는다** ────────────────
+        #
+        # 실측 신고(2026-07-28): "응대중인데 계속 바퀴가 움직임".
+        #
+        # BT 는 브랜치가 선점당하면 `DriverAction.terminate()` 에서 `driver.stop()` 을
+        # 부르고, `FleetCmdDriver.stop()` 이 이 액션을 보낸다. 그런데 `stop` 이
+        # BT_LAYER_ACTIONS 에 있어 아래 분기로 흘러 **"수락만" 하고 끝났다.**
+        # 세션(follow/guide/watch)은 follow_node 가 자기 id 로 닫지만, 그쪽은
+        # `/cmd_vel` 만 다룬다 — `goal` 로 내보낸 nav2 목표는 **아무도 안 끊었다.**
+        # 그래서 순회 중 방문객이 패널을 만져도 로봇은 다음 정점으로 계속 갔다.
+        #
+        # 세션 종료와 주행 취소는 소비자가 달라 겹치지 않는다. 그리고 이 레포의 원칙
+        # 그대로다 — **멈추는 것은 중복돼도 안전, 조종하는 것은 중복되면 위험.**
+        # 취소할 목표가 없으면 아무 일도 일어나지 않는다.
+        if ros_bridge.is_active():
+            ros_bridge.cancel_nav()
+        return True, 202, {"accepted": True, "handled_by": "bt",
+                           "cancelled_nav": ros_bridge.is_active()}, ""
+
     if action in BT_LAYER_ACTIONS:
         # ── BT 층 명령 — 여기서 실행하지 않는다 ──────────────────────────────
         # `/fleet_cmd` 에는 소비자가 둘이다:
