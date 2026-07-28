@@ -39,8 +39,8 @@ N_INTRUSIONS = 8
 
 # ops.py 의 TASK_KINDS 표(운영 지시 폼)와 같은 종류 키만 씀 — 화면 라벨과 어긋나지 않게.
 TASK_KIND_KEYS = ["transfer", "sort", "tidy", "porter", "dispatch", "patrol"]
-# 실제 로봇 이름(pinky1~3) — README/도메인 브릿지 설정과 동일, 여기선 로그용 문자열일 뿐.
-ROBOTS = ["pinky1", "pinky2", "pinky3"]
+# 실제 로봇 이름(libi1~3) — README/도메인 브릿지 설정과 동일, 여기선 로그용 문자열일 뿐.
+ROBOTS = ["libi1", "libi2", "libi3"]
 INTRUSION_NOTES = [
     "열람실 창문 근처 움직임 감지",
     "야간 순찰 중 인기척 감지",
@@ -143,13 +143,11 @@ def _seed_robot_states(db) -> int:
     개발 환경에서 도넛이 항상 빈값이 되는 걸 막는다. `ops.py`/`/dashboard` 는 실제 FMS
     스냅샷이 있으면 이 테이블을 절대 안 쓴다. 재실행해도 안 쌓이게 먼저 비운다."""
     db.query(DemoRobotState).delete()
-    # 주행 3대(pinky1-3) + 팔 2대(arm1-2) — 4개 상태 전부 채워지게 일부러 스프레드.
+    # 주행 3대(libi1-3) — 대수만큼만 스프레드라 에러 조각은 비어 있는 게 정상.
     demo_fleet = [
-        ("pinky1", "PATROL"),
-        ("pinky2", "WORKING"),
-        ("pinky3", "CHARGING"),
-        ("arm1", "IDLE"),
-        ("arm2", "ERROR"),
+        ("libi1", "PATROL"),
+        ("libi2", "WORKING"),
+        ("libi3", "CHARGING"),
     ]
     for robot, state in demo_fleet:
         db.add(DemoRobotState(robot=robot, state=state))
