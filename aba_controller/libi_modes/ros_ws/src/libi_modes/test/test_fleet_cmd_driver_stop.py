@@ -133,3 +133,47 @@ def test_new_command_clears_the_abandoned_id(driver):
     fresh = pub.last_id
     d.stop()
     assert pub.last_id == f"stop-{fresh}"
+
+
+# ── 세션 취소가 주행을 죽이면 안 된다 ────────────────────────────────────────
+#
+# `stop` 은 소비자가 둘이고 뜻이 다르다:
+#   follow_node : 실린 id 의 세션을 닫는다
+#   fleet_link  : id 와 무관하게 nav2 목표를 취소한다
+# 그래서 추종 세션을 닫으려고 낸 `stop` 이 형제 leaf 가 방금 낸 주행까지 죽였다.
+# 실측 2026-07-28 `/fleet_cmd`: goal-1(t=172.393) → stop-follow_admin-1(t=172.404)
+# → 재전송(t=182.489)까지 10초를 서 있었다. 사용자 신고: "갑자기 멈춤".
+
+def test_session_driver_uses_follow_stop(driver):
+    """세션 드라이버는 `follow_stop` 을 낸다 — fleet_link 의 nav 취소는 `stop` 정확일치만 잡는다."""
+    clock = _Clock()
+    pub = _Pub()
+    d = FleetCmdDriver(_FakeNode(clock), "follow_admin", timeout_sec=100.0,
+                       stop_action="follow_stop").bind(pub)
+    d.start()
+    d.stop()
+    assert pub.actions == ["follow_admin", "follow_stop"], "세션 취소가 주행을 끊는 액션을 썼다"
+
+
+def test_session_stop_keeps_the_stop_id_prefix(driver):
+    """접두어는 액션 이름과 **무관하게** `stop-` 이다.
+
+    세션을 찾는 쪽(session.py target_session_id)이 `"stop-"` 만 벗겨 낸다. 접두어를
+    액션에 맞춰 바꾸면 id 가 안 맞아 조용히 아무것도 안 닫힌다.
+    """
+    clock = _Clock()
+    pub = _Pub()
+    d = FleetCmdDriver(_FakeNode(clock), "follow_admin", timeout_sec=100.0,
+                       stop_action="follow_stop").bind(pub)
+    d.start()
+    started = pub.last_id
+    d.stop()
+    assert pub.last_id == f"stop-{started}"
+
+
+def test_nav_driver_still_uses_plain_stop(driver):
+    """주행 드라이버는 그대로 `stop` 이다 — 그게 nav2 목표를 실제로 끊는 유일한 수단이다."""
+    d, pub, _ = driver
+    d.start()
+    d.stop()
+    assert pub.actions[-1] == "stop"

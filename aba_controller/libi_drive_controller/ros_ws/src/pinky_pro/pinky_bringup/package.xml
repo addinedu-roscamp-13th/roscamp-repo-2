@@ -13,7 +13,10 @@
   <test_depend>python3-pytest</test_depend>
 
   <depend>tf_transformations</depend>
-  
+  <!-- /cmd_vel 중재. 없으면 bringup_robot.launch.xml 이 twist_mux 를 못 찾아 죽는다
+       (sudo apt install ros-jazzy-twist-mux). config/twist_mux.yaml 에 근거를 적어 뒀다. -->
+  <exec_depend>twist_mux</exec_depend>
+
   <export>
     <build_type>ament_python</build_type>
   </export>

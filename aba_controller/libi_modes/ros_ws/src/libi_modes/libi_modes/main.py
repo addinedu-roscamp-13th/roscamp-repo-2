@@ -169,9 +169,11 @@ class FsmNode(Node):
             "guide_stop": FleetCmdDriver(self, "mission_stop").bind(cmd_pub),
             # 뒷캠 감시 세션. 이게 없으면 `/libi/requester_visible` 발행자가 없어
             # GuideExec 이 "감시 없음 → 그냥 주행"으로 읽고, 사람을 놓쳐도 계속 간다.
+            # stop_action: 세션만 닫고 **주행은 안 끊는다** (FleetCmdDriver 주석 참고).
             "guide_watch": FleetCmdDriver(self, "guide_watch",
                                           args_fn=lambda: {"camera": "back"},
-                                          timeout_sec=3600.0).bind(cmd_pub),
+                                          timeout_sec=3600.0,
+                                          stop_action="follow_stop").bind(cmd_pub),
             # 사람 추종 — libi_perception 의 RemoteControl 이 같은 /fleet_cmd 를 구독해
             # FollowSession 을 켜고 끈다. 세션은 스스로 안 끝나므로(관리자가 멈추거나
             # 회복이 소진될 때까지) 응답 타임아웃을 길게 준다 — 기본 120초면 추종 중에
@@ -180,7 +182,8 @@ class FsmNode(Node):
             # ⚠️ libi_perception 이 안 떠 있으면 이 명령에 아무도 응답하지 않고
             #    timeout_sec 뒤 failure 가 된다. 예전처럼 조용히 안 도는 게 아니라
             #    "추종 실패"로 관제에 뜬다.
-            "follow": FleetCmdDriver(self, "follow_admin", timeout_sec=3600.0).bind(cmd_pub),
+            "follow": FleetCmdDriver(self, "follow_admin", timeout_sec=3600.0,
+                                     stop_action="follow_stop").bind(cmd_pub),
             # 주차장으로 goto. `home` 이 아니라 `goal` 인 이유는 위 return_x 주석 참고.
             "return_dock": FleetCmdDriver(
                 self, "goal",

@@ -27,7 +27,11 @@ def _clamp(v, lo, hi):
 def main():
     ap = argparse.ArgumentParser(description="UDP cmd -> /cmd_vel bridge (Pi side)")
     ap.add_argument("--port", type=int, default=6002, help="UDP cmd port from AI server")
-    ap.add_argument("--topic", default="/cmd_vel")
+    # ⚠️ `/cmd_vel` 직접 발행 금지 — 바퀴로 가는 문은 twist_mux 하나뿐이다
+    #    (pinky_bringup/config/twist_mux.yaml). 이 다리는 은퇴했지만
+    #    scripts/drive-pi/follow-drive.sh 로 **아직 실행 가능**하고, 그때 `/cmd_vel` 로
+    #    직접 쏘면 중재를 통째로 우회한다. 추종과 같은 입력(priority 100)으로 낸다.
+    ap.add_argument("--topic", default="/cmd_vel_follow")
     ap.add_argument("--rate", type=float, default=20.0, help="publish Hz")
     ap.add_argument("--timeout", type=float, default=0.5,
                     help="STOP if no cmd received within this many seconds (watchdog)")

@@ -17,6 +17,17 @@
         <arg name="scan_mode" value="DenseBoost"/>
     </include>
 
+    <!-- /cmd_vel 중재 — 바퀴로 가는 유일한 문. config/twist_mux.yaml 에 근거를 적어 뒀다.
+         ⚠️ nav2 가 아니라 **여기(bringup)** 에 있다. nav2 를 안 띄우고 추종·수동만 쓰는
+            구성이 있는데, 중재자가 nav2 안에 있으면 그때 로봇이 통째로 못 움직인다.
+         ⚠️ 아래 두 줄은 **빼면 로봇이 안 움직이고 에러도 안 난다.**
+            · 출력 리맵: twist_mux 의 기본 출력은 `/cmd_vel` 이 아니라 `cmd_vel_out` 이다.
+            · 메시지 타입: config/twist_mux.yaml 의 `use_stamped: false` 가 짝이다. -->
+    <node pkg="twist_mux" exec="twist_mux" name="twist_mux" output="screen">
+        <param from="$(find-pkg-share pinky_bringup)/config/twist_mux.yaml"/>
+        <remap from="cmd_vel_out" to="cmd_vel"/>
+    </node>
+
     <node pkg="pinky_bringup" exec="bringup">
         <param from="$(find-pkg-share pinky_bringup)/config/pinky_params.yaml"/>
         <param name="wheel_radius" value="$(var wheel_radius)"/>

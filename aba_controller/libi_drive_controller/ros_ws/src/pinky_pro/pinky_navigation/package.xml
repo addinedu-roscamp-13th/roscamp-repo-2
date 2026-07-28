@@ -12,6 +12,11 @@
 
   <depend>navigation2</depend>
   <depend>nav2_bringup</depend>
+  <!-- gz_bringup_launch.xml 이 시뮬에도 /cmd_vel 중재자를 띄운다(실기와 같은 배선).
+       설정은 pinky_bringup 의 config/twist_mux.yaml 을 그대로 쓴다 — 두 벌로 두면
+       시뮬과 실기의 우선순위가 조용히 갈린다. -->
+  <exec_depend>twist_mux</exec_depend>
+  <exec_depend>pinky_bringup</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

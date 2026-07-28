@@ -35,10 +35,23 @@ from py_trees.common import Access, Status
 
 from libi_interfaces.msg import FsmState
 from libi_interfaces.srv import RequestTransition
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 from libi_modes.blackboard import Keys
 from libi_modes.registry import ANY, BRANCH_ORDER, START, TRANSITIONS
+
+#: 자율주행이 돌면 **안 되는** 상태. 이 동안 twist_mux 가 자동 제어 입력을 통째로 막는다.
+#
+# 왜 필요한가 — 지금까지는 "각 BT leaf 가 자기 목표를 끊는다"에 전적으로 기대고 있었다.
+# 그런데 leaf 가 이미 끝난 뒤(도착 판정 등)에는 끊을 주체가 사라져서, 화면은 대기인데
+# nav2 goal 이 살아 바퀴가 돌았다(2026-07-28 실측). 취소를 **기억하는지**에 의존하는 대신
+# 상태 자체로 문을 닫는다.
+#
+# 잠금은 twist_mux 의 `fsm_motion_lock`(priority 150)이라 자동 제어(follow/recovery/nav)만
+# 막고 사람 조작(manual 200 · fleet 150)은 안 막는다 — 대기 상태에서 사람이 로봇을
+# 미세 조작해야 할 때가 있고, 그것까지 막으면 복구 수단이 사라진다.
+#   설정: pinky_drive/../pinky_bringup/config/twist_mux.yaml
+MOTION_LOCKED_STATES = frozenset({"IDLE", "INTERACTING", "ERROR", "CHARGING"})
 
 _STATUS_NAME = {
     Status.SUCCESS: "SUCCESS",
@@ -105,6 +118,7 @@ class StateIO:
                  request_topic="/libi/fsm_transition_request",
                  result_topic="/libi/fsm_transition_result",
                  typed_state_topic="fsm_state_typed",
+                 motion_lock_topic="/libi/motion_lock",
                  follow_snapshot_topic="/libi/follow_bt_snapshot",
                  follow_stale_sec=3.0,
                  service_name="request_transition"):
@@ -121,6 +135,10 @@ class StateIO:
         self._snap_pub = node.create_publisher(String, snapshot_topic, 10)
         self._result_pub = node.create_publisher(String, result_topic, 10)
         self._typed_pub = node.create_publisher(FsmState, typed_state_topic, 10)
+        # twist_mux 잠금. latched 가 아니라 매 tick 낸다 — twist_mux 는 마지막 값을
+        # 들고 있고, 우리가 안 내면 옛 값이 그대로 유효하다. 상태가 바뀌는 순간
+        # 반영돼야 하므로 상태 발행과 같은 주기로 붙여 둔다.
+        self._lock_pub = node.create_publisher(Bool, motion_lock_topic, 10)
         node.create_subscription(String, request_topic, self._on_request_topic, 10)
         self._srv = node.create_service(RequestTransition, service_name, self._on_request_srv)
 
@@ -238,6 +256,9 @@ class StateIO:
 
         led = String(); led.data = current                       # LED 는 이름 원문만 본다
         self._led_pub.publish(led)
+
+        # 자율주행 잠금 — MOTION_LOCKED_STATES 주석 참고.
+        self._lock_pub.publish(Bool(data=current in MOTION_LOCKED_STATES))
 
         # remaining_sec 은 INTERACTING 일 때만 의미가 있다(UiSessionTimer 가 그 브랜치에서만
         # 쓴다). 다른 상태에선 0.0 으로 내보내 패널이 남은 카운트다운을 오인하지 않게 한다.

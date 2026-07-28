@@ -12,9 +12,11 @@ from tf2_ros import TransformBroadcaster
 from tf_transformations import quaternion_from_euler
 from std_msgs.msg import Float32
 
+from .cmd_watchdog import CMD_VEL_TIMEOUT_SEC, command_expired
 from .dynamixel_driver import DynamixelDriver
 
 TWIST_SUB_TOPIC_NAME = "cmd_vel"
+
 ODOM_PUB_TOPIC_NAME = "odom"
 JOINT_PUB_TOPIC_NAME = "joint_states"
 ODOM_FRAME_ID = "odom"
@@ -81,6 +83,11 @@ class Pinky(Node):
 
         self.get_logger().info(f"Initial Encoder read: L={self.last_encoder_l}, R={self.last_encoder_r}. Controller is responsive.")
             
+        # ⚠️ 아래 구독·타이머를 만들기 **전에** 둔다. 타이머 콜백이 이 값을 읽는데,
+        #    생성 뒤에 초기화하면 첫 tick 이 AttributeError 로 죽는다.
+        self.last_cmd_time = None      # 아직 한 번도 못 받았다 (CMD_VEL_TIMEOUT_SEC 주석)
+        self.stopped_by_watchdog = False
+
         self.odom_pub = self.create_publisher(Odometry, ODOM_PUB_TOPIC_NAME, 10)
         self.joint_pub = self.create_publisher(JointState, JOINT_PUB_TOPIC_NAME, 10)
         self.twist_sub = self.create_subscription(Twist, TWIST_SUB_TOPIC_NAME, self.twist_callback, 10)
@@ -102,6 +109,7 @@ class Pinky(Node):
         self.get_logger().info('Pinky Bringup with Dynamixel has been started successfully.')
 
     def twist_callback(self, msg: Twist):
+        self.last_cmd_time = self.get_clock().now().nanoseconds / 1e9
         linear_x = msg.linear.x
         angular_z = msg.angular.z
 
@@ -124,7 +132,26 @@ class Pinky(Node):
         if not self.driver.set_double_rpm(rpm_l, rpm_r):
             self.get_logger().warn("Failed to send motor command.")
 
+    def _check_cmd_watchdog(self):
+        """명령이 끊기면 모터를 세운다. 한 번만 보내고, 명령이 돌아오면 리셋한다.
+
+        매 tick 정지 명령을 쏘면 시리얼 대역을 잡아먹어 정작 새 명령이 밀린다.
+        """
+        now = self.get_clock().now().nanoseconds / 1e9
+        if not command_expired(now, self.last_cmd_time):
+            self.stopped_by_watchdog = False
+            return
+        if self.stopped_by_watchdog:
+            return
+        self.stopped_by_watchdog = True
+        self.get_logger().warn(
+            f"{CMD_VEL_TIMEOUT_SEC}s 동안 {TWIST_SUB_TOPIC_NAME} 명령이 없어 모터를 세웁니다 "
+            f"(발행자가 죽었을 수 있습니다)")
+        if not self.driver.set_double_rpm(0, 0):
+            self.get_logger().error("워치독 정지 실패 — 모터가 계속 돌 수 있습니다")
+
     def update_and_publish(self):
+        self._check_cmd_watchdog()
         current_time = self.get_clock().now()
         dt = (current_time - self.last_time).nanoseconds / 1e9
         if dt <= 0: return

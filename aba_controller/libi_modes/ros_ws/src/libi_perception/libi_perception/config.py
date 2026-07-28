@@ -63,7 +63,10 @@ CAMERA_SELECT_EXPIRY_SEC = 3.0
 DETECTION_TCP_HOST = '0.0.0.0'
 DETECTION_TCP_PORT = 6000
 SCAN_TOPIC = '/scan'
-CMD_VEL_TOPIC = '/cmd_vel'
+# ⚠️ `/cmd_vel` 직접 발행 금지. twist_mux 가 중재하는 입력으로 낸다
+#    (pinky_bringup/config/twist_mux.yaml — follow, priority 100).
+#    직접 내면 중재를 우회해 nav2·수동조작과 마지막 메시지 싸움이 된다.
+CMD_VEL_TOPIC = '/cmd_vel_follow'
 CAMERA_SELECT_TOPIC = '/libi/camera_select'
 REQUESTER_VISIBLE_TOPIC = '/libi/requester_visible'
 REQUESTER_AREA_TOPIC = '/libi/requester_area'

@@ -133,6 +133,23 @@ class NavigationExec(CommandDrivenAction):
         self._target = None
         self._target_at = 0.0
         self._sent_at = None
+        #: nav2 에 goal 을 냈고 **아직 안 끊었다.** `_started` 와 별개로 둔다.
+        #
+        # `_started` 는 "이 leaf 가 지금 일을 쥐고 있나"이고, 이건 "바깥 세계에 내가 남긴
+        # 것이 있나"다. 도착 판정(`_release`)이 `_started` 를 내리는 순간 둘이 갈라지는데,
+        # 그때가 정확히 사고 지점이었다:
+        #
+        #   도착 판정은 **내 pose 가 5cm 안에 들어왔나**만 본다(arrive_tolerance_m, params.yaml).
+        #   nav2 는 같은 순간 아직 자기 goal 을 들고 최종 접근·목표 회전·회복 중일 수 있다.
+        #   그 뒤 상태가 IDLE 로 바뀌면 `terminate(INVALID)` 가 오는데 `_started` 가 이미
+        #   False 라 **stop 을 안 보낸다.** nav2 goal 은 살아 있고 바퀴는 돈다.
+        #   → 사용자 신고: "대기상태인데 움직이는 경우도 있었어" (2026-07-28)
+        #
+        # ⚠️ 도착할 때 바로 끊지 않는 이유: `PatrolNavigation` 도 도착에서 `_release` 를
+        #    탄다(`_arrived_status()` 가 RUNNING). 거기서 끊으면 순회가 **노드마다** 죽은
+        #    듯 서고, 다음 노드 허가가 올 때까지 정지해 있는다. 끊는 것은 이 leaf 가
+        #    **진짜 끝날 때**(무효화)여야 한다.
+        self._goal_outstanding = False
 
     def setup(self, **kwargs):
         super().setup(**kwargs)
@@ -190,6 +207,7 @@ class NavigationExec(CommandDrivenAction):
             # 처음이거나, 같은 목적지인데 아직 못 갔다 — 주행이 도착 없이 끝났을 수 있다.
             self.driver.start()
             self._started = True
+            self._goal_outstanding = True
             self._sent_at = now
         elif self.driver.poll() == "failure":
             return self._give_up()      # 실행 층이 거부했다 (링크 끊김 등)
@@ -206,13 +224,44 @@ class NavigationExec(CommandDrivenAction):
         return math.hypot(pose["x"] - target["x"], pose["y"] - target["y"]) <= self.arrive_tolerance
 
     def _release(self, status: Status) -> Status:
-        """주행 진행 상태까지 같이 버린다 — 남으면 다음 주행이 옛 목적지를 이어받는다."""
+        """주행 진행 상태까지 같이 버린다 — 남으면 다음 주행이 옛 목적지를 이어받는다.
+
+        ⚠️ 여기서 nav2 goal 을 끊지 **않는다.** 순회는 도착에서도 이 경로를 타므로
+        (`PatrolNavigation._arrived_status()` = RUNNING) 여기서 끊으면 노드마다 선다.
+        끊는 것은 `_cancel_goal` 이고, 부르는 자리는 이 leaf 가 진짜 끝날 때다.
+        """
         self._target = None
         self._sent_at = None
         return super()._release(status)
 
     def _give_up(self) -> Status:
+        # 실패한 주행은 **지금** 끊는다. 도착과 다르다 —
+        #   도착: nav2 도 같은 목표에 닿았으니, 최종 접근을 마치도록 두고
+        #         `terminate(INVALID)` 때 끊는다(안 그러면 순회가 노드마다 선다).
+        #   실패: 못 갔다는 뜻이라 nav2 목표가 **확실히 stale** 하다. 남기면 다음 명령과
+        #         `/cmd_vel` 을 다투고, 아무도 안 끊으면 IDLE 에서도 계속 돈다.
+        # 여기서 안 내리면 플래그가 leaf 재진입 뒤까지 살아남아, 나중의 INVALID 가
+        # **형제가 방금 낸 목표**를 대신 취소할 수 있다(stop 은 id 별이 아니라 전역 취소다).
+        self._cancel_goal()
         return self._release(Status.FAILURE)
+
+    def _cancel_goal(self) -> None:
+        """nav2 에 남긴 goal 을 끊는다. 남긴 게 없으면 아무것도 안 한다."""
+        if self._goal_outstanding:
+            self.driver.stop()
+            self._goal_outstanding = False
+
+    def _abandon(self) -> None:
+        self._cancel_goal()
+        super()._abandon()
+
+    def terminate(self, new_status):
+        # `_started` 가 아니라 `_goal_outstanding` 을 본다. 도착 판정이 `_started` 를
+        # 내린 뒤에도 nav2 는 자기 goal 을 들고 있을 수 있고, 그 상태로 상태 전이가
+        # 오면 아무도 안 끊어 **대기 상태에서 바퀴가 돌았다**(`_goal_outstanding` 주석).
+        if new_status == Status.INVALID:
+            self._cancel_goal()
+        super().terminate(new_status)
 
 
 class GuideExec(NavigationExec):

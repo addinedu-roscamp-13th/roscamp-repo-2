@@ -21,11 +21,30 @@ class FleetCmdDriver:
     args_fn: 호출 시점에 인자 dict 를 만드는 콜러블 (목적지가 매번 다르므로)
     """
 
-    def __init__(self, node, action, args_fn=None, *, timeout_sec=120.0):
+    def __init__(self, node, action, args_fn=None, *, timeout_sec=120.0,
+                 stop_action="stop"):
         self._node = node
         self._action = action
         self._args_fn = args_fn or (lambda: {})
         self._timeout_sec = timeout_sec
+        #: `stop()` 이 보낼 액션 이름. 세션 드라이버는 `"follow_stop"` 을 써야 한다.
+        #
+        # `"stop"` 은 **두 소비자가 서로 다른 뜻으로 받는다**:
+        #   follow_node  : 실린 id 의 세션을 닫는다 (session.py target_session_id)
+        #   fleet_link   : id 와 **무관하게** nav2 목표를 취소한다 (fleet_link.py `stop` 분기)
+        # 후자는 "응대중인데 바퀴가 계속 돈다"를 고치려고 일부러 넣은 것이라 옳다.
+        #
+        # 문제는 추종 세션을 닫으려고 낸 `stop` 이 **형제 leaf 가 방금 낸 주행까지**
+        # 죽인다는 것이다. 실측 2026-07-28 `/fleet_cmd`::
+        #
+        #     t=172.393  goal-1               NavigationExec 이 nav2 목표를 냈다
+        #     t=172.404  stop-follow_admin-1  11ms 뒤 FollowExec 이 세션을 닫으며 냈다
+        #     t=182.489  goal-2               재전송(arrive_resend_sec)까지 10초를 서 있었다
+        #
+        # `follow_stop` 은 follow_node 의 `STOP_ACTIONS` 에 이미 있고(follow_node.py),
+        # fleet_link 의 nav 취소 분기는 `action == "stop"` **정확히 일치**만 잡는다.
+        # 그래서 액션 이름만 바꾸면 세션은 닫히고 주행은 안 끊긴다.
+        self._stop_action = stop_action
         self._log = node.get_logger()
 
         self._pending_id = None
@@ -83,7 +102,10 @@ class FleetCmdDriver:
         cmd_id = self._pending_id or self._abandoned_id
         if cmd_id is None:
             return
-        self._publish("stop", {}, f"stop-{cmd_id}")
+        # ⚠️ **id 접두어는 액션 이름과 무관하게 `stop-` 이다.** 세션을 찾는 쪽
+        # (session.py `target_session_id`)이 `"stop-"` 만 벗겨 낸다. 여기서 접두어를
+        # 액션 이름에 맞춰 바꾸면 세션 id 가 안 맞아 **조용히 아무것도 안 닫힌다.**
+        self._publish(self._stop_action, {}, f"stop-{cmd_id}")
         self._pending_id = None
         self._abandoned_id = None
 

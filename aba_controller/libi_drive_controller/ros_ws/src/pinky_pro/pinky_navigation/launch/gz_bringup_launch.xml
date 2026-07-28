@@ -24,6 +24,19 @@
 
     <group>
         <push-ros-namespace namespace="$(var namespace)"/>
+
+        <!-- /cmd_vel 중재 — 실기와 **같은 배선**을 시뮬에도 둔다.
+             실기에서는 pinky_bringup 이 이걸 띄우는데(bringup_robot.launch.xml), 시뮬엔
+             그 하드웨어 런치가 없다. 안 두면 nav2 는 `cmd_vel_nav_out` 으로 나가는데
+             Gazebo 의 diff drive 는 `/cmd_vel` 을 구독해 **아무도 안 이어준다** —
+             에러 없이 로봇만 안 움직인다.
+             시뮬과 실기의 제어 경로가 달라지면 시뮬에서 통과한 것이 실기에서 깨진다. -->
+        <node pkg="twist_mux" exec="twist_mux" name="twist_mux" output="screen">
+            <param from="$(find-pkg-share pinky_bringup)/config/twist_mux.yaml"/>
+            <param name="use_sim_time" value="$(var use_sim_time)"/>
+            <remap from="cmd_vel_out" to="cmd_vel"/>
+        </node>
+
         <node pkg="rclcpp_components" exec="component_container_isolated" name='$(var container_name)' output="screen" args="--ros-args --log-level $(var log_level)">
             <param from="$(var params_file)"/>
             <param name='map' value="$(var map)"/>

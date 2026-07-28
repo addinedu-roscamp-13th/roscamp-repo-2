@@ -51,6 +51,21 @@ def set_target(target: str) -> bool:
     return True
 
 
+#: 이 노드가 속도를 내보내는 토픽.
+#
+# ⚠️ `/cmd_vel` 이 **아니다.** 바퀴로 가는 문은 twist_mux 하나뿐이다
+#    (pinky_bringup/config/twist_mux.yaml). 여기는 `manual` 입력(priority 200)이라
+#    다른 어떤 자동 제어보다 우선한다 — 사람이 잡으면 사람이 이긴다.
+#
+# 2026-07-28 이전에는 여기가 `/cmd_vel` 직행이었고, nav2·회복동작·추종 PID·도메인
+# 브릿지까지 같은 토픽에 발행자 10개가 물려 있었다. 중재가 없어 마지막 메시지가
+# 이겼고, "누가 바퀴를 돌렸는지"를 로그로 가릴 수 없었다.
+#
+# 아래 타입 탐지(_wanted_cmd_vel_type)도 **같은 토픽**을 봐야 한다. 다른 토픽의
+# 구독자를 보고 타입을 고르면 조용히 엉뚱한 메시지 타입을 낸다.
+CMD_VEL_TOPIC = "/cmd_vel_manual"
+
+
 def get_cmd_vel_info() -> dict[str, Any]:
     """현재 타겟/발행 타입/수신측(구독자) 정보."""
     info: dict[str, Any] = {
@@ -65,7 +80,7 @@ def get_cmd_vel_info() -> dict[str, Any]:
     try:
         info["cmd_vel_type"] = getattr(node, "_cmd_vel_type", None)
         subs = [
-            e for e in node.get_subscriptions_info_by_topic("/cmd_vel")
+            e for e in node.get_subscriptions_info_by_topic(CMD_VEL_TOPIC)
             if e.node_name != node.get_name()
         ]
         info["subscriber_count"] = len(subs)
@@ -594,7 +609,7 @@ def _bridge_thread() -> None:
             def _wanted_cmd_vel_type(self) -> str:
                 try:
                     sub_types = {
-                        e.topic_type for e in self.get_subscriptions_info_by_topic("/cmd_vel")
+                        e.topic_type for e in self.get_subscriptions_info_by_topic(CMD_VEL_TOPIC)
                         if e.node_name != self.get_name()
                     }
                 except Exception:
@@ -614,9 +629,9 @@ def _bridge_thread() -> None:
                 if self._cmd_pub is not None:
                     self.destroy_publisher(self._cmd_pub)
                 if wanted == "twist":
-                    self._cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
+                    self._cmd_pub = self.create_publisher(Twist, CMD_VEL_TOPIC, 10)
                 else:
-                    self._cmd_pub = self.create_publisher(TwistStamped, "/cmd_vel", 10)
+                    self._cmd_pub = self.create_publisher(TwistStamped, CMD_VEL_TOPIC, 10)
                 self._cmd_vel_type = wanted
                 self.get_logger().info(
                     f"/cmd_vel 퍼블리셔 타입 = {wanted} (target={_desired_target})"
