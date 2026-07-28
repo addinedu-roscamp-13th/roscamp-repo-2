@@ -35,6 +35,11 @@ class ControlLoop:
         self.switch = FollowSwitch()
         self.tracker = TrackingController(publish, cfg)
         self.miss = 0
+        #: 이 세션에서 **대상을 한 번이라도 잡았나.**
+        #: 잃어버리려면 먼저 가지고 있어야 한다 — 등록 전에는 검출이 계속 None 이라
+        #: 이게 없으면 세션을 연 지 2초(N_MISS_FRAMES 40 @20Hz) 만에 회복 BT 가 돌아
+        #: 아무도 등록하지 않았는데 로봇이 혼자 돌며 앞뒤 캠을 번갈아 켠다(실측 2026-07-28).
+        self._acquired = False
         self._search_ctx = None
         self._search_tree = None
         self._last_tick = None
@@ -84,6 +89,7 @@ class ControlLoop:
             det = self.get_detection()
             if det is not None:
                 self.miss = 0
+                self._acquired = True
                 if not getattr(det, 'motion_ok', True):
                     # 보이지만 가면 안 된다 — 누워 있거나, 로봇 코앞이거나, 자세를
                     # 재는 중이다. **miss 를 올리지 않는다**: 올리면 눈앞에 멀쩡히
@@ -99,7 +105,11 @@ class ControlLoop:
             else:
                 self.miss += 1
                 self.publish(0.0, 0.0)
-                if self.miss >= self.cfg.N_MISS_FRAMES:
+                # **아직 한 번도 못 잡았으면 탐색하지 않는다.** 등록 전에는 검출이 계속
+                # None 이라, 이 검사가 없으면 세션을 연 직후 회복 BT 가 돌아 로봇이 혼자
+                # 돌기 시작한다 — 사람은 아직 화면에서 자기를 등록하는 중이다.
+                # 여기서는 계속 정지 명령만 내며 등록을 기다린다.
+                if self.miss >= self.cfg.N_MISS_FRAMES and self._acquired:
                     self.switch.lost()
                     self._start_search()
         elif self.switch.state == 'SEARCHING':

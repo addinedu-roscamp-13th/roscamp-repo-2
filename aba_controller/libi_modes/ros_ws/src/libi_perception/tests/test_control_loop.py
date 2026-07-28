@@ -145,3 +145,66 @@ def test_missing_motion_ok_field_does_not_block():
     loop = ControlLoop(lambda: _det(), lambda: [], pub, _cfg(), now=_Clock())
     loop.tick()
     assert pub.calls[-1] != (0.0, 0.0)
+
+
+# ── 등록 전에는 탐색하지 않는다 (2026-07-28 실측) ─────────────────────────────
+# 잃어버리려면 먼저 가지고 있어야 한다. 등록 전에는 검출이 계속 None 이라, 이 검사가
+# 없으면 세션을 연 지 2초(N_MISS_FRAMES 40 @20Hz) 만에 회복 BT 가 돌았다 —
+# 아무도 등록하지 않았는데 로봇이 혼자 돌며 앞뒤 캠을 번갈아 켰다.
+
+def test_never_searches_before_the_first_detection():
+    """이 파일의 존재 이유. 사람은 아직 화면에서 자기를 등록하는 중이다."""
+    pub = _Pub()
+    loop = ControlLoop(get_detection=lambda: None, get_scan=lambda: [],
+                       publish=pub, cfg=_cfg(N_MISS_FRAMES=3), now=_Clock())
+    for _ in range(50):               # 문턱을 한참 넘긴다
+        loop.tick()
+    assert loop.state == 'TRACKING', "등록 전에 탐색으로 빠졌다 — 로봇이 혼자 돈다"
+    assert loop.search_tree is None, "회복 BT 가 만들어졌다"
+
+
+def test_holds_still_while_waiting_for_registration():
+    """기다리는 동안 바퀴가 돌면 안 된다."""
+    pub = _Pub()
+    loop = ControlLoop(get_detection=lambda: None, get_scan=lambda: [],
+                       publish=pub, cfg=_cfg(N_MISS_FRAMES=3), now=_Clock())
+    for _ in range(20):
+        loop.tick()
+    assert pub.calls, "아무것도 발행하지 않았다"
+    assert all(c == (0.0, 0.0) for c in pub.calls), f"정지가 아닌 명령: {set(pub.calls)}"
+
+
+def test_searches_once_the_target_has_been_seen():
+    """등록 뒤에 놓친 것은 진짜 놓친 것 — 그때는 탐색해야 한다."""
+    det_box = {'v': None}
+    pub = _Pub()
+    loop = ControlLoop(get_detection=lambda: det_box['v'], get_scan=lambda: [],
+                       publish=pub, cfg=_cfg(N_MISS_FRAMES=3), now=_Clock())
+    for _ in range(10):               # 등록 전 — 탐색 안 함
+        loop.tick()
+    assert loop.state == 'TRACKING'
+
+    det_box['v'] = _det()             # 등록됨
+    loop.tick()
+    det_box['v'] = None               # 놓침
+    for _ in range(3):
+        loop.tick()
+    assert loop.state == 'SEARCHING', "등록 뒤 놓쳤는데 탐색을 안 한다"
+
+
+def test_acquisition_survives_a_recovery_round():
+    """회복에 성공해 다시 놓치면, 두 번째도 탐색해야 한다(플래그가 리셋되면 안 된다)."""
+    det_box = {'v': _det()}
+    pub = _Pub()
+    loop = ControlLoop(get_detection=lambda: det_box['v'], get_scan=lambda: [],
+                       publish=pub, cfg=_cfg(N_MISS_FRAMES=1), now=_Clock())
+    loop.tick()
+    det_box['v'] = None
+    loop.tick()
+    assert loop.state == 'SEARCHING'
+    det_box['v'] = _det()
+    loop.tick()                       # 재획득
+    assert loop.state == 'TRACKING'
+    det_box['v'] = None
+    loop.tick()
+    assert loop.state == 'SEARCHING', "두 번째 놓침에서 탐색을 안 한다"
