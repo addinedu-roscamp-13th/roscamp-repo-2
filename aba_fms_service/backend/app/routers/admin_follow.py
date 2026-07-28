@@ -28,7 +28,7 @@ import time
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from app import fsm_link
+from app import fleet_telemetry, fsm_link
 
 router = APIRouter(prefix="/api/robot/admin-follow", tags=["admin-follow"])
 
@@ -133,7 +133,23 @@ async def request_admin_follow(req: AdminFollowRequest) -> AdminFollowResponse:
             return _reject("관제에 이 로봇의 추종 승인 기록이 남아 있습니다. 먼저 해제하세요.")
         _grants[req.robot_id] = {"granted_at": time.time()}
 
-    # 로봇을 WORKING 으로 옮긴다. 실패하면 승인 자체를 무른다(fail-closed): 로봇이 IDLE 로
+    # ① 진행 중이던 주행을 먼저 끊는다.
+    #
+    # 전이는 `active_command` 를 지우지 않는다. PATROL 에서 왔다면 fleet_node 가 허가한
+    # `navigate` 가 blackboard 에 그대로 남아 있어, WORKING 으로 옮기는 순간
+    # `WorkingBranch` 의 `NavigationExec` 이 **그 옛 목표를 이어서 실행한다.**
+    # 그리고 추종은 `/cmd_vel` 을 직접 미므로, nav2 목표가 살아 있으면 두 제어 주체가
+    # 같은 토픽을 다툰다(중재자 없음 — 마지막 메시지가 이긴다).
+    #
+    # 실측 2026-07-28: 승인은 났는데 로봇이 사람을 따라오지 않고 순회 정점으로 계속 갔다.
+    # BT 스냅샷의 RUNNING leaf 가 `FollowExec` 이 아니라 `NavigationExec` 이었다.
+    #
+    # 실패해도 진행한다 — 정지를 못 보냈다고 추종 자체를 막으면, 링크가 잠깐 흔들릴 때마다
+    # 추종을 못 쓰게 된다. 아래 `follow_admin` 이 도착하면 BT 가 선점하며 다시 멈춘다.
+    await asyncio.to_thread(
+        fleet_telemetry.send_command_async, req.robot_id, "mission_stop", {})
+
+    # ② 로봇을 WORKING 으로 옮긴다. 실패하면 승인 자체를 무른다(fail-closed): 로봇이 IDLE 로
     # 남으면 관제가 유휴로 보고 다른 태스크를 배차할 수 있는데, 실제로는 사람을 따라다니는
     # 중이라 충돌한다. 승인 기록과 로봇 상태는 같이 움직이거나 둘 다 안 움직여야 한다.
     moved, reason = await _move_state(req.robot_id, FOLLOW_STATE)
@@ -141,6 +157,25 @@ async def request_admin_follow(req: AdminFollowRequest) -> AdminFollowResponse:
         with _grants_lock:
             _grants.pop(req.robot_id, None)
         return _reject(reason)
+
+    # ③ **추종 명령을 실제로 내보낸다.**
+    #
+    # 여기가 오래 비어 있었다: `FOLLOW_COMMAND` 는 응답 필드로만 쓰였고 아무도 발행하지
+    # 않았다(패널에도 `follow_admin` 문자열이 없다). 그래서 로봇은 WORKING 으로만 가고
+    # 세션이 안 열려 카메라도 안 켜졌다. `guide.py` 는 처음부터 이 단계를 갖고 있었다.
+    #
+    # 전이가 된 **뒤에** 보낸다. 순서가 뒤집히면 BT 가 WORKING 이 아닌 채로 명령을 받아
+    # `WorkingBranch` 의 `IsMode` 에서 걸러진다(명령만 조용히 버려진다).
+    #
+    # args 는 비운다 — 세션 역할이 FOLLOW 면 카메라는 앞이 기본값이다(session.py).
+    cmd_id = await asyncio.to_thread(
+        fleet_telemetry.send_command_async, req.robot_id, FOLLOW_COMMAND, {})
+    if cmd_id is None:
+        # 명령이 안 나갔으면 되돌린다 — WORKING 에 갇힌 로봇을 남기지 않는다(guide.py 와 같다).
+        await _move_state(req.robot_id, RELEASE_STATE)
+        with _grants_lock:
+            _grants.pop(req.robot_id, None)
+        return _reject("로봇 명령 링크가 없습니다 (브릿지 미기동?).")
 
     return AdminFollowResponse(accepted=True, command=FOLLOW_COMMAND)
 

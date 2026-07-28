@@ -65,6 +65,33 @@ def link(monkeypatch):
     return fake
 
 
+class FakeCmd:
+    """`/fleet_cmd` 발행 대역. 무엇을 어떤 순서로 보냈는지 기록한다.
+
+    승인만 하고 명령을 안 보내면 로봇은 WORKING 으로만 가고 세션이 안 열린다 —
+    실측으로 당한 사고라 순서까지 본다(실측 2026-07-28)."""
+
+    def __init__(self):
+        self.calls = []
+        self.result = "cmd-1"
+
+    def __call__(self, robot_id, action, args=None):
+        self.calls.append((robot_id, action, args or {}))
+        return self.result
+
+    @property
+    def actions(self):
+        return [a for _, a, _ in self.calls]
+
+
+@pytest.fixture(autouse=True)
+def cmd(monkeypatch):
+    """autouse — 안 막으면 브릿지가 없어 발행이 실패하고 모든 승인이 거부된다."""
+    fake = FakeCmd()
+    monkeypatch.setattr(admin_follow.fleet_telemetry, "send_command_async", fake)
+    return fake
+
+
 def _seed(robot_id, state, fresh=True):
     entry = fsm_link._empty_entry()
     entry["current_state"] = state
@@ -307,3 +334,60 @@ def test_release_still_succeeds_when_the_return_transition_fails(client, link):
     assert body["released"] is True
     assert "복귀 실패" in body["reason"]
     assert _status(client)["following"] == []
+
+
+# ── 승인이 로봇까지 닿는가 (2026-07-28 실측 사고) ────────────────────────────
+# 증상: 승인은 났고 로봇도 WORKING 인데, 사람을 안 따라오고 순회 정점으로 계속 갔다.
+#       BT 스냅샷의 RUNNING leaf 가 FollowExec 이 아니라 NavigationExec 이었다.
+# 원인: FOLLOW_COMMAND 가 응답 필드로만 쓰이고 아무도 /fleet_cmd 로 발행하지 않았다.
+#       패널에도 "follow_admin" 문자열이 0건. guide.py 는 처음부터 이 단계를 갖고 있었다.
+
+def test_grant_actually_dispatches_follow_admin(client, cmd):
+    """이 파일에서 가장 중요한 테스트 — 승인만 하고 명령을 안 보내면 추종은 시작되지 않는다."""
+    _seed("pinky1", "PATROL")
+    assert _post(client)["accepted"] is True
+    assert ("pinky1", "follow_admin", {}) in cmd.calls, \
+        f"follow_admin 이 안 나갔다 — 보낸 것: {cmd.actions}"
+
+
+def test_existing_drive_is_cancelled_before_the_transition(client, cmd, link):
+    """WORKING 으로 옮기면 남아 있던 navigate 를 NavigationExec 이 이어서 실행한다.
+    전이는 active_command 를 지우지 않는다 — 먼저 끊어야 한다."""
+    _seed("pinky1", "PATROL")
+    _post(client)
+    assert cmd.actions[0] == "mission_stop", f"첫 명령이 정지가 아니다: {cmd.actions}"
+    assert cmd.actions.index("mission_stop") < cmd.actions.index("follow_admin")
+
+
+def test_follow_admin_is_sent_after_the_transition(client, cmd, link):
+    """순서가 뒤집히면 BT 가 WORKING 이 아닌 채로 받아 IsMode 에서 조용히 버려진다."""
+    _seed("pinky1", "PATROL")
+    _post(client)
+    assert link.targets == ["WORKING"], f"전이 대상: {link.targets}"
+    # 전이가 먼저 일어났는지는 호출 순서로만 알 수 있다 — 발행 대역이 전이 뒤에 불렸다.
+    assert cmd.actions[-1] == "follow_admin"
+
+
+def test_dispatch_failure_rolls_back_to_idle_and_drops_the_grant(client, cmd, link, ):
+    """명령이 안 나갔으면 WORKING 에 갇힌 로봇을 남기지 않는다(guide.py 와 같은 계약)."""
+    cmd.result = None
+    _seed("pinky1", "PATROL")
+    body = _post(client)
+    assert body["accepted"] is False
+    assert link.targets == ["WORKING", "IDLE"], f"복귀 전이가 없다: {link.targets}"
+    assert _status(client)["following"] == [], "승인 기록이 남았다 — 재시도가 막힌다"
+
+
+def test_stop_failure_does_not_block_the_follow(client, cmd):
+    """정지를 못 보냈다고 추종을 막으면 링크가 흔들릴 때마다 못 쓰게 된다.
+    follow_admin 이 도착하면 BT 가 선점하며 어차피 다시 멈춘다."""
+    calls = []
+
+    def flaky(robot_id, action, args=None):
+        calls.append(action)
+        return None if action == "mission_stop" else "cmd-1"
+
+    admin_follow.fleet_telemetry.send_command_async = flaky
+    _seed("pinky1", "PATROL")
+    assert _post(client)["accepted"] is True
+    assert calls == ["mission_stop", "follow_admin"]
