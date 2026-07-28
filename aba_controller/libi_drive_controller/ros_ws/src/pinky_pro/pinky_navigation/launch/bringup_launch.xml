@@ -12,13 +12,15 @@
     <arg name="use_respawn" default="False"/>
     <arg name="log_level" default="info"/>
     <arg name="lifecycle_nodes_local" default="['map_server', 'amcl']"/>
+    <!-- [2026-07-28] collision_monitor 제거 — navigation_launch.xml 머리말 참고.
+         ⚠️ 이 목록은 아래에서 navigation_launch.xml 로 **넘어가 그쪽 기본값을 덮는다**.
+         그래서 navigation_launch.xml 만 고치면 무효다. 되살릴 때도 여기를 같이 고친다. -->
     <arg name="lifecycle_nodes_nav" default="['controller_server',
                        'planner_server',
                        'behavior_server',
                        'bt_navigator',
                        'waypoint_follower',
-                       'velocity_smoother',
-                       'collision_monitor']"/>
+                       'velocity_smoother']"/>
 
     <group>
         <push-ros-namespace namespace="$(var namespace)"/>

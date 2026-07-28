@@ -361,6 +361,11 @@ velocity_smoother:
     deadband_velocity: [0.0, 0.0, 0.0]
     velocity_timeout: 1.0
 
+# ⚠️ [2026-07-28] **이 노드는 지금 안 뜬다.** navigation_launch.xml 에서 뺐다 —
+#    폴리곤이 둘 다 enabled:False 라 cmd_vel_smoothed → cmd_vel 통과만 하고 있었고,
+#    그 자리는 velocity_smoother 의 `cmd_vel_smoothed → cmd_vel` 리맵이 대신한다.
+#    아래 설정은 **되살릴 때 쓰라고 남겨 둔 것**이다. 되살리는 절차는
+#    navigation_launch.xml 머리말의 ①②③ 참고(세 곳을 같이 되돌려야 한다).
 collision_monitor:
   ros__parameters:
     base_frame_id: "base_link"
