@@ -218,3 +218,53 @@ def test_empty_points_are_ignored(monkeypatch):
     monkeypatch.setattr(bridge, "NAV_VIA_BT", True)
     _reset_nav()
     bridge.on_path_request("Pinky-3", [])        # 예외가 나면 구독 스레드가 죽는다
+
+
+# ── 주문 취소가 로봇까지 닿는가 (2026-07-28) ──────────────────────────────────
+# set_robot_mode 는 fleet_node 의 task 만 취소한다. 로봇에게 /fleet_cmd 를 안 보내면
+# 이미 내려간 goal 이 살아 있어 **현재 목표까지 간 뒤에야** 멈춘다.
+
+def _release_spy(monkeypatch):
+    sent, modes = [], []
+    monkeypatch.setattr(bridge.fleet_telemetry, "send_command_async",
+                        lambda robot, action, args=None: sent.append((robot, action)) or "c1")
+    monkeypatch.setattr(bridge.fleet_link, "set_robot_mode",
+                        lambda robot, mode: modes.append((robot, mode)) or {"ok": True})
+    return sent, modes
+
+
+def test_release_sends_mission_stop_to_the_robot(monkeypatch):
+    """이 테스트의 존재 이유 — 예전엔 로봇에 아무것도 안 갔다."""
+    sent, modes = _release_spy(monkeypatch)
+    bridge.real_release("Pinky-3")
+    assert ("Pinky-3", "mission_stop") in sent, "취소했는데 로봇이 계속 간다"
+    assert modes == [("Pinky-3", bridge.RELEASE_MODE)], "fleet_node 해제도 그대로 해야 한다"
+
+
+def test_release_still_frees_fleet_node_when_stop_fails(monkeypatch):
+    """정지를 못 보내도 점유 해제는 계속해야 한다 — 둘 다 실패하면 로봇이 영영 묶인다."""
+    modes = []
+    monkeypatch.setattr(bridge.fleet_telemetry, "send_command_async",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("링크 끊김")))
+    monkeypatch.setattr(bridge.fleet_link, "set_robot_mode",
+                        lambda robot, mode: modes.append((robot, mode)) or {"ok": True})
+    bridge.real_release("Pinky-3")
+    assert modes == [("Pinky-3", bridge.RELEASE_MODE)]
+
+
+def test_release_ignores_empty_robot(monkeypatch):
+    sent, modes = _release_spy(monkeypatch)
+    bridge.real_release("")
+    assert sent == [] and modes == []
+
+
+def test_release_uses_async_send(monkeypatch):
+    """동기 전송은 코어 락을 쥔 채 ROS 왕복을 기다려 주문 큐 전체를 멈춘다."""
+    called = []
+    monkeypatch.setattr(bridge.fleet_telemetry, "send_command_async",
+                        lambda robot, action, args=None: called.append("async") or "c1")
+    monkeypatch.setattr(bridge.fleet_telemetry, "send_command_for_robot",
+                        lambda *a, **k: called.append("sync"))
+    monkeypatch.setattr(bridge.fleet_link, "set_robot_mode", lambda r, m: {"ok": True})
+    bridge.real_release("Pinky-3")
+    assert called == ["async"]

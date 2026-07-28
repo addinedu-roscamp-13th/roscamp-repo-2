@@ -383,11 +383,35 @@ def real_release(robot: str) -> None:
 
     RELEASE_MODE=PATROL 을 주면 취소 즉시 순회로 돌아간다. 그 뒤에는 로봇 자신의
     FsmState 가 다시 정본이 된다(on_fsm_state 가 robot_mode_ 를 덮어쓴다).
+
+    ## 로봇에게도 정지를 보낸다 (2026-07-28)
+
+    `set_robot_mode` 는 **fleet_node** 의 task 를 취소하고 점유 노드를 놓을 뿐,
+    로봇에게는 `/fleet_cmd` 를 아무것도 안 보낸다. 이미 내려간 `goal` 은 살아 있어
+    **로봇은 현재 목표까지 간 뒤에야 멈췄다** — 주문은 사라졌는데 로봇은 계속 갔다.
+
+    `mission_stop` 은 로봇에서 `mission.stop_mission()` 으로 가고, 그 안에서
+    `ros_bridge.cancel_nav()` 가 nav2 목표를 실제로 끊는다.
+
+    **비동기로 보낸다.** 이 함수는 `Orchestrator._release()` 를 통해 **코어 락을 쥔 채**
+    불린다(`cancel()`/실패 처리 안쪽). 응답을 기다리는 `send_command_for_robot` 을 쓰면
+    ROS 왕복 시간만큼 주문 큐 전체가 멈춘다.
+
+    보낼 게 없어도(로봇이 이미 서 있어도) 무해하다 —
+    **멈추는 것은 중복돼도 안전, 조종하는 것은 중복되면 위험.**
     """
     if not robot:
         return
     with _nav_lock:
         _last_nav.pop(robot, None)      # 놓아준 로봇의 목적지 기억도 지운다
+
+    try:
+        cmd_id = fleet_telemetry.send_command_async(robot, action="mission_stop", args={})
+        log.info("[release] %s 주행 정지 요청 (cmd=%s)", robot, cmd_id)
+    except Exception as e:                      # noqa: BLE001
+        # 정지를 못 보내도 아래 해제는 계속한다 — 둘 다 실패하는 것보다 낫다.
+        log.warning("[release] %s 정지 명령 실패: %s", robot, e)
+
     res = fleet_link.set_robot_mode(robot, RELEASE_MODE)
     if res.get("ok"):
         log.info("[release] %s → %s (task 취소·점유 해제)", robot, RELEASE_MODE)
