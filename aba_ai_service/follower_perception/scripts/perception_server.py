@@ -91,13 +91,29 @@ def _cm(m):
     return -1 if (m is None or not np.isfinite(m)) else int(round(m * 100.0))
 
 
+#: `poll_cmd` 이 "상대가 연결을 닫았다"를 알리는 표식. `None`(명령 없음)과 **반드시**
+#: 구분돼야 한다 — 섞으면 죽은 소켓을 붙들고 도는 아래 사고가 난다.
+EOF = object()
+
+
 def serve_loop(conn, frames, perception, *, poll_cmd=None, jpeg_quality=80,
                cmd_sink=None, policy=None, lidar_source=None, detection_sink=None,
                camera_source=None):
     last_t = time.monotonic()
     for frame in frames:
+        # None = 심장박동(영상이 아직 안 옴). 소켓만 확인하고 넘어간다 — 이게 없으면
+        # 프레임이 안 오는 동안 뷰어가 끊긴 것을 영영 못 알아챈다(udp_video.frames 주석).
+        if frame is None:
+            if poll_cmd is not None and poll_cmd(conn) is EOF:
+                return
+            continue
         _sync_camera(perception, camera_source)
         cmd = poll_cmd(conn) if poll_cmd else None
+        if cmd is EOF:
+            # 패널이 닫혔다. 여기서 안 빠지면 소켓이 CLOSE-WAIT 로 잔류하고,
+            # `listen(1)` + 뷰어 1개 구조라 **다음 패널이 영영 못 붙는다**
+            # (SYN-SENT 로 매달린 채 "AI 서버에 연결 중…"). 실측 2026-07-28.
+            return
         if cmd == "register":
             perception.register_from_image(frame)
         elif cmd == "reset":
@@ -138,7 +154,14 @@ def serve_loop(conn, frames, perception, *, poll_cmd=None, jpeg_quality=80,
 
 
 def make_socket_poller():
-    """Return a poll_cmd(conn) that non-blockingly reads newline commands."""
+    """Return a poll_cmd(conn) that non-blockingly reads newline commands.
+
+    끊김은 `EOF` 로 돌려준다 — `None`(이번 tick 에 명령 없음)과 다른 뜻이다.
+    예전에는 둘 다 `None` 이라, 상대가 닫아도 `select` 는 EOF 를 계속 readable 로
+    보고하고 `recv` 는 계속 `b""` 를 줘서 `serve_loop` 이 죽은 소켓을 붙들고 돌았다.
+    `send_frame` 도 예외를 안 냈다 — 상대가 half-close(FIN)만 하고 RST 를 안 보내면
+    송신은 한동안 성공한다.
+    """
     state = {"buf": b""}
 
     def poll(conn):
@@ -147,10 +170,12 @@ def make_socket_poller():
             return None
         try:
             data = conn.recv(4096)
+        except (ConnectionResetError, BrokenPipeError):
+            return EOF
         except OSError:
             return None
         if not data:
-            return None
+            return EOF
         state["buf"] += data
         cmd = None
         while b"\n" in state["buf"]:
@@ -249,6 +274,9 @@ def _rotate_frames(frames, deg):
     rot = {90: cv2.ROTATE_90_CLOCKWISE, 180: cv2.ROTATE_180,
            270: cv2.ROTATE_90_COUNTERCLOCKWISE}.get(deg)
     for f in frames:
+        if f is None:            # 심장박동은 그대로 통과시킨다(회전할 것이 없다)
+            yield None
+            continue
         yield cv2.rotate(f, rot) if rot is not None else f
 
 
@@ -380,7 +408,9 @@ def main():
         from scripts.udp_video import UdpVideoReceiver
         UdpVideoReceiver  # imported lazily so non-UDP runs need no extra deps
         _recv = UdpVideoReceiver(args.udp_port)
-        frames = _recv.frames()
+        # idle_yield: 로봇이 camera_select=none 이라 영상을 안 보낼 때도 루프가 돌아야
+        # 뷰어 끊김을 알아챈다. 안 그러면 다음 패널이 영영 못 붙는다.
+        frames = _recv.frames(idle_yield=True)
         print(f"[ok] receiving UDP video on :{args.udp_port} (from robot)")
     elif args.test_pattern:
         frames = test_pattern_frames()
