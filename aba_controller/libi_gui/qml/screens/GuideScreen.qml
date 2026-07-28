@@ -1,4 +1,5 @@
 import QtQuick 2.15
+import QtQuick.Controls 2.15   // ScrollBar — 목적지 목록이 넘칠 때만 보인다
 import "../Style.js" as S
 import "../components"
 
@@ -48,37 +49,59 @@ Item {
             visible: !root.guiding && controller.guidePhase !== "completed"
             anchors.fill: parent
 
-            Column {
-                id: pickCol
-                anchors { left: parent.left; right: parent.right; top: parent.top }
-                spacing: 16
-                Text {
-                    text: "어디로 안내해드릴까요?"
-                    font.family: S.fontFamily; font.pixelSize: 24; font.bold: true; color: S.text
-                }
-                // 지도가 그림뿐이라 "누를 수 있다"가 안 보인다 — 검색 화면에는 같은 안내가
-                // 이미 있는데 여기만 없었다.
-                Text {
-                    text: "지도의 구역을 눌러도 고를 수 있어요"
-                    font.family: S.fontFamily; font.pixelSize: 15; color: S.textMuted
-                }
-                Flow {
-                    width: parent.width
-                    spacing: 12
-                    Repeater {
-                        model: controller.facilities()
-                        delegate: Chip {
-                            icon: modelData.icon
-                            text: modelData.name
-                            selected: root.picked === modelData.name
-                            onClicked: {
-                    root.picked = modelData.name
-                    controller.startGuideRegistration()
-                    perception.start()
-                }
-                        }
+            // 목적지 목록은 **남는 높이 안에서만** 그린다.
+            //
+            // 예전에는 이 Column 이 top 에만 걸려 아래로 자랐고, 아래쪽 등록 영역(regCol)은
+            // 버튼에서 위로 자랐다. 둘은 형제라 서로를 모른다 — 시설이 많으면 그대로
+            // 겹쳐서, 마지막 줄 칩이 "자세를 재고 있어요" 문구와 카메라 상자에 가려
+            // **누를 수 없게** 됐다(실측 2026-07-28).
+            //
+            // 목록을 숨기지 않고 Flickable 로 가둔다. 등록 중에도 목적지를 바꿀 수 있어야
+            // 하기 때문이다 — 숨기면 다시 고르려고 화면을 나갔다 들어와야 한다.
+            Flickable {
+                id: pickArea
+                anchors { left: parent.left; right: parent.right; top: parent.top
+                          bottom: regCol.visible ? regCol.top : startBtn.top
+                          bottomMargin: 14 }
+                contentHeight: pickCol.implicitHeight
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
+                // 넘칠 때만 스크롤바가 보인다 — 안 넘치면 화면이 예전과 똑같다.
+                ScrollBar.vertical: ScrollBar { policy: pickArea.contentHeight > pickArea.height
+                                                        ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff }
+
+                Column {
+                    id: pickCol
+                    width: pickArea.width
+                    spacing: 16
+                    Text {
+                        text: "어디로 안내해드릴까요?"
+                        font.family: S.fontFamily; font.pixelSize: 24; font.bold: true; color: S.text
                     }
+                    // 지도가 그림뿐이라 "누를 수 있다"가 안 보인다 — 검색 화면에는 같은 안내가
+                    // 이미 있는데 여기만 없었다.
+                    Text {
+                        text: "지도의 구역을 눌러도 고를 수 있어요"
+                        font.family: S.fontFamily; font.pixelSize: 15; color: S.textMuted
+                    }
+                    Flow {
+                        width: parent.width
+                        spacing: 12
+                        Repeater {
+                            model: controller.facilities()
+                            delegate: Chip {
+                                icon: modelData.icon
+                                text: modelData.name
+                                selected: root.picked === modelData.name
+                                onClicked: {
+                                    root.picked = modelData.name
+                                    controller.startGuideRegistration()
+                                    perception.start()
+                                }
+                            }
+                        }
                 }
+            }
             }
 
             // 목적지를 고른 뒤 **이용자 등록**을 거친다. 로봇이 누구를 안내하는지
