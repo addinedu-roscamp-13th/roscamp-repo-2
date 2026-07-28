@@ -274,7 +274,16 @@ class StateIO:
 
 
 #: 다른 프로세스의 서브트리를 붙일 자리. 이름이 곧 접합점이라 여기만 고치면 된다.
-_GRAFT_POINT = "FollowExec"
+#:
+#: 후보가 둘인 이유 — 회복 BT 는 **추종과 길잡이 양쪽에서 돈다.** 길잡이도 사람을
+#: 놓치면 반대 캠으로 찾기 때문이다(감시 세션도 트리를 돌린다. 속도만 삼킨다).
+#: 그런데 `CommandDispatch` 는 memory=False Selector 라, 길잡이 중에는 `GuideExec` 이
+#: tick 을 집어가고 `FollowExec` 은 **한 번도 안 돌아 INVALID** 로 남는다.
+#: 고정해 두면 화면에 **꺼진 노드 밑에서 무언가 돌고 있는** 그림이 나온다 — 코드는
+#: 멀쩡한데 화면만 거짓이 되는, 이 파일이 막으려는 바로 그 상황이다.
+_GRAFT_POINTS = ("FollowExec", "GuideExec")
+#: RUNNING 인 후보가 없을 때(추종·길잡이 둘 다 안 도는데 스냅샷은 온 경우) 붙일 자리.
+_GRAFT_FALLBACK = "FollowExec"
 
 
 def _kind(node) -> str:
@@ -304,15 +313,38 @@ def _kind(node) -> str:
     return cls
 
 
-def _to_dict(node, follow_subtree=None):
+def _pick_graft_point(node) -> str:
+    """지금 tick 을 쥔 접합 후보의 이름. 없으면 `_GRAFT_FALLBACK`.
+
+    추종이면 `FollowExec`, 길잡이면 `GuideExec` 이 RUNNING 이다. 둘 다 아니면(세션은
+    떴는데 미션 BT 가 다른 브랜치를 돌고 있는 등) 기본 자리에 붙인다 — 안 붙이면
+    회복 트리가 화면에서 통째로 사라져, 돌고 있는데 안 보이는 쪽으로 거짓이 된다.
+    """
+    for cand in _GRAFT_POINTS:
+        if _find_running(node, cand):
+            return cand
+    return _GRAFT_FALLBACK
+
+
+def _find_running(node, name) -> bool:
+    if node.name == name and _STATUS_NAME.get(node.status) == "RUNNING":
+        return True
+    return any(_find_running(c, name) for c in getattr(node, "children", []))
+
+
+def _to_dict(node, follow_subtree=None, graft_at=None):
     """트리 → `{name, status, children}`.
 
-    `follow_subtree` 가 있으면 `FollowExec` **밑에 붙인다.** 추종 회복 BT 는
-    libi_perception 이라는 **다른 프로세스**에서 돌아 이 트리에 존재하지 않는데,
-    관제 화면에서는 그 leaf 밑에 이어져 보여야 한다(그게 실제 실행 관계다).
+    `follow_subtree` 가 있으면 지금 도는 실행 leaf(`FollowExec`/`GuideExec`) **밑에
+    붙인다.** 추종·길잡이 회복 BT 는 libi_perception 이라는 **다른 프로세스**에서 돌아
+    이 트리에 존재하지 않는데, 관제 화면에서는 그 leaf 밑에 이어져 보여야 한다
+    (그게 실제 실행 관계다).
     """
-    children = [_to_dict(c, follow_subtree) for c in getattr(node, "children", [])]
-    if follow_subtree is not None and node.name == _GRAFT_POINT and not children:
+    if follow_subtree is not None and graft_at is None:
+        graft_at = _pick_graft_point(node)
+    children = [_to_dict(c, follow_subtree, graft_at)
+                for c in getattr(node, "children", [])]
+    if follow_subtree is not None and node.name == graft_at and not children:
         children = [follow_subtree]
     return {
         "name": node.name,
