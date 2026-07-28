@@ -160,3 +160,38 @@ def test_missing_yolo_pose_dir_raises_clearly():
         del os.environ["LIBI_YOLO_POSE_DIR"]
         pe._posture_module = None
         pe.load_posture_module()                  # 다른 테스트를 위해 되돌린다
+
+
+# ── 화면에 그릴 키포인트 보관 ──────────────────────────────────────────────────
+#
+# 판정에는 안 쓴다. 순전히 서버가 스켈레톤을 그리기 위한 것이다(test_pose_overlay).
+# 안 채워지면 **에러 없이 골격만 안 보인다** — 그래서 여기서 붙들어 둔다.
+
+def test_keypoints_are_kept_for_drawing():
+    est = PoseEstimator(model=FakeModel(_standing(200)))
+    est.classify(_frame(), BBOX)
+    xy, conf, origin = est.last_keypoints
+    assert origin == (BBOX[0], BBOX[1]), "bbox 원점을 같이 보관해야 화면 좌표로 옮긴다"
+    assert len(xy) == 17 and len(conf) == 17
+
+
+def test_keypoints_are_cleared_when_inference_fails():
+    """직전 골격이 남으면 사람이 사라진 자리에 유령이 그려진다."""
+    est = PoseEstimator(model=FakeModel(_standing(60) + [None]))
+    for _ in range(60):
+        est.classify(_frame(), BBOX)
+    assert est.last_keypoints is not None, "전제: 한 번은 잡혔다"
+    for _ in range(est.every_n):
+        est.classify(_frame(), BBOX)
+    assert est.last_keypoints is None
+
+
+def test_skipped_frames_keep_the_last_keypoints():
+    """every_n 주기로 지우면 골격이 깜빡인다 — 추론한 프레임에서만 갱신한다."""
+    est = PoseEstimator(model=FakeModel(_standing(200)), every_n=3)
+    for _ in range(3):
+        est.classify(_frame(), BBOX)
+    kept = est.last_keypoints
+    assert kept is not None
+    est.classify(_frame(), BBOX)              # 건너뛰는 프레임
+    assert est.last_keypoints is kept

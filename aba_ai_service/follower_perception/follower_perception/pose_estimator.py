@@ -75,6 +75,16 @@ class PoseEstimator:
         self._frame = 0
         self._last = self._posture.UNKNOWN
         self._calibrator = self._posture.RatioCalibrator()
+        #: 마지막으로 **추론한** 키포인트 `(xy(17,2), conf(17,), (ox, oy))`. 없으면 None.
+        #  좌표는 crop 기준이라 그리려면 원점 `(ox, oy)` 를 더해야 한다.
+        #  판정에는 안 쓴다 — 순전히 화면에 스켈레톤을 그리기 위한 것이다. 추론을 건너뛴
+        #  프레임에서는 갱신하지 않아, 그림이 `every_n` 주기로 깜빡이지 않고 유지된다.
+        self.last_keypoints = None
+
+    @property
+    def conf_min(self) -> float:
+        """키포인트를 믿을 최소 신뢰도. 판정과 **같은 값**을 써야 화면과 판정이 안 어긋난다."""
+        return float(getattr(self._posture, "CONF_MIN", 0.5))
 
     # ── 기준 비율 ────────────────────────────────────────────────────────
     def recalibrate(self) -> None:
@@ -136,6 +146,7 @@ class PoseEstimator:
         crop 좌표계 그대로 쓴다 — 자세 판정은 **상대 기하**(어깨선·골반선·몸통축의
         길이 비율과 각도)만 보므로 원본 프레임 좌표로 되돌릴 필요가 없다.
         """
+        self.last_keypoints = None      # 아래에서 성공했을 때만 다시 채운다
         if frame is None or bbox is None:
             return None, None
         h, w = frame.shape[:2]
@@ -161,6 +172,7 @@ class PoseEstimator:
             # 그게 맞다 — "모른다"를 "괜찮다"로 바꾸지 않는다.
             import numpy as np         # noqa: PLC0415
             conf = np.zeros(len(xy), dtype=float)
+        self.last_keypoints = (xy, conf, (x1, y1))
         return xy, conf
 
 

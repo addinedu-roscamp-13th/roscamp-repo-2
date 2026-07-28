@@ -49,7 +49,50 @@ def _hud_text(img, text, org, color, scale=0.6, thick=2):
                 thick, cv2.LINE_AA)
 
 
-def draw_overlay(frame, det, *, cands=None, pick=None, cmd=None, status_extra=""):
+#: COCO-17 골격 연결. yolo11n-pose 가 내는 키포인트 순서 그대로다.
+#  0 코 · 1,2 눈 · 3,4 귀 · 5,6 어깨 · 7,8 팔꿈치 · 9,10 손목
+#  11,12 골반 · 13,14 무릎 · 15,16 발목
+_COCO_EDGES = (
+    (0, 1), (0, 2), (1, 3), (2, 4),                       # 얼굴
+    (5, 7), (7, 9), (6, 8), (8, 10),                      # 팔
+    (5, 6), (5, 11), (6, 12), (11, 12),                   # 몸통
+    (11, 13), (13, 15), (12, 14), (14, 16),               # 다리
+)
+
+#: 자세 문자열 → 색 (BGR). 판정 결과를 한눈에 구분하려는 것뿐이다.
+_POSTURE_COLORS = {
+    "Standing": (0, 255, 0),        # 초록 — 따라가도 되는 상태
+    "Lying": (0, 0, 255),           # 빨강 — 주행을 막는다
+    "Calibrating": (0, 255, 255),   # 노랑 — 기준 비율 측정 중
+}
+_POSTURE_UNKNOWN_COLOR = (170, 170, 170)
+
+
+def _draw_skeleton(vis, keypoints, conf_min, color):
+    """crop 좌표 키포인트를 원본 프레임 좌표로 옮겨 그린다.
+
+    `PoseEstimator` 는 owner bbox **crop** 에만 pose 를 돌리므로 좌표가 crop 기준이다
+    (`pose_estimator.py` `_keypoints` 주석). 그리려면 bbox 원점을 더해야 한다 — 판정은
+    상대 기하만 봐서 되돌릴 필요가 없었지만, 화면은 절대 좌표가 필요하다.
+
+    신뢰도가 낮은 점은 **안 그린다.** 판정이 안 쓰는 점을 화면에만 그리면, 판정이
+    Unknown 인데 골격은 멀쩡해 보이는 모순이 생긴다.
+    """
+    xy, conf, (ox, oy) = keypoints
+    pts = []
+    for i in range(len(xy)):
+        c = float(conf[i]) if conf is not None else 0.0
+        pts.append(None if c < conf_min else (int(xy[i][0]) + ox, int(xy[i][1]) + oy))
+    for a, b in _COCO_EDGES:
+        if a < len(pts) and b < len(pts) and pts[a] and pts[b]:
+            cv2.line(vis, pts[a], pts[b], color, 2, cv2.LINE_AA)
+    for p in pts:
+        if p:
+            cv2.circle(vis, p, 3, color, -1, cv2.LINE_AA)
+
+
+def draw_overlay(frame, det, *, cands=None, pick=None, cmd=None, status_extra="",
+                 pose=None):
     vis = frame.copy()
     h, w = vis.shape[:2]
     # thirds guide lines: left / center / right direction zones
@@ -73,6 +116,24 @@ def draw_overlay(frame, det, *, cands=None, pick=None, cmd=None, status_extra=""
         label = "OWNER (predicted)" if det.is_predicted else "OWNER"
         cv2.putText(vis, label, (max(0, x1), max(20, y1 - 8)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+        # 자세 — 스켈레톤과 판정을 같이 그린다.
+        #
+        # 판정만 글자로 띄우면 "왜 Unknown 인지"를 알 수 없다. 골격을 같이 그리면 점이
+        # 몇 개나 잡혔는지가 눈에 보여서, 모델이 못 본 건지 임계가 센 건지 바로 갈린다.
+        # 그리는 것은 서버 몫이다 — 패널은 JPEG 를 그대로 띄울 뿐이고 bbox·OWNER 도
+        # 이미 여기서 굽는다(FollowScreen.qml 머리말).
+        posture = getattr(det, "posture", None)
+        pcol = _POSTURE_COLORS.get(posture, _POSTURE_UNKNOWN_COLOR)
+        kp = getattr(pose, "last_keypoints", None) if pose is not None else None
+        if kp is not None:
+            _draw_skeleton(vis, kp, pose.conf_min, pcol)
+        if posture:
+            # 주행 허용 여부까지 같이 낸다. 자세와 주행은 별개다 — PostureGate 는
+            # 한 번 Lying 을 보면 Standing 이 몇 프레임 이어질 때까지 계속 막는다.
+            gate = "" if getattr(det, "motion_ok", True) else "  [motion blocked]"
+            _hud_text(vis, f"POSTURE: {posture}{gate}",
+                      (max(0, x1), min(vis.shape[0] - 8, y2 + 24)), pcol, 0.6, 2)
     if cmd is not None:
         state = cmd.get("state", "")
         scol = {"IDLE": (200, 200, 200), "FOLLOWING": (0, 255, 0),
@@ -136,7 +197,8 @@ def serve_loop(conn, frames, perception, *, poll_cmd=None, jpeg_quality=80,
         if cmd_sink is not None:                 # optional drive hook (opt-in)
             cmd_sink(cmd)
         vis = draw_overlay(frame, det, cands=cands, pick=pick, cmd=cmd,
-                           status_extra=_status_line(perception.matcher))
+                           status_extra=_status_line(perception.matcher),
+                           pose=perception.pose)
         ok, buf = cv2.imencode(".jpg", vis,
                                [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
         if ok:
@@ -339,7 +401,8 @@ def _run_local_show(frames, perception, cmd_sink=None, policy=None, detection_si
         if cmd_sink is not None:                 # optional drive hook (opt-in)
             cmd_sink(cmd)
         vis = draw_overlay(frame, det, cands=cands, pick=pick, cmd=cmd,
-                           status_extra=_status_line(perception.matcher))
+                           status_extra=_status_line(perception.matcher),
+                           pose=perception.pose)
         cv2.imshow(win, vis)
         k = cv2.waitKey(1) & 0xFF
         if k in (ord("q"), 27):

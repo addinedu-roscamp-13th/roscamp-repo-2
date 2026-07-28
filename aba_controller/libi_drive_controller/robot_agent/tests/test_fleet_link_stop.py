@@ -79,3 +79,34 @@ def test_stop_is_listed_as_a_bt_layer_action(link):
     같은 id 로 그걸 먼저 집어 세션이 시작 즉시 끝난다(follow_admin 이 그랬다)."""
     fleet_link, _, _ = link
     assert "stop" in fleet_link.BT_LAYER_ACTIONS
+
+
+# ── 세션 명령에는 답하지 않는다 ────────────────────────────────────────────────
+#
+# 실측 2026-07-28. `follow_admin` 을 BT_LAYER_ACTIONS 에 넣어 "알 수 없는 action" 실패를
+# 없앴는데도 추종이 안 됐다. 실패가 **성공**으로 바뀌었을 뿐, 결과가 나가는 건 그대로라
+# `FleetCmdDriver.poll()` 이 그걸 완료로 읽고 세션이 시작 즉시 끝났기 때문이다.
+# 그 결과 `_pending_id` 가 비어 뒤이은 `stop()` 이 아무것도 안 보냈고, follow_node 의
+# 세션은 영영 안 닫혔다(`/libi/follow_bt_snapshot` 이 Following[TRACKING] 을 계속 발행).
+
+@pytest.mark.parametrize("action", ["follow_admin", "guide_watch", "watch"])
+def test_session_start_gets_no_result(link, action):
+    """이 파일의 두 번째 존재 이유. 답하면 그게 곧 '세션 끝'으로 읽힌다."""
+    fleet_link, _, _ = link
+    ok, _status, _data, _msg = fleet_link._dispatch(action, {})
+    assert ok is True, "접수 자체는 성공이다"
+    assert fleet_link.should_publish_result(action, ok) is False, (
+        f"{action} 에 결과를 내면 FleetCmdDriver 가 완료로 읽어 세션이 즉시 끝난다")
+
+
+@pytest.mark.parametrize("action", ["navigate", "guide", "stop", "follow_stop", "goal"])
+def test_non_session_actions_still_get_a_result(link, action):
+    """답을 막는 범위가 넓어지면 FMS 가 다리 실패로 받아 주문이 FAILED 로 떨어진다."""
+    fleet_link, _, _ = link
+    assert fleet_link.should_publish_result(action, True) is True
+
+
+def test_failed_session_start_is_still_reported(link):
+    """접수가 실패했으면 세션이 없다 — 답을 막으면 부른 쪽이 3600초 매달린다."""
+    fleet_link, _, _ = link
+    assert fleet_link.should_publish_result("follow_admin", False) is True
