@@ -916,6 +916,24 @@ void RobotController::attachRos(RosLink *ros) {
                 m_guideTargetValid = false;
                 log(QStringLiteral("길잡이 종료 — 로봇이 WORKING 을 벗어남 (") + state + QStringLiteral(")"));
             }
+
+            // 관리자 추종도 같다 — **길잡이에만 있고 여기엔 없었다.**
+            //
+            // `m_following` 을 되돌리는 곳이 「해제」 버튼과 GUI 종료뿐이라, 로봇이 다른
+            // 이유로 WORKING 을 벗어나면(관제 취소·배터리·에러·stop_request·미션 타임아웃)
+            // 패널만 계속 "추종 중"으로 남았다. 그러면 다음 시도가 startAdminFollow() 의
+            // `if (m_following)` 에서 **HTTP 를 보내지도 못하고** 막힌다 —
+            // 화면엔 "이미 추종 중입니다" 만 뜨고 원인이 안 보인다.
+            // 실측 2026-07-28: 추종이 두 번 연속 안 됐다.
+            //
+            // FMS 승인 기록도 같이 정리한다. 로봇은 이미 WORKING 을 나갔으므로 그 기록만
+            // 남으면 이번엔 관제 쪽에서 "승인 기록이 남아 있습니다" 로 막힌다.
+            if (m_following && state != QLatin1String("WORKING")) {
+                m_following = false; emit followingChanged();
+                setTaskStatus(QStringLiteral("명령 대기"));
+                log(QStringLiteral("관리자 추종 종료 — 로봇이 WORKING 을 벗어남 (") + state + QStringLiteral(")"));
+                reportFollowRelease();
+            }
         });
 }
 

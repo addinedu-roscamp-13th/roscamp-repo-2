@@ -35,16 +35,51 @@ class CommandDrivenAction(py_trees.behaviour.Behaviour):
 
     def update(self) -> Status:
         if bb.get(self.blackboard, Keys.ACTIVE_COMMAND) not in self.handles:
+            self._abandon()
             return Status.FAILURE
         if not self._started:
             self.driver.start()
             self._started = True
         result = self.driver.poll()
         if result in ("success", "failure"):
-            self.blackboard.set(Keys.ACTIVE_COMMAND, None)
-            self._started = False
-            return Status.SUCCESS if result == "success" else Status.FAILURE
+            return self._release(Status.SUCCESS if result == "success" else Status.FAILURE)
         return Status.RUNNING
+
+    def _release(self, status: Status) -> Status:
+        """명령 슬롯을 비우고 상태를 돌려준다. 안 비우면 다음 명령을 못 받는다.
+
+        하위 클래스가 "끝났을 때 할 일"을 여기에 얹는다(자기 상태 정리, 상태 전이 예약).
+        끝나는 자리가 여기 하나뿐이라, 얹은 일이 성공/실패 어느 쪽으로도 빠지지 않는다.
+        """
+        self.blackboard.set(Keys.ACTIVE_COMMAND, None)
+        self._started = False
+        return status
+
+    def _abandon(self) -> None:
+        """슬롯을 뺏겼다 — **열어 둔 원격 세션을 닫는다.**
+
+        `terminate(INVALID)` 만으로는 안 된다. 그건 이 leaf 가 tick 에서 통째로 빠질 때만
+        오는데(상태 전이, 앞 형제가 가로챔), `active_command` 가 바뀌는 건 그 둘 다
+        아니다 — 이 leaf 는 여전히 tick 되고, 제 "내 명령 아님" 분기로 얌전히 FAILURE 를
+        돌려주며 손만 놨다. 그 사이 원격 세션은 아무도 안 닫는다.
+
+        실측 2026-07-28, `/fleet_cmd` echo — `stop` 이 **단 한 번도** 안 나갔다::
+
+            follow_admin-1-...     추종 시작
+            navigate ...           관제가 주행을 배차 (active_command 를 덮음)
+            follow_admin-2-...     두 번째 추종
+                                   ← 그 사이 어디에도 stop 이 없다
+
+        결과: libi_perception 의 제어 루프가 계속 20Hz 로 `/cmd_vel` 을 밀고,
+        `/libi/follow_bt_snapshot` 이 `Following[TRACKING]` 을 영원히 내보내
+        관제 화면에서 `FollowExec` 은 회색인데 그 밑만 파랗게 남았다.
+
+        슬롯(`active_command`)은 **건드리지 않는다.** 남의 명령을 여기서 지우면 그 명령을
+        처리할 형제가 영영 못 받는다.
+        """
+        if self._started:
+            self.driver.stop()
+        self._started = False
 
     def terminate(self, new_status):
         if self._started and new_status == Status.INVALID:
@@ -126,9 +161,11 @@ class NavigationExec(CommandDrivenAction):
         if bb.get(self.blackboard, Keys.ACTIVE_COMMAND) not in self.handles:
             # 슬롯은 **건드리지 않는다.** 남의 명령(perform_action 등)을 여기서 지우면
             # 뒤에 있는 ArmExec 이 그 명령을 영영 못 받는다.
+            # 다만 내보낸 주행은 끊는다 — `_abandon` 참고. 안 끊으면 옛 nav2 목표가
+            # 새 명령과 같은 `/cmd_vel` 을 다툰다(중재자 없음).
             self._target = None
             self._sent_at = None
-            self._started = False
+            self._abandon()
             return self._idle_status()
 
         target = bb.get(self.blackboard, Keys.NAV_TARGET)
@@ -169,12 +206,10 @@ class NavigationExec(CommandDrivenAction):
         return math.hypot(pose["x"] - target["x"], pose["y"] - target["y"]) <= self.arrive_tolerance
 
     def _release(self, status: Status) -> Status:
-        """명령 슬롯을 비우고 상태를 돌려준다. 안 비우면 다음 명령을 못 받는다."""
-        self.blackboard.set(Keys.ACTIVE_COMMAND, None)
-        self._started = False
+        """주행 진행 상태까지 같이 버린다 — 남으면 다음 주행이 옛 목적지를 이어받는다."""
         self._target = None
         self._sent_at = None
-        return status
+        return super()._release(status)
 
     def _give_up(self) -> Status:
         return self._release(Status.FAILURE)
@@ -444,3 +479,26 @@ class FollowExec(CommandDrivenAction):
     def __init__(self, driver=None, name: str | None = None):
         super().__init__(driver or UnwiredDriver("follow_admin"),
                          handles={"follow_admin"}, name=name or "FollowExec")
+
+    def setup(self, **kwargs):
+        super().setup(**kwargs)
+        self.blackboard.register_key(key=Keys.NEXT_MODE, access=Access.WRITE)
+
+    def _release(self, status: Status) -> Status:
+        """추종이 끝났음을 **스스로 알린다** — `GuideExec._release` 와 같은 이유다.
+
+        추종을 시킨 건 패널이고, FMS 는 세션이 언제 끝났는지 모른다. 배달처럼 `task_done`
+        을 대신 보내줄 주체가 없어서, 여기서 안 내보내면 `active_command` 만 비고 dispatch
+        Selector 가 `AwaitingCommand` 로 떨어져 **WORKING 에 그대로 남는다** — 120초 뒤
+        `CommandTimeout` 이 ERROR 로 보낼 때까지.
+
+        실측 2026-07-28: 그래서 **관리자 추종이 두 번째부터 안 됐다.** 패널은 "WORKING 을
+        벗어남"으로 추종 종료를 판정하는데(RobotController.cpp fsmStateReceived) 그 일이
+        영영 안 일어나 `m_following` 이 true 로 남았고, 다음 시도가 화면 안에서
+        "이미 추종 중입니다" 로 막혀 HTTP 조차 나가지 않았다.
+
+        `LAST_COMMAND` 에 `task_done` 을 쓰는 방법이 왜 안 통하는지는 `GuideExec._release`
+        에 적혀 있다 — 여기도 똑같이 `NEXT_MODE` 를 쓴다.
+        """
+        self.blackboard.set(Keys.NEXT_MODE, "PATROL")
+        return super()._release(status)

@@ -254,6 +254,15 @@ class RemoteControl:
                 self._active_id = None
                 self._publish_camera(force=True)
                 self._log.info(f'세션 종료 (id={target})')
+            else:
+                # 안 맞으면 **아무 일도 안 일어난다** — 제어 루프가 계속 20Hz 로
+                # `/cmd_vel` 을 미는데 화면과 미션 BT 는 이미 빠져나와 있다.
+                # 조용히 흘리면 "종료를 눌렀는데 로봇이 계속 움직인다"로만 드러나고
+                # 원인을 찾을 실마리가 남지 않는다. 실제로 그것 때문에 헤맸다
+                # (2026-07-28, BT 화면: FollowExec 회색 + Following[TRACKING] 파랑).
+                self._log.warning(
+                    f'종료 요청이 어느 세션도 안 가리킨다 (요청={target}, '
+                    f'현재={self._sessions.session_id or "없음"}) — 세션은 그대로 돈다')
 
     def publish_snapshot(self):
         """추종 상태를 `FollowExec` 밑에 붙일 서브트리로 내보낸다.

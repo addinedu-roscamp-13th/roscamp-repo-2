@@ -63,6 +63,41 @@ def test_follow_session_end_clears_active_command(seed, read, tick):
     assert read(Keys.ACTIVE_COMMAND) is None
 
 
+def test_follow_session_end_takes_the_robot_out_of_working(seed, read, tick):
+    """추종이 끝나면 WORKING 도 끝나야 한다 — 길잡이의 도착 처리와 같은 이유다.
+
+    슬롯만 비우면 dispatch Selector 가 `AwaitingCommand` 로 떨어져 로봇이 WORKING 에
+    눌러앉는다. 그러면 `CommandTimeout` 이 120초 뒤 ERROR 로 보낼 때까지 아무도 이 상태를
+    못 벗어난다.
+
+    화면에서는 이렇게 드러났다(실측 2026-07-28): 패널은 "WORKING 을 벗어남"으로 추종 종료를
+    판정하는데 그 일이 영영 안 일어나 `m_following` 이 true 로 남고, **관리자 추종이 두
+    번째부터 "이미 추종 중입니다" 로 막혔다.** 추종을 시킨 건 패널이라 FMS 는 세션이
+    끝났는지 모른다 — 배달처럼 `task_done` 을 대신 보내줄 주체가 없다.
+    """
+    seed(**{Keys.CURRENT_MODE: "WORKING", Keys.ACTIVE_COMMAND: "follow_admin"})
+    root = working.create(PARAMS, FakeDriver(), FakeDriver(),
+                          FakeDriver(["success"]), clock=lambda: 1.0)
+    tick(root)
+    # 성공은 Sequence 가 끝까지 가므로 RequestTransition 이 같은 tick 에 적용하고
+    # NEXT_MODE 를 지운다 — 결과는 CURRENT_MODE 에서 본다 (test_guide_exec 와 같다).
+    assert read(Keys.CURRENT_MODE) == "PATROL", "추종이 끝났는데 WORKING 에 갇혔다"
+
+
+def test_follow_failure_also_leaves_working(seed, read, tick):
+    """실패도 같다. 사람을 놓쳐 세션이 접혀도 WORKING 에 남으면 안 된다.
+
+    실패는 Selector 가 `AwaitingCommand` 로 떨어져 같은 tick 에 `RequestTransition` 까지
+    못 간다. 그래서 여기서는 예약값(NEXT_MODE)만 확인한다 — 길잡이의 요청자 이탈 시험과
+    같은 구조다.
+    """
+    seed(**{Keys.CURRENT_MODE: "WORKING", Keys.ACTIVE_COMMAND: "follow_admin"})
+    root = working.create(PARAMS, FakeDriver(), FakeDriver(),
+                          FakeDriver(["failure"]), clock=lambda: 1.0)
+    tick(root)
+    assert read(Keys.NEXT_MODE) == "PATROL", "세션이 접혔으면 WORKING 에 갇히면 안 된다"
+
+
 # ── structure ─────────────────────────────────────────────────────────────────
 
 def test_follow_exec_precedes_awaiting_command():
