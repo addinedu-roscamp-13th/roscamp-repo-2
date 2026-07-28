@@ -29,6 +29,11 @@ class FleetCmdDriver:
         self._log = node.get_logger()
 
         self._pending_id = None
+        #: 타임아웃으로 **포기한** 명령의 id. 응답이 없다고 상대가 안 도는 게 아니라서,
+        #: 뒤따르는 `stop()` 이 그 id 로 취소를 보낼 수 있게 남겨 둔다.
+        #: 이게 없으면 `poll()` 이 `_pending_id` 를 지운 뒤 `stop()` 이 조용히 아무것도
+        #: 안 해서, 원격 세션(추종 루프 등)이 고아로 계속 돈다.
+        self._abandoned_id = None
         self._started_at = None
         self._results = {}          # id -> (ok, msg)
         self._seq = 0
@@ -44,6 +49,7 @@ class FleetCmdDriver:
 
     def start(self):
         self._seq += 1
+        self._abandoned_id = None       # 새 명령을 내면 옛 포기 기록은 의미가 없다
         self._pending_id = f"{self._action}-{self._seq}-{int(self._now() * 1000)}"
         self._started_at = self._now()
         self._publish(self._action, self._args_fn(), self._pending_id)
@@ -56,19 +62,30 @@ class FleetCmdDriver:
             ok, msg = got
             if not ok:
                 self._log.warning(f"{self._action} 실패: {msg}")
+            # 결과가 왔다 = 상대가 그 명령을 끝냈다. 취소할 것이 없다.
             self._pending_id = None
+            self._abandoned_id = None
             return "success" if ok else "failure"
         if self._now() - self._started_at >= self._timeout_sec:
             self._log.warning(f"{self._action} 응답 없음 ({self._timeout_sec}s) — 실패 처리")
+            # **id 를 버리지 않는다.** 응답이 없다는 건 상대가 안 돈다는 뜻이 아니다 —
+            # 오히려 아직 돌고 있을 가능성이 크다. 여기서 지우면 곧이어 불리는
+            # `stop()` 이 early return 으로 아무것도 안 보내고, 원격 세션이 고아가 된다.
+            # (실측 경로: FollowExec 타임아웃 → terminate → stop() 무동작 →
+            #  follow_node 의 ControlLoop 이 계속 돌며 /cmd_vel 을 민다)
+            self._abandoned_id = self._pending_id
             self._pending_id = None
             return "failure"
         return "running"
 
     def stop(self):
-        if self._pending_id is None:
+        # 포기한 id 도 취소 대상이다 — 위 타임아웃 주석 참고.
+        cmd_id = self._pending_id or self._abandoned_id
+        if cmd_id is None:
             return
-        self._publish("stop", {}, f"stop-{self._pending_id}")
+        self._publish("stop", {}, f"stop-{cmd_id}")
         self._pending_id = None
+        self._abandoned_id = None
 
     def _publish(self, action, args, cmd_id):
         self._cmd_pub.publish_json({"id": cmd_id, "ts": self._now(), "action": action, "args": args})
