@@ -41,7 +41,7 @@ Rectangle {
         // 목 모드에서는 onScreenTouch 가 발행할 상대가 없어(RobotController.cpp:756) 눌러도
         // 세션이 안 늘어난다 — 그 상태에서 이 문구를 띄우면 화면이 거짓말을 한다.
         StatusPill {
-            visible: controller.robotState === "응대중" && controller.interactingRemaining <= 5
+            visible: controller.robotState === "이용중" && controller.interactingRemaining <= 5
             anchors.verticalCenter: parent.verticalCenter
             pillColor: S.warning
             text: "곧 이동합니다 " + controller.interactingRemaining + "초"

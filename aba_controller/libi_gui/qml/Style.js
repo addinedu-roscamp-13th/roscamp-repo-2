@@ -44,7 +44,7 @@ function categoryColor(cat) {
 function ledColorFor(robotState) {
     if (robotState === "에러" || robotState === "충전중") return danger;
     if (robotState === "순찰" || robotState === "보안순찰") return sky;
-    return success;   // 대기·응대중·작업중·안내중·복귀중
+    return success;   // 대기·이용중·작업중·안내중·복귀중
 }
 
 // 폰트 (Noto Sans CJK KR 설치 확인됨)

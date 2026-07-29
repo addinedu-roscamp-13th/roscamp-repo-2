@@ -34,6 +34,14 @@ public slots:
     void publishTouch();                        // ui_last_touch_at (Float64, 값 무의미 — 수신측이 스탬프)
     void publishFleetCmd(const QString &json);  // /fleet_cmd (String JSON, 예: {"action":"ui_touch"})
 
+    /** 비상정지 — 켜면 `/cmd_vel_stop` 으로 **0 을 20Hz 로 계속** 낸다(twist_mux priority 255).
+     *
+     *  왜 계속 내나: twist_mux 는 timeout(0.5s) 안에 안 오는 입력을 없는 것으로 친다.
+     *  한 번만 쏘면 0.5초 뒤 추종·nav2 가 다시 이긴다. 반대로 끄면 그냥 발행을 멈추면 된다.
+     *  ⚠️ 그래서 이건 **소프트웨어 정지**다 — 패널이 죽으면 정지도 풀린다.
+     *     하드웨어 차단은 별개로 있어야 한다. */
+    void setEmergencyStop(bool on);
+
 signals:
     void fsmStateReceived(QString currentState, double remainingSec,
                           QString errorCode, double batteryPercent, bool docked);

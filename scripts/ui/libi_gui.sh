@@ -3,8 +3,8 @@
 # 추종 화면(PERCEPTION_URL)·FMS 승인(FMS_URL)·도서 검색(ABA_SERVICE_URL)이 붙을 서버
 # 주소를 .env 의 LAPTOP_IP 로 채운다.
 #
-#   ./libi_gui.sh Pinky-3 --domain-id 88
-#   FMS_URL=http://192.168.0.9:9001 ./libi_gui.sh Pinky-3 --domain-id 88   # 서버가 딴 데면 개별 오버라이드
+#   ./libi_gui.sh pinky-3 --domain-id 88
+#   FMS_URL=http://192.168.0.9:9001 ./libi_gui.sh pinky-3 --domain-id 88   # 서버가 딴 데면 개별 오버라이드
 #
 # robot_id 는 pi.sh --robot / sim.sh --robot 에 준 값(= DB rc_robots.name)과 **완전히 같아야**
 # 한다 — FMS 승인 요청의 키라서, 다르면 "알 수 없는 로봇"으로 거부된다(gui.sh 주석 참고).
@@ -29,7 +29,7 @@ done
 source "$(dirname "${BASH_SOURCE[0]}")/../_common.sh"
 
 [ -n "$ROBOT_ID_ARG" ] || die "사용법: ./libi_gui.sh <robot_id> --domain-id <n>
-  robot_id 는 pi.sh --robot / sim.sh --robot 에 준 값과 같아야 합니다 (예: Pinky-3, Pinky-sim-1)."
+  robot_id 는 pi.sh --robot / sim.sh --robot 에 준 값과 같아야 합니다 (예: pinky-3, pinky-sim-1)."
 [ -n "$DOMAIN_ID" ] || die "--domain-id 가 없습니다 — sim.sh(또는 이 로봇)에 쓴 것과 같은 값을 명시하세요.
   예:  ./libi_gui.sh $ROBOT_ID_ARG --domain-id 90"
 export ROS_DOMAIN_ID="$DOMAIN_ID"
@@ -61,4 +61,13 @@ check_reachable "FMS" "$FMS_URL"
 check_reachable "ABA_SERVICE" "$ABA_SERVICE_URL"
 
 cd "$REPO_ROOT"
+
+# VNC 포트는 **로봇 번호에서 계산한다** — AI 수신 포트(6001/6011/6021, VIEWER 5007/5017/5027)와
+# 같은 원칙이다. 안 그러면 2대째 패널이 5900 을 못 잡고 그 자리에서 죽는다.
+#   pinky-1 → 5901   pinky-2 → 5902   pinky-3 → 5903   (번호를 못 뽑으면 5900)
+ROBOT_NUM="$(printf '%s' "$ROBOT_ID_ARG" | grep -oE '[0-9]+' | tail -1)"
+export VNC_PORT="${VNC_PORT:-$((5900 + ${ROBOT_NUM:-0}))}"
+echo "[libi_gui] VNC :$VNC_PORT — 태블릿/로봇 패널에서 $(hostname -I 2>/dev/null | awk '{print $1}'):$VNC_PORT 로 접속"
+echo "[libi_gui]   이 PC 에 창으로 띄우려면: ./aba_controller/libi_gui/gui.sh $ROBOT_ID_ARG --window"
+
 exec "$REPO_ROOT/aba_controller/libi_gui/gui.sh" "$ROBOT_ID_ARG"

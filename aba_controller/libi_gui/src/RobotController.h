@@ -200,6 +200,12 @@ signals:
     void poseChanged();
     void patrolActiveChanged();
     void followingChanged();
+    //: 관리자가 「해제」를 누른 것이 **아니라**, 로봇이 스스로 추종을 끝냈다.
+    //  (사람을 못 찾아 회복이 포기했거나, 관제가 상태를 바꿨거나, 에러)
+    //  화면은 이때 홈으로 돌아간다 — 조작하던 관리자는 이미 자리를 떴을 가능성이 크고,
+    //  로봇도 순찰로 복귀하므로(FollowExec._release 가 PATROL 을 예약) 관리자 화면에
+    //  남아 있으면 실제 상태와 화면이 어긋난다.
+    void followEndedByRobot();
     void emotionChanged();
     void taskStatusChanged();
     void guidePhaseChanged();
@@ -266,6 +272,14 @@ private:
     QString m_guideTargetWaypoint;
     bool m_patrol = true;
     bool m_following = false;
+    //: 추종을 켠 뒤 로봇이 WORKING 인 것을 **한 번이라도 봤나.**
+    //
+    //  아래 종료 감시가 "WORKING 을 벗어났다"로 판정하는데, 승인 직후에는 아직
+    //  WORKING 이 **도착하기 전**이라 그 조건이 참이다. 그대로 두면 켜자마자 스스로
+    //  해제를 보내고, FMS 가 로봇을 IDLE 로 되돌린다 — 관리자 추종이 안 되는 것처럼 보인다.
+    //  (실측 2026-07-28: FMS 를 직접 부르면 WORKING 이 18초+ 유지되는데, 패널로 켜면
+    //   몇 초 만에 IDLE 로 돌아왔다. 차이는 이 감시뿐이었다.)
+    bool m_followSawWorking = false;
     QString m_emotion = QStringLiteral("happy");
     QString m_taskStatus = QStringLiteral("명령 대기");
     QString m_guidePhase = "idle";

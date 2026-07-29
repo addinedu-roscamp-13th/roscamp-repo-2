@@ -2,12 +2,15 @@
 # 로봇(Pi) 한 방 기동 — 주행 스택 + 앞/뒤 카메라 송출 + 추종 cmd 브리지.
 # 창을 네 개 열어 손으로 치던 걸 하나로 묶는다.
 #
-#   ./pi-all.sh --robot Pinky-3                       # 앞캠만 (기본)
-#   ./pi-all.sh --robot Pinky-3 --back 4              # 뒷캠 /dev/video4 도 함께
-#   ./pi-all.sh --robot Pinky-3 --ai 192.168.1.10     # AI 서버 IP 직접 지정
-#   ./pi-all.sh --robot Pinky-3 --no-battery          # [디버그] 배터리 자동 전이 OFF
-#   ./pi-all.sh --robot Pinky-3 --battery             # 물어보지 말고 켠 채로
-#   ./pi-all.sh --robot Pinky-3 --no-fsm              # 모르는 플래그는 pi.sh 로 그대로 넘어간다
+#   ./libi_pi.sh --robot pinky-3 --domain-id 119                 # 기본 (뒷캠 자동 탐지)
+#   ./libi_pi.sh --robot pinky-3 --domain-id 119 --back 4        # 뒷캠 인덱스 직접 지정
+#   ./libi_pi.sh --robot pinky-3 --domain-id 119 --no-back       # 뒷캠 아예 안 열기
+#   ./libi_pi.sh --robot pinky-3 --domain-id 119 --ai 172.30.1.97 # AI 서버 IP 직접 지정
+#   ./libi_pi.sh --robot pinky-3 --domain-id 119 --no-battery    # [디버그] 배터리 자동 전이 OFF
+#   ./libi_pi.sh --robot pinky-3 --domain-id 119 --no-fsm        # 모르는 플래그는 pi.sh 로 그대로
+#
+# **`--robot` 과 `--domain-id` 는 필수다.** 도메인에 기본값을 두지 않는다 — 셸 값(보통
+# ~/.bashrc 의 119)을 물려쓰면 로봇이 늘었을 때 **에러 없이 안 붙는다.**
 #
 # ## 배터리 자동 전이 — 안 정하면 **물어본다**
 #
@@ -27,9 +30,10 @@
 #
 # 복귀는 관제 UI 에서 직접 명령해서 검증한다. `pi.sh --no-battery` 로 그대로 넘어간다.
 #
-# 뒷캠 인덱스는 로봇마다 다르다. 목록:  v4l2-ctl --list-devices
+# 뒷캠은 자동으로 켠다 — 인덱스는 /sys 에서 찾는다(CSI·ISP 노드는 걸러낸다).
+# 못 찾으면 앞캠만으로 뜨고 경고를 찍는다. 목록을 직접 보려면: v4l2-ctl --list-devices
 #
-# 정리: ./kill-pi.sh (같은 폴더)
+# 정리: ./kill-libi_pi.sh (같은 폴더)
 #
 # ## 무엇을 띄우나 (전부 tmux 세션 `pinky_pi` 안)
 #
@@ -62,16 +66,37 @@ set -eo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../_common.sh"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# ⚠️ **모든 창이 같은 DDS 구현을 써야 한다.** 안 그러면 통신이 조용히 끊긴다.
+#
+# 2026-07-28 실측 — 로봇이 안 움직이던 진짜 원인이었다:
+#     twist_mux · pinky_bringup(모터)  →  CycloneDDS   (ros_ws/scripts/pi.sh 의 ROS_SETUP)
+#     libi_modes(FSM) · follow_node    →  기본값(Fast DDS)
+# DDS 는 **구현이 다르면 매칭 자체를 안 만든다.** 그래서 추종이 만든
+# `/cmd_vel_follow` 도, FSM 이 내는 `/libi/motion_lock` 도 twist_mux 에 영영 안 닿았다.
+# 화면은 전부 정상이고 에러도 없다 — 바퀴만 안 돈다.
+#
+# 여기서 export 하면 아래 모든 tmux 창이 상속한다. 안쪽 pi.sh 의 ROS_SETUP 은
+# `${RMW_IMPLEMENTATION:-...}` 로 받으므로 이 값이 그대로 유지된다.
+if [ -f /opt/ros/jazzy/lib/librmw_cyclonedds_cpp.so ]; then
+  export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
+  _CDDS="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/aba_controller/libi_drive_controller/ros_ws/cyclonedds.xml"
+  [ -f "$_CDDS" ] && export CYCLONEDDS_URI="${CYCLONEDDS_URI:-file://$_CDDS}"
+fi
+
 SESSION="pinky_pi"          # 안쪽 ros_ws/scripts/pi.sh:28 이 만드는 세션 이름
 # [2026-07-27] BACK_PORT/BACK_FPS 는 없앴다. 앞뒤가 한 프로세스라 포트도 fps 도 하나다
 # (선택된 캠만 인코딩하므로, 예전에 뒷캠 fps 를 낮춰 아끼려던 비용 자체가 사라졌다).
 
 ROBOT=""
 AI_IP=""
-# 뒷캠은 **명시할 때만** 뜬다(opt-in). 기본값을 두면 안 되는 이유는 아래 장치 검사 주석 참고 —
-# 인덱스는 로봇마다 다르고, 틀린 값은 조용히 실패하지 않고 **앞캠을 죽인다.**
-# laptop-all.sh 의 --back 과 같은 결이다.
-WITH_BACK=false
+# [2026-07-29] 뒷캠은 **항상 켠다.** 인덱스는 아래 detect_back_cam 이 /sys 에서 찾는다.
+# 예전엔 `--back <n>` 을 줘야만 떴는데, 매번 인덱스를 외워 치는 게 실제로 더 위험했다 —
+# 틀린 값(특히 0)은 조용히 실패하지 않고 **앞캠을 죽인다**(아래 장치 검사 주석).
+# 이제 사람이 숫자를 고르지 않는다. 못 찾으면 앞캠만으로 뜬다(경고 한 줄).
+#   --back <n>  자동 탐지 대신 그 인덱스를 쓴다
+#   --no-back   뒷캠을 아예 안 연다
+WITH_BACK=true
+BACK_CAM=""     # 빈 값 = 자동 탐지
 # 동적 장애물 회피는 **기본 꺼짐**이다. 켜고 끄기가 쉬워야, 좁은 통로가 통째로 막히는
 # 상황이 났을 때 즉시 되돌릴 수 있다(맵이 1.26×2.16m 라 실제로 그럴 수 있다).
 WITH_DYN_OBSTACLE=false
@@ -80,12 +105,26 @@ DYN_OBSTACLE_TTL="${DYN_OBSTACLE_TTL:-20.0}"
 DYN_OBSTACLE_NEAR_AREA="${DYN_OBSTACLE_NEAR_AREA:-0}"   # 0 = 정책 자체가 꺼짐
 # 배터리 자동 전이. "" = 미지정 → 아래에서 물어본다. true/false = 플래그로 명시됨.
 BATTERY_AUTO=""
+DOMAIN_ID=""
+
+# 값을 받는 플래그가 **다음 플래그를 값으로 먹지 않게** 막는다.
+#   `--ai --no-back`  →  AI_IP="--no-back" 이 비어 있지 않아 검증을 통과하고,
+#   그 주소로 영상을 쏘려다 조용히 실패했다. (codex 2차 지적)
+need_arg() {   # <플래그> <값>
+  case "${2:-}" in
+    ''|--*) die "$1 뒤에 값이 필요합니다 (받은 값: '${2:-없음}')" ;;
+  esac
+  printf '%s' "$2"
+}
+
 ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    --robot)    ROBOT="${2:-}"; shift 2 ;;
-    --ai)       AI_IP="${2:-}"; shift 2 ;;
+    --robot)    ROBOT="$(need_arg "$1" "${2:-}")"; shift 2 ;;
+    --domain-id) DOMAIN_ID="$(need_arg "$1" "${2:-}")"; shift 2 ;;
+    --ai)       AI_IP="$(need_arg "$1" "${2:-}")"; shift 2 ;;
     --back)     WITH_BACK=true; BACK_CAM="${2:?--back 뒤에 USB 캠 인덱스가 필요합니다 (예: --back 1).  목록: v4l2-ctl --list-devices}"; shift 2 ;;
+    --no-back)  WITH_BACK=false; shift ;;
     --dyn-obstacle) WITH_DYN_OBSTACLE=true; shift ;;
     --no-battery)   BATTERY_AUTO=false; shift ;;
     --battery)      BATTERY_AUTO=true;  shift ;;
@@ -118,17 +157,45 @@ if [ -z "$BATTERY_AUTO" ]; then
 fi
 if [ "$BATTERY_AUTO" = false ]; then
   ARGS+=("--no-battery")
-  echo "[pi-all] ⚠️  배터리 자동 전이 OFF — 저전력 복귀·자동 순회가 뜨지 않습니다."
+  echo "[libi_pi] ⚠️  배터리 자동 전이 OFF — 저전력 복귀·자동 순회가 뜨지 않습니다."
   echo "         복귀는 관제 UI 에서 직접 명령하세요."
 fi
 
 ROBOT="${ROBOT:-${FSM_ROBOT_ID:-}}"
-[ -n "$ROBOT" ] || die "로봇 이름이 필요합니다.  예: ./pi-all.sh --robot Pinky-3
+[ -n "$ROBOT" ] || die "로봇 이름이 필요합니다.  예: ./libi_pi.sh --robot pinky-3
   이름은 관제 DB(rc_robots.name)에 등록된 값과 정확히 같아야 합니다 — 다르면 fleet_node 가
   이 로봇을 못 알아보고 배차해도 움직이지 않습니다(scripts/drive-pi/pi.sh 머리말)."
 
 AI_IP="${AI_IP:-${LAPTOP_IP:-}}"
 [ -n "$AI_IP" ] || die "AI 서버 IP 가 필요합니다 — --ai 로 주거나 .env 의 LAPTOP_IP 를 채우세요."
+
+# ── 도메인은 **반드시 인자로** ─────────────────────────────────────────────
+#
+# 예전엔 이 Pi 셸의 ROS_DOMAIN_ID(보통 ~/.bashrc 의 119)를 그대로 썼다. 로봇이 늘면
+# 새 Pi 를 복제 설치하면서 그 119 를 물려받고, 관제는 DB 대로 117 브릿지를 열어
+# **영영 안 붙는다 — 에러 한 줄 없이.** 조용히 틀리느니 안 뜨는 게 낫다.
+#
+# 여기서 export 하면 안쪽 pi.sh 의 ROS_SETUP 과 모든 tmux 창이 이 값을 상속한다
+# (그 스크립트는 셸의 ROS_DOMAIN_ID 를 그대로 쓴다).
+if [ -z "$DOMAIN_ID" ]; then
+  DOMAIN_ID="$(robot_domain "$ROBOT")"
+  [ -n "$DOMAIN_ID" ] && echo "[libi_pi] 도메인 $DOMAIN_ID (표: pinky-1→117 · pinky-2→118 · pinky-3→119)"
+fi
+[ -n "$DOMAIN_ID" ] || die "'$ROBOT' 의 도메인을 알 수 없습니다 (표는 실물 pinky-<N> 만 압니다).
+  직접 주세요:  ./libi_pi.sh --robot $ROBOT --domain-id <N>
+  이 값은 관제 DB(rc_robots.domain_id)와 **같아야** 합니다 — 다르면 브릿지가 로봇을 못 찾습니다."
+case "$DOMAIN_ID" in
+  *[!0-9]*) die "도메인은 숫자여야 합니다: '$DOMAIN_ID'" ;;
+esac
+if [ -n "${ROS_DOMAIN_ID:-}" ] && [ "$ROS_DOMAIN_ID" != "$DOMAIN_ID" ]; then
+  echo "[libi_pi] ⚠ 셸의 ROS_DOMAIN_ID=$ROS_DOMAIN_ID 를 인자값 $DOMAIN_ID 로 덮어씁니다 (~/.bashrc 확인)"
+fi
+export ROS_DOMAIN_ID="$DOMAIN_ID"
+
+# 영상 송출 포트를 로봇 번호에서 만든다. 노트북의 libi_laptop.sh 가 **같은 함수**로
+# 수신 포트를 계산하므로 서로 값을 넘길 필요가 없다 — 로봇 이름만 맞으면 맞는다.
+# (노트북 한 대가 로봇 2대 이상의 영상을 동시에 받으려면 포트가 갈려 있어야 한다.)
+robot_ports "$ROBOT"
 
 # ── 뒷캠 장치 검사 ──────────────────────────────────────────────────────────
 # ⚠️ 실제로 당한 사고(2026-07-27): `--back-cam 0` 으로 띄웠더니 **앞캠이 죽었다.**
@@ -149,32 +216,94 @@ list_cams() {
     echo "    /dev/$n  $(cat "$f")"
   done
 }
+# 뒷캠 인덱스를 /sys 에서 찾는다. CSI·코덱·ISP 노드를 이름으로 걸러내고 남은 것 중
+# **가장 낮은 번호**를 쓴다(USB 캠은 보통 capture + metadata 두 노드를 만들고, 앞쪽이 capture).
+# v4l2-utils 없이 동작한다 — Pi 에 없을 수 있어서 /sys 만 읽는다.
+# 후보 전부(공백 구분). 여러 개면 사람에게 알린다 — 어느 쪽이 뒷캠인지는 기계가 모른다.
+detect_back_cam_all() {
+  local f n name out=""
+  for f in /sys/class/video4linux/video*/name; do
+    [ -r "$f" ] || continue
+    n="$(basename "$(dirname "$f")")"; n="${n#video}"
+    case "$n" in ''|*[!0-9]*) continue ;; esac
+    name="$(cat "$f")"
+    case "$name" in
+      *unicam*|*bcm2835*|*rp1-cfe*|*isp*|*pisp*|*rpivid*|*codec*) continue ;;
+    esac
+    out="$out $n"
+  done
+  printf '%s' "$out"
+}
+
+detect_back_cam() {
+  local f n name best=""
+  for f in /sys/class/video4linux/video*/name; do
+    [ -r "$f" ] || continue
+    n="$(basename "$(dirname "$f")")"; n="${n#video}"
+    case "$n" in ''|*[!0-9]*) continue ;; esac
+    name="$(cat "$f")"
+    case "$name" in
+      *unicam*|*bcm2835*|*rp1-cfe*|*isp*|*pisp*|*rpivid*|*codec*) continue ;;
+    esac
+    if [ -z "$best" ] || [ "$n" -lt "$best" ]; then best="$n"; fi
+  done
+  printf '%s' "$best"
+}
+
+if [ "$WITH_BACK" = true ] && [ -z "$BACK_CAM" ]; then
+  BACK_CAM="$(detect_back_cam)"
+  if [ -z "$BACK_CAM" ]; then
+    WITH_BACK=false
+    echo "[libi_pi] ⚠ USB 뒷캠을 못 찾았습니다 — 앞캠만으로 뜹니다."
+    echo "           연결돼 있는데 이러면 인덱스를 직접:  --back <n>   (목록은 아래)"
+    echo "$(list_cams)"
+  else
+    echo "[libi_pi] 뒷캠 자동 탐지: /dev/video$BACK_CAM"
+    # ⚠️ capability(캡처 가능 여부)는 안 본다 — /sys 만 읽어 v4l2-utils 없이 돌기 위해서다.
+    #    후보가 둘 이상이면 어느 쪽이 뒷캠인지 이 스크립트는 모른다. 그래서 알린다.
+    # ⚠️ 후보가 여러 개여도 **같은 물리 장치면 정상이다** — USB 캠 하나가 보통
+    #    capture + metadata 두 노드를 만든다(이 Pi 는 video1/video2). 그건 경고할 일이 아니다.
+    #    USB 장치가 **둘 이상**일 때만 알린다: 그때는 어느 쪽이 뒷캠인지 기계가 모른다.
+    _devs=""
+    for _c in $(detect_back_cam_all); do
+      _d="$(readlink -f "/sys/class/video4linux/video$_c/device" 2>/dev/null)"
+      case " $_devs " in *" $_d "*) ;; *) _devs="$_devs $_d" ;; esac
+    done
+    set -- $_devs
+    [ "$#" -gt 1 ] && echo "[libi_pi] ⚠ USB 영상 장치가 $# 개입니다 — 뒷캠이 /dev/video$BACK_CAM 이 아니면 --back <n> 으로 지정하세요"
+    unset _devs _c _d
+  fi
+fi
+
 if [ "$WITH_BACK" = true ]; then
   [ -e "/dev/video$BACK_CAM" ] || die "/dev/video$BACK_CAM 이 없습니다.
   이 로봇의 영상 장치:
 $(list_cams)
-  USB 캠 인덱스를 골라 주세요:  ./pi-all.sh --robot $ROBOT --back <n>"
+  USB 캠 인덱스를 골라 주세요:  ./libi_pi.sh --robot $ROBOT --back <n>"
 
   BACK_NAME=""
   [ -r "/sys/class/video4linux/video$BACK_CAM/name" ] \
     && BACK_NAME="$(cat "/sys/class/video4linux/video$BACK_CAM/name")"
+  # ⚠️ 자동 탐지(detect_back_cam)와 **같은 목록**이어야 한다. 예전엔 수동 경로가 더 헐거워서
+  #    (`bcm2835`·`rpivid`·`codec` 를 안 걸렀다) 손으로 준 값이 오히려 위험했다. (codex 2차)
   case "$BACK_NAME" in
-    *unicam*|*bcm2835*|*rp1-cfe*|*isp*|*pisp*)
+    *unicam*|*bcm2835*|*rp1-cfe*|*isp*|*pisp*|*rpivid*|*codec*)
       die "/dev/video$BACK_CAM 는 CSI 카메라(앞캠) 장치입니다 — '$BACK_NAME'
   여기에 뒷캠을 물리면 **앞캠(picam)이 'Device or resource busy' 로 죽어** 추종 영상이 끊깁니다.
   이 로봇의 영상 장치:
 $(list_cams)
-  USB 캠 인덱스를 골라 주세요:  ./pi-all.sh --robot $ROBOT --back <n>" ;;
+  USB 캠 인덱스를 골라 주세요:  ./libi_pi.sh --robot $ROBOT --back <n>" ;;
   esac
-  echo "[pi-all] 뒷캠 장치 확인: /dev/video$BACK_CAM  '${BACK_NAME:-이름 미상}'"
+  echo "[libi_pi] 뒷캠 장치 확인: /dev/video$BACK_CAM  '${BACK_NAME:-이름 미상}'"
 fi
 
 # 이미 떠 있으면 창이 중복으로 쌓인다. 안쪽 pi.sh 도 같은 이유로 여기서 멈춘다.
 if tmux has-session -t "$SESSION" 2>/dev/null; then
-  die "'$SESSION' 세션이 이미 떠 있습니다. 먼저 정리하세요:  $HERE/kill-pi.sh"
+  die "'$SESSION' 세션이 이미 떠 있습니다. 먼저 정리하세요:  $HERE/kill-libi_pi.sh"
 fi
 
-echo "[pi-all] 로봇=$ROBOT  AI=$AI_IP  뒷캠=$([ "$WITH_BACK" = true ] && echo "/dev/video$BACK_CAM" || echo "없음(--back <n> 으로 켬)")  동적장애물=$([ "$WITH_DYN_OBSTACLE" = true ] && echo "ON" || echo "OFF(--dyn-obstacle 로 켬)")"
+echo "[libi_pi] 영상 → $AI_IP:$VIDEO_PORT (로봇 번호에서 계산 — 노트북 libi_laptop.sh 와 같은 규칙)"
+echo "[libi_pi] 로봇=$ROBOT  AI=$AI_IP  뒷캠=$([ "$WITH_BACK" = true ] && echo "/dev/video$BACK_CAM" || echo "없음")  동적장애물=$([ "$WITH_DYN_OBSTACLE" = true ] && echo "ON" || echo "OFF(--dyn-obstacle 로 켬)")"
 
 # ── 1) 주행 스택 ────────────────────────────────────────────────────────────
 # ⚠️ 파이프를 태우는 게 핵심이다. 안쪽 pi.sh 는 `[ -t 1 ]` 이면 세션에 **attach 해서
@@ -201,12 +330,12 @@ tmux has-session -t "$SESSION" 2>/dev/null \
 LIBI_WS="$REPO_ROOT/aba_controller/libi_modes/ros_ws"
 FOLLOW_BIN="$LIBI_WS/install/libi_perception/lib/libi_perception/follow_node"
 if [ ! -x "$FOLLOW_BIN" ]; then
-  echo "[pi-all] libi_perception 진입점이 없습니다 → colcon build (한 번만)"
+  echo "[libi_pi] libi_perception 진입점이 없습니다 → colcon build (한 번만)"
   ( source /opt/ros/jazzy/setup.bash && cd "$LIBI_WS" \
     && colcon build --symlink-install --packages-select libi_perception ) \
     || die "colcon build 실패: $LIBI_WS"
 elif [ -n "$(find "$LIBI_WS/src/libi_perception" -name '*.py' -newer "$FOLLOW_BIN" -print -quit 2>/dev/null)" ]; then
-  echo "[pi-all] ⚠️  libi_perception 소스가 빌드보다 새롭습니다 — **옛 코드가 돕니다.**"
+  echo "[libi_pi] ⚠️  libi_perception 소스가 빌드보다 새롭습니다 — **옛 코드가 돕니다.**"
   echo "         cd $LIBI_WS && colcon build --symlink-install --packages-select libi_perception"
 fi
 
@@ -229,7 +358,7 @@ tmux new-window -t "$SESSION" -n follow \
 CAM_ARGS="--picamera"
 [ "$WITH_BACK" = true ] && CAM_ARGS="$CAM_ARGS --back-camera $BACK_CAM"
 tmux new-window -t "$SESSION" -n cam \
-  bash -c "cd '$REPO_ROOT' && echo '[cam] 앞/뒤 → $AI_IP:6001 (BT 가 camera_select 로 고름)' && CAM_ARGS='$CAM_ARGS' ./scripts/drive-pi/image-sender.sh '$AI_IP'; exec bash"
+  bash -c "cd '$REPO_ROOT' && echo '[cam] 앞/뒤 → $AI_IP:$VIDEO_PORT (BT 가 camera_select 로 고름)' && VIDEO_PORT='$VIDEO_PORT' CAM_ARGS='$CAM_ARGS' ./scripts/drive-pi/image-sender.sh '$AI_IP'; exec bash"
 
 # ── 4) 동적 장애물 (기본 꺼짐) ──────────────────────────────────────────────
 # 켜면 nav2 가 필터 포함 파라미터로 뜨고 마스크 발행 노드가 함께 돈다.
@@ -239,7 +368,7 @@ if [ "$WITH_DYN_OBSTACLE" = true ]; then
     bash -c "cd '$REPO_ROOT' && echo '[keepout] 통행 금지 마스크 발행 (부채꼴 ${DYN_OBSTACLE_FAN_DEG}° / TTL ${DYN_OBSTACLE_TTL}s)' && source /opt/ros/jazzy/setup.bash && source '$REPO_ROOT/aba_controller/libi_modes/ros_ws/install/setup.bash' && ros2 run libi_perception keepout_node --ros-args -p fan_deg:=$DYN_OBSTACLE_FAN_DEG -p ttl_sec:=$DYN_OBSTACLE_TTL -p near_area_max:=$DYN_OBSTACLE_NEAR_AREA; exec bash"
 fi
 
-echo "[pi-all] 정리: $HERE/kill-pi.sh"
+echo "[libi_pi] 정리: $HERE/kill-libi_pi.sh"
 
 # 세션에 붙여서 끝낸다 — 창을 눈으로 보며 디버깅하는 게 목적이다.
 # (비-TTY 면 tmux_attach 가 안내만 찍고 넘어간다 — _common.sh)

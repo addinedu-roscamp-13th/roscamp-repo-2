@@ -79,7 +79,8 @@ bt_navigator:
     robot_base_frame: base_link
     odom_topic: odom
     bt_loop_duration: 10
-    default_server_timeout: 20
+    # 20(ms)는 이 Pi 부하에서 짧다 — 근거는 nav2_params.yaml 의 같은 항목 주석.
+    default_server_timeout: 200
     wait_for_service_timeout: 1000
     action_server_result_timeout: 900.0
     navigators: ["navigate_to_pose", "navigate_through_poses"]
@@ -222,8 +223,10 @@ local_costmap:
       global_frame: odom
       robot_base_frame: base_footprint
       rolling_window: true
-      width: 3
-      height: 3
+      # [2026-07-28] 3 → 2. 일반 params 와 같은 값이어야 한다 — 근거는 nav2_params.yaml.
+      #   맵(1.26×2.16m)보다 로컬 창이 컸다. ⚠️ nav2 가 int 로 선언하므로 정수만.
+      width: 2
+      height: 2
       resolution: 0.02
       robot_radius: 0.06        # [2026-07-15] 0.11 → 0.06 되돌림 — 실물 바퀴간격 0.0961m 기준. inflation(0.08)보다 크면 감쇠구간이 사라져 8cm 띠 전체가 253(통행불가)이 된다
       #footprint: '[[0.06, 0.06], [0.06, -0.06], [-0.06, -0.06], [-0.06, 0.06]]'
@@ -236,7 +239,11 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 5.0      # [2026-06-30] 10.0 → 5.0
-        inflation_radius: 0.08        # [2026-07-15] 0.20 → 0.08 되돌림 — 맵 여유(0.04~0.18m)보다 커서 자유공간이 전부 덮였음
+        # [2026-07-28] 0.08 → 0.09. 일반 params(nav2_params.yaml)와 **같은 값이어야 한다.**
+        #   inscribed = robot_radius(0.06) + footprint_padding(0.03) ≈ 0.088 인데 0.08 은 그보다 작다.
+        #   nav2 가 "inflation_radius < inscribed radius" 로 거부해 --dyn-obstacle 을 켜는 순간
+        #   costmap 기동이 실패한다. 일반 params 만 0.09 로 올려 두고 여기를 빠뜨렸었다.
+        inflation_radius: 0.09        # [2026-07-15] 0.20 → 0.08 되돌림 — 맵 여유(0.04~0.18m)보다 커서 자유공간이 전부 덮였음
       # [2026-07-20] voxel_layer(3D VoxelLayer) → obstacle_layer(2D) 교체.
       # 관측원이 2D 라이다(/scan_filtered) 하나뿐이라 3D 복셀·복셀맵 발행이 불필요한 CPU 낭비였음.
       # global_costmap 의 obstacle_layer 와 동일 설정. 장애물 표시/회피 동작은 그대로.
@@ -297,7 +304,11 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 5.0      # [2026-06-30] 10.0 → 5.0
-        inflation_radius: 0.08        # [2026-07-15] 0.20 → 0.08 되돌림 — 맵 여유(0.04~0.18m)보다 커서 자유공간이 전부 덮였음
+        # [2026-07-28] 0.08 → 0.09. 일반 params(nav2_params.yaml)와 **같은 값이어야 한다.**
+        #   inscribed = robot_radius(0.06) + footprint_padding(0.03) ≈ 0.088 인데 0.08 은 그보다 작다.
+        #   nav2 가 "inflation_radius < inscribed radius" 로 거부해 --dyn-obstacle 을 켜는 순간
+        #   costmap 기동이 실패한다. 일반 params 만 0.09 로 올려 두고 여기를 빠뜨렸었다.
+        inflation_radius: 0.09        # [2026-07-15] 0.20 → 0.08 되돌림 — 맵 여유(0.04~0.18m)보다 커서 자유공간이 전부 덮였음
       always_send_full_costmap: True
 
 # The yaml_filename does not need to be specified since it going to be set by defaults in launch.

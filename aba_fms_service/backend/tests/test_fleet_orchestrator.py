@@ -6,10 +6,12 @@ dispatch_leg 를 페이크로 주입한다: 호출을 기록하고 증가하는 
 import pytest
 
 from app.fleet_orchestrator import (
+    COLLECTION_WAYPOINT,
     Leg,
     LegType,
     Orchestrator,
     TaskStatus,
+    decompose_collection,
     decompose_delivery,
 )
 
@@ -48,6 +50,41 @@ def test_delivery_decomposes_into_four_legs():
     assert legs[3].params == {"action": "place", "book": "B1", "at": 3}
 
 
+def test_collection_decomposes_into_nav_plus_three_arm_legs():
+    """수거 = 주행(수거함) → 팔×3. 배달과 달리 **두 번째 주행이 없다** — 로봇은
+    수거함에 선 채로 바구니만 세 번 교체한다."""
+    legs = decompose_collection()
+    assert [l.type for l in legs] == [
+        LegType.NAVIGATE, LegType.PERFORM_ACTION, LegType.PERFORM_ACTION, LegType.PERFORM_ACTION,
+    ]
+    assert legs[0].params == {"waypoint": COLLECTION_WAYPOINT}
+    # "book" 키를 그대로 쓴다 — real_dispatch() 가 그 키만 읽는다(다른 키는 사라진다).
+    assert legs[1].params == {"action": "unload_to_floor", "book": "바구니", "at": COLLECTION_WAYPOINT}
+    assert legs[2].params == {"action": "load_from_box", "book": "바구니", "at": COLLECTION_WAYPOINT}
+    assert legs[3].params == {"action": "refill_box", "book": "바구니", "at": COLLECTION_WAYPOINT}
+
+
+def test_collection_completes_after_all_four_legs_with_no_second_navigate():
+    """3개 연속 PERFORM_ACTION(중간에 NAVIGATE 없이)이 오케스트레이터 상태기에서
+    정상적으로 하나씩 흘러가는지 — 코어가 다리 타입 순서를 가정하지 않는지 확인한다."""
+    d = FakeDispatcher()
+    orc = Orchestrator(d)
+    tid = orc.submit_collection(requester="사서")
+    orc.assign(tid, "pinky3")
+    assert d.leg_types == [LegType.NAVIGATE]           # 첫 다리만 나감
+
+    orc.on_result("c1", ok=True)                       # 수거함 도착 → 팔①
+    orc.on_result("c2", ok=True)                        # 팔① 완료 → 팔②
+    assert d.leg_types == [
+        LegType.NAVIGATE, LegType.PERFORM_ACTION, LegType.PERFORM_ACTION,
+    ]
+    assert orc.get(tid).status == TaskStatus.EXECUTING
+
+    orc.on_result("c3", ok=True)                        # 팔② 완료 → 팔③
+    orc.on_result("c4", ok=True)                        # 팔③ 완료 → 끝
+    assert orc.get(tid).status == TaskStatus.COMPLETED
+
+
 # ── 접수 / 큐 ─────────────────────────────────────────────────────────────────
 
 def test_submit_delivery_queues_pending():
@@ -65,6 +102,16 @@ def test_submit_empty_legs_rejected():
         orc.submit("delivery", [])
 
 
+def test_snapshot_exposes_raw_legs_for_display_labels():
+    """화면이 leg_idx 로 라벨을 추측하지 않도록, 다리 원자료를 그대로 낸다."""
+    orc = Orchestrator(FakeDispatcher())
+    tid = orc.submit_collection()
+    legs = orc.get(tid).snapshot()["legs"]
+    assert legs[0] == {"type": "navigate", "params": {"waypoint": COLLECTION_WAYPOINT}}
+    assert legs[1]["type"] == "perform_action"
+    assert legs[1]["params"]["action"] == "unload_to_floor"
+
+
 # ── 정상 경로 ─────────────────────────────────────────────────────────────────
 
 def test_assign_starts_first_leg():
@@ -77,6 +124,33 @@ def test_assign_starts_first_leg():
     assert task.robot == "pinky3"
     assert d.leg_types == [LegType.NAVIGATE]          # 첫 다리만 나감
     assert task.id not in [t["id"] for t in orc.pending()]  # 큐에서 빠짐
+
+
+def test_assign_rejects_robot_already_bound_to_a_live_task():
+    """같은 로봇을 두 번째 살아있는 주문에 배정하면 안 된다 — fleet_node 가 첫 fleet task 를
+    지우고 첫 orchestrator task 는 완료 신호를 영영 못 받아 EXECUTING 에 고립된다."""
+    orc = Orchestrator(FakeDispatcher())
+    t1 = orc.submit_delivery(book="B1", pickup=7, dropoff=3)
+    t2 = orc.submit_delivery(book="B2", pickup=7, dropoff=3)
+    orc.assign(t1, "pinky3")
+    with pytest.raises(ValueError):
+        orc.assign(t2, "pinky3")
+    assert orc.get(t2).status == TaskStatus.PENDING   # 두 번째는 여전히 대기
+
+
+def test_assign_allows_robot_after_previous_task_completed():
+    """이전 주문이 끝난(터미널) 로봇은 다시 배정받을 수 있어야 한다."""
+    d = FakeDispatcher()
+    orc = Orchestrator(d)
+    t1 = orc.submit_delivery(book="B1", pickup=7, dropoff=3)
+    orc.assign(t1, "pinky3")
+    for cmd_id in ("c1", "c2", "c3", "c4"):
+        orc.on_result(cmd_id, ok=True)
+    assert orc.get(t1).status == TaskStatus.COMPLETED
+
+    t2 = orc.submit_delivery(book="B2", pickup=7, dropoff=3)
+    orc.assign(t2, "pinky3")     # 예외 없이 통과해야 한다
+    assert orc.get(t2).robot == "pinky3"
 
 
 def test_happy_path_sequences_all_four_legs_in_order():

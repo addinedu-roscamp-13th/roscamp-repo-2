@@ -28,7 +28,7 @@ CbsTraffic 의 시간 모델과 같은 가정이라, 계획과 실행이 어긋�
 `--delay <로봇>:<시작초>:<지속초>` 로 특정 로봇을 특정 시간 동안 멈춰 세운다.
 장애물을 만나 늦는 상황이고, **재계획이 실제로 도는지** 보려면 이게 필요하다.
 
-    ./sim_robots.py --robots Pinky-1:0 Pinky-2:15 --delay Pinky-1:12:20
+    ./sim_robots.py --robots pinky-1:0 pinky-2:15 --delay pinky-1:12:20
 """
 from __future__ import annotations
 
@@ -196,7 +196,7 @@ class SimNode(Node):
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--robot", action="append", required=True,
-                    metavar="이름:x:y", help="예: Pinky-1:-0.0007:-0.0333")
+                    metavar="이름:x:y", help="예: pinky-1:-0.0007:-0.0333")
     ap.add_argument("--delay", action="append", default=[],
                     metavar="이름:시작초:지속초", help="장애물 지연 주입")
     ap.add_argument("--record", default=None)

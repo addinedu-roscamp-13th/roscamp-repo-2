@@ -89,6 +89,12 @@ class Task:
             "leg_count": len(self.legs),
             "current_leg": (self.current_leg().type.value if self.current_leg() else None),
             "reason": self.reason,
+            # 다리 전체의 원자료(타입+파라미터). task_type 마다 다리 뜻이 다르므로
+            # (수거 4다리는 배달 4다리와 전혀 다른 일을 한다), 화면이 leg_idx 를 4로
+            # 나눈 나머지로 라벨을 추측하면 반드시 틀린다 — 표시 문구는 여기서
+            # 만들지 않는다(이 모듈은 ROS 뿐 아니라 UI 문구도 모른다). 화면용 한글
+            # 라벨은 `fleet_dispatch_bridge.leg_label()` 이 이 raw 값으로 만든다.
+            "legs": [{"type": leg.type.value, "params": dict(leg.params)} for leg in self.legs],
         }
 
 
@@ -114,6 +120,38 @@ def decompose_navigation(*, dropoff) -> list[Leg]:
     이유가 이것이다.
     """
     return [Leg(LegType.NAVIGATE, {"waypoint": dropoff})]
+
+
+#: 수거의 출발·도착이 늘 이 정점 하나다 — 사람이 고를 게 없다(복귀의 도크 좌표가 고정인 것과
+#: 같은 성질). `aba_controller/.../pinky_navigation/params/waypoint.yaml` 의 실제 정점 이름.
+COLLECTION_WAYPOINT = "수거함"
+
+
+def decompose_collection() -> list[Leg]:
+    """수거 = 수거함으로 주행 → 바구니 3단계 교체. **다리 4개, 그중 3개가 팔이다.**
+
+    분류(sort, 실운영에서 없어짐 — waypoint 도 "분류함"→"미정"으로 이미 리네임됨)를 대신하는
+    간소화된 반납 수거 동작이다. 배달(navigate→pick→navigate→place)과 달리 **두 번째 주행이
+    없다** — 로봇은 수거함에 선 채로 팔만 세 번 움직인다.
+
+        ① 로봇 위 바구니를 바닥에 내려놓는다(자리를 만든다)
+        ② 수거함의 바구니를 로봇에 싣는다(반납된 책이 든 바구니)
+        ③ 바닥의 빈 바구니를 수거함에 채운다(다음 반납을 받을 빈 바구니를 남긴다)
+
+    액션 이름(`unload_to_floor`/`load_from_box`/`refill_box`)은 지금 팔이 스텁이라 물리
+    동작으로 안 이어진다 — 나중에 팔이 실제로 붙을 때 이 이름에 맞는 동작을 넣으면 된다.
+    ⚠️ `book` 키를 그대로 쓴다(`cargo` 가 아니다) — `fleet_dispatch_bridge.real_dispatch()`
+    의 PERFORM_ACTION 분기가 `leg.params.get("book", "")` 로 **"book" 키만** 읽는다. 다른
+    키를 쓰면 그 값이 조용히 사라진다.
+    """
+    at = COLLECTION_WAYPOINT
+    basket = {"book": "바구니", "at": at}
+    return [
+        Leg(LegType.NAVIGATE, {"waypoint": at}),
+        Leg(LegType.PERFORM_ACTION, {"action": "unload_to_floor", **basket}),
+        Leg(LegType.PERFORM_ACTION, {"action": "load_from_box", **basket}),
+        Leg(LegType.PERFORM_ACTION, {"action": "refill_box", **basket}),
+    ]
 
 
 class Orchestrator:
@@ -164,6 +202,11 @@ class Orchestrator:
         legs = decompose_navigation(dropoff=dropoff)
         return self._enqueue("navigate", legs, requester=requester, priority=priority)
 
+    def submit_collection(self, *, requester: str = "", priority: int = 0) -> str:
+        """수거. 사람이 고를 게 없다 — book/pickup/dropoff 인자 자체가 없다."""
+        legs = decompose_collection()
+        return self._enqueue("collect", legs, requester=requester, priority=priority)
+
     def submit(self, task_type: str, legs: list[Leg], *, requester: str = "",
                priority: int = 0) -> str:
         if not legs:
@@ -189,6 +232,20 @@ class Orchestrator:
             task = self._require(task_id)
             if task.status != TaskStatus.PENDING:
                 raise ValueError(f"배정 불가: {task_id} 상태 {task.status.value}")
+            # 이 로봇이 이미 **다른 살아있는 주문**에 배정돼 있으면 거절한다.
+            #
+            # 이게 없으면: 자동배차/수동배차가 거의 동시에 같은 로봇을 두 주문에 배정할 때
+            # (fleet_link 의 busy 캐시는 ROS 로 뒤늦게 갱신되므로 그 틈에 겹칠 수 있다),
+            # fleet_node 는 두 번째 배정에서 `cancel_task(robot)` 으로 **첫 번째 fleet task 를
+            # 지운다**(강제 배정은 busy 여도 받는다). 그러면 첫 번째 orchestrator task 는
+            # cmd_id 에 대한 완료 신호를 영영 못 받고 EXECUTING 에 갇힌다 — 로봇은 두 번째
+            # 주문으로 가는데 관제엔 첫 번째가 "진행 중"으로 계속 남는, 원인 불명 상태가 된다.
+            # 여기서 막으면 그 경합이 우리 프로세스 안에서는 원천적으로 안 생긴다(외부에서
+            # fleet_node 를 직접 건드리는 경우까지는 못 막지만, orchestrator 를 거치는
+            # 자동/수동 배차 둘 다 이 관문을 지난다).
+            if any(t.robot == robot and t.status not in _TERMINAL
+                   for t in self._tasks.values()):
+                raise ValueError(f"배정 불가: {robot} 는 이미 다른 주문에 배정돼 있습니다")
             task.robot = robot
             task.status = TaskStatus.ASSIGNED
             if task_id in self._queue:

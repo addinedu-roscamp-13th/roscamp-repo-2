@@ -41,7 +41,7 @@ Pi 카메라(앞/뒤 한 프로세스) ──UDP:6001──▶ perception_server
 스텁(`main.py`)만 받아 **진짜 검출을 한 번도 못 본다.**
 
 **주행 명령 경로(`--drive-host` / UDP:6002)는 은퇴했다.** 추종 제어가 로봇 쪽으로
-옮겨갔다. `pi-all.sh` 의 `follow-drive` 창도 없앴다 — 남겨 두면 그 브리지가 명령이
+옮겨갔다. `libi_pi.sh` 의 `follow-drive` 창도 없앴다 — 남겨 두면 그 브리지가 명령이
 없을 때도 20Hz 로 정지 명령을 쏴서 새 PID 와 `/cmd_vel` 을 다툰다(중재자가 없어
 마지막에 도착한 메시지가 이긴다).
 
@@ -50,10 +50,11 @@ Pi 카메라(앞/뒤 한 프로세스) ──UDP:6001──▶ perception_server
 `none` 은 **인코딩·송출만** 중단이고 캡처와 생프레임 로컬 탭(`/dev/shm/libi_cam_{front,back}`)
 은 계속 돈다 — 탭까지 멈추면 복귀 중 도는 마커 도킹이 프레임을 못 얻어 조용히 죽는다.
 
-**자세 판정이 붙었다.** 검출 가중치(`best.pt`)는 `task=detect` 라 키포인트를 못 내므로,
-owner bbox crop 에만 `yolo11n-pose` 를 2차로 돌린다. 판정 로직은 `~/personal_repo/yolo_pose`
-의 `posture.py` 를 import 해서 쓴다(복제하면 임계값이 두 곳으로 갈라진다).
-끄려면 `--no-pose`, 프레임 예산을 넘기면 `--pose-every-n 3`.
+**자세 판정은 기본 꺼짐 — `--pose` 로만 켠다.** 검출 가중치(`best.pt`)는 `task=detect` 라
+키포인트를 못 내므로, 켜면 owner bbox crop 에만 `yolo11n-pose` 를 2차로 돌린다. 판정 로직은
+`~/personal_repo/yolo_pose` 의 `posture.py` 를 import 해서 쓴다(복제하면 임계값이 두 곳으로
+갈라진다). 프레임 예산을 넘기면 `--pose-every-n 3`.
+끈 상태에서는 누워 있는 사람에게도 로봇이 그대로 다가간다 — 그게 기본값의 대가다.
 
 ```bash
 ./scripts/ai-server.sh --robot-host 192.168.0.31 --camera-label front

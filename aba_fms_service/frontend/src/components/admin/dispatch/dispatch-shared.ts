@@ -19,17 +19,6 @@ export const TERMINAL: ReadonlySet<OrderStatus> = new Set([
 ]);
 
 /**
- * 배달 1건이 풀리는 다리 순서. orchestrator.submit_delivery 가 만드는 4다리와 같다.
- * current_leg 는 종류("navigate"|"perform_action")만 주므로, 몇 번째인지는 leg_idx 로 읽는다.
- */
-export const LEG_STEPS = [
-  { kind: "navigate", label: "주행 → 서가" },
-  { kind: "perform_action", label: "집기" },
-  { kind: "navigate", label: "주행 → 전달지" },
-  { kind: "perform_action", label: "놓기" },
-] as const;
-
-/**
  * 배차를 받을 수 있는 상태 — FSM 전이표(`libi_modes/registry.py` = `fsm_model.py`, 둘은 동일)에서
  * `task_assigned` 로 WORKING 에 갈 수 있는 상태가 근거다:
  *

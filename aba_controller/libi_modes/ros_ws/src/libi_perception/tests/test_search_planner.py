@@ -3,7 +3,8 @@ from libi_perception.search_planner import search_command
 
 
 def _cfg(**over):
-    base = dict(SEARCH_HOLD_SEC=10.0, SEARCH_SCAN_SEC=4.0,
+    base = dict(SEARCH_HOLD_SEC=5.0, SEARCH_SWEEP_ANGLE=3.14159,
+                ANGULAR_Z_SWEEP=0.55,
                 ANGULAR_Z_SEARCH=0.35, SEARCH_TURN_ANGLE=3.14159)
     base.update(over)
     return SimpleNamespace(**base)

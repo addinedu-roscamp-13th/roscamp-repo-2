@@ -3,22 +3,22 @@
 # aba_controller/.../ros_ws/scripts/pi.sh 에 위임하되, 두 워크스페이스가 안 빌드돼 있으면
 # colcon build 까지 해 준다. 실행 위치와 무관하다(REPO_ROOT 기준).
 #
-#   ./pi.sh --robot Pinky-3              # 전체
-#   ./pi.sh --robot Pinky-3 --no-fsm     # fsm 창 없이 (플래그는 그대로 위임)
-#   ./pi.sh --robot Pinky-3 --no-led
+#   ./pi.sh --robot pinky-3              # 전체
+#   ./pi.sh --robot pinky-3 --no-fsm     # fsm 창 없이 (플래그는 그대로 위임)
+#   ./pi.sh --robot pinky-3 --no-led
 #
 # ## 이름을 왜 꼭 받나 (기본값을 없앤 이유)
-# fleet_node·FSM·경로 드라이버가 쓰는 **정본 이름은 DB `rc_robots.name`** 이다(`Pinky-3`).
+# fleet_node·FSM·경로 드라이버가 쓰는 **정본 이름은 DB `rc_robots.name`** 이다(`pinky-3`).
 # 예전에는
 #   - 인자 없이 `./pi.sh` 로 안쪽 스크립트를 직접 부르면 기본값 `pinky1` 로 떴고
 #   - 래퍼는 IP 키(`pinky3`)를 그대로 이름으로 썼다
 # 둘 다 DB 이름과 달라서 이런 일이 벌어졌다:
-#   · fsm_node 가 robot_id=pinky1 로 발행 → fleet_node 는 Pinky-3 로 조회 → 영영 안 붙음
+#   · fsm_node 가 robot_id=pinky1 로 발행 → fleet_node 는 pinky-3 로 조회 → 영영 안 붙음
 #     (관제에 "상태 미상", 배차 가능 0대)
-#   · path-driver 가 PathRequest.robot_name="Pinky-3" 를 전부 걸러 배차해도 안 움직임
+#   · path-driver 가 PathRequest.robot_name="pinky-3" 를 전부 걸러 배차해도 안 움직임
 # 조용히 어긋나느니 **멈추고 묻는 편이 낫다** — sim.sh 와 같은 원칙이다.
 #
-# IP 키는 이름에서 만든다: `Pinky-3` → `PINKY3_IP` (영숫자만 남기고 대문자).
+# IP 키는 이름에서 만든다: `pinky-3` → `PINKY3_IP` (영숫자만 남기고 대문자).
 set -eo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../_common.sh"
 
@@ -40,11 +40,11 @@ if [ -z "$ROBOT" ]; then
   echo >&2
   echo "  이름은 관제 DB(rc_robots.name)에 등록된 값과 **정확히** 같아야 합니다." >&2
   echo "  다르면 fleet_node 가 이 로봇을 못 알아보고, 배차해도 움직이지 않습니다." >&2
-  echo "  관제 「로봇 관리」 화면에서 확인하세요.  예:  ./pi.sh --robot Pinky-3" >&2
+  echo "  관제 「로봇 관리」 화면에서 확인하세요.  예:  ./pi.sh --robot pinky-3" >&2
   exit 1
 fi
 
-# IP 키는 이름에서 유도한다: Pinky-3 -> PINKY3_IP
+# IP 키는 이름에서 유도한다: pinky-3 -> PINKY3_IP
 IP_KEY="$(printf '%s' "$ROBOT" | tr -cd '[:alnum:]' | tr '[:lower:]' '[:upper:]')_IP"
 ROBOT_IP="${!IP_KEY:-}"
 if [ -z "$ROBOT_IP" ]; then

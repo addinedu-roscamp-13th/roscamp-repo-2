@@ -38,17 +38,119 @@ need_py_module() {
 
 # pinky3 → ROBOT_ID=pinky3, ROBOT_IP=$PINKY3_IP (.env 에서).
 resolve_pinky() {
-  ROBOT_ID="${1:?로봇 이름이 필요합니다 (예: pinky3 · Pinky-3)}"
+  ROBOT_ID="${1:?로봇 이름이 필요합니다 (예: pinky3 · pinky-3)}"
   local key
-  # ⚠️ 영숫자만 남긴다. 셸 변수명에는 `-` 를 쓸 수 없어서, DB 이름(`Pinky-3`)을 그대로
+  # ⚠️ 영숫자만 남긴다. 셸 변수명에는 `-` 를 쓸 수 없어서, DB 이름(`pinky-3`)을 그대로
   # 넣으면 `PINKY-3_IP` 가 되어 `invalid variable name` 으로 죽었다.
-  # 이제 `pinky3` 든 `Pinky-3` 든 같은 키(PINKY3_IP)로 간다.
+  # 이제 `pinky3` 든 `pinky-3` 든 같은 키(PINKY3_IP)로 간다.
   key="$(printf '%s' "$ROBOT_ID" | tr -cd '[:alnum:]' | tr '[:lower:]' '[:upper:]')_IP"
   if [ -z "$key" ] || [ "$key" = "_IP" ]; then
     die "로봇 이름에서 IP 키를 만들 수 없습니다: '$ROBOT_ID'"
   fi
   ROBOT_IP="${!key:-}"
 }
+
+# 로봇 이름 → 노트북(AI 서버) 수신 포트. 로봇마다 10 씩 띄운다.
+#
+# 왜 필요한가: perception_server 의 수신 포트는 **노트북 한 대에 한 벌뿐**이다
+# (영상 UDP 6001 · 뷰어 TCP 5007 — perception_server.py 기본값). 앞뒤 캠은 한 포트를
+# 공유한다(로봇 camera_sender 가 `/libi/camera_select` 로 고른 것만 보낸다).
+# 로봇 2대를 동시에 추종하면 두 번째가 bind 에서 죽는다.
+#
+# 로봇 쪽(image-sender)과 노트북 쪽(ai-server)이 **같은 규칙으로 각자 계산**하므로
+# 서로 포트를 넘겨줄 필요가 없다 — 로봇 이름만 맞으면 맞는다.
+#
+#   pinky-1 → 6001/5007    pinky-2 → 6011/5017    pinky-3 → 6021/5027
+#
+# ⚠️ 로봇이 한 대뿐이던 시절 pinky-3 은 6001/5007 이었다. 이 규칙에선 6021/5027 이다.
+#    양쪽 스크립트가 같이 계산하니 어긋나지 않지만, 손으로 `ros2`/`nc` 를 칠 때는
+#    포트가 바뀐 걸 기억해야 한다.
+# ⚠️ 셸/env 에 이미 값이 있으면 그게 이긴다(진단용 수동 지정).
+robot_ports() {
+  local num off
+  num="$(printf '%s' "${1:-}" | grep -oE '[0-9]+' | tail -1)"
+  num="${num:-1}"
+  off=$(( (num - 1) * 10 ))
+  # ⚠️ 셸/.env 에 이미 값이 있으면 그게 이긴다(진단용 수동 지정). 다만 **로봇마다 계산되는
+  #    값을 덮어쓰는** 것이라, .env 에 박아 두면 로봇 2대가 같은 포트를 쓰게 된다.
+  #    조용히 그러지 않도록 한 줄 찍는다.
+  if [ -n "${VIDEO_PORT:-}${VIEWER_PORT:-}" ]; then
+    echo "[ports] ⚠ 셸/.env 의 VIDEO_PORT/VIEWER_PORT 를 씁니다 (${VIDEO_PORT:-자동}/${VIEWER_PORT:-자동})" >&2
+    echo "        로봇마다 자동으로 갈리는 값입니다 — 2대 이상이면 같은 포트를 물 수 있습니다." >&2
+  fi
+  VIDEO_PORT="${VIDEO_PORT:-$((6001 + off))}"
+  VIEWER_PORT="${VIEWER_PORT:-$((5007 + off))}"
+  export VIDEO_PORT VIEWER_PORT
+}
+
+# 로봇 이름 → ROS 도메인. **표가 코드에 박혀 있다.**
+#
+#   pinky-1 → 117    pinky-2 → 118    pinky-3 → 119        (규칙: 116 + 번호)
+#
+# 왜 하드코딩인가: IP 는 DHCP 라 자주 바뀌지만 **도메인은 배선처럼 고정**이다. 매번 손으로
+# 치게 하면 오타 하나로 브릿지가 로봇을 못 찾는데 에러는 안 난다. 예전에 `.env` 의
+# ROS_DOMAIN_ID(=119 하나)를 기본값으로 쓰던 것과는 다르다 — 그건 **모든 로봇에 같은 값**이라
+# 2대째부터 반드시 틀렸다. 이 표는 로봇마다 다른 값이라 그 실패 자체가 없다.
+#
+# ⚠️ 로봇 Pi 의 ROS_DOMAIN_ID 와 DB(rc_robots.domain_id)도 같은 값이어야 한다.
+#    셋 중 하나만 어긋나면 텔레메트리·FSM 이 관제에 영영 안 올라온다(에러 없음).
+#    다른 번호를 써야 하면 `--domain-id` 로 덮어쓴다.
+# ⚠️ **실물 `pinky-<N>` 에만 적용한다.** `pinky-sim-2` 같은 이름까지 끝자리로 계산하면
+#    118 이 나오는데 sim 은 DB 에 90/91/92 다 — 실물 pinky-2 와 도메인이 겹친다.
+#    표 밖 이름은 빈 값을 돌려주고, 호출부가 DB 값으로 간다.
+DOMAIN_BASE=116
+robot_domain() {
+  local name="${1:-}" num
+  case "$name" in
+    [Pp]inky-[0-9]|[Pp]inky[0-9]|[Pp]INKY-[0-9]) ;;      # pinky-3 · pinky3 · PINKY-3
+    *) return 0 ;;
+  esac
+  num="${name##*[!0-9]}"
+  printf '%s' "$((DOMAIN_BASE + num))"
+}
+
+# 로봇 이름 → DB 에 등록된 도메인 (rc_robots.domain_id). 못 찾으면 빈 문자열.
+# 위 표와 **대조**하는 데 쓴다 — 둘이 다르면 브릿지는 DB 값으로 열리므로 그쪽이 진실이다.
+#
+# 왜 DB 인가: 도메인 브릿지도 여기서 나온다(gen_domain_bridges.py). 런처가 .env 의
+# `ROS_DOMAIN_ID`(**로봇 한 대 기준값**)를 기본으로 쓰면, 로봇이 늘어난 순간
+# pinky-1 을 119(=pinky-3 도메인)로 띄우는 사고가 난다 — 브릿지는 117 을 여니
+# 영영 안 붙고, 에러는 안 난다. 출처가 하나여야 그 부류가 사라진다.
+#
+# pymysql 이 있는 파이썬을 찾는다(시스템 python3 엔 보통 없다). 못 찾거나 DB 가
+# 안 떠 있으면 조용히 빈 값 — 호출자가 셸/.env 로 폴백하면 된다.
+robot_domain_db() {
+  local c py=""
+  for c in "$REPO_ROOT/aba_fms_service/backend/.venv/bin/python" \
+           "$REPO_ROOT/aba_service/backend/.venv/bin/python" \
+           "$REPO_ROOT/.venv/bin/python" python3; do
+    if command -v "$c" >/dev/null 2>&1 && "$c" -c "import pymysql" 2>/dev/null; then py="$c"; break; fi
+  done
+  [ -n "$py" ] || return 0
+  "$py" - "$1" <<'PY' 2>/dev/null
+import os, sys, urllib.parse
+url = os.environ.get("ROBOT_DATABASE_URL") or os.environ.get("ADMIN_DATABASE_URL") or ""
+try:
+    import pymysql
+    u = urllib.parse.urlparse(
+        url.replace("+asyncmy", "").replace("+aiomysql", "").replace("+pymysql", ""))
+    conn = pymysql.connect(host=u.hostname or "127.0.0.1", port=u.port or 3306,
+                           user=u.username or "", password=u.password or "",
+                           database=(u.path or "/").lstrip("/"), connect_timeout=4)
+    cur = conn.cursor()
+    cur.execute("SELECT domain_id FROM rc_robots WHERE name=%s AND robot_type='pinky'", (sys.argv[1],))
+    row = cur.fetchone()
+    conn.close()
+    if row and row[0] is not None:
+        print(int(row[0]))
+except Exception:
+    pass
+PY
+}
+
+# 로봇 이름 → tmux 세션·파일 이름에 쓸 키. `pinky-3` → `pinky3`
+# (gen_domain_bridges.py 의 bridge_key 와 같은 규칙이라 브릿지 토픽 접두사와도 맞는다.)
+robot_key() { printf '%s' "${1:-}" | tr -d '_ -' | tr '[:upper:]' '[:lower:]'; }
 
 # 워크스페이스가 안 빌드돼 있으면(=install/setup.bash 없음) colcon build.
 # 이미 빌드돼 있으면 아무것도 안 한다 — 매번 재빌드하지 않는다.

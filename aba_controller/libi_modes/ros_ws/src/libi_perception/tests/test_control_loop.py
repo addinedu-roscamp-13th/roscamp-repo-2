@@ -10,7 +10,8 @@ def _cfg(**over):
                 INTEGRAL_ANGLE_CLAMP=200.0, ANGLE_DEADZONE=45.0, ANGULAR_Z_MAX=0.60,
                 ANGULAR_SMOOTHING=1.0, MIN_DIST=0.20, AVOID_DIST=0.40, AVOID_KP=0.50,
                 FRONT_ARC_DEG=15, SIDE_ARC=(20, 71), N_MISS_FRAMES=3,
-                SEARCH_HOLD_SEC=10.0, SEARCH_SCAN_SEC=4.0, ANGULAR_Z_SEARCH=0.35,
+                SEARCH_HOLD_SEC=5.0, SEARCH_SWEEP_ANGLE=3.14159, ANGULAR_Z_SWEEP=0.55,
+                ANGULAR_Z_SEARCH=0.35,
                 SEARCH_TURN_ANGLE=3.14159, FRAME_DT=0.05)
     base.update(over)
     return SimpleNamespace(**base)

@@ -64,7 +64,6 @@ const STATUS_PRIORITY: Record<string, number> = {
 /** 목적지 칸의 이름 — 종류마다 뜻이 다르다. 없으면 그냥 「목적지」. */
 const DROPOFF_LABEL: Record<string, string> = {
   transfer: "목적지 — 전달할 곳",
-  sort: "목적지 — 분류대",
   tidy: "점검할 서가",
   dispatch: "대기 위치",
   porter: "목적지 — 내릴 곳",
@@ -149,11 +148,12 @@ function TasksPage() {
     return () => clearInterval(t);
   }, [load]);
 
-  /** 종류에 필요한 칸이 다 찼는가 — 안 쓰는 칸은 보지 않는다. */
+  /** 종류에 필요한 칸이 다 찼는가 — 안 쓰는 칸은 보지 않는다.
+   * "수거"처럼 fields 가 비어 있으면(고정 출발·도착) 아래 검사가 전부 통과해
+   * 자연히 true 가 된다 — 별도 특례가 필요 없다. */
   const ready = (() => {
     if (!spec || !linked) return false;
     if (spec.mode === "state") return !!robot; // 복귀·순찰은 대상 로봇이 필수
-    if (kind === "sort") return true; // 분류는 로봇 배정만 하면 된다(위치 고정)
     if (shows("book") && !book.trim()) return false;
     if (shows("cargo") && !cargo.trim()) return false;
     if (shows("pickup") && !pickup) return false;
@@ -161,26 +161,18 @@ function TasksPage() {
     return true;
   })();
 
-  const SORT_FIXED_WAYPOINT = "테이블-1번-좌";
-
   const submit = async () => {
     setErr(null);
     setMsg(null);
     if (!spec) return;
     try {
       // 안 쓰는 칸은 아예 보내지 않는다 — 「정리」에 책 이름이 실리면 로봇이 집으러 간다.
-      // 「분류」는 출발지/목적지가 항상 같은 고정 지점이라(진짜 반납함/분류대
-      // waypoint 가 아직 없어 임시로 재사용) 화면에서 고르지 않고 여기서 채운다.
       const res = await ops.createTask({
         kind,
         ...(shows("book") ? { book } : {}),
         ...(shows("cargo") ? { cargo } : {}),
-        ...(kind === "sort"
-          ? { pickup: SORT_FIXED_WAYPOINT, dropoff: SORT_FIXED_WAYPOINT }
-          : {
-              ...(shows("pickup") ? { pickup } : {}),
-              ...(shows("dropoff") ? { dropoff } : {}),
-            }),
+        ...(shows("pickup") ? { pickup } : {}),
+        ...(shows("dropoff") ? { dropoff } : {}),
         robot,
       });
 
@@ -286,7 +278,7 @@ function TasksPage() {
               </Labeled>
             ) : null}
 
-            {shows("pickup") && kind !== "sort" ? (
+            {shows("pickup") ? (
               <Labeled label="출발지 — 집을 곳">
                 <select
                   value={pickup}
@@ -310,7 +302,7 @@ function TasksPage() {
               </Labeled>
             ) : null}
 
-            {shows("dropoff") && kind !== "sort" ? (
+            {shows("dropoff") ? (
               <Labeled label={DROPOFF_LABEL[kind] ?? "목적지"}>
                 <select
                   value={dropoff}
@@ -323,14 +315,6 @@ function TasksPage() {
                     </option>
                   ))}
                 </select>
-              </Labeled>
-            ) : null}
-
-            {kind === "sort" ? (
-              <Labeled label="위치 (자동)">
-                <p className="flex h-9 items-center rounded-md border bg-muted px-3 text-sm text-muted-foreground">
-                  {SORT_FIXED_WAYPOINT} (반납함 ↔ 분류대 고정)
-                </p>
               </Labeled>
             ) : null}
 

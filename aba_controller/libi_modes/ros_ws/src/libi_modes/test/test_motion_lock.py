@@ -39,3 +39,57 @@ def test_the_lock_set_matches_the_transition_table():
     from libi_modes.registry import BRANCH_ORDER
     unknown = MOTION_LOCKED_STATES - set(BRANCH_ORDER)
     assert not unknown, f"전이표에 없는 상태: {unknown}"
+
+
+# ── 잠금 상태의 정지 명령 (cmd_vel_hold) ────────────────────────────────────
+#
+# [2026-07-29] 잠금은 아래 입력을 **막을 뿐 0 을 만들지 않는다.** 그래서 잠긴 순간
+# /cmd_vel 은 침묵이고, 실제 정지는 모터 워치독(0.5초)이 했다 — **최대 0.5초는 마지막
+# 속도로 굴러간다.** 잠근 주체가 0 도 같이 내도록 바꿨고, 여기서 그 계약을 지킨다.
+
+def test_hold_priority_sits_between_lock_and_estop():
+    """`cmd_vel_hold` 는 잠금(150)보다 위, 비상정지(255)보다 아래여야 한다.
+
+    150 이하면 **자기가 건 잠금에 자기가 막혀** 0 이 안 나간다(정지가 조용히 사라진다).
+    255 이상이면 비상정지를 이겨서, 누른 버튼이 FSM 에 밀린다.
+    """
+    import pathlib
+    import yaml
+
+    cfg = (pathlib.Path(__file__).resolve().parents[5]
+           / "libi_drive_controller/ros_ws/src/pinky_pro/pinky_bringup/config/twist_mux.yaml")
+    if not cfg.exists():          # 로봇 워크스페이스가 없는 체크아웃(서버 전용)에서는 건너뛴다
+        pytest.skip(f"twist_mux.yaml 없음: {cfg}")
+
+    params = yaml.safe_load(cfg.read_text())["twist_mux"]["ros__parameters"]
+    hold = params["topics"]["hold"]["priority"]
+    lock = params["locks"]["fsm_motion_lock"]["priority"]
+    stop = params["topics"]["stop"]["priority"]
+
+    assert lock < hold < stop, f"hold={hold} 가 lock={lock}~stop={stop} 사이가 아니다"
+    assert params["topics"]["hold"]["topic"] == "cmd_vel_hold"
+
+
+def test_hold_is_published_only_while_locked():
+    """안 잠겼으면 **아무것도 안 낸다** — 계속 0 을 내면 추종·nav2 를 영영 막는다.
+
+    twist_mux 는 값을 안 보고 우선순위만 본다. hold(160)가 계속 나가면 follow(100)도
+    navigation(50)도 통과하지 못한다 — 로봇이 아무 데도 못 간다.
+    """
+    class _FakePub:
+        def __init__(self): self.count = 0
+        def publish(self, _msg): self.count += 1
+
+    from libi_modes.ros.state_io import StateIO
+
+    io = StateIO.__new__(StateIO)          # ROS 노드 없이 콜백만 시험한다
+    io._hold_pub = _FakePub()
+
+    io._locked = False
+    StateIO._publish_hold(io)
+    assert io._hold_pub.count == 0, "안 잠겼는데 정지 명령이 나갔다"
+
+    io._locked = True
+    StateIO._publish_hold(io)
+    StateIO._publish_hold(io)
+    assert io._hold_pub.count == 2

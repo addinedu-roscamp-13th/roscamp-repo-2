@@ -24,36 +24,34 @@
 
 
 def search_command(elapsed, cfg, lkd=1.0):
-    """경과 초 → (angular_z, 끝났나).
+    """경과 초 → (angular_z, 끝났나). `recovery_bt` 타임라인의 참조 구현.
 
-    Peek 구간은 **정지**다(각속도 0). 카메라만 반대쪽으로 바뀌는데, 그 전환은
-    `recovery_bt` 쪽 관심사라 각속도만 보는 여기서는 표현하지 않는다.
+    타임라인:
+        HoldFront  hold      정지 (앞캠)
+        HoldBack   hold      정지 (뒷캠) — 캠 전환은 각속도로 안 나타난다
+        SweepFront leg       +   (0 → +끝)
+                   2*leg     −   (+끝 → −끝)
+                   leg       +   (−끝 → 0, 원위치)
+        SweepBack  같은 왕복을 뒷캠으로
+
+    Hold 구간은 **정지**다(각속도 0). 카메라만 바뀌는데 그 전환은 `recovery_bt` 쪽
+    관심사라 각속도만 보는 여기서는 표현하지 않는다.
     """
     hold = cfg.SEARCH_HOLD_SEC
-    scan = cfg.SEARCH_SCAN_SEC
-    peek = getattr(cfg, "SEARCH_PEEK_SEC", 0.0)
-    turn = cfg.SEARCH_TURN_ANGLE / cfg.ANGULAR_Z_SEARCH
+    leg = (cfg.SEARCH_SWEEP_ANGLE / 2.0) / cfg.ANGULAR_Z_SWEEP
+    w = cfg.ANGULAR_Z_SWEEP * lkd
 
-    t_hold_end = hold
-    t_peek1_end = t_hold_end + peek
-    t_scan1_end = t_peek1_end + scan
-    t_peek2_end = t_scan1_end + peek
-    t_scan2_end = t_peek2_end + scan
-    t_turn_end = t_scan2_end + turn
-    t_scan3_end = t_turn_end + scan
+    t = elapsed - 2 * hold          # 두 Hold 를 지난 뒤의 경과
+    if t < 0:
+        return 0.0, False           # HoldFront / HoldBack — 서서 본다
 
-    if elapsed < t_hold_end:
-        return 0.0, False
-    if elapsed < t_peek1_end:
-        return 0.0, False                       # 반대 캠 관찰 — 서서 본다
-    if elapsed < t_scan1_end:
-        return cfg.ANGULAR_Z_SEARCH * lkd, False
-    if elapsed < t_peek2_end:
-        return 0.0, False
-    if elapsed < t_scan2_end:
-        return cfg.ANGULAR_Z_SEARCH * -lkd, False
-    if elapsed < t_turn_end:
-        return cfg.ANGULAR_Z_SEARCH, False      # 사각 보루 — 맹목 180° 회전
-    if elapsed < t_scan3_end:
-        return cfg.ANGULAR_Z_SEARCH * lkd, False
-    return 0.0, True
+    sweep = 4 * leg                 # 한 번의 왕복+복귀
+    if t >= 2 * sweep:
+        return 0.0, True            # 앞뒤 훑기까지 끝났다
+
+    u = t % sweep                   # 앞 훑기든 뒷 훑기든 모양이 같다
+    if u < leg:
+        return w, False             # 0 → +끝
+    if u < 3 * leg:
+        return -w, False            # +끝 → −끝
+    return w, False                 # −끝 → 0 (원위치)

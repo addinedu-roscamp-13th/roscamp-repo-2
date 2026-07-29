@@ -32,10 +32,15 @@ ROBOT_AGENT_DIR="$ROS_WS_DIR/../robot_agent"
 SESSION="pinky_pi"
 WITH_FSM=true
 WITH_LED=true
-# 통행 금지 필터(동적 장애물). 기본 꺼짐 — pi-all.sh 가 --dyn-obstacle 을 받으면 넘겨준다.
+# 통행 금지 필터(동적 장애물). 기본 꺼짐 — libi_pi.sh 가 --dyn-obstacle 을 받으면 넘겨준다.
 WITH_KEEPOUT=false
 # [디버그] 배터리로 인한 자동 상태 전이. 기본 켜짐.
 BATTERY_AUTO=true
+# [2026-07-30] `--panel=IP:PORT`(노트북 libi_gui 의 VNC 화면을 로봇에 전체화면으로 띄우기)는
+# 만들었다가 지웠다. **로봇에 띄울 화면이 없다** — 실측하니 이 Pi 의 X `:0` 은 DUMMY0(가상
+# 출력)이고 `/dev/fb*` 도 없다. 로봇에 달린 LCD 는 `pinky_lcd_server` 가 모는 240×240 SPI 라
+# X 화면이 아니고, 1280×800 짜리 패널을 넣어도 글자를 못 읽는다.
+# HDMI 터치스크린을 실제로 달면 그때 되살린다(뷰어 접속·디코딩까지는 검증됐다).
 for arg in "$@"; do
   [ "$arg" = "--no-fsm" ] && WITH_FSM=false
   [ "$arg" = "--no-led" ] && WITH_LED=false
@@ -52,10 +57,20 @@ INIT_POSE="$ROS_WS_DIR/../scripts/set_initial_pose.py"
 # 로봇을 그 waypoint 위치에 실제로 놓아야** AMCL 추정과 실제 위치가 맞는다.
 ROBOT_NUM="$(printf '%s' "$FSM_ROBOT_ID" | grep -oE '[0-9]+' | tail -1)"
 case "$ROBOT_NUM" in
-  1) INIT_DOCK="주차장" ;;
-  2) INIT_DOCK="문학서가" ;;
-  3) INIT_DOCK="도서관출입구" ;;
-  *) INIT_DOCK="" ;;
+  1) INIT_DOCK="주차장";       INIT_YAW="0" ;;
+  2) INIT_DOCK="문학서가";      INIT_YAW="0" ;;
+  # [2026-07-28] Pinky-3 은 **도서관출입구**(+0.300,-1.704) 에서 **순회경로-5 를 보게** 놓는다.
+  #
+  # 왜 1.5708 인가: 순회경로-5 는 (+0.300,-1.385) 라 x 가 같고 y 만 +0.319 다.
+  # 즉 방위가 **정확히 +90°** 다 — 근사가 아니다. (예전 주석은 주차장까지의 100.2° 를
+  # 기준으로 "10° 차"라고 적었는데, 기준 자체가 사용자 의도와 달랐다.)
+  #
+  # ⚠️ 여기 값과 **로봇을 실제로 놓은 방향이 다르면** AMCL 이 처음부터 어긋난 채
+  #    시작한다. 스캔이 맞아 들어가도 복도가 평행해 한참 뒤에야 드러난다.
+  #    2026-07-28 실측: 라이다 스캔이 맵 벽과 45° 가량 어긋난 채 수렴해 맵 밖으로 나갔다.
+  #    값이 맞는데 어긋나면 **놓은 방향**을 먼저 의심할 것.
+  3) INIT_DOCK="도서관출입구";   INIT_YAW="1.5708" ;;
+  *) INIT_DOCK="";             INIT_YAW="0" ;;
 esac
 
 if tmux has-session -t "$SESSION" 2>/dev/null; then
@@ -66,7 +81,7 @@ fi
 # CycloneDDS 사용(설치돼 있을 때만 — 없으면 FastDDS로 자동 폴백). Pi에서 FastDDS
 # SHM 전송 스레드(dds.shm)가 CPU를 크게 먹어 CycloneDDS로 교체. 모든 노드가 같은
 # RMW 여야 통신되므로 hw/nav2/fleet_link 세 창 모두 이 ROS_SETUP 을 공유한다.
-ROS_SETUP="source /opt/ros/jazzy/setup.bash && source '$ROS_WS_DIR/install/setup.bash' && if [ -f /opt/ros/jazzy/lib/librmw_cyclonedds_cpp.so ]; then export RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}; export CYCLONEDDS_URI=file://$ROS_WS_DIR/cyclonedds.xml; fi"
+ROS_SETUP="source /opt/ros/jazzy/setup.bash && source '$ROS_WS_DIR/install/setup.bash' && if [ -f /opt/ros/jazzy/lib/librmw_cyclonedds_cpp.so ]; then export RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}; export CYCLONEDDS_URI=\${CYCLONEDDS_URI:-file://$ROS_WS_DIR/cyclonedds.xml}; fi"
 
 # libi_modes 는 별도 워크스페이스라 그쪽 install 도 겹쳐 source 한다.
 # 도메인은 셸에 이미 설정된 로봇 도메인을 그대로 쓴다 (실기는 로봇별 88/89/…).
@@ -95,12 +110,25 @@ if [ "$WITH_KEEPOUT" = true ]; then
   NAV2_PARAMS_ARG="params_file:=$ROS_WS_DIR/src/pinky_pro/pinky_navigation/params/nav2_params_keepout.yaml"
   echo "[pi] 통행 금지 필터 ON — nav2_params_keepout.yaml 사용"
 fi
+# ⚠️ use_composition:=False — nav2 노드를 **각각 별도 프로세스로** 띄운다.
+#
+# 2026-07-28: nav2 를 1.3.10 → 1.3.12 로 올린 뒤 컴포지션 컨테이너가 기동 중
+# 죽었다(exit -6). 로그에 남은 것은 이 한 줄이었다:
+#
+#     Magick: abort due to signal 11 (SIGSEGV) "Segmentation Fault"
+#
+# 맵 파일 문제가 아니다 — `ros2 run nav2_map_server map_server` 로는 세 맵 모두
+# 정상적으로 열린다. **한 프로세스에 전부 올렸을 때만** 죽는다. 컴포지션에서는
+# 컴포넌트 하나가 죽으면 컨테이너가 통째로 사라져 nav2 가 전부 내려간다.
+#
+# 프로세스를 나누면 안 죽고, lifecycle 도 정상 활성화된다(Managed nodes are active).
+# 대가는 프로세스 수와 intra-process 통신을 못 쓰는 것뿐이다.
 tmux new-window -t "$SESSION" -n nav2 \
-  bash -c "$ROS_SETUP && echo '[nav2] 하드웨어(/scan) 대기 중...' && for i in \$(seq 1 30); do ros2 topic list 2>/dev/null | grep -q '/scan' && break; sleep 1; done && ros2 launch pinky_navigation bringup_launch.xml map:='$MAP_PATH' $NAV2_PARAMS_ARG; exec bash"
+  bash -c "$ROS_SETUP && echo '[nav2] 하드웨어(/scan) 대기 중...' && for i in \$(seq 1 30); do ros2 topic list 2>/dev/null | grep -q '/scan' && break; sleep 1; done && ros2 launch pinky_navigation bringup_launch.xml map:='$MAP_PATH' use_composition:=False $NAV2_PARAMS_ARG; exec bash"
 
 if [ -f "$INIT_POSE" ] && [ -n "$INIT_DOCK" ]; then
   tmux new-window -t "$SESSION" -n init-pose \
-    bash -c "$ROS_SETUP && echo \"[init-pose] ⚠️ 로봇을 '$INIT_DOCK' 위치에 놓았는지 확인하세요. AMCL 초기 자세 발행 중...\" && python3 '$INIT_POSE' --dock '$INIT_DOCK' --navgraph '$NAVGRAPH'; exec bash"
+    bash -c "$ROS_SETUP && echo \"[init-pose] ⚠️ 로봇을 '$INIT_DOCK' 위치에 yaw=$INIT_YAW rad 방향으로 놓았는지 확인하세요. AMCL 초기 자세 발행 중...\" && python3 '$INIT_POSE' --dock '$INIT_DOCK' --navgraph '$NAVGRAPH' --yaw '$INIT_YAW'; exec bash"
 fi
 
 tmux new-window -t "$SESSION" -n fleet-link \

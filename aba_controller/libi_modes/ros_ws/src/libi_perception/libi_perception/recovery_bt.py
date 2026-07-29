@@ -44,11 +44,15 @@ class SearchContext:
         self.start = None
         #: 카메라를 바꿔 달라는 요청. 실제 발행은 follow_node 가 한다
         #: (camera_select 발행자는 하나뿐이라는 규칙).
-        self.select_camera = select_camera or (lambda _name: None)
+        self._select_camera = select_camera or (lambda _name: None)
         #: 반대 캠에 사람이 몇 명 보이나. **신원은 안 본다** — 앞뒤 캠은 렌즈·노출이
         #: 달라 크로스카메라 재식별을 못 믿는다. 신원 확인은 회전 후 정위치 캠에서 한다.
         self.peek_people = peek_people or (lambda: 0)
         self.role = role
+        #: 지금 어느 캠을 보고 있나. `select_camera` 는 요청만 하고 실제 발행은
+        #: follow_node 가 하므로, 재획득 판정에 쓸 "지금 보는 캠"을 여기서 기억한다.
+        #: 이게 없으면 `CheckReacquired` 가 반대 캠 검출을 정면 재획득으로 오인한다.
+        self._camera_now = self.home_camera
         #: 추종에서 반대 캠에 잡혔다 → 몸을 돌려야 제어가 된다.
         self.align_latched = False
         #: 이번 탐색에서 이미 한 번 돌았나. **탐색 1회당 정렬 1회**로 막는다 —
@@ -59,6 +63,14 @@ class SearchContext:
         #: 길잡이에서 반대 캠에 잡혔다 → 회전 없이 보는 캠만 그쪽으로 두고 끝낸다.
         self.peek_reacquired = False
         self.peek_camera_locked = None
+
+    def select_camera(self, name):
+        """카메라 전환 요청 + 지금 보는 캠 기록."""
+        self._camera_now = name
+        self._select_camera(name)
+
+    def camera_now(self):
+        return self._camera_now
 
     @property
     def home_camera(self):
@@ -83,6 +95,15 @@ class CheckReacquired(py_trees.behaviour.Behaviour):
         self.ctx = ctx
 
     def update(self):
+        # ⚠️ **정위치 캠을 보고 있을 때만** 재획득으로 친다.
+        #
+        # 반대 캠을 보는 구간(HoldBack·SweepBack)에서 잡힌 것을 "정면에서 다시 보인다"로
+        # 읽으면, 로봇이 등을 진 채로 탐색을 끝내고 그대로 추종을 재개한다. 방위 PID 는
+        # 앞캠 좌표로 속도를 만들므로 대상이 뒤에 있으면 제어가 성립하지 않는다.
+        # 반대 캠에서 찾았을 때의 정답은 `AlignHeading`(180° 회전)이고, 그건 `PeekPhase`
+        # 가 래치를 세워 처리한다.
+        if self.ctx.camera_now() != self.ctx.home_camera:
+            return Status.FAILURE
         if self.ctx.get_detection() is not None:
             return Status.SUCCESS
         return Status.FAILURE
@@ -239,32 +260,63 @@ class GiveUp(py_trees.behaviour.Behaviour):
         return Status.FAILURE
 
 
+def sweep_leg_sec(cfg) -> float:
+    """훑기 한 구간(중앙 → 한쪽 끝)에 걸리는 시간.
+
+    `SEARCH_SWEEP_ANGLE` 이 훑는 **전체 폭**이라 한쪽 끝까지는 그 절반이다.
+    왕복+복귀는 이 값의 4배(= 총 회전량 2×폭)다.
+    """
+    return (cfg.SEARCH_SWEEP_ANGLE / 2.0) / cfg.ANGULAR_Z_SWEEP
+
+
 def create_searching_tree(ctx):
     """탐색 순서를 트리 구조로 세운다. 참조 구현은 `search_planner.search_command()` 다.
 
     타임라인이 바뀌면 **둘 다** 고쳐야 한다 — 한쪽만 고치면 동등성 검증이 거짓말을 한다.
     """
     cfg = ctx.cfg
-    turn_sec = cfg.SEARCH_TURN_ANGLE / cfg.ANGULAR_Z_SEARCH
-    peek_sec = getattr(cfg, 'SEARCH_PEEK_SEC', 0.0)
+    hold = cfg.SEARCH_HOLD_SEC
+    w = cfg.ANGULAR_Z_SWEEP
+    leg = sweep_leg_sec(cfg)            # 중앙 → 한쪽 끝
     home, peek = ctx.home_camera, ctx.peek_camera
+
+    def sweep(prefix, camera):
+        """좌우로 훑고 **원위치로 돌아오는** 세 구간.
+
+        한 노드로 합치지 않는 이유: `search_planner.search_command()` 와 각속도
+        타임라인을 1:1 로 대조하는 동등성 시험이 있는데(test_recovery_bt), 시간축을
+        leaf 안에 숨기면 그 대조가 불가능해진다. 구간이 곧 계약이다.
+
+        원위치 복귀가 마지막에 붙는 이유: 안 돌아오면 다음 탐색의 기준 방위가 매번
+        달라져 "어디를 이미 봤는지"를 알 수 없게 된다.
+        """
+        return [
+            (f'{prefix}Out',    leg,     lambda: w * ctx.lkd,  camera),   # 0 → +끝
+            (f'{prefix}Across', 2 * leg, lambda: -w * ctx.lkd, camera),   # +끝 → -끝
+            (f'{prefix}Home',   leg,     lambda: w * ctx.lkd,  camera),   # -끝 → 0
+        ]
+
     spec = [
         # (이름, 길이, 각속도, 이 구간이 볼 카메라)
-        ('Hold', cfg.SEARCH_HOLD_SEC, lambda: 0.0, home),
-        # 뒤를 보려고 9초를 돌리는 대신 캠을 바꿔 2초 본다. 전환은 공짜다.
-        ('PeekBack', peek_sec, lambda: 0.0, peek),
-        ('Scan1', cfg.SEARCH_SCAN_SEC, lambda: cfg.ANGULAR_Z_SEARCH * ctx.lkd, home),
-        ('PeekBack2', peek_sec, lambda: 0.0, peek),
-        ('Scan2', cfg.SEARCH_SCAN_SEC, lambda: cfg.ANGULAR_Z_SEARCH * -ctx.lkd, home),
-        # 앞뒤 화각에도 안 잡히는 사각을 위한 보루. 화각 실측 후 사각이 없으면 지운다.
-        ('Turn180', turn_sec, lambda: cfg.ANGULAR_Z_SEARCH, home),
-        ('Scan3', cfg.SEARCH_SCAN_SEC, lambda: cfg.ANGULAR_Z_SEARCH * ctx.lkd, home),
+        #
+        # 앞을 보며 잠깐 기다린다 — 사람이 그냥 다시 나타나는 경우가 제일 흔하다.
+        ('HoldFront', hold, lambda: 0.0, home),
+        # 그 다음 **바로 뒤를 본다.** 캠 전환은 공짜라 돌 필요가 없다.
+        # 여기서 한 명이 잡히면 `PeekPhase` 가 래치를 세우고, 다음 tick 에 Selector
+        # 맨 위의 `AlignHeading` 이 이겨 180° 회전으로 넘어간다.
+        ('HoldBack', hold, lambda: 0.0, peek),
+        # 정지 관찰로 못 찾았으면 훑는다. 앞뒤 각각 좌우로 훑고 원위치로 돌아온다.
+        *sweep('SweepFront', home),
+        *sweep('SweepBack', peek),
     ]
     phases, offset = [], 0.0
+    #: 반대 캠을 보는 구간은 `PeekPhase` 여야 한다 — 거기서 잡힌 대상은 재획득이 아니라
+    #  **회전 대상**이다(그대로 추종하면 로봇이 등을 진 채로 따라간다).
+    peek_names = {'HoldBack', 'SweepBackOut', 'SweepBackAcross', 'SweepBackHome'}
     for name, duration, angular_fn, camera in spec:
         if duration <= 0:
-            continue                    # peek 을 0 으로 두면 그 구간이 사라진다
-        klass = PeekPhase if name.startswith('Peek') else CameraPhase
+            continue                    # 길이를 0 으로 두면 그 구간이 사라진다
+        klass = PeekPhase if name in peek_names else CameraPhase
         phases.append(klass(ctx, name, offset, offset + duration, angular_fn, camera))
         offset += duration
 

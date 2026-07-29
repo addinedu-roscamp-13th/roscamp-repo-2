@@ -11,7 +11,8 @@ from libi_perception.search_planner import search_command
 
 
 def _cfg(**over):
-    base = dict(SEARCH_HOLD_SEC=10.0, SEARCH_SCAN_SEC=4.0, SEARCH_PEEK_SEC=2.0,
+    base = dict(SEARCH_HOLD_SEC=5.0, SEARCH_SWEEP_ANGLE=3.14159,
+                ANGULAR_Z_SWEEP=0.55,
                 ANGULAR_Z_SEARCH=0.35, SEARCH_TURN_ANGLE=3.14159)
     base.update(over)
     return SimpleNamespace(**base)
@@ -69,10 +70,15 @@ def test_recovery_order_is_tree_structure():
                         cfg=_cfg(), now=_Clock())
     root = create_searching_tree(ctx)
     phases = [c for c in root.children if c.name == 'SearchPhases'][0]
-    # [2026-07-27] 뒤를 보려고 9초를 돌리던 Turn180 이 PeekBack(캠 전환 2초) 두 개로
-    # 대체되고, 맹목 회전은 사각 보루로 뒤로 밀렸다. search_planner 도 같이 바뀐다.
+    # [2026-07-28] 앞 5초 → 뒤 5초 → 앞 훑기(왕복+원위치) → 뒤 훑기(왕복+원위치).
+    # 맹목 Turn180 과 Scan1~3 은 훑기가 흡수했다. search_planner 도 같이 바뀐다.
+    # 훑기를 세 구간으로 쪼개는 이유는 recovery_bt 의 `sweep()` 주석 참고 —
+    # 시간축을 leaf 안에 숨기면 search_planner 와의 동등성 대조가 불가능해진다.
     assert [c.name for c in phases.children] == [
-        'Hold', 'PeekBack', 'Scan1', 'PeekBack2', 'Scan2', 'Turn180', 'Scan3', 'GiveUp',
+        'HoldFront', 'HoldBack',
+        'SweepFrontOut', 'SweepFrontAcross', 'SweepFrontHome',
+        'SweepBackOut', 'SweepBackAcross', 'SweepBackHome',
+        'GiveUp',
     ]
     assert phases.memory is True, 'a finished phase must not restart'
     assert root.memory is False, 'reacquire must be re-checked every tick'
@@ -118,7 +124,7 @@ def test_angular_output_matches_search_command_over_timeline():
         root = create_searching_tree(ctx)
         mismatches = []
         t = 0.0
-        while t < 30.0:
+        while t < 40.0:          # 새 타임라인은 32.85초 — 30 으로 두면 뒤끝이 검증 밖이다
             clock.t = t
             before = len(pub.calls)
             status = tick_tree(root)
@@ -156,21 +162,23 @@ def _run_to(env, t, step=0.05):
 
 
 def test_camera_follows_the_phase_plan():
-    """Hold=앞, Peek=뒤, Scan=앞. 추종 기준."""
+    """HoldFront=앞, HoldBack=뒤, SweepFront=앞, SweepBack=뒤. 추종 기준.
+
+    구간 길이: Hold 5+5, 한 훑기 = 4 × (π/2 / 0.55) ≈ 11.4초.
+    """
     env = _peek_ctx(role="follow")
-    _run_to(env, 5.0);  assert env.cams[-1] == "front"      # Hold
-    _run_to(env, 11.0); assert env.cams[-1] == "back"       # PeekBack
-    _run_to(env, 14.0); assert env.cams[-1] == "front"      # Scan1
-    _run_to(env, 17.0); assert env.cams[-1] == "back"       # PeekBack2
-    _run_to(env, 20.0); assert env.cams[-1] == "front"      # Scan2
+    _run_to(env, 2.0);  assert env.cams[-1] == "front"      # HoldFront
+    _run_to(env, 7.0);  assert env.cams[-1] == "back"       # HoldBack
+    _run_to(env, 12.0); assert env.cams[-1] == "front"      # SweepFront
+    _run_to(env, 25.0); assert env.cams[-1] == "back"       # SweepBack
 
 
 def test_guide_home_camera_is_back():
     """길잡이는 사람이 뒤에 있는 것이 정상이다."""
     env = _peek_ctx(role="guide")
-    _run_to(env, 5.0)
+    _run_to(env, 2.0)
     assert env.cams[-1] == "back"
-    _run_to(env, 11.0)
+    _run_to(env, 7.0)
     assert env.cams[-1] == "front"          # peek 은 반대쪽
 
 
@@ -249,7 +257,7 @@ def test_guide_peek_does_not_fall_back_to_home_camera():
 def test_peek_publishes_zero_velocity():
     """반대 캠 관찰은 **서서** 본다. 돌면서 보면 그 사이 대상이 프레임에서 빠진다."""
     env = _peek_ctx(role="follow", people=0)
-    _run_to(env, 11.0)
+    _run_to(env, 7.0)                       # HoldBack 구간 (5~10초)
     assert env.pub.calls[-1] == (0.0, 0.0)
 
 
@@ -265,13 +273,19 @@ def test_no_camera_hook_still_runs_the_old_way():
     assert pub.calls[-1][1] != 0.0
 
 
-def test_peek_zero_removes_the_phase():
-    """SEARCH_PEEK_SEC=0 이면 옛 타임라인 그대로여야 한다(캠 없는 로봇 대비)."""
+def test_hold_zero_removes_both_hold_phases():
+    """SEARCH_HOLD_SEC=0 이면 정지 관찰 없이 곧바로 훑는다.
+
+    길이 0 인 구간을 남기면 `SearchPhase` 가 `elapsed >= end` 로 즉시 SUCCESS 를 내
+    같은 tick 에 다음 구간으로 넘어가는데, 그 사이 카메라만 한 번 깜빡인다.
+    """
     clock, pub = _Clock(), _Pub()
     ctx = SearchContext(get_detection=lambda: None, publish=pub,
-                        cfg=_cfg(SEARCH_PEEK_SEC=0.0), now=clock)
+                        cfg=_cfg(SEARCH_HOLD_SEC=0.0), now=clock)
     root = create_searching_tree(ctx)
     phases = [c for c in root.children if c.name == 'SearchPhases'][0]
     assert [c.name for c in phases.children] == [
-        'Hold', 'Scan1', 'Scan2', 'Turn180', 'Scan3', 'GiveUp',
+        'SweepFrontOut', 'SweepFrontAcross', 'SweepFrontHome',
+        'SweepBackOut', 'SweepBackAcross', 'SweepBackHome',
+        'GiveUp',
     ]

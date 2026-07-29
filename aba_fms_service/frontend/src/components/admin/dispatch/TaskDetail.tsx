@@ -1,7 +1,7 @@
 import { Button } from "@/components/ui/button";
 import type { OrderSnapshot } from "@/lib/admin-api";
 
-import { LEG_STEPS, STATUS_STYLE, TERMINAL } from "./dispatch-shared";
+import { STATUS_STYLE, TERMINAL } from "./dispatch-shared";
 
 /**
  * 선택한 주문 1건의 상세 — orchestrator 가 이 주문을 어떤 다리로 쪼갰고 지금 어디까지
@@ -72,11 +72,13 @@ export function TaskDetail({
 
   const isExecuting = order.status === "EXECUTING";
   const isTerminal = TERMINAL.has(order.status);
-  // leg_count 가 4가 아닐 수도 있으므로(다른 task_type) 실제 개수를 따른다.
-  const steps = Array.from({ length: order.leg_count }, (_, i) => {
-    const fallback = LEG_STEPS[i % LEG_STEPS.length];
-    return { label: fallback.label, kind: fallback.kind };
-  });
+  // task_type 마다 다리 뜻이 다르다(수거 4개는 배달 4개와 전혀 다르다) — 실제
+  // leg 값과 백엔드가 만든 라벨을 그대로 쓴다. 예전엔 4칸짜리 고정 배열을
+  // leg_idx % 4 로 흉내내서, 수거처럼 종류가 다르면 항상 틀린 라벨이 떴다.
+  const steps = order.legs.map((leg, i) => ({
+    label: order.leg_labels[i] ?? "작업",
+    kind: leg.type,
+  }));
   const pct =
     order.leg_count === 0
       ? 0

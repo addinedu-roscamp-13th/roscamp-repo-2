@@ -113,7 +113,7 @@ async def _seed():
                     is_active=True,
                 ),
                 Robot(
-                    name="Pinky-1",
+                    name="pinky-1",
                     robot_type="pinky",
                     ip_address="192.168.0.71",
                     port=9001,

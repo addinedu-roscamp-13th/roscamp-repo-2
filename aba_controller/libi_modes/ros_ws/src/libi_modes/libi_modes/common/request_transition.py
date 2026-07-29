@@ -7,7 +7,12 @@ from libi_modes import blackboard as bb
 from libi_modes.blackboard import Keys
 
 #: 이 상태로 가는 전이는 유지 시간에 막히지 않는다. 고장은 기다릴 수 없다.
-_ALWAYS_ALLOWED = ("ERROR",)
+#
+#  [2026-07-30] RETURNING 추가. 유지 시간이 2초일 때는 무엇을 막든 티가 안 났지만,
+#  사람이 정한 상태가 오래 남도록 늘리면(params.yaml manual_hold_sec) **저전압 복귀도
+#  그만큼 미뤄진다.** 배터리는 기다려 주지 않는다 — 관제가 IDLE 로 세워 둔 로봇이라도
+#  15% 아래로 떨어지면 충전소로 보내야 한다.
+_ALWAYS_ALLOWED = ("ERROR", "RETURNING")
 
 
 class RequestTransition(py_trees.behaviour.Behaviour):

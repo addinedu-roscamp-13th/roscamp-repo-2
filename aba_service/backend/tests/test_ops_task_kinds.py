@@ -65,13 +65,13 @@ def fake_fms(monkeypatch) -> FakeOps:
 def test_종류_정의는_폼_명세를_포함한다():
     keys = [k["key"] for k in ops.TASK_KINDS]
     assert keys == [
-        "transfer", "shelve", "sort", "tidy", "porter", "dispatch", "return", "patrol",
+        "transfer", "shelve", "collect", "tidy", "porter", "dispatch", "return", "patrol",
     ]
     for spec in ops.TASK_KINDS:
         assert spec["mode"] in ("order", "state")
         assert isinstance(spec["fields"], list)
         if spec["mode"] == "order":
-            assert spec["order_kind"] in ("delivery", "navigate")
+            assert spec["order_kind"] in ("delivery", "navigate", "collect")
         else:
             assert spec["target_state"] in ("RETURNING", "PATROL")
 
@@ -87,8 +87,8 @@ def test_주행만_하는_종류는_navigate_로_나간다():
     assert by_key["dispatch"]["order_kind"] == "navigate"
     assert by_key["transfer"]["order_kind"] == "delivery"
     assert by_key["shelve"]["order_kind"] == "delivery"
-    assert by_key["sort"]["order_kind"] == "delivery"
     assert by_key["porter"]["order_kind"] == "delivery"
+    assert by_key["collect"]["order_kind"] == "collect"
 
 
 # ── 배달형 ───────────────────────────────────────────────────────────────────
@@ -144,14 +144,25 @@ def test_진열은_카탈로그에_없는_제목이면_거절(client, admin_auth
     assert fake_fms.orders == []
 
 
-def test_분류는_대상을_안_받고_반납_도서_일괄로_고정(client, admin_auth, fake_fms):
+def test_수거는_아무것도_안_받고_접수된다(client, admin_auth, fake_fms):
+    """수거는 fields 가 비어 있다 — book/pickup/dropoff 를 보내도 안 보내도 무시되고
+    빈 값으로 접수된다(출발·도착이 수거함으로 고정, `decompose_collection()` 이 만든다)."""
     res = client.post(
         TASKS,
-        json={"kind": "sort", "pickup": "안네데스크", "dropoff": "입구"},
+        json={"kind": "collect"},
         headers=admin_auth,
     )
     assert res.status_code == 201, res.text
-    assert fake_fms.orders[0]["book"] == ops.SORT_CARGO
+    assert fake_fms.orders == [
+        {
+            "kind": "collect",
+            "book": "",
+            "pickup": "",
+            "dropoff": "",
+            "requester": "사서:collect",
+            "priority": 0,
+        }
+    ]
 
 
 def test_짐꾼은_도서_목록에_없는_짐_이름을_받는다(client, admin_auth, fake_fms):

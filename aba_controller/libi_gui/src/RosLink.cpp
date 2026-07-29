@@ -5,6 +5,7 @@
 #include <QTimer>
 #include <QUuid>
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
+#include <geometry_msgs/msg/twist.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_msgs/msg/float64.hpp>
@@ -15,6 +16,8 @@ struct RosLink::Impl {
     rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr touchPub;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr cmdPub;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr panelReqPub;
+    rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr stopPub;
+    QTimer *stopTimer = nullptr;      // 비상정지 중 0 을 20Hz 로 반복 발행
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr stateSub;
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr panelResSub;
     rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr poseSub;
@@ -30,6 +33,9 @@ RosLink::RosLink(QObject *parent) : QObject(parent), d_(new Impl) {
     d_->node = std::make_shared<rclcpp::Node>("libi_gui");
     d_->touchPub = d_->node->create_publisher<std_msgs::msg::Float64>("ui_last_touch_at", 10);
     d_->cmdPub   = d_->node->create_publisher<std_msgs::msg::String>("fleet_cmd", 10);
+    // 비상정지 — twist_mux 의 최상위 입력(255). 타입은 Twist 여야 한다
+    // (twist_mux.yaml 의 use_stamped:false 와 짝. 다르면 DDS 가 연결을 안 만든다).
+    d_->stopPub  = d_->node->create_publisher<geometry_msgs::msg::Twist>("cmd_vel_stop", 10);
     d_->stateSub = d_->node->create_subscription<std_msgs::msg::String>(
         "/libi/fsm_state", 10,
         [this](std_msgs::msg::String::SharedPtr msg) {
@@ -85,6 +91,25 @@ RosLink::~RosLink() {
 void RosLink::publishTouch() {
     std_msgs::msg::Float64 m; m.data = 0.0;   // 값 무의미 — 로봇이 수신 시점 monotonic 으로 스탬프
     d_->touchPub->publish(m);
+}
+
+void RosLink::setEmergencyStop(bool on) {
+    if (!on) {
+        if (d_->stopTimer) { d_->stopTimer->stop(); }
+        return;
+    }
+    if (!d_->stopTimer) {
+        d_->stopTimer = new QTimer(this);
+        d_->stopTimer->setInterval(50);          // 20Hz — twist_mux timeout(0.5s)의 10배 여유
+        connect(d_->stopTimer, &QTimer::timeout, this, [this] {
+            geometry_msgs::msg::Twist zero;      // 전 축 0 (기본 생성자가 이미 0)
+            d_->stopPub->publish(zero);
+        });
+    }
+    // 누른 즉시 한 발 — 첫 타이머 tick(50ms)을 기다리지 않는다.
+    geometry_msgs::msg::Twist zero;
+    d_->stopPub->publish(zero);
+    d_->stopTimer->start();
 }
 
 void RosLink::publishFleetCmd(const QString &json) {

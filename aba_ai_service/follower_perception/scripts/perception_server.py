@@ -296,7 +296,8 @@ def _build_pose(args):
     검출 가중치(best.pt)는 task=detect 라 키포인트를 못 낸다. 그래서 owner bbox crop 에만
     yolo11n-pose 를 2차로 돌린다(전체 프레임이 아니라 crop 이라 비용이 작다).
     """
-    if getattr(args, "no_pose", False) or args.test_pattern:
+    # 기본은 꺼짐 — `--pose` 로만 켠다. 켜면 프레임당 2차 추론이 붙어 추종 주기가 느려진다.
+    if not getattr(args, "pose", False) or args.test_pattern:
         return None
     try:
         from follower_perception.pose_estimator import PoseEstimator
@@ -458,8 +459,9 @@ def main():
                     help="로봇의 /libi/camera_select 를 구독해 카메라 전환을 따라간다. "
                          "예: --camera-topic /libi/camera_select. ROS sourced + 같은 "
                          "ROS_DOMAIN_ID 가 필요하다(--lidar-ros 와 같은 전제).")
-    ap.add_argument("--no-pose", dest="no_pose", action="store_true",
-                    help="자세 판정을 끈다(디버깅용). 끄면 누워 있어도 로봇이 다가간다.")
+    ap.add_argument("--pose", dest="pose", action="store_true",
+                    help="자세 판정을 켠다. **기본은 꺼짐** — 켜면 누워 있는 사람에게는 "
+                         "로봇이 다가가지 않는다(대신 프레임 예산을 더 쓴다).")
     ap.add_argument("--pose-every-n", dest="pose_every_n", type=int, default=None,
                     help="자세 추론 주기(프레임). 프레임 예산을 넘기면 3 정도로 올린다.")
     args = ap.parse_args()
@@ -467,20 +469,40 @@ def main():
         from follower_perception.constants import POSE_EVERY_N_FRAMES
         args.pose_every_n = POSE_EVERY_N_FRAMES
 
+    _recv = None
     if args.udp:
         from scripts.udp_video import UdpVideoReceiver
         UdpVideoReceiver  # imported lazily so non-UDP runs need no extra deps
         _recv = UdpVideoReceiver(args.udp_port)
-        # idle_yield: 로봇이 camera_select=none 이라 영상을 안 보낼 때도 루프가 돌아야
-        # 뷰어 끊김을 알아챈다. 안 그러면 다음 패널이 영영 못 붙는다.
-        frames = _recv.frames(idle_yield=True)
         print(f"[ok] receiving UDP video on :{args.udp_port} (from robot)")
-    elif args.test_pattern:
-        frames = test_pattern_frames()
-    else:
-        frames = _camera_frames(args.camera)
-    if args.rotate:
-        frames = _rotate_frames(frames, args.rotate)
+
+    def new_frames():
+        """프레임 공급원을 **처음 고른 것과 같은 종류로** 다시 만든다.
+
+        뷰어가 끊기면 제너레이터를 새로 만들어야 하는데(카메라 제너레이터는 닫히면
+        소진된다), 예전엔 그 자리에서 무조건 `_camera_frames()` 를 불렀다. UDP 모드로
+        떠 있어도 두 번째 뷰어가 붙는 순간 **없는 로컬 카메라를 열려다 서버가 죽었다.**
+
+            [ok] receiving UDP video on :6001 (from robot)
+            [ok] viewer connected → disconnected
+            [ok] viewer connected            ← 두 번째
+            [error] cannot open camera 0     ← 여기서 프로세스 종료
+
+        증상은 "관리자 추종이 두 번째부터 안 되고 바퀴도 안 움직인다"로 나타났다 —
+        AI 서버가 죽었으니 검출이 끊기고, 추종 제어 루프가 속도를 만들 수 없었다.
+        (실측 2026-07-28)
+        """
+        if _recv is not None:
+            # idle_yield: 로봇이 camera_select=none 이라 영상을 안 보낼 때도 루프가 돌아야
+            # 뷰어 끊김을 알아챈다. 안 그러면 다음 패널이 영영 못 붙는다.
+            f = _recv.frames(idle_yield=True)
+        elif args.test_pattern:
+            f = test_pattern_frames()
+        else:
+            f = _camera_frames(args.camera)
+        return _rotate_frames(f, args.rotate) if args.rotate else f
+
+    frames = new_frames()
     perception = _build_perception(args)
 
     cmd_sink = None
@@ -548,8 +570,9 @@ def main():
             conn.close()
             print("[..] viewer disconnected; waiting again")
         if not args.test_pattern:
-            # real camera generator is exhausted once closed; rebuild for next viewer
-            frames = _camera_frames(args.camera)
+            # 제너레이터는 닫히면 소진된다 — 다음 뷰어를 위해 **같은 종류로** 다시 만든다.
+            # `_camera_frames()` 를 직접 부르면 UDP 모드가 무시된다(new_frames 주석).
+            frames = new_frames()
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@
 ## 왜 필요한가
 
 Pi 에서 카메라 장치를 두 프로세스가 열면 앞캠이 `Device or resource busy` 로 죽는다
-(`scripts/all/pi-all.sh` 머리말에 기록된 실제 사고: 뒷캠을 `/dev/video0` 으로 잡았더니
+(`scripts/all/libi_pi.sh` 머리말에 기록된 실제 사고: 뒷캠을 `/dev/video0` 으로 잡았더니
 앞캠 libcamera 가 장치를 못 잡고 죽었고, 죽는 건 앞캠 창이라 원인이 안 보였다).
 
 그래서 장치는 `camera_sender` **하나만** 열고, 프레임이 필요한 쪽(마커 도킹 등)은

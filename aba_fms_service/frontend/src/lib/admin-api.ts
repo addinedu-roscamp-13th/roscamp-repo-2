@@ -1145,6 +1145,8 @@ export const adminApi = {
 
   // 배달 주문 오케스트레이터 (composite task 시퀀서, fleet_node 위) — /api/fleet/order*
   fleetOrders: () => request<{ orders: OrderSnapshot[] }>("/api/fleet/orders"),
+  // 주문 화면의 도서 목록 — aba_service 도서 DB(cb_books)를 FMS 가 읽어 넘긴다.
+  fleetBooks: () => request<{ books: BookOption[] }>("/api/fleet/books"),
   fleetCreateOrder: (input: CreateOrderInput) =>
     request<{ ok: boolean; task_id: string }>("/api/fleet/order", {
       method: "POST",
@@ -1480,6 +1482,11 @@ export interface OrderSnapshot {
   leg_count: number;
   current_leg: "navigate" | "perform_action" | null;
   reason: string;
+  /** 다리 전체의 원자료. task_type 마다 다리 뜻이 다르므로(수거 4다리는 배달 4다리와
+   * 전혀 다르다), 화면은 이 값으로 라벨을 그리고 `leg_idx` 로 추측하지 않는다. */
+  legs: { type: "navigate" | "perform_action"; params: Record<string, unknown> }[];
+  /** `legs` 를 사람이 읽을 한글 문구로 바꾼 것 — 백엔드 `leg_label()` 이 만든다. */
+  leg_labels: string[];
 }
 
 export interface CreateOrderInput {
@@ -1488,4 +1495,19 @@ export interface CreateOrderInput {
   dropoff: string;
   requester?: string;
   priority?: number;
+}
+
+/**
+ * 도서 DB(`cb_books`) 한 행. 소유자는 aba_service 라 컬럼 이름을 그대로 쓴다.
+ * `zone` 은 waypoint 정점 이름과 같은 문자열이다(문학서가 등) — 출발지에 그대로 넣는다.
+ */
+export interface BookOption {
+  id: number;
+  title_kr: string;
+  author: string;
+  category: string;
+  zone: string;
+  shelf: string;
+  in_stock: number;
+  unavailable: number;
 }

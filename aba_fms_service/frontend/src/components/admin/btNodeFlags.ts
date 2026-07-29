@@ -32,6 +32,20 @@ import type { BtNodeFlag } from "@/components/admin/BtGraphView";
  * 회복 BT 에 노드가 셋 늘었다(PeekBack/PeekBack2 는 SearchPhases 안, PeekReacquired 와
  * AlignHeading 은 BT_Searching 바로 아래). 전부 정상 동작이라 여기 적지 않는다.
  *
+ * ## 2026-07-28 — 회복 탐색 시퀀스 교체
+ *
+ * `SearchPhases` 의 자식이 통째로 바뀌었다. 옛 이름(Hold·PeekBack·PeekBack2·
+ * Scan1~3·Turn180)은 **더 이상 없다.**
+ *
+ *   HoldFront → HoldBack → SweepFront{Out,Across,Home} → SweepBack{Out,Across,Home} → GiveUp
+ *
+ * 앞뒤로 5초씩 서서 보고, 각각 좌우로 훑은 뒤 원위치로 돌아온다. 어느 구간에 있든
+ * 위 Selector 가 매 tick 이기므로(앞캠 재획득 → 즉시 종료, 뒷캠 포착 → 180° 회전)
+ * 구간을 끝까지 돌 필요가 없다.
+ *
+ * 이 목록에 플래그로 등록된 이름은 없어서 범례 숫자는 안 바뀐다 — 그래도 여기 적는
+ * 이유는, 다음 사람이 옛 이름으로 플래그를 달면 **조용히 안 붙기 때문**이다.
+ *
  * 새로 흐리게 표시하는 것은 복귀 5단계 중 **마커로 갈아끼울 두 자리**뿐이다.
  */
 export const BT_NODE_FLAGS: Record<string, BtNodeFlag> = {

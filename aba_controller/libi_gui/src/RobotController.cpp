@@ -231,6 +231,11 @@ void RobotController::logout() {
 void RobotController::emergencyStop() {
     if (m_estop) return;
     m_estop = true; emit emergencyStoppedChanged();
+    // ⚠️ **바퀴부터 세운다.** 아래 FSM 전이(requestTransition)는 왕복이 있고 실패할 수도
+    // 있는데, 그 사이에도 추종·nav2 는 계속 /cmd_vel_follow·nav_out 을 민다.
+    // `/cmd_vel_stop` 은 twist_mux 최상위 입력(255)이라 그 전부를 즉시 이긴다.
+    // (2026-07-29 이전에는 화면 플래그만 뒤집혀서 바퀴는 그대로 돌았다.)
+    if (m_ros) m_ros->setEmergencyStop(true);
     m_lin = 0; m_ang = 0; emit linVelChanged(); emit angVelChanged();
     if (m_guidePhase == QLatin1String("guiding")) setGuidePhase(QStringLiteral("cancelled"));
     setRobotState(QStringLiteral("에러"));
@@ -247,6 +252,9 @@ void RobotController::clearEmergencyStop() {
     if (!m_estop) return;
     if (!m_isAdmin) { emit toast(QStringLiteral("관리자만 해제할 수 있습니다.")); return; }
     m_estop = false; emit emergencyStoppedChanged();
+    // 0 발행을 멈춘다. twist_mux 는 timeout(0.5s) 뒤 이 입력을 없는 것으로 치고,
+    // 그때부터 아래 입력(추종·nav2)이 다시 통과한다 — 즉 해제도 최대 0.5초 안에 반영된다.
+    if (m_ros) m_ros->setEmergencyStop(false);
     // ⚠️ **로봇에게도 알려야 한다.** 예전엔 화면 플래그만 뒤집어서, 로봇 FSM 은 ERROR 인 채
     // 남고 다음 fsm_state 가 오는 순간 화면이 다시 "에러"로 돌아갔다 — "해제를 눌러도
     // 에러가 안 풀린다"의 정체다. emergencyStop() 이 ERROR 로 보냈으니 해제도 짝이 맞아야
@@ -388,7 +396,9 @@ void RobotController::onFollowGrantReply(bool ok, const QJsonObject &body) {
 }
 
 void RobotController::beginFollowing() {
-    m_following = true; emit followingChanged();
+    m_following = true;
+    m_followSawWorking = false;   // 아직 WORKING 을 못 봤다 (헤더 주석 참고)
+    emit followingChanged();
     setRobotState(QStringLiteral("작업중"));
     setTaskStatus(QStringLiteral("관리자 추종 중"));
     requestTransition(QStringLiteral("WORKING"));
@@ -402,7 +412,7 @@ void RobotController::beginFollowing() {
 void RobotController::stopAdminFollow() {
     if (!m_isAdmin) { emit toast(QStringLiteral("관리자만 조작할 수 있습니다.")); return; }
     if (!m_following) return;
-    m_following = false; emit followingChanged();
+    m_following = false; m_followSawWorking = false; emit followingChanged();
     setRobotState(QStringLiteral("대기"));
     setTaskStatus(QStringLiteral("명령 대기"));
     log(QStringLiteral("관리자 추종 종료"));
@@ -625,6 +635,10 @@ void RobotController::setGripper(double v) { if (!m_isAdmin) return; m_gripper =
 // 실제 정점과 무관한 이름을 썼다. x,y 는 회원 앱과 같은 스키마 배치의 중심점(0..1)이다.
 QVariantList RobotController::facilities() const {
     QVariantList f;
+    // [2026-07-30] 옛 `분류함` 정점은 `미정` 이 됐다(도서관에서 없어졌고, 지도 그림을 다시
+    // 그려야 무엇이 될지 정해진다). 여기에 카드를 만들지 않는 이유가 그거다 — 이 목록의
+    // bx/by/bw/bh 는 패널 지도 **그림에서 실측한** 값이라, 그림이 없으면 지어낼 수 없다
+    // (넣게 되면 tools/measure_map_boxes.py 로 그 칸을 재서 추가할 것).
     f << makeFacility(QStringLiteral("화장실"), QStringLiteral("화장실"), QStringLiteral("🚻"),
                       QStringLiteral("화장실입니다. 남녀 공용으로 각 1칸씩 있어요."),
                       0.139, 0.031, 0.207, 0.100);
@@ -836,7 +850,10 @@ QString RobotController::mapState(const QString &c) {
     if (c == "PATROL")          return QStringLiteral("순찰");
     if (c == "SECURITY_PATROL") return QStringLiteral("보안순찰");
     if (c == "WORKING")         return QStringLiteral("작업중");
-    if (c == "INTERACTING")     return QStringLiteral("응대중");
+    // [2026-07-30] "응대중" → "이용중". 이 상태의 실제 뜻은 **방문객이 패널을 잡고 있어
+    // 로봇이 멈춰 있다** 이고, fleet_node 도 그래서 배차에서 뺀다(fleet_node.cpp:869).
+    // "안내"는 길잡이(WORKING·GuideExec)가 이미 쓰는 말이라 쓰면 두 상태가 안 갈린다.
+    if (c == "INTERACTING")     return QStringLiteral("이용중");
     if (c == "CHARGING")        return QStringLiteral("충전중");
     if (c == "RETURNING")       return QStringLiteral("복귀중");
     if (c == "ERROR")           return QStringLiteral("에러");
@@ -928,11 +945,20 @@ void RobotController::attachRos(RosLink *ros) {
             //
             // FMS 승인 기록도 같이 정리한다. 로봇은 이미 WORKING 을 나갔으므로 그 기록만
             // 남으면 이번엔 관제 쪽에서 "승인 기록이 남아 있습니다" 로 막힌다.
-            if (m_following && state != QLatin1String("WORKING")) {
-                m_following = false; emit followingChanged();
+            // ⚠️ **WORKING 을 한 번 본 뒤에만** 종료로 친다.
+            // 승인 직후에는 WORKING 이 아직 도착 전이라 `state != "WORKING"` 이 참이고,
+            // 그대로 두면 켜자마자 스스로 해제를 보내 FMS 가 로봇을 IDLE 로 되돌린다.
+            // (실측 2026-07-28: FMS 를 직접 부르면 WORKING 이 18초+ 유지되는데 패널로
+            //  켜면 몇 초 만에 IDLE. 차이는 이 감시뿐이었다.)
+            if (m_following && state == QLatin1String("WORKING"))
+                m_followSawWorking = true;
+            if (m_following && m_followSawWorking && state != QLatin1String("WORKING")) {
+                m_following = false; m_followSawWorking = false; emit followingChanged();
                 setTaskStatus(QStringLiteral("명령 대기"));
                 log(QStringLiteral("관리자 추종 종료 — 로봇이 WORKING 을 벗어남 (") + state + QStringLiteral(")"));
                 reportFollowRelease();
+                // 관리자가 끝낸 게 아니다 — 화면을 홈으로 돌린다(위 시그널 주석 참고).
+                emit followEndedByRobot();
             }
         });
 }
@@ -944,6 +970,6 @@ void RobotController::onScreenTouch() {
     m_ros->publishTouch();
     if (m_robotState == QStringLiteral("순찰")) {
         m_ros->publishFleetCmd(QStringLiteral("{\"action\":\"ui_touch\"}"));
-        log(QStringLiteral("화면 터치 — 응대 진입 요청(ui_touch)"));
+        log(QStringLiteral("화면 터치 — 이용중 진입 요청(ui_touch)"));
     }
 }

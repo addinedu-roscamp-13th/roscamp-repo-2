@@ -461,6 +461,16 @@ class GuideExec(NavigationExec):
     def terminate(self, new_status):
         # 안내가 어떻게 끝나든(성공·실패·상위 취소) 취소 상태를 남기지 않는다.
         self._halted = False
+        # 감시 세션도 **여기서** 닫는다. `_release()` 에만 두면 안 된다 —
+        # 그건 이 leaf 가 스스로 끝냈을 때만 돈다. 패널이 IDLE 전이를 걸거나
+        # 상위가 브랜치를 바꾸면 leaf 는 `_release()` 없이 INVALID 로 terminate 되고,
+        # 그러면 뒷캠 감시 세션이 **열린 채 남는다**(카메라가 back 에 물린 채,
+        # `/libi/requester_visible` 도 계속 발행). 화면상으로는 안내가 끝나 있어서
+        # 에러도 안 난다. `FollowExec` 의 `_abandon` 과 같은 종류의 구멍이었다.
+        #   (2026-07-28 codex 지적 — guide.py:132-141 이 mission_stop 과 별개로
+        #    IDLE 전이를 요청하므로 이 경로는 실제로 밟힌다)
+        # `_release_watch()` 는 `_watching` 을 보고 한 번만 돌아서 중복 호출이 안전하다.
+        self._release_watch()
         super().terminate(new_status)
 
 

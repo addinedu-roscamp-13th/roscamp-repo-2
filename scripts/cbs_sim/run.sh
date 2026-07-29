@@ -54,11 +54,11 @@ export ROS_DOMAIN_ID="$DOMAIN"
 
 # ── 시나리오 ────────────────────────────────────────────────────────────────
 # arte2 navgraph 에서 서로를 마주 보고 지나가야 하는 두 대.
-#   Pinky-1: v0(주차장) → v15
-#   Pinky-2: v15        → v0
+#   pinky-1: v0(주차장) → v15
+#   pinky-2: v15        → v0
 # 둘 다 좁은 중앙 통로(v9, v1)를 지난다 — 시간으로 분리하지 않으면 마주친다.
-R1_NAME="Pinky-1"; R1_START=0;  R1_GOAL=15
-R2_NAME="Pinky-2"; R2_START=15; R2_GOAL=0
+R1_NAME="pinky-1"; R1_START=0;  R1_GOAL=15
+R2_NAME="pinky-2"; R2_START=15; R2_GOAL=0
 
 coord() {   # 정점 인덱스 → "x:y"
   python3 - "$NAVGRAPH" "$1" <<'PY'
@@ -133,7 +133,7 @@ grep -m1 "plugins:" "$OUT/fleet_node.log" || true
 # ── ② 가짜 로봇 ─────────────────────────────────────────────────────────────
 DELAY_ARGS=()
 if [ "$DELAY" = "1" ]; then
-  # Pinky-1 을 25초 시점부터 25초간 세운다 — 계획 도착 시각을 확실히 넘긴다.
+  # pinky-1 을 25초 시점부터 25초간 세운다 — 계획 도착 시각을 확실히 넘긴다.
   DELAY_ARGS=(--delay "$R1_NAME:25:25")
 fi
 python3 "$HERE/sim_robots.py" \

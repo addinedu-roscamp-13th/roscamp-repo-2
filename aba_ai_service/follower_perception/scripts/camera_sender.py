@@ -9,7 +9,7 @@
 ## 왜 한 프로세스인가
 
 Pi 에서 카메라 장치를 두 프로세스가 열면 앞캠이 `Device or resource busy` 로 죽는다
-(`scripts/all/pi-all.sh` 머리말의 실제 사고). 장치를 여는 주체를 하나로 모으면 그 사고가
+(`scripts/all/libi_pi.sh` 머리말의 실제 사고). 장치를 여는 주체를 하나로 모으면 그 사고가
 구조적으로 불가능해지고, JPEG 인코딩도 **선택된 한 벌만** 돌아 Pi 부담이 준다.
 
 ## `none` 의 의미 — 반드시 지킨다
@@ -154,7 +154,13 @@ def run(front_frames, back_frames, sender, select, *, orient_front, orient_back,
                 if sent % 60 == 0:
                     print(f"[..] sent {sent} frames ({choice})")
         if delay:
-            time.sleep(delay)
+            # ⚠️ `time.sleep(delay)` 를 그냥 걸면 안 된다 — 그러면 실제 주기가
+            #    **캡처+인코딩 시간 + delay** 가 되어 `--fps` 가 상한일 뿐 달성값이
+            #    아니게 된다. picamera2 캡처가 ~33ms 면 15fps 를 시켜도 실제 ~10fps 다.
+            #    추종 제어 루프가 20Hz 인데 검출이 10fps 로 들어오면 그만큼 늦게 반응한다.
+            #    (2026-07-28 "추종이 잘 안 된다" 신고 — 이 루프가 원인 후보다)
+            #    남은 시간만 잔다. 처리가 delay 보다 오래 걸리면 안 자고 바로 다음 장.
+            time.sleep(max(0.0, delay - (now() - t)))
     return seq, sent
 
 

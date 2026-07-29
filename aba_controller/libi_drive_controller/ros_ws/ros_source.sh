@@ -27,5 +27,8 @@ export ROS_STATIC_PEERS=${ROS_STATIC_PEERS:-192.168.0.19}
 if [ -f /opt/ros/jazzy/lib/librmw_cyclonedds_cpp.so ]; then
   export RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
   _rmw_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  [ -f "$_rmw_dir/cyclonedds.xml" ] && export CYCLONEDDS_URI="file://$_rmw_dir/cyclonedds.xml"
+  # ⚠️ 이미 셸/.env 가 정한 값이 이긴다(RMW_IMPLEMENTATION 과 같은 규칙). 무조건 덮으면
+  #    scripts/_load_env.sh 가 .env 의 IP 목록으로 만든 피어가 조용히 버려진다 —
+  #    로봇을 늘려도 새 로봇만 안 보이고 에러는 안 난다.
+  [ -f "$_rmw_dir/cyclonedds.xml" ] && export CYCLONEDDS_URI="${CYCLONEDDS_URI:-file://$_rmw_dir/cyclonedds.xml}"
 fi

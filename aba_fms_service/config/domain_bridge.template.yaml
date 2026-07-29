@@ -41,11 +41,10 @@ topics:
     type: std_msgs/msg/String
     reversed: True
     remap: /fleet_cmd
-  # 역방향 속도 명령: 86의 /{KEY}/cmd_vel 발행 → 로봇 도메인의 /cmd_vel
-  {KEY}/cmd_vel:
-    type: geometry_msgs/msg/Twist
-    reversed: True
-    remap: /cmd_vel
+  # [2026-07-29] **관제 직접 속도 명령 제거.** twist_mux 의 `fleet` 입력(priority 150)을
+  #   없앴다 — 시나리오에 관제가 바퀴를 직접 미는 경우가 없는데, 자율 제어 전부를 이기는
+  #   문만 열려 있었다. 주행은 아래 `robot_path_requests`(fleet_node 경로) 로만 간다.
+  #   되살리려면 twist_mux.yaml 에 fleet 입력을 되돌리고 이 블록을 복구한다.
 
   # ── fleet_node 주행 명령 (2026-07-21) ────────────────────────────────────────
   # fleet_node 가 교통(예약)까지 풀어 정한 경로를 로봇으로 내린다. 로봇 쪽에서

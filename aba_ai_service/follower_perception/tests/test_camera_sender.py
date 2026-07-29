@@ -205,3 +205,44 @@ def test_expired_selection_stops_sending_mid_run():
                     orient_front=lambda f: f, orient_back=lambda f: f,
                     fps=0, now=Clock(), max_frames=10)
     assert 0 < sent < 10
+
+
+# ── 프레임 주기 ─────────────────────────────────────────────────────────────
+
+
+def test_sleep_subtracts_work_time_so_fps_is_actually_reached(monkeypatch):
+    """`--fps` 는 상한이 아니라 **목표값**이어야 한다.
+
+    처리 시간을 빼지 않고 `sleep(1/fps)` 를 걸면 실제 주기가
+    `캡처+인코딩 + 1/fps` 가 되어, 15fps 를 시켜도 캡처가 33ms 걸리면 ~10fps 로 떨어진다.
+    추종 제어 루프는 20Hz 라 검출이 늦어진 만큼 그대로 반응이 늦는다.
+    """
+    import scripts.camera_sender as cs
+
+    slept = []
+    monkeypatch.setattr(cs.time, "sleep", slept.append)
+
+    # 한 장 처리에 0.04초 걸리는 시계. `run` 은 루프 시작에서 한 번,
+    # sleep 계산에서 한 번 호출하므로 그 차이가 처리 시간이 된다.
+    ticks = iter([0.0, 0.04, 1.0, 1.04, 2.0, 2.04])
+    run(_frames(1, 2), None, FakeSender(), CameraSelect(expiry_sec=5),
+        orient_front=lambda f: f, orient_back=lambda f: f,
+        fps=10.0, now=lambda: next(ticks), max_frames=2)
+
+    # delay=0.1, 처리 0.04  →  0.06 만 자야 한다 (0.1 이 아니라)
+    assert slept == pytest.approx([0.06, 0.06], abs=1e-9)
+
+
+def test_sleep_never_negative_when_work_exceeds_budget(monkeypatch):
+    """처리가 예산보다 오래 걸리면 **안 자고** 바로 다음 장으로 간다."""
+    import scripts.camera_sender as cs
+
+    slept = []
+    monkeypatch.setattr(cs.time, "sleep", slept.append)
+
+    ticks = iter([0.0, 0.5, 1.0, 1.5])      # 한 장에 0.5초 — 예산 0.1 초과
+    run(_frames(1, 2), None, FakeSender(), CameraSelect(expiry_sec=5),
+        orient_front=lambda f: f, orient_back=lambda f: f,
+        fps=10.0, now=lambda: next(ticks), max_frames=2)
+
+    assert slept == [0.0, 0.0]

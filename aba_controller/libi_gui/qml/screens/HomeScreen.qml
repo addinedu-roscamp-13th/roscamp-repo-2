@@ -99,7 +99,7 @@ Item {
             }
 
             // 로봇이 **지금 무슨 상태인지** 그대로 말한다. 예전엔 `patrolActive`(목 플래그)만
-            // 보고 "순찰 중"을 하드코딩해서, 상단바가 "응대중"인데 여기만 "순찰 중"이라고
+            // 보고 "순찰 중"을 하드코딩해서, 상단바가 "이용중"인데 여기만 "순찰 중"이라고
             // 하는 상황이 났다(실측). 같은 화면이 같은 것을 두 가지로 말하면 안 된다.
             StatusPill {
                 anchors.horizontalCenter: parent.horizontalCenter
@@ -109,7 +109,7 @@ Item {
                     switch (controller.robotState) {
                     case "순찰":
                     case "보안순찰":   return controller.robotState + " 중 · 도움이 필요하면 불러주세요";
-                    case "응대중":     return "도와드릴게요 · 무엇을 찾으세요?";
+                    case "이용중":     return "도와드릴게요 · 무엇을 찾으세요?";
                     case "대기":       return "대기 중 · 화면을 눌러 불러주세요";
                     case "작업중":
                     case "안내중":     return controller.robotState + " · 잠시만요";

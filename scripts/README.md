@@ -26,34 +26,31 @@ cp .env.example .env    # 레포 루트에서
 # LAPTOP_IP / PINKY{N}_IP 를 실제 IP 로 채운다
 ```
 
-> CycloneDDS 피어는 여기서 자동 구성하지 않는다 — 각 머신 `~/.bashrc` 에서 직접 관리한다
-> (아래 "CycloneDDS 피어" 참고).
+> CycloneDDS 피어도 이 `.env` 에서 만들어진다 — 아래 참고.
 
-## CycloneDDS 피어 (`~/.bashrc`)
+## CycloneDDS 피어 — `.env` 의 `*_IP` 가 곧 피어다
 
-공유기가 멀티캐스트를 막아 DDS 디스커버리가 자동으로 안 되므로, **정적 피어**로 서로를
-찾게 한다. **각 머신**(laptop·로봇들)의 `~/.bashrc` 에 아래를 넣는다:
+공유기가 멀티캐스트를 막아 DDS 디스커버리가 자동으로 안 되므로 **정적 피어**로 서로를
+찾게 한다. 예전에는 그 목록이 `ros_ws/cyclonedds.xml` 과 각 머신 `~/.bashrc` 두 곳에
+손으로 박혀 있었다. 로봇을 늘리면 **IP 를 안 넣은 머신만 에러 없이 서로 안 보였다.**
 
-```bash
-if [ -f /opt/ros/jazzy/lib/librmw_cyclonedds_cpp.so ]; then
-  export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-  export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface autodetermine="true"/></Interfaces><AllowMulticast>false</AllowMulticast></General><Discovery><Peers><Peer address="localhost"/><Peer address="172.30.1.10"/><Peer address="172.30.1.83"/></Peers></Discovery></Domain></CycloneDDS>'
-fi
-```
+지금은 `scripts/_load_env.sh` 가 `.env` 에서 만든다:
 
-핵심 4가지:
+- `*_IP` 로 끝나는 값(`LAPTOP_IP`·`PINKY{N}_IP`)이 전부 피어가 된다. `localhost` 는 항상 포함.
+- 옛 망 머신이 아직 필요하면 아무 이름이나 `*_IP` 로 넣으면 된다 — 예: `OLDFMS_IP=192.168.0.19`.
+- **셸/`~/.bashrc` 가 이미 `CYCLONEDDS_URI` 를 정했으면 그 값이 이긴다.** 그 경우 `.env` 에만
+  있고 그 값에 없는 IP 를 찾아 경고를 찍는다:
 
-1. **피어 = `localhost` + 통신할 모든 머신 IP.** 위 예시는 laptop(`172.30.1.10`) + pinky3
-   (`172.30.1.83`). 로봇이 늘면 `<Peer address="새IP"/>` 를 한 줄씩 더 넣는다.
-2. **모든 머신이 같은 목록**이면 된다 — 자기 IP 가 목록에 있어도 무해하니 머신마다 다르게
-   만들 필요가 없다. (pi 냐 laptop 이냐 구분 안 함)
-3. **`localhost` 는 빼지 말 것** — 같은 머신 안의 프로세스(nav2·fleet_link·bringup)끼리
-   디스커버리하는 데 필요하다.
-4. **모든 머신이 같은 RMW(cyclonedds)** 여야 서로 보인다. 하나라도 FastDDS 면 같은
-   도메인이어도 안 잡힌다.
+  ```
+  [env] ⚠ 셸의 CYCLONEDDS_URI 에 없는 .env IP: 172.30.1.81 — 그 머신과는 DDS 가 조용히 안 붙는다.
+  ```
 
-새 머신을 추가하면 → **모든 머신의 목록에** 그 IP 를 넣고 각자 `source ~/.bashrc`(또는 새 셸).
-피어는 "찾아갈 주소"일 뿐, 실제로 통신할지는 `ROS_DOMAIN_ID`(같은 도메인끼리만 매칭)가 정한다.
+  완전 자동으로 가려면 각 머신 `~/.bashrc` 의 `CYCLONEDDS_URI` export 를 지운다(한 번만).
+  pinky-3 에는 이미 적용했다 — bashrc 가 `.env` 에서 뽑아 쓴다.
+
+여전히 유효한 두 가지: **`localhost` 는 필수**(같은 머신 안 nav2·fleet_link·bringup 디스커버리),
+**모든 머신이 같은 RMW(cyclonedds)** 여야 한다. 피어는 "찾아갈 주소"일 뿐이고 실제 통신
+여부는 `ROS_DOMAIN_ID` 가 정한다.
 
 ### 필요 패키지
 
@@ -109,19 +106,65 @@ sudo apt install -y ros-jazzy-domain-bridge        # ros-domain-bridge.sh / sim.
 
 ## all/ — 한 방 기동 (평소에는 이것만)
 
-| 스크립트 | 어디서 | 하는 일 |
+기동 3개 · 정리 3개, **짝으로만** 기억하면 된다.
+
+| 기동 | 정리 | 어디서 | 하는 일 |
 |---|---|---|
-| `pi-all.sh --robot <이름>` | 로봇 | 주행 스택(`pi.sh`) + 카메라 송출 + `libi_perception`(추종/길잡이) 을 tmux 세션 `pinky_pi` 하나에 전부. `--back <n>` 뒷캠, `--dyn-obstacle` 동적 장애물(기본 꺼짐). 모르는 플래그는 `pi.sh` 로 위임. |
-| `laptop-all.sh` | 노트북 | 도메인 브릿지 + fleet_node + AI 인지 서버. |
-| `kill-pi.sh` / `kill-laptop.sh` | 각각 | 위 둘의 정리. |
+| `libi_server.sh` | `kill-libi_server.sh` | 노트북 | **로봇과 무관한 것만** — DB + 도메인 브릿지 + fleet_node + 관제 UI(:9001/:9002) + 도서관 웹(:8000/:3000). 로봇이 몇 대든 **한 번만**. |
+| `libi_laptop.sh --robot <이름>` | `kill-libi_laptop.sh [이름]` | 노트북 | **로봇 한 대분** — AI 추종 서버 + 터치패널. 세션 `libi_laptop_<key>`. 로봇 대수만큼 부른다. 정리는 이름을 주면 그 로봇만, 안 주면 전부. |
+| `libi_pi.sh --robot <이름>` | `kill-libi_pi.sh` | 로봇 | 주행 스택(`pi.sh`) + 카메라 송출 + `libi_perception`(추종/길잡이) 을 tmux 세션 `pinky_pi` 하나에. `--back <n>` 뒷캠, `--dyn-obstacle` 동적 장애물(기본 꺼짐). 모르는 플래그는 `pi.sh` 로 위임. |
 
 ```bash
-[로봇]    ./scripts/all/pi-all.sh --robot Pinky-3 --back 4
-[노트북]  ./scripts/all/laptop-all.sh
+[노트북]  ./scripts/all/libi_server.sh                                        # 먼저, 한 번만
+          ./scripts/all/libi_laptop.sh --robot pinky-3 --domain-id 119
+[로봇]    ./scripts/all/libi_pi.sh     --robot pinky-3 --domain-id 119 --back 4
+
+# 로봇 2대 이상 — libi_server.sh 는 그대로 두고 로봇 것만 늘린다
+[노트북]  ./scripts/all/libi_laptop.sh --robot pinky-1 --domain-id 117
+          ./scripts/all/libi_laptop.sh --robot pinky-2 --domain-id 118
 ```
+
+### 도메인은 표가 정한다 — `--domain-id` 는 덮어쓸 때만
+
+```
+pinky-1 → 117    pinky-2 → 118    pinky-3 → 119        (규칙: 116 + 번호)
+```
+
+IP 는 DHCP 라 자주 바뀌지만 **도메인은 배선처럼 고정**이라 코드에 박아 뒀다
+(`_common.sh` 의 `robot_domain`). 두 런처가 로봇 이름에서 자동으로 고른다.
+
+| 우선순위 | |
+|---|---|
+| ① `--domain-id` | 명시하면 그 값. DB 와 다르면 경고(브릿지는 DB 값으로 열린다) |
+| ② 표 | 실물 `pinky-<N>` 만. `pinky-sim-2` 같은 이름은 표 밖이다(sim 은 90/91/92) |
+| ③ DB `rc_robots.domain_id` | 표 밖 이름일 때. 노트북 런처만 — Pi 는 DB 를 못 볼 수 있다 |
+| 그래도 없으면 | 죽는다 |
+
+⚠️ 예전에 없앤 "기본값"과는 다르다. 그건 `.env` 의 `ROS_DOMAIN_ID`(=119) **하나를 모든
+로봇에** 쓰는 것이라 2대째부터 반드시 틀렸다. 이 표는 로봇마다 다른 값이라 그 실패가 없다.
+로봇 Pi 의 셸 `ROS_DOMAIN_ID` 와 DB 값도 같아야 한다 — 셋 중 하나만 어긋나면 조용히 안 붙는다.
+
+⚠️ 순서가 있다: `libi_laptop.sh` 의 터치패널은 :9001 / :8000 이 안 열려 있으면 그 자리에서
+죽는다(`ui/libi_gui.sh` 의 check_reachable). 그 둘을 띄우는 건 `libi_server.sh` 다.
 
 로봇 이름은 관제 DB(`rc_robots.name`)에 등록된 값과 **정확히 같아야** 한다 — 다르면
 `fleet_node` 가 못 알아보고 배차해도 안 움직인다.
+
+### AI 수신 포트는 로봇 번호에서 나온다
+
+`perception_server` 의 수신 포트는 노트북에 한 벌뿐이라, 2대를 동시에 추종하면 두 번째가
+bind 에서 죽는다. `robot_ports`(`_common.sh`)가 로봇마다 10 씩 띄우고, **로봇 쪽
+`libi_pi.sh` 도 같은 함수로 계산**하므로 서로 값을 넘길 필요가 없다.
+
+| 로봇 | 영상 UDP | 뷰어 TCP |
+|---|---|---|
+| pinky-1 | 6001 | 5007 |
+| pinky-2 | 6011 | 5017 |
+| pinky-3 | 6021 | 5027 |
+
+⚠️ 로봇이 한 대뿐이던 시절 pinky-3 은 6001/5007 이었다. 스크립트끼리는 어긋나지 않지만
+**손으로 `nc`/브라우저를 열 때는 바뀐 포트**를 봐야 한다. `VIDEO_PORT=... VIEWER_PORT=...`
+로 덮어쓰면 그 값이 이긴다.
 
 ## ⚠️ UDP:6002 추종 주행 경로는 은퇴했다
 
@@ -140,7 +183,7 @@ ros2 topic hz /cmd_vel                                     # ~30Hz (정상은 na
 ros2 topic echo /cmd_vel                                   # 0,0 사이에 명령이 띄엄띄엄
 
 # 정리
-pkill -f cmd_bridge.py        # 또는 ./scripts/all/kill-pi.sh
+pkill -f cmd_bridge.py        # 또는 ./scripts/all/kill-libi_pi.sh
 ```
 
 해당 스크립트: `drive-pi/follow-drive.sh`(로봇) · `laptop/ai_follower_service.sh`(노트북,
@@ -148,7 +191,7 @@ pkill -f cmd_bridge.py        # 또는 ./scripts/all/kill-pi.sh
 
 ## drive-pi/ — 로봇 주행 보드에서 실행
 
-> 평소에는 `all/pi-all.sh` 가 이걸 다 부른다. 아래는 하나씩 떼어 볼 때만.
+> 평소에는 `all/libi_pi.sh` 가 이걸 다 부른다. 아래는 하나씩 떼어 볼 때만.
 
 | 스크립트 | 하는 일 |
 |---|---|
@@ -183,13 +226,13 @@ pkill -f cmd_bridge.py        # 또는 ./scripts/all/kill-pi.sh
 | 스크립트 | 하는 일 |
 |---|---|
 | `fms_service.sh` | 도메인 브릿지 + fleet_node + 상태 어댑터(tmux 세션 `libi_fms`). 관제 백엔드/프론트는 안 띄움 — `ui/fms.sh` 로 따로. |
-| ~~`ai_follower_service.sh <pinky>`~~ | **은퇴한 경로.** `--drive-host` 를 붙여 UDP:6002 로 주행 명령을 쏜다 — 로봇 `cmd_bridge` 가 받아 `/cmd_vel` 을 다툰다. 인지 서버는 `all/laptop-all.sh` 가 `--drive-host` 없이 띄운다. |
+| ~~`ai_follower_service.sh <pinky>`~~ | **은퇴한 경로.** `--drive-host` 를 붙여 UDP:6002 로 주행 명령을 쏜다 — 로봇 `cmd_bridge` 가 받아 `/cmd_vel` 을 다툰다. 인지 서버는 `all/libi_laptop.sh` 가 `--drive-host` 없이 띄운다. |
 | `sim.sh [viewer\|--no-fsm\|--no-rviz]` | Gazebo 시뮬 전체(로봇 없이 검증). `./sim.sh viewer` = GUI 포함. |
 | `kill.sh` | `libi_fms` 세션 + sim·브릿지·ROS 고아 정리. 관제 백엔드/프론트는 안 건드림 — `backend/stop.sh` 로 따로. |
 
 ```bash
 ./fms_service.sh               # 브릿지 + fleet_node + 어댑터 (관제 백엔드/프론트 제외)
-# 인지 서버는 ./scripts/all/laptop-all.sh 로 띄운다 (--drive-host 없이)
+# 인지 서버는 ./scripts/all/libi_laptop.sh 로 띄운다 (--drive-host 없이)
 ```
 
 ## ui/ — 웹 UI (노트북/서버에서 실행)
@@ -202,7 +245,7 @@ pkill -f cmd_bridge.py        # 또는 ./scripts/all/kill-pi.sh
 |---|---|
 | `fms.sh` | 관제(FMS) 백엔드(:9001) + 프론트(:9002). 콘솔 `http://<ip>:9002/` (로그인 후 `/admin/…`). |
 | `library.sh` | 도서관 웹 백엔드(:8000) + 프론트(:3000). **회원 `/`, 사서 `/admin`**. |
-| `libi_gui.sh <pinky>` | libi_gui 를 그 로봇 것으로. `PERCEPTION_URL`/`FMS_URL` 을 `LAPTOP_IP` 로 채움. |
+| `libi_gui.sh <robot> --domain-id <n>` | libi_gui 를 그 로봇 것으로. `PERCEPTION_URL`/`FMS_URL` 을 `LAPTOP_IP` 로 채움. |
 | `kill.sh [fms\|library\|gui]` | 인자 없으면 셋 다(관제·도서관·터치패널), 주면 그것만. (FMS 백엔드 데몬은 공유라 안 건드림) |
 
 ```bash
@@ -221,12 +264,13 @@ pkill -f cmd_bridge.py        # 또는 ./scripts/all/kill-pi.sh
 ## 추종 전체를 굴리는 순서
 
 ```
-[노트북]  ./scripts/all/laptop-all.sh                       # 브릿지 + fleet_node + 인지 서버
-[로봇]    ./scripts/all/pi-all.sh --robot Pinky-3 --back 4  # 주행 + 카메라 + libi_perception
-[패널]    ./ui/libi_gui.sh pinky3   → 관리자 로그인 → 「관리자 추종」 → 「등록」
+[노트북]  ./scripts/all/libi_server.sh                                   # 브릿지 + fleet_node + UI (한 번만)
+          ./scripts/all/libi_laptop.sh --robot pinky-3 --domain-id 119   # 인지 서버 + 패널
+[로봇]    ./scripts/all/libi_pi.sh     --robot pinky-3 --domain-id 119   # 주행 + 카메라 + libi_perception
+[패널]    관리자 로그인 → 「관리자 추종」 → 「등록」   (패널은 libi_laptop.sh 가 띄운다)
 ```
 
 **주행 스택을 내릴 필요가 없다.** 예전에는 추종이 `/cmd_vel` 을 직접 밀어서 nav2 와
 다퉜지만, 지금은 추종 제어가 로봇 `libi_perception` 안에 있고 **미션 BT 가 세션을 열고
-닫는다** — 추종 상태가 아니면 속도를 아예 발행하지 않는다. `pi-all.sh` 가 둘을 한 세션에
+닫는다** — 추종 상태가 아니면 속도를 아예 발행하지 않는다. `libi_pi.sh` 가 둘을 한 세션에
 같이 띄우는 것이 정상 구성이다.

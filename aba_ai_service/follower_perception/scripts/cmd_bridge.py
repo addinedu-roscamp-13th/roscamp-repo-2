@@ -29,9 +29,27 @@ def main():
     ap.add_argument("--port", type=int, default=6002, help="UDP cmd port from AI server")
     # ⚠️ `/cmd_vel` 직접 발행 금지 — 바퀴로 가는 문은 twist_mux 하나뿐이다
     #    (pinky_bringup/config/twist_mux.yaml). 이 다리는 은퇴했지만
-    #    scripts/drive-pi/follow-drive.sh 로 **아직 실행 가능**하고, 그때 `/cmd_vel` 로
-    #    직접 쏘면 중재를 통째로 우회한다. 추종과 같은 입력(priority 100)으로 낸다.
-    ap.add_argument("--topic", default="/cmd_vel_follow")
+    #    scripts/drive-pi/follow-drive.sh 로 **아직 실행 가능**하다.
+    #
+    # [2026-07-28] `/cmd_vel_follow` → `/cmd_vel_ai`. **같은 입력을 쓰면 안 된다.**
+    #   `/cmd_vel_follow` 는 로봇 로컬 PID(libi_perception follow_node)가 쓰는 입력이다.
+    #   거기에 이 다리까지 발행하면 **한 토픽에 제어기가 둘**이 되는데, twist_mux 는
+    #   토픽 단위로 중재하므로 그 둘은 구별도 우선순위 부여도 못 한다 —
+    #   마지막에 도착한 게 이긴다. 둘 다 20Hz 라 서로 덮어써서 추종이 흔들렸다.
+    #   이 노드는 명령이 끊겨도 워치독으로 **zero Twist 를 계속 낸다**(아래 루프).
+    #   가만히 있는 게 아니라 적극적으로 방해한다는 뜻이다.
+    #
+    #   `cmd_vel_ai` 는 twist_mux 에서 priority **40** — 입력 중 맨 아래다.
+    #   (2026-07-28 에 80 으로 뒀다가 내렸다: 80 이면 navigation(50)·recovery(60)를 이겨서,
+    #    이 다리가 떠 있기만 해도 워치독 zero 가 nav2 를 계속 이겨 주행이 통째로 막힌다.
+    #    twist_mux 는 메시지의 **값을 안 본다** — 최신·고우선순위면 그대로 통과시킨다.)
+    #   그래서 둘이 같이 떠도 로컬 PID(follow 100)가 언제나 이기고, 이 다리만 쓰는 옛
+    #   구성에서는 경쟁자가 없어 그대로 동작한다.
+    # [2026-07-29] twist_mux 에서 `cmd_vel_ai` 입력을 **삭제했다.** 이 토픽은 이제
+    #   아무도 안 듣는다 — 이 스크립트를 띄워도 바퀴는 안 돈다(그게 의도다).
+    #   런처(scripts/drive-pi/follow-drive.sh)도 같이 지웠다. 추종 제어는 로봇 로컬
+    #   PID(libi_perception → /cmd_vel_follow)가 유일한 경로다.
+    ap.add_argument("--topic", default="/cmd_vel_ai")
     ap.add_argument("--rate", type=float, default=20.0, help="publish Hz")
     ap.add_argument("--timeout", type=float, default=0.5,
                     help="STOP if no cmd received within this many seconds (watchdog)")

@@ -29,6 +29,28 @@ NAVGRAPH="$FLEET_WS/maps/library/arte2.navgraph.yaml"
 # 가 매번 nav2 목표를 갈아치워 status=6(ABORTED) → **출발하자마자 멈춘다.**
 #   하한 nav2 xy_goal_tolerance = 0.05 / 상한 최소 레인 길이 = 0.062 (v4 유아 ↔ v13 복도-5)
 ARRIVE_RADIUS="${ARRIVE_RADIUS:-0.05}"
+# 경유 노드 선행 통과 반경(m). 이 반경에 들면 **도착 전에** 다음 노드를 예약·발행해서
+# 로봇이 감속·정지하기 전에 새 목표를 받는다(fleet_node.cpp:104 주석).
+#
+# ⚠️ fleet_node 기본값 0.10 으로는 부족하다. nav2 RPP 가 목표 앞에서 감속을 시작하는데
+#    (nav2_params.yaml: approach_velocity_scaling_dist), 허가가 그보다 늦으면 이미 감속에
+#    들어간 뒤에 새 목표가 와서 노드마다 한 번 주춤한다.
+#
+#    현재 감속 시작은 **0.16** 이다(사용자가 "조금씩 줄어들게" 요청해 0.12 → 0.16).
+#    즉 허가 0.14 < 감속 0.16 이라 **순서가 뒤집혀 있다** — 마지막 2cm 는 감속에 들어간
+#    뒤 새 목표를 받는다. 이건 알고 고른 값이다. 정량 검산(codex):
+#      0.14m 지점 속도 = 0.07 × 0.14/0.16 = 0.06125 m/s  (약 12.5% 감속)
+#      그 2cm 통과 시간 0.305s vs 무감속 0.286s → **노드당 약 19ms 손해**
+#    min_approach_linear_velocity(0.02) 는 4.57cm 아래에서만 걸리므로 관여하지 않는다.
+#
+#    주춤이 거슬리면 고칠 곳은 이 값이 아니라 approach_velocity_scaling_dist 를 0.10 으로
+#    내리는 것이다(허가 0.14 밖으로 빠져 경유 노드에서 감속이 아예 안 걸린다).
+#
+#    상한: fleet_node 가 반경을 레인 길이의 절반으로 깎는다(fleet_node.cpp:679).
+#    실측 레인(codex 검산) 9→6 0.3005 / 6→7 0.2737 / 7→13 0.2985 / 13→15 0.3418 /
+#    15→14 0.3832 → 최단 절반이 0.1369 다. **0.14 는 전 구간에서 그대로 적용되지만
+#    0.16 으로 올리면 6→7 에서 0.1369 로 깎인다.** 그래서 0.14 가 상한에 가깝다.
+PREFETCH_RADIUS="${PREFETCH_RADIUS:-0.14}"
 SESSION="libi_fms"
 
 # ── 순회 루트 이름 → navgraph 정점 인덱스 해석 ──────────────────────────────
@@ -83,6 +105,26 @@ need_cmd tmux "sudo apt install -y tmux"
 tmux has-session -t "$SESSION" 2>/dev/null && \
   die "'$SESSION' 세션이 이미 떠 있습니다. 먼저 ./kill.sh 로 정리하세요."
 
+# ── .env → rc_robots 등록을 **창을 띄우기 전에** 끝낸다 ────────────────────
+#
+# 등록 자체는 브릿지 창의 gen_domain_bridges.py 도 한다. 그런데 아래 adapters 창
+# (robot-link --all)은 DB 목록을 **한 번만 읽고 재시도하지 않는다.** 두 창이 거의 동시에
+# 뜨므로, .env 에 새로 적은 로봇이 첫 기동에서 어댑터 0대로 굳을 수 있다 — 브릿지는
+# 떠도 fleet_node 는 그 로봇을 못 본다(조용한 실패). 순서를 고정해서 그 경쟁을 없앤다.
+# (codex 적대적 검토 2026-07-29)
+#
+# ⚠️ 실패하면 **여기서 멈춘다** — 아래 창이 뜬 뒤에는 되돌릴 방법이 없다.
+if [ -x "$FMS/backend/.venv/bin/python" ]; then
+  # ⚠️ 실패를 **삼키지 않는다.** 여기서 넘어가면 브릿지 창이 나중에 등록에 성공해도
+  #    어댑터는 이미 DB 를 한 번 읽고 끝난 뒤라, 그 로봇이 0대로 굳는다(경쟁이 그대로 재발).
+  #    DB 일시 장애 같은 경우가 정확히 그 모양이다. (codex 2차 지적)
+  if ! ( cd "$FMS" && ./backend/.venv/bin/python scripts/gen_domain_bridges.py --sync-only ) \
+       2>&1 | sed 's/^/[robots] /'; then
+    die ".env → rc_robots 동기화 실패. DB(MariaDB)와 ROBOT_DATABASE_URL 을 확인하세요.
+  이 단계를 건너뛰면 새 로봇이 상태 어댑터에 안 잡혀 fleet_node 가 못 봅니다."
+  fi
+fi
+
 cd "$REPO_ROOT"
 tmux new-session -d -s "$SESSION" -n bridge \
   bash -c "cd '$FMS' && echo '[bridge] 로봇 도메인 <-> 86 (DB rc_robots 기준)...' && ./scripts/ros-domain-bridge.sh; exec bash"
@@ -91,7 +133,7 @@ tmux new-session -d -s "$SESSION" -n bridge \
 # fleet_ws 안 빌드면 colcon build. RMW/CycloneDDS 는 ~/.bashrc 설정을 따른다(bridge 와 동일).
 if [ -f "$FLEET_WS/install/setup.bash" ] || ensure_built "$FLEET_WS"; then
   tmux new-window -t "$SESSION" -n fleet-node \
-    bash -c "source /opt/ros/jazzy/setup.bash && source '$FLEET_WS/install/setup.bash' && export ROS_DOMAIN_ID=86 && echo '[fleet-node] 배차·교통 (domain 86)...' && ros2 run libi_fleet fleet_node --ros-args -p navgraph_file:='$NAVGRAPH' -p arrive_radius:=$ARRIVE_RADIUS -p patrol_route:='$PATROL_ROUTE' -p security_patrol_route:='$SECURITY_ROUTE'; exec bash"
+    bash -c "source /opt/ros/jazzy/setup.bash && source '$FLEET_WS/install/setup.bash' && export ROS_DOMAIN_ID=86 && echo '[fleet-node] 배차·교통 (domain 86)...' && ros2 run libi_fleet fleet_node --ros-args -p navgraph_file:='$NAVGRAPH' -p arrive_radius:=$ARRIVE_RADIUS -p prefetch_radius:=$PREFETCH_RADIUS -p patrol_route:='$PATROL_ROUTE' -p security_patrol_route:='$SECURITY_ROUTE'; exec bash"
 fi
 
 # 로봇 상태 어댑터 — 도메인 86 에서 돈다(fleet_node·브릿지와 같은 자리라 여기 둔다).

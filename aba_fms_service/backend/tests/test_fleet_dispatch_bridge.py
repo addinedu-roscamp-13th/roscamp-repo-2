@@ -268,3 +268,125 @@ def test_release_uses_async_send(monkeypatch):
     monkeypatch.setattr(bridge.fleet_link, "set_robot_mode", lambda r, m: {"ok": True})
     bridge.real_release("Pinky-3")
     assert called == ["async"]
+
+
+# ── 관리자 추종 중에는 주행을 배차하지 않는다 ────────────────────────────────
+#
+# 추종은 FSM 을 안 거쳐서 fleet_node 는 이 로봇이 사람을 따라가는 중인 걸 모른다.
+# 그래서 순회 경로 요청이 계속 들어오고, navigate 를 내보내면 로봇 쪽에서
+# active_command 가 덮여 FollowExec 이 밀려나고, 그때 나가는 stop 이 추종 세션을 닫는다.
+# 실측 2026-07-28: 추종 시작 20초 뒤 재배차가 들어와 세션이 끊겼다.
+
+def test_no_nav_dispatch_while_admin_follow_is_granted(monkeypatch):
+    """이 시험의 존재 이유 — 화면은 '추종 중'인데 로봇이 사람을 안 따라오던 원인."""
+    from app import fleet_dispatch_bridge as fdb
+    from app.routers import admin_follow
+
+    sent = []
+    monkeypatch.setattr(fdb.fleet_telemetry, "send_command_async",
+                        lambda robot, action, args: sent.append((robot, action)) or "id-1")
+    monkeypatch.setattr(fdb, "NAV_VIA_BT", True)
+
+    with admin_follow._grants_lock:
+        admin_follow._grants["Pinky-3"] = {"granted_at": 0.0}
+    try:
+        fdb.on_path_request("Pinky-3", [(1.0, 2.0, 0.0)])
+        assert sent == [], "추종 중인 로봇에 주행을 배차했다 — 세션이 끊긴다"
+    finally:
+        with admin_follow._grants_lock:
+            admin_follow._grants.pop("Pinky-3", None)
+
+
+def test_nav_dispatch_resumes_after_release(monkeypatch):
+    """해제하면 다시 배차돼야 한다 — 안 그러면 로봇이 영영 순회를 못 한다."""
+    from app import fleet_dispatch_bridge as fdb
+
+    sent = []
+    monkeypatch.setattr(fdb.fleet_telemetry, "send_command_async",
+                        lambda robot, action, args: sent.append((robot, action)) or "id-1")
+    monkeypatch.setattr(fdb, "NAV_VIA_BT", True)
+    monkeypatch.setattr(fdb, "_last_nav", {})
+
+    fdb.on_path_request("Pinky-3", [(1.0, 2.0, 0.0)])
+    assert sent == [("Pinky-3", "navigate")]
+
+
+# ── 자동배차 로봇 선택 ────────────────────────────────────────────────────────
+#
+# 관제 프런트(dispatch-shared.ts:pickRobot)와 같은 규칙이어야 한다 — 두 곳에 각자
+# 만들면 반드시 어긋난다. 여기선 파이썬 쪽 구현만 순수 함수로 검증한다.
+
+def test_pick_robot_prefers_patrol_over_idle():
+    from app.fleet_dispatch_bridge import pick_robot
+
+    robots = [
+        {"name": "idle-bot", "state": "IDLE", "busy": False, "battery": 100, "stale": False},
+        {"name": "patrol-bot", "state": "PATROL", "busy": False, "battery": 10, "stale": False},
+    ]
+    assert pick_robot(robots) == "patrol-bot"
+
+
+def test_pick_robot_prefers_higher_battery_within_same_state():
+    from app.fleet_dispatch_bridge import pick_robot
+
+    robots = [
+        {"name": "low", "state": "PATROL", "busy": False, "battery": 30, "stale": False},
+        {"name": "high", "state": "PATROL", "busy": False, "battery": 90, "stale": False},
+    ]
+    assert pick_robot(robots) == "high"
+
+
+def test_pick_robot_excludes_stale_and_busy_and_wrong_state():
+    from app.fleet_dispatch_bridge import pick_robot
+
+    robots = [
+        {"name": "stale", "state": "PATROL", "busy": False, "battery": 100, "stale": True},
+        {"name": "busy", "state": "IDLE", "busy": True, "task_id": "orchestrator:t1", "battery": 100, "stale": False},
+        {"name": "error", "state": "ERROR", "busy": False, "battery": 100, "stale": False},
+    ]
+    assert pick_robot(robots) is None
+
+
+# ── 다리 표시 라벨 ────────────────────────────────────────────────────────────
+#
+# task_type 마다 다리 뜻이 다르다(수거 4다리 ≠ 배달 4다리). 화면이 leg_idx 로
+# 라벨을 추측하던 옛 방식(LEG_STEPS) 대신, 실제 leg 값으로 여기서 만든다.
+
+def test_leg_label_navigate_shows_destination():
+    from app.fleet_dispatch_bridge import snapshot_leg_label
+
+    leg = {"type": "navigate", "params": {"waypoint": "수거함"}}
+    assert snapshot_leg_label(leg) == "주행 → 수거함"
+
+
+def test_leg_label_known_arm_actions_are_readable():
+    from app.fleet_dispatch_bridge import snapshot_leg_label
+
+    cases = {
+        "pick": "책 집기 (안네데스크)",
+        "place": "책 놓기 (안네데스크)",
+        "unload_to_floor": "바구니 내려놓기 (안네데스크)",
+        "load_from_box": "바구니 싣기 (안네데스크)",
+        "refill_box": "바구니 채우기 (안네데스크)",
+    }
+    for action, expected in cases.items():
+        leg = {"type": "perform_action", "params": {"action": action, "at": "안네데스크"}}
+        assert snapshot_leg_label(leg) == expected
+
+
+def test_leg_label_unknown_action_falls_back_to_generic_text():
+    from app.fleet_dispatch_bridge import snapshot_leg_label
+
+    leg = {"type": "perform_action", "params": {"action": "who_knows", "at": "수거함"}}
+    assert snapshot_leg_label(leg) == "작업 (수거함)"
+
+
+def test_pick_robot_allows_patrol_task_to_be_preempted():
+    """fleet_node 자체 순회(P-*)는 배차로 선점 가능해야 한다."""
+    from app.fleet_dispatch_bridge import pick_robot
+
+    robots = [
+        {"name": "patrolling", "state": "PATROL", "busy": True, "task_id": "P-patrolling",
+         "battery": 80, "stale": False},
+    ]
+    assert pick_robot(robots) == "patrolling"

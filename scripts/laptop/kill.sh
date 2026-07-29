@@ -5,11 +5,24 @@
 #   3) 나머지(sim 세션 pinky_sim*, domain_bridge, launch 고아 노드)는 기존 kill.sh 에 위임
 #
 #   ./kill.sh                  정리
+#   ./kill.sh --keep-ai        AI 추종 서버는 남긴다 (서버 스택만 내릴 때)
+#
+# `--keep-ai` 가 왜 있나: 추종 서버는 **로봇별**이다(all/libi_laptop.sh 의 `libi_laptop_<key>`
+# 세션 안에서 돈다). 서버 스택만 내리는데 여기서 패턴으로 쓸어버리면 다른 로봇의 추종까지
+# 끊긴다 — 패턴이 로봇을 구분하지 못하기 때문이다. 로봇별 정리는 세션 종료가 담당한다.
 #
 # 관제 백엔드(:9001)/프론트(:9002) 중지는 aba_fms_service/backend/stop.sh 와
 # 프론트 쪽에서 따로 한다 — 이 스크립트는 관여하지 않는다.
 set -eo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../_common.sh"
+
+KEEP_AI=false
+for a in "$@"; do
+  case "$a" in
+    --keep-ai) KEEP_AI=true ;;
+    *) die "모르는 인자: $a  (--keep-ai 만 받습니다)" ;;
+  esac
+done
 
 if tmux has-session -t libi_fms 2>/dev/null; then
   tmux kill-session -t libi_fms
@@ -37,7 +50,11 @@ fi
 #    실패로 바로 죽는다. 증상은 "왜 영상이 안 뜨지"로 나타나 원인을 찾기 어렵다.
 #
 # TERM→KILL 과 생존 확인은 _common.sh 의 kill_patterns 가 한다(drive-pi/handy-pi kill.sh 와 공유).
-kill_patterns "perception_server.py" "aba_ai_service/main.py"
+if [ "$KEEP_AI" = true ]; then
+  echo "[keep-ai] 추종 서버(perception_server)·릴레이 stub 은 남깁니다 — 로봇별 정리는 all/kill-libi_laptop.sh"
+else
+  kill_patterns "perception_server.py" "aba_ai_service/main.py"
+fi
 
 # sim 세션·domain_bridge·ROS 고아 노드 정리 (domain_bridge 패턴 포함).
 exec "$REPO_ROOT/aba_controller/libi_drive_controller/ros_ws/scripts/kill.sh"

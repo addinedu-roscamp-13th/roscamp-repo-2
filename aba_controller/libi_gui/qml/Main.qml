@@ -62,13 +62,21 @@ ApplicationWindow {
     Component { id: adminControlC;AdminControlScreen {} }
     Component { id: followC;      FollowScreen {} }
 
-    // 추종이 시작되면 영상 화면으로, 끝나면 관리자 화면으로 돌아온다. 화면 전환을 QML 이
-    // 맡으므로 RobotController 와 PerceptionClient 는 서로를 몰라도 된다.
+    // 추종이 시작되면 영상 화면으로, 끝나면 돌아온다. 화면 전환을 QML 이 맡으므로
+    // RobotController 와 PerceptionClient 는 서로를 몰라도 된다.
+    //
+    // **어디로 돌아가느냐는 누가 끝냈느냐로 갈린다:**
+    //   관리자가 「해제」   → 관리자 화면 (그 사람이 아직 앞에 있다)
+    //   로봇이 스스로 종료 → 홈 (사람을 못 찾아 포기했거나 관제가 상태를 바꿨다.
+    //                        로봇도 순찰로 복귀하므로 관리자 화면에 남으면 어긋난다)
     Connections {
         target: controller
         function onFollowingChanged() {
             if (controller.following) controller.setMode("follow");
             else if (controller.mode === "follow") controller.setMode("adminControl");
+        }
+        function onFollowEndedByRobot() {
+            controller.setMode("home");
         }
     }
 

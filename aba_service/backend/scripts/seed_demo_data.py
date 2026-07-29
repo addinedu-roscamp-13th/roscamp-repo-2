@@ -38,7 +38,7 @@ N_TASK_LOGS = 120
 N_INTRUSIONS = 8
 
 # ops.py 의 TASK_KINDS 표(운영 지시 폼)와 같은 종류 키만 씀 — 화면 라벨과 어긋나지 않게.
-TASK_KIND_KEYS = ["transfer", "sort", "tidy", "porter", "dispatch", "patrol"]
+TASK_KIND_KEYS = ["transfer", "collect", "tidy", "porter", "dispatch", "patrol"]
 # 실제 로봇 이름(libi1~3) — README/도메인 브릿지 설정과 동일, 여기선 로그용 문자열일 뿐.
 ROBOTS = ["libi1", "libi2", "libi3"]
 INTRUSION_NOTES = [
