@@ -10,6 +10,11 @@ from libi_modes.common.request_transition import RequestTransition
 from libi_modes.common.watchdog import exit_watchdog
 
 # Night operation: no task assignment, no visitor touch — only an operator stop.
+#
+# ⚠️ `security_patrol_complete` 라는 명령은 **없다.** 전이표(registry.py)에 그렇게
+# 적혀 있었지만 이 맵에도, 레포 어디에도 그 문자열을 보내는 곳이 없었다. 야간 순찰은
+# 설계상 **스스로 끝나지 않으므로**(아래 독스트링) 그 명령이 있어야 할 이유도 없다.
+# 표만 거짓이었다 — 관제 화면이 있지도 않은 전이를 안내하고 있었다(2026-07-28 수정).
 _COMMAND_MAP = {"stop_request": "IDLE"}
 
 

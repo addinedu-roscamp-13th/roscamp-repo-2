@@ -21,15 +21,25 @@ class ControlLoop:
     the whole follow behaviour be tested without a robot.
     """
 
-    def __init__(self, get_detection, get_scan, publish, cfg, now=time.monotonic):
+    def __init__(self, get_detection, get_scan, publish, cfg, now=time.monotonic,
+                 select_camera=None, peek_people=None, role="follow"):
         self.get_detection = get_detection
         self.get_scan = get_scan
         self.publish = publish
         self.cfg = cfg
         self.now = now
+        #: 회복 BT 가 반대 캠을 보려고 요청할 통로. 주입 안 하면 예전처럼 회전만으로 찾는다.
+        self.select_camera = select_camera
+        self.peek_people = peek_people
+        self.role = role
         self.switch = FollowSwitch()
         self.tracker = TrackingController(publish, cfg)
         self.miss = 0
+        #: 이 세션에서 **대상을 한 번이라도 잡았나.**
+        #: 잃어버리려면 먼저 가지고 있어야 한다 — 등록 전에는 검출이 계속 None 이라
+        #: 이게 없으면 세션을 연 지 2초(N_MISS_FRAMES 40 @20Hz) 만에 회복 BT 가 돌아
+        #: 아무도 등록하지 않았는데 로봇이 혼자 돌며 앞뒤 캠을 번갈아 켠다(실측 2026-07-28).
+        self._acquired = False
         self._search_ctx = None
         self._search_tree = None
         self._last_tick = None
@@ -50,7 +60,10 @@ class ControlLoop:
     def _start_search(self):
         lkd = self.tracker.last_direction or 1.0
         self._search_ctx = SearchContext(self.get_detection, self.publish,
-                                         self.cfg, self.now, lkd=lkd)
+                                         self.cfg, self.now, lkd=lkd,
+                                         select_camera=self.select_camera,
+                                         peek_people=self.peek_people,
+                                         role=self.role)
         # Stamp the search start when SEARCHING begins, not on the tree's first tick —
         # those can be ticks apart, which would understate elapsed search time.
         self._search_ctx.start = self.now()
@@ -76,11 +89,27 @@ class ControlLoop:
             det = self.get_detection()
             if det is not None:
                 self.miss = 0
-                self.tracker.step(det, self.get_scan(), self._dt())
+                self._acquired = True
+                if not getattr(det, 'motion_ok', True):
+                    # 보이지만 가면 안 된다 — 누워 있거나, 로봇 코앞이거나, 자세를
+                    # 재는 중이다. **miss 를 올리지 않는다**: 올리면 눈앞에 멀쩡히
+                    # 보이는 대상을 두고 탐색 회전을 시작한다. 놓친 게 아니라
+                    # 가지 않기로 한 것이다.
+                    self.publish(0.0, 0.0)
+                    # PID 도 리셋한다. 정지 구간 동안 적분항이 쌓이면 재개하는 순간
+                    # 튀어 나간다.
+                    self.tracker.reset()
+                    self._last_tick = None
+                else:
+                    self.tracker.step(det, self.get_scan(), self._dt())
             else:
                 self.miss += 1
                 self.publish(0.0, 0.0)
-                if self.miss >= self.cfg.N_MISS_FRAMES:
+                # **아직 한 번도 못 잡았으면 탐색하지 않는다.** 등록 전에는 검출이 계속
+                # None 이라, 이 검사가 없으면 세션을 연 직후 회복 BT 가 돌아 로봇이 혼자
+                # 돌기 시작한다 — 사람은 아직 화면에서 자기를 등록하는 중이다.
+                # 여기서는 계속 정지 명령만 내며 등록을 기다린다.
+                if self.miss >= self.cfg.N_MISS_FRAMES and self._acquired:
                     self.switch.lost()
                     self._start_search()
         elif self.switch.state == 'SEARCHING':

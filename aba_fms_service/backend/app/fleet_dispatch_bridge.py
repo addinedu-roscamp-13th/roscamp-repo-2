@@ -291,6 +291,20 @@ def should_send_nav(robot: str, key: tuple, now: float) -> bool:
         return True
 
 
+def _has_admin_follow(robot: str) -> bool:
+    """이 로봇에 관리자 추종 승인이 살아 있나.
+
+    import 를 함수 안에서 한다 — 모듈 최상단에서 라우터를 끌어오면 순환 import 가 된다
+    (라우터가 fleet_telemetry 를, 이 모듈도 fleet_telemetry 를 쓴다).
+    """
+    try:
+        from app.routers import admin_follow
+        with admin_follow._grants_lock:
+            return robot in admin_follow._grants
+    except Exception:       # noqa: BLE001 — 조회 실패로 배차를 막지 않는다
+        return False
+
+
 def on_path_request(robot: str, points: list) -> None:
     """fleet_node 가 허가한 다음 노드를 로봇 BT 로 내려보낸다.
 
@@ -303,6 +317,26 @@ def on_path_request(robot: str, points: list) -> None:
     """
     if not NAV_VIA_BT or not robot or not points:
         return
+
+    # 관리자 추종 중인 로봇에는 **주행을 배차하지 않는다.**
+    #
+    # 추종은 FSM 을 거치지 않고 ai_service↔로봇 직결로 돌아서, fleet_node 는 이 로봇이
+    # 사람을 따라가는 중이라는 것을 모른다. 그래서 순회 경로 요청이 계속 들어오고,
+    # 여기서 `navigate` 를 내보내면 로봇 쪽에서 이렇게 무너진다:
+    #
+    #   providers 가 active_command 를 "navigate" 로 덮음
+    #     → dispatch Selector 에서 FollowExec 이 밀려남
+    #     → terminate(INVALID) → driver.stop() → `stop-follow_admin-N`
+    #     → follow_node 가 그 id 로 세션을 닫는다
+    #
+    # 실측 2026-07-28: 추종 시작 20초 뒤 재배차가 들어와 세션이 끊겼다. 화면은
+    # "추종 중"인데 로봇은 사람을 안 따라온다 — 왜 끊겼는지 어디에도 안 남는다.
+    #
+    # 승인 기록(grant)이 이 상태를 아는 유일한 곳이다(admin_follow 머리말 참고).
+    if _has_admin_follow(robot):
+        log.info("[nav] %s 관리자 추종 중 — 주행 배차를 보류한다", robot)
+        return
+
     x, y, yaw = points[-1]
     if not should_send_nav(robot, (round(x, 3), round(y, 3)), time.monotonic()):
         return
@@ -383,11 +417,35 @@ def real_release(robot: str) -> None:
 
     RELEASE_MODE=PATROL 을 주면 취소 즉시 순회로 돌아간다. 그 뒤에는 로봇 자신의
     FsmState 가 다시 정본이 된다(on_fsm_state 가 robot_mode_ 를 덮어쓴다).
+
+    ## 로봇에게도 정지를 보낸다 (2026-07-28)
+
+    `set_robot_mode` 는 **fleet_node** 의 task 를 취소하고 점유 노드를 놓을 뿐,
+    로봇에게는 `/fleet_cmd` 를 아무것도 안 보낸다. 이미 내려간 `goal` 은 살아 있어
+    **로봇은 현재 목표까지 간 뒤에야 멈췄다** — 주문은 사라졌는데 로봇은 계속 갔다.
+
+    `mission_stop` 은 로봇에서 `mission.stop_mission()` 으로 가고, 그 안에서
+    `ros_bridge.cancel_nav()` 가 nav2 목표를 실제로 끊는다.
+
+    **비동기로 보낸다.** 이 함수는 `Orchestrator._release()` 를 통해 **코어 락을 쥔 채**
+    불린다(`cancel()`/실패 처리 안쪽). 응답을 기다리는 `send_command_for_robot` 을 쓰면
+    ROS 왕복 시간만큼 주문 큐 전체가 멈춘다.
+
+    보낼 게 없어도(로봇이 이미 서 있어도) 무해하다 —
+    **멈추는 것은 중복돼도 안전, 조종하는 것은 중복되면 위험.**
     """
     if not robot:
         return
     with _nav_lock:
         _last_nav.pop(robot, None)      # 놓아준 로봇의 목적지 기억도 지운다
+
+    try:
+        cmd_id = fleet_telemetry.send_command_async(robot, action="mission_stop", args={})
+        log.info("[release] %s 주행 정지 요청 (cmd=%s)", robot, cmd_id)
+    except Exception as e:                      # noqa: BLE001
+        # 정지를 못 보내도 아래 해제는 계속한다 — 둘 다 실패하는 것보다 낫다.
+        log.warning("[release] %s 정지 명령 실패: %s", robot, e)
+
     res = fleet_link.set_robot_mode(robot, RELEASE_MODE)
     if res.get("ok"):
         log.info("[release] %s → %s (task 취소·점유 해제)", robot, RELEASE_MODE)
@@ -467,17 +525,58 @@ _ARRIVAL_TEXT = {
     "perform_action": "{what} 완료",
 }
 
+#: 팔 액션 → 사람이 읽을 문구. `snapshot_leg_label()`/`_completed_leg_summary()` 가 공유한다 — 따로 두면
+#: 새 액션을 추가할 때 한쪽만 고치고 잊어버리기 쉽다.
+_ARM_ACTION_TEXT = {
+    "pick": "책 집기", "place": "책 놓기",
+    "unload_to_floor": "바구니 내려놓기",
+    "load_from_box": "바구니 싣기",
+    "refill_box": "바구니 채우기",
+}
 
-def _leg_summary(leg) -> tuple[str, str]:
-    """(다리 종류, 사람이 읽을 한 줄). leg 가 없으면 빈 값."""
+
+def snapshot_leg_label(leg: dict) -> str:
+    """`Task.snapshot()` 의 raw leg dict(`{"type","params"}`) 하나를 관제 패널에 보일
+    한 줄로 바꾼다.
+
+    task_type 마다 다리 뜻이 다르다 — 수거의 4다리(주행+팔×3)는 배달의 4다리
+    (주행→집기→주행→놓기)와 전혀 다른 일을 한다. 프런트가 `leg_idx` 를 4로 나눈
+    나머지로 라벨을 추측하면(예전 `LEG_STEPS`) 반드시 틀린 라벨이 뜬다 — 실제
+    leg 값을 보고 여기서 만든다.
+    """
+    params = leg.get("params") or {}
+    if leg.get("type") == "navigate":
+        where = params.get("waypoint", "")
+        return f"주행 → {where}" if where else "주행"
+    action = str(params.get("action") or "")
+    text = _ARM_ACTION_TEXT.get(action, "작업")
+    where = params.get("at", "")
+    return f"{text} ({where})" if where else text
+
+
+def _completed_leg_summary(leg) -> tuple[str, str]:
+    """(다리 종류, 사람이 읽을 한 줄). leg 가 없으면 빈 값.
+
+    `snapshot_leg_label()` 과 목적이 다르다 — 이건 다리 하나가 **막 끝났을 때** 사건 문구를
+    만든다(과거형, "도착"/"완료"). `snapshot_leg_label()` 은 아직 안 끝난 다리도 포함해 전체
+    목록을 미리 보여줄 때 쓴다(중립형, "주행"/"집기").
+    """
     if leg is None:
         return "", ""
     kind = getattr(leg.type, "value", str(leg.type))
     params = leg.params or {}
     where = str(params.get("waypoint") or params.get("at") or "")
-    what = {"pick": "책 집기", "place": "책 놓기"}.get(str(params.get("action") or ""), "작업")
+    what = _ARM_ACTION_TEXT.get(str(params.get("action") or ""), "작업")
     text = _ARRIVAL_TEXT.get(kind, "{what}").format(where=where or "목적지", what=what)
     return kind, text
+
+
+#: task_type 별 완료 문구. 종류가 늘 "배달"은 아니다 — 수거·주행도 이 이벤트를 낸다.
+_TASK_DONE_TEXT = {
+    "delivery": "배달 완료",
+    "navigate": "이동 완료",
+    "collect": "수거 완료",
+}
 
 
 def on_orchestrator_event(kind: str, task, leg) -> None:
@@ -487,9 +586,9 @@ def on_orchestrator_event(kind: str, task, leg) -> None:
     (`fleet_events.publish` 자체도 예외를 삼키지만, 그 앞 변환에서 터질 수 있다.)
     """
     try:
-        leg_kind, text = _leg_summary(leg)
+        leg_kind, text = _completed_leg_summary(leg)
         if kind == "task_done":
-            text = "배달 완료"
+            text = _TASK_DONE_TEXT.get(task.task_type, "작업 완료")
         elif kind == "task_failed":
             text = f"실패: {task.reason}" if task.reason else "실패"
         elif kind == "task_started":
@@ -509,6 +608,74 @@ def on_orchestrator_event(kind: str, task, leg) -> None:
         log.exception("[events] 사건 변환 실패 kind=%s", kind)
 
 
+#: 자동배차 주기(초). 0 이면 끔 — 사람이 관제 화면에서 배차(수동/템플릿)해야 한다.
+#
+# ⚠️ **진짜 경매가 아니다.** fleet_node 의 `Auction` 플러그인(Dijkstra 최단거리)은
+# `SubmitTask` 를 `robot=""` 로 불러야 도는데, 그 응답에는 **어느 로봇이 뽑혔는지가 없다**
+# (`SubmitTask.srv` Response: accepted/task_id/reason 뿐 — robot 필드 없음). 그 값은
+# `/fms/task_states` 의 ASSIGNED 메시지로 뒤늦게, 서비스 응답과 순서 보장 없이 온다.
+# 그 경합에 기대는 대신, 관제 프런트가 이미 쓰는 것과 **같은 휴리스틱**(PATROL 우선 →
+# 배터리 최대, `dispatch-shared.ts:pickRobot`)을 여기서도 써서 사람이 아는 로봇을 바로
+# `assign()` 한다 — 두 곳에 각자 만들면 반드시 어긋나므로 근거 문서는 하나(그 파일)만 보면 된다.
+# 나중에 fleet_node 쪽 `SubmitTask.srv` 에 robot 필드를 추가하면 이 함수는 지우고
+# `real_dispatch` 가 `robot=""` 로 제출하도록 바꾼다.
+AUTO_ASSIGN_SEC = float(os.environ.get("LIBI_AUTO_ASSIGN_SEC", "3"))
+_auto_assign_stop = threading.Event()
+
+#: fleet_node 의 `can_accept()`/`is_dispatchable()` 과 같은 규칙(IDLE·PATROL 만).
+_ACCEPTING_STATES = {"IDLE", "PATROL"}
+
+
+def pick_robot(robots: list[dict]) -> str | None:
+    """대기 중인 주문 하나에 배정할 로봇을 고른다. 근거: `dispatch-shared.ts:pickRobot`."""
+    def ready(r: dict) -> bool:
+        state = r.get("state")
+        if state not in _ACCEPTING_STATES or r.get("stale"):
+            return False
+        if r.get("busy") and not str(r.get("task_id") or "").startswith("P-"):
+            return False   # 순회(P-*)는 선점 가능, 그 외 작업 중은 후보 제외
+        return True
+
+    candidates = [r for r in robots if ready(r)]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda r: (0 if r.get("state") == "PATROL" else 1,
+                                   -(r.get("battery") if r.get("battery") is not None else -1)))
+    return str(candidates[0]["name"])
+
+
+def _auto_assign_once() -> int:
+    orc = _orc()
+    # 우선순위 높은 순 — priority 는 task 지정 우선도(SubmitTask.srv 주석과 같은 뜻).
+    pending = sorted(orc.pending(), key=lambda t: -t.get("priority", 0))
+    if not pending:
+        return 0
+    robots = fleet_link.snapshot().get("robots", [])
+    assigned = 0
+    for t in pending:
+        robot = pick_robot(robots)
+        if robot is None:
+            break   # 배차 가능한 로봇 소진 — 나머지는 다음 주기로
+        try:
+            orc.assign(t["id"], robot)
+        except (KeyError, ValueError) as exc:
+            log.warning("[auto-assign] %s → %s 배정 실패: %s", t["id"], robot, exc)
+            continue
+        robots = [r for r in robots if r.get("name") != robot]   # 이번 주기엔 다시 안 고른다
+        assigned += 1
+    return assigned
+
+
+def _auto_assign_loop() -> None:
+    while not _auto_assign_stop.wait(AUTO_ASSIGN_SEC):
+        try:
+            n = _auto_assign_once()
+            if n:
+                log.info("[auto-assign] %d건 배차", n)
+        except Exception:  # noqa: BLE001 — 루프가 죽으면 자동배차 자체가 영구히 멈춘다
+            log.exception("[auto-assign] 루프 실패")
+
+
 def install() -> None:
     """실배선을 켠다. `LIBI_REAL_DISPATCH=1` 일 때만 main.py 가 부른다."""
     from app import fleet_orchestrator_service as svc
@@ -526,7 +693,16 @@ def install() -> None:
         _reconcile_stop.clear()
         threading.Thread(target=_reconcile_loop, daemon=True,
                          name="fleet-reconcile").start()
+
+    # 자동배차 — 이게 없으면 주문이 PENDING 에서 사람이 누를 때까지 영원히 멈춘다
+    # (2026-07-30 배선 감사에서 확인된 증상). 실배선(LIBI_REAL_DISPATCH=1)일 때만 돈다 —
+    # stub 모드에서 자동으로 assign 해봐야 로그만 남고 아무것도 안 움직인다.
+    if AUTO_ASSIGN_SEC > 0:
+        _auto_assign_stop.clear()
+        threading.Thread(target=_auto_assign_loop, daemon=True,
+                         name="fleet-auto-assign").start()
+
     log.info(
-        "[dispatch] 실배선 활성화 (arm_stub=%s, delay=%.1fs)",
-        ARM_STUB, ARM_STUB_DELAY_SEC,
+        "[dispatch] 실배선 활성화 (arm_stub=%s, delay=%.1fs, auto_assign=%.1fs)",
+        ARM_STUB, ARM_STUB_DELAY_SEC, AUTO_ASSIGN_SEC,
     )

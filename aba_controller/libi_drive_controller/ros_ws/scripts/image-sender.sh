@@ -32,5 +32,33 @@ if [ ! -d "$FOLLOWER_DIR" ]; then
   exit 1
 fi
 
+# 이 전송 경로는 **캘리브 보정을 하지 않는다** — 픽셀만 보낸다. 거리(solvePnP)를 쓰는 쪽이
+# K 를 읽어야 하고, 그 K 는 **이 스크립트가 내보내는 프레임과 같은 기하**여야 한다.
+# camera_sender 는 --picamera 일 때 --rotate 180 이 기본이라(카메라가 거꾸로 달려 YOLO 가
+# 사람을 똑바로 보게 하려는 것) 회전 없는 캘리브 파일을 그대로 쓰면 주점이 반대쪽이 된다.
+# 어느 파일을 써야 하는지 여기서 찍어 둔다 — 받는 쪽에서 헷갈릴 일이 없게.
+case " $CAM_ARGS " in
+  *" --rotate 0 "*) ROT=0 ;;
+  *" --rotate "*)   ROT="$(printf '%s\n' "$CAM_ARGS" | sed -n 's/.*--rotate \([0-9]*\).*/\1/p')" ;;
+  *" --picamera "*|*"--picamera") ROT=180 ;;    # camera_sender.py:79 기본값
+  *) ROT=0 ;;
+esac
+CALIB_BASE="$REPO_ROOT/config/camera"
+if [ "$ROT" = "0" ]; then CALIB="$CALIB_BASE/picam_640x480.npz"; else CALIB="$CALIB_BASE/picam_640x480_rot${ROT}.npz"; fi
+echo "[image-sender] rotate=${ROT}° → 이 스트림에 맞는 캘리브: ${CALIB#$REPO_ROOT/}"
+[ -f "$CALIB" ] || echo "[image-sender] ⚠ 그 파일이 없습니다. rotate_calib.py 로 만드세요:
+    python3 scripts/cam-calib/rotate_calib.py config/camera/picam_640x480.npz $ROT"
+
+# camera_sender 는 이제 `/libi/camera_select` 를 구독해 어느 캠을 내보낼지 정한다.
+# ROS 를 source 하지 않으면 rclpy import 가 실패해 **구독 없이** 뜨고, 그러면 BT 가
+# 카메라를 켜고 끄지 못한다(스크립트는 계속 돌기 때문에 조용히 어긋난다).
+# 시스템 python3 로 돌아야 하는 제약(picamera2)과 충돌하지 않는다 — ROS 도 시스템 파이썬이다.
+if [ -f /opt/ros/jazzy/setup.bash ]; then
+  # shellcheck disable=SC1091
+  source /opt/ros/jazzy/setup.bash
+else
+  echo "[image-sender] ⚠ /opt/ros/jazzy 가 없습니다 — camera_select 구독 없이 돕니다."
+fi
+
 cd "$FOLLOWER_DIR"
 exec python3 scripts/camera_sender.py --host "$AI_IP" --port "$PORT" --fps "$FPS" $CAM_ARGS

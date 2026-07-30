@@ -1,0 +1,120 @@
+# /cmd_vel 중재 — 바퀴를 돌릴 수 있는 유일한 문.
+#
+# ## 왜 넣었나
+#
+# 2026-07-28 실측: `ros2 topic info /cmd_vel -v` 가 **발행자 10개, 중재자 0개**였다.
+#
+#     fastapi_ros_bridge ×2   behavior_server ×5   velocity_smoother ×1
+#     bridge_pinky3_119 ×1    libi_perception ×1
+#
+# 중재가 없으면 **마지막에 도착한 메시지가 이긴다.** 누가 바퀴를 돌렸는지 로그로도 못
+# 가린다. 그날 나온 버그 다섯 개가 전부 이 구멍이었다:
+#
+#   · 응대중(INTERACTING)인데 바퀴가 계속 돌았다 — 순회 목표를 아무도 안 끊었다
+#   · 대기(IDLE)인데 바퀴가 돌았다 — 도착 판정 뒤에도 nav2 goal 이 살아 있었다
+#   · 추종을 껐는데 제어 루프가 계속 /cmd_vel 을 밀었다
+#   · 세션을 닫으려고 낸 stop 이 형제가 11ms 전에 낸 nav2 목표까지 죽였다
+#   · nav2 회복 동작이 velocity_smoother 를 우회해 직접 /cmd_vel 을 썼다
+#
+# 하나씩 쫓으면 끝이 없다. 문을 하나로 만들면 부류가 통째로 사라진다.
+#
+# ## [2026-07-29] 입력을 4개로 줄이고 비상정지를 맨 위에 뒀다
+#
+# 지운 것과 이유 — 셋 다 **시나리오에 없는데 자율 제어를 이기는 문**이었다:
+#   · manual(200)   수동 조작 시나리오가 없다. robot_agent 의 발행자·엔드포인트도 같이 제거
+#   · fleet(150)    관제가 바퀴를 직접 미는 경우가 없다. 주행은 fleet_node 경로로만 간다
+#                   (도메인 브릿지의 `{KEY}/cmd_vel` 블록도 같이 제거)
+#   · ai_legacy(40) 은퇴한 AI 다리. 런처(follow-drive.sh)까지 삭제
+#
+# 더한 것: **stop(255)** — libi_gui 비상정지 버튼이 누르는 동안 0 을 20Hz 로 낸다.
+#
+# ## 검증
+#
+#     ROS_DOMAIN_ID=119 ros2 topic info /cmd_vel -v
+#
+# **Publisher count 가 1(twist_mux)이어야 한다.** 하나라도 더 있으면 그놈은 중재를
+# 우회하는 것이고, 이 파일이 하는 일이 그만큼 거짓이 된다. 발행자를 새로 만들 때는
+# 반드시 아래 입력 토픽 중 하나로 보내라 — `/cmd_vel` 직접 발행은 금지다.
+
+twist_mux:
+  ros__parameters:
+    # ⚠️ 기본값이 true 다. true 면 TwistStamped 를 주고받는데, 이 로봇의 모터 노드는
+    #    `geometry_msgs/Twist` 를 구독한다(pinky_bringup/bringup.py:86). 타입이 다르면
+    #    DDS 가 연결을 아예 안 만든다 — **경고 한 줄 없이 바퀴만 안 돈다.**
+    #    nav2 도 `enable_stamped_cmd_vel: false` 로 맞춰져 있고(nav2_params.yaml),
+    #    libi_perception 도 Twist 를 낸다(cmd_publisher.py:8). 다섯 입력이 전부 Twist 다.
+    use_stamped: false
+
+    # priority: 높을수록 이긴다 (0~255)
+    # timeout : 이 시간 동안 안 오면 그 입력은 없는 것으로 친다 (초)
+    #           0.5 는 20Hz 제어 루프 기준 10 주기다 — 한두 프레임 끊겨도 안 흔들리고,
+    #           발행자가 죽으면 0.5초 안에 손을 뗀다.
+    topics:
+      # ── 비상정지 — 화면 버튼이 누르는 문 ─────────────────────────────────
+      # [2026-07-29] libi_gui 의 비상정지 오버레이가 **누르는 동안 계속** 0 을 낸다(20Hz).
+      # 255 라 아래 전부를 이긴다: 추종·회복·nav2 어느 것이 밀고 있어도 즉시 0 이 이긴다.
+      #
+      # ⚠️ **latch 가 아니다.** twist_mux 는 timeout(0.5s) 동안 안 오면 그 입력을 없는 것으로
+      #    친다. 그래서 GUI 가 죽으면 정지도 같이 풀린다(fail-open). 화면이 살아 있는 동안의
+      #    소프트웨어 정지라는 뜻이고, 관리자가 「해제」를 눌러야 풀리는 것도 같은 이유다.
+      #    하드웨어 차단(전원·모터 드라이버)과 **다르다** — 그건 별개로 있어야 한다.
+      # ⚠️ 모터 쪽에도 짝이 있다: 명령이 0.5초 끊기면 bringup 이 스스로 세운다
+      #    (pinky_bringup/cmd_watchdog.py, CMD_VEL_TIMEOUT_SEC=0.5).
+      stop:
+        topic   : cmd_vel_stop
+        timeout : 0.5
+        priority: 255
+
+      # ── 잠금 상태의 정지 명령 (libi_modes) ──────────────────────────────
+      # [2026-07-29] 잠금(fsm_motion_lock, 150)은 아래 입력을 **막을 뿐 0 을 만들지 않는다.**
+      # 그래서 잠긴 순간 /cmd_vel 은 침묵이고, 실제 정지는 모터 워치독(0.5초)이 한다 —
+      # **최대 0.5초는 마지막 속도로 굴러간다.** 축소맵(1.26×2.16m)에서 무시할 거리가 아니다.
+      # 그래서 잠근 주체(FSM)가 0 을 20Hz 로 같이 낸다(state_io.py `_publish_hold`).
+      #
+      # ⚠️ 160 인 이유: **잠금(150)보다 위, 비상정지(255)보다 아래.**
+      #    자기가 건 잠금에 자기가 막히면 안 되고, 비상정지를 이겨서도 안 된다.
+      hold:
+        topic   : cmd_vel_hold
+        timeout : 0.5
+        priority: 160
+
+      # 사람 추종 PID (libi_perception). 관리자가 명시적으로 켠 세션이라
+      # 새어 나온 nav2 목표보다 우선한다.
+      follow:
+        topic   : cmd_vel_follow
+        timeout : 0.5
+        priority: 100
+
+      # nav2 회복 동작 (behavior_server: spin/backup/wait/drive_on_heading).
+      # ⚠️ 이것들은 velocity_smoother 를 **안 거친다** — behavior_server 에 cmd_vel
+      #    리맵이 없어서 원래 /cmd_vel 직행이었다. 그래서 별도 입력으로 뺐다.
+      recovery:
+        topic   : cmd_vel_recovery
+        timeout : 0.5
+        priority: 60
+
+      # nav2 본선 (controller_server → cmd_vel_nav → velocity_smoother).
+      navigation:
+        topic   : cmd_vel_nav_out
+        timeout : 0.5
+        priority: 50
+
+    # ── 잠금 ────────────────────────────────────────────────────────────
+    #
+    # priority 보다 **낮은** 입력을 전부 막는다. FSM 이 "지금은 자율주행이 돌면
+    # 안 되는 상태"라고 말하면 여기서 통째로 잠근다 — 각 BT leaf 가 자기 목표를
+    # 취소하는 것을 기억하는지에 의존하지 않는다. 그게 오늘 계속 새던 자리다.
+    locks:
+      # 150 이므로 follow(100)·recovery(60)·navigation(50)을 막는다.
+      # **비상정지(255)는 안 막는다** — 잠긴 상태에서도 정지는 언제나 통과해야 한다.
+      # (2026-07-29 이전에는 manual 200 / fleet 150 도 통과 대상이었다. 그 둘을 없애면서
+      #  이 잠금은 사실상 "자율 제어 전부"를 막는 문이 됐다.)
+      fsm_motion_lock:
+        topic   : /libi/motion_lock
+        # 0.0 = 명시적으로 true 를 받을 때만 잠근다.
+        #
+        # ⚠️ 0 보다 크게 두면 **발행자가 죽었을 때 잠긴다**(fail-safe). 그쪽이 더
+        #    안전하지만, libi_modes 없이 nav2 만 띄워 시험하는 팀원의 작업이 통째로
+        #    막힌다. FSM 발행이 항상 떠 있는 구성이 되면 그때 timeout 을 켜라.
+        timeout : 0.0
+        priority: 150

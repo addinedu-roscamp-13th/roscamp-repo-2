@@ -137,7 +137,7 @@ def test_arm_command_is_unaffected():
 
 def test_transition_commands_still_go_to_last_command():
     """상태를 바꾸는 명령은 실행 커맨드가 아니라 전이 트리거다."""
-    for action in ("task_assigned", "task_done", "stop_request", "patrol_request"):
+    for action in ("task_assigned", "task_done", "stop_request", "resume_request"):
         p, _ = _providers()
         _send(p, {"action": action})
         d = p.as_dict()

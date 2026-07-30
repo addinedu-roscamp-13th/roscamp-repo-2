@@ -1,11 +1,14 @@
 """One test per edge of the transition box, plus the edges that must NOT exist."""
+import math
+
+import py_trees
 from py_trees.common import Status
 
 from libi_modes.blackboard import Keys
 from libi_modes.branches import (
     charging, error, idle, interacting, patrol, returning, security_patrol, working,
 )
-from test.fakes import PARAMS, FakeArmDriver, FakeDriver
+from test.fakes import PARAMS, FakeDriver, all_drivers
 
 
 # ── CHARGING ──────────────────────────────────────────────────────────────────
@@ -324,59 +327,111 @@ def test_working_clears_active_command_when_done(seed, read, tick):
 
 
 # ── RETURNING ─────────────────────────────────────────────────────────────────
+# [2026-07-27] 한 leaf(ReturnNavigation) → 5단계 시퀀스로 바뀌었다.
+#   GoToParkingEntrance → FaceParking → GoToParking → TurnAround → AlignDock
+# 팔 홈복귀는 없앴다(이 로봇에 팔이 없다 — 사용자 결정).
 
-def test_returning_homes_arm_before_driving(seed, tick):
-    seed(**{Keys.CURRENT_MODE: "RETURNING"})
-    arm, dock = FakeArmDriver(), FakeDriver()
-    tick(returning.create(PARAMS, arm, dock))
-    assert arm.went_home, "arm pose is unknown at boot; driving first risks a collision"
+
+def _returning(**over):
+    """5단계 복귀 브랜치. 좌표·드라이버를 갈아끼울 수 있게 감싼다."""
+    d = all_drivers()
+    d.update(over)
+    return returning.create(
+        PARAMS,
+        entrance_driver=d["return_entrance"],
+        dock_driver=d["return_dock"],
+        rotate_driver=d["return_rotate"],
+        entrance_xy=d["return_entrance_xy"],
+        parking_xy=d["return_parking_xy"],
+        clock=lambda: 0.0)
+
+
+def test_returning_drives_to_the_entrance_first(seed, tick):
+    """5단계의 첫 동작은 주차장 **입구** 주행이다."""
+    entrance = FakeDriver()
+    seed(**{Keys.CURRENT_MODE: "RETURNING", Keys.ROBOT_POSE: {"x": 5.0, "y": 5.0}})
+    tick(_returning(return_entrance=entrance))
+    assert entrance.started is True
+
+
+def _walk_the_steps(root, tick, seed, *, docked):
+    """각 단계의 목표에 로봇을 실제로 데려다 놓으며 시퀀스를 끝까지 민다.
+
+    도착 판정이 **실좌표 거리**라, pose 를 안 옮기면 첫 단계에서 영원히 RUNNING 이다
+    (그게 이 설계의 요점이다 — 명령 수락을 도착으로 치지 않는다)."""
+    entrance, parking = (0.6, 0.0), (0.0, 0.0)
+    poses = [
+        {"x": entrance[0], "y": entrance[1], "yaw": 0.0},   # ① 입구 도착
+        {"x": entrance[0], "y": entrance[1], "yaw": math.pi},  # ② 주차장 쪽을 봄
+        {"x": parking[0], "y": parking[1], "yaw": math.pi},  # ③ 주차장 도착
+        {"x": parking[0], "y": parking[1], "yaw": 0.0},      # ④ 180° 돌아섬
+    ]
+    status = None
+    for pose in poses:
+        py_trees.blackboard.Blackboard.set(Keys.ROBOT_POSE, pose)
+        status = tick(root)
+    py_trees.blackboard.Blackboard.set(Keys.IS_DOCKED, docked)
+    for _ in range(3):
+        status = tick(root)
+        if py_trees.blackboard.Blackboard.get(Keys.CURRENT_MODE) != "RETURNING":
+            break        # 전이가 일어난 tick 을 본다 — 더 돌면 IsMode 가 떨어진다
+    return status
 
 
 def test_returning_docked_to_charging(seed, read, tick):
-    """dock_driver 의 success 는 명령 접수일 뿐 — is_docked(실제 도킹 확인, 예: 충전소 위치
-    +yaw 근접)가 별도로 True 여야 CHARGING 으로 넘어간다."""
-    seed(**{Keys.CURRENT_MODE: "RETURNING", Keys.IS_DOCKED: True})
-    assert tick(returning.create(PARAMS, FakeArmDriver(), FakeDriver(["success"]))) == Status.SUCCESS
+    """마지막 단계(AlignDock)가 **실제 도킹 확인**(is_docked)을 요구한다.
+
+    이 확인을 빼면 로봇이 충전소에 닿지도 않은 채 CHARGING 을 선언한다."""
+    seed(**{Keys.CURRENT_MODE: "RETURNING", Keys.IS_DOCKED: False})
+    status = _walk_the_steps(_returning(), tick, seed, docked=True)
+    assert status == Status.SUCCESS
     assert read(Keys.CURRENT_MODE) == "CHARGING"
 
 
-def test_returning_dock_command_accepted_but_not_yet_confirmed_stays_returning(seed, read, tick):
-    """도킹 명령이 성공 응답을 받아도, is_docked 가 아직 False(또는 미수신=None)면
-    자동으로 CHARGING 에 진입하지 않는다 — send_nav_goal 은 완료 대기 없이 리턴한다."""
+def test_returning_without_dock_confirmation_stays_returning(seed, read, tick):
+    """도착만으로는 부족하다 — is_docked 가 없으면 CHARGING 으로 안 넘어간다."""
     seed(**{Keys.CURRENT_MODE: "RETURNING", Keys.IS_DOCKED: False})
-    assert tick(returning.create(PARAMS, FakeArmDriver(), FakeDriver(["success"]))) == Status.RUNNING
+    status = _walk_the_steps(_returning(), tick, seed, docked=False)
+    assert status == Status.RUNNING
     assert read(Keys.CURRENT_MODE) == "RETURNING"
 
 
-def test_returning_retries_dock_without_faulting(seed, read, tick):
-    seed(**{Keys.CURRENT_MODE: "RETURNING", Keys.DOCK_RETRY_COUNT: 0})
-    assert tick(returning.create(PARAMS, FakeArmDriver(), FakeDriver(["failure"]))) == Status.RUNNING
+def test_returning_step_failure_never_returns_failure(seed, tick):
+    """Parallel 은 자식 하나가 FAILURE 면 즉시 실패한다. 그러면 형제 FaultDetected 가
+    fault 를 ERROR 로 바꿀 tick 조차 없이 브랜치가 죽는다."""
+    seed(**{Keys.CURRENT_MODE: "RETURNING"})       # ROBOT_POSE 없음 → 도착 판정 불가
+    root = _returning(return_entrance=FakeDriver(["failure"]))
+    assert tick(root) != Status.FAILURE
+
+
+def test_returning_retries_before_faulting(seed, read, tick):
+    seed(**{Keys.CURRENT_MODE: "RETURNING"})
+    root = _returning(return_entrance=FakeDriver(["failure"] * 5))
+    tick(root)          # 1회차: goal 을 낸다(아직 poll 안 함)
+    tick(root)          # 2회차: poll → failure → 흡수되어 재시도
     assert read(Keys.DOCK_RETRY_COUNT) == 1
     assert read(Keys.FAULT) is False
 
 
-def test_returning_faults_after_retries_exhausted(seed, read, tick):
-    seed(**{Keys.CURRENT_MODE: "RETURNING", Keys.DOCK_RETRY_COUNT: 2})
-    root = returning.create(PARAMS, FakeArmDriver(), FakeDriver(["failure"]))
-    tick(root)
-    assert read(Keys.DOCK_RETRY_COUNT) == 3
-    assert read(Keys.FAULT) is True, "sets fault so the branch's own FaultDetected sees it"
-
-
 def test_returning_reaches_error_when_retries_exhausted(seed, read, tick):
-    """The nav leaf raises fault and stays RUNNING rather than failing, so the sibling
-    watchdog sees the fault on the same tick and routes to ERROR. Returning FAILURE here
-    would abort the Parallel first and the transition would never happen."""
-    seed(**{Keys.CURRENT_MODE: "RETURNING", Keys.DOCK_RETRY_COUNT: 2})
-    root = returning.create(PARAMS, FakeArmDriver(), FakeDriver(["failure"]))
-    assert tick(root) == Status.SUCCESS
+    """재시도를 다 쓰면 fault 를 세우고 **RUNNING** 을 유지한다 — 같은 tick 에
+    형제 watchdog 이 그 fault 를 보고 ERROR 로 보낸다."""
+    seed(**{Keys.CURRENT_MODE: "RETURNING"})
+    root = _returning(return_entrance=FakeDriver(["failure"] * 20))
+    status = None
+    for _ in range(PARAMS["returning"]["dock_retry_max"] * 2 + 2):
+        status = tick(root)
+        if read(Keys.CURRENT_MODE) == "ERROR":
+            break            # 전이가 일어난 그 tick 을 본다 (더 돌면 IsMode 가 떨어진다)
+    assert read(Keys.FAULT) is True
+    assert status == Status.SUCCESS
     assert read(Keys.CURRENT_MODE) == "ERROR"
 
 
 def test_returning_ignores_stop_request(seed, read, tick):
     """Below 15% and away from the charger — stopping here means going flat."""
     seed(**{Keys.CURRENT_MODE: "RETURNING", Keys.LAST_COMMAND: "stop_request"})
-    tick(returning.create(PARAMS, FakeArmDriver(), FakeDriver()))
+    tick(_returning())
     assert read(Keys.CURRENT_MODE) == "RETURNING"
 
 

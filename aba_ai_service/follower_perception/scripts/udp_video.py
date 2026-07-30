@@ -122,9 +122,26 @@ class UdpVideoReceiver:
                     self._latest = img
                 self._event.set()
 
-    def frames(self):
+    def frames(self, idle_yield=False, idle_timeout=0.5):
+        """수신한 최신 프레임을 흘린다. 중간 프레임은 버린다.
+
+        `idle_yield=True` 면 영상이 안 올 때 `idle_timeout` 마다 **None 을 흘린다.**
+        소비자가 프레임 도착에 묶이지 않고 계속 돌 수 있게 하는 심장박동이다.
+
+        왜 필요한가 (실측 2026-07-28): 로봇은 `camera_select` 가 `none` 이면 아무것도
+        안 보낸다(추종·길잡이 세션이 없을 때가 그렇다). 그때 이 제너레이터가 아무것도
+        안 흘리면 `perception_server.serve_loop` 의 `for frame in frames:` 가 첫
+        프레임에서 멈춰 **뷰어 소켓을 한 번도 확인하지 않는다.** 패널이 끊어도 못
+        알아채 소켓이 CLOSE-WAIT 로 남고, `listen(1)` + 뷰어 1개 구조라 **다음 패널이
+        영영 못 붙는다**("AI 서버에 연결 중…"). 영상을 못 봐서 등록을 못 하고, 등록을
+        못 해서 세션이 없고, 세션이 없어서 영상이 안 오는 자기강화 교착이었다.
+
+        기본값은 끔 — `track_frames` 처럼 진짜 프레임만 기대하는 소비자를 안 건드린다.
+        """
         while self._run:
-            if not self._event.wait(timeout=2.0):
+            if not self._event.wait(timeout=idle_timeout if idle_yield else 2.0):
+                if idle_yield:
+                    yield None                    # 심장박동: 소비자가 한 바퀴 돌 기회
                 continue                          # no frame yet; keep waiting
             self._event.clear()
             with self._lock:

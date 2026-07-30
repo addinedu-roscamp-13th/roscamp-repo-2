@@ -10,7 +10,7 @@ from py_trees.common import Access, Status
 
 from libi_modes import tree
 from libi_modes.blackboard import Keys
-from test.fakes import PARAMS, FakeArmDriver, FakeDriver
+from test.fakes import PARAMS, FakeDriver, all_drivers
 
 TICKS = 2000
 SCRIPT = {
@@ -25,11 +25,8 @@ SCRIPT = {
 
 def _run(fault_at=None):
     world = {"battery": 12.0, "docked": False, "cmd": None, "fault": False}
-    drivers = {
-        "patrol": FakeDriver(), "security_patrol": FakeDriver(),
-        "nav": FakeDriver(), "arm": FakeDriver(),
-        "return_arm": FakeArmDriver(), "return_dock": FakeDriver(),
-    }
+    # 드라이버 목록을 여기서 또 만들면 새 키가 생길 때마다 두 곳을 고쳐야 한다.
+    drivers = all_drivers()
     root = tree.build_root(PARAMS, drivers, {
         "battery_percent": lambda: world["battery"],
         "is_docked": lambda: world["docked"],

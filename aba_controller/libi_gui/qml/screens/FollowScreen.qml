@@ -21,7 +21,20 @@ Item {
             width: parent.width
             title: "관리자 추종"
             emoji: "🧑‍🤝‍🧑"
-            onBack: controller.setMode("adminControl")
+            // 뒤로가기는 **추종도 같이 끊는다.**
+            //
+            // 예전엔 화면만 넘어가고 추종은 계속 돌았다. 영상이 사라지니 끝난 것처럼
+            // 보이는데 로봇은 계속 사람을 따라온다 — 조작하는 사람에게 설명이 안 되고,
+            // FMS 승인 기록도 남아 다음 추종이 거부된다.
+            //
+            // stopAdminFollow() 는 추종 중이 아니면 아무 일도 안 한다. 그래서 아래
+            // setMode 는 그대로 둔다 — 추종이 이미 끝난 뒤 눌러도 화면은 넘어가야 한다.
+            // (추종 중이었다면 following 이 꺼지며 Main.qml 의 Connections 가 같은
+            //  화면으로 한 번 더 보내지만, 같은 값이라 아무 일도 안 일어난다.)
+            onBack: {
+                controller.stopAdminFollow();
+                controller.setMode("adminControl");
+            }
         }
 
         // 영상 (3등분 방향 가이드선·bbox·상태값은 서버가 프레임에 그려서 보낸다)

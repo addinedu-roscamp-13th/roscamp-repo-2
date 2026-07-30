@@ -35,8 +35,9 @@ from std_msgs.msg import String
 from libi_modes import blackboard as bb
 from libi_modes import tree as tree_mod
 from libi_modes.blackboard import Keys
+from libi_modes.common.junctions import JunctionSet, load_junctions
 from libi_modes.registry import BRANCH_ORDER
-from libi_modes.ros.fleet_cmd_driver import ArmHomeDriver, FleetCmdDriver
+from libi_modes.ros.fleet_cmd_driver import FleetCmdDriver, YawGoalDriver
 from libi_modes.ros.providers import RosProviders
 from libi_modes.ros.state_io import StateIO
 
@@ -100,27 +101,39 @@ class FsmNode(Node):
         # yaw 0 = +x 방향 = 입구·안내데스크 쪽(관제 화면에서 위쪽). waypoint.yaml 의
         # `주차장` 자세와 같은 값이다.
         #
-        # ⚠️ 주차는 원래 네 단계다. 지금은 그중 둘이 빠져 **goal 하나로 압축**돼 있다:
+        # [2026-07-27] 복귀가 **5단계로 쪼개졌다.** 예전에는 goal 하나로 압축돼 있었다.
         #
-        #   ① 특정 위치(입구) 이동   nav2 주행           → 지금은 주차장 정점으로 직접
-        #   ② 각도 틀기              주차장 방향 180°     → **없음**
-        #   ③ 이동 로직              테이프 추종 미세조정 → **그냥 주행** (nav2 가 데려다 준다)
-        #   ④ 도착 후 yaw 회전       주차 자세            → nav2 의 goal yaw 로 대신
+        #   ① 주차장 입구 이동   nav2 주행                    GoToParkingEntrance
+        #   ② 주차장 쪽 회전     지금은 좌표 기반             FaceParking   ← 앞캠 ArUco 자리
+        #   ③ 주차장 이동        nav2 주행                    GoToParking
+        #   ④ 180° 회전          충전 단자가 뒤에 있다         TurnAround
+        #   ⑤ 정렬               지금은 자리만                AlignDock     ← 뒷캠 ArUco 자리
         #
-        #    ②③을 붙이려면 park_dock 을 불러야 하는데 그 경로가 아직 배선돼 있지 않다.
-        #    누가 무엇을 부르는지와 미결 네 가지: scripts/drive-pi/dock/README.md
+        # ②⑤에 마커를 붙일 때 트리 배선은 안 바뀐다 — leaf 구현만 갈아끼우면 된다.
+        # (park_dock 연결은 여전히 미결: scripts/drive-pi/dock/README.md)
         return_x = float(self.declare_parameter("return_x", -0.001).value)
         return_y = float(self.declare_parameter("return_y", -0.033).value)
         return_yaw = float(self.declare_parameter("return_yaw", 0.0).value)
+        # 주차장 **입구** 정점. arte2 navgraph 의 `주차장입구`.
+        entrance_x = float(self.declare_parameter("entrance_x", 0.6005).value)
+        entrance_y = float(self.declare_parameter("entrance_y", -0.0333).value)
+        entrance_yaw = float(self.declare_parameter("entrance_yaw", 3.1415).value)
 
         # [디버그] 잠글 상태 브랜치 — 콤마구분. ROS param `disabled_branches` 또는
         # env `LIBI_DISABLED_BRANCHES` (fsm-bt.sh --disable 가 env 로 넘긴다). 기본 빈 값.
         disabled_branches = self._resolve_disabled_branches()
 
         params = self._load_params(params_file)
+        self._apply_battery_auto(params)
 
         cmd_pub = _CmdPublisher(self, cmd_topic)
-        self._providers = RosProviders(self, cmd_topic=cmd_topic)
+        self._providers = RosProviders(
+            self, cmd_topic=cmd_topic,
+            # 요청자 가시성이 이 시간 갱신되지 않으면 False(정지)로 본다.
+            # 감시하던 쪽이 죽었을 때 마지막 True 가 영원히 남아 로봇이 사람 없이
+            # 계속 몰고 가는 것을 막는다.
+            requester_ttl_sec=float(
+                params.get("working", {}).get("requester_ttl_sec", 2.0)))
 
         # 액션별 드라이버. 전부 같은 /fleet_cmd 통로를 쓰고 결과는 id 로 갈린다.
         self._drivers = {
@@ -148,6 +161,19 @@ class FsmNode(Node):
             "nav": FleetCmdDriver(self, "goal",
                                   args_fn=lambda: self._nav_args(home_location)).bind(cmd_pub),
             "arm": FleetCmdDriver(self, "perform_action").bind(cmd_pub),
+            # 길잡이 주행 — nav 와 같은 실행 층 `goal` 이다. 다른 건 BT 층에서 누가 받느냐뿐.
+            "guide": FleetCmdDriver(self, "goal",
+                                    args_fn=lambda: self._nav_args(home_location)).bind(cmd_pub),
+            # 요청자를 놓쳤을 때 **실제로 멈추는** 수단. mission_stop → ros_bridge.cancel_nav().
+            # 이게 없으면 GuideExec 은 "기다리는 중"만 표시하고 로봇은 계속 달린다.
+            "guide_stop": FleetCmdDriver(self, "mission_stop").bind(cmd_pub),
+            # 뒷캠 감시 세션. 이게 없으면 `/libi/requester_visible` 발행자가 없어
+            # GuideExec 이 "감시 없음 → 그냥 주행"으로 읽고, 사람을 놓쳐도 계속 간다.
+            # stop_action: 세션만 닫고 **주행은 안 끊는다** (FleetCmdDriver 주석 참고).
+            "guide_watch": FleetCmdDriver(self, "guide_watch",
+                                          args_fn=lambda: {"camera": "back"},
+                                          timeout_sec=3600.0,
+                                          stop_action="follow_stop").bind(cmd_pub),
             # 사람 추종 — libi_perception 의 RemoteControl 이 같은 /fleet_cmd 를 구독해
             # FollowSession 을 켜고 끈다. 세션은 스스로 안 끝나므로(관리자가 멈추거나
             # 회복이 소진될 때까지) 응답 타임아웃을 길게 준다 — 기본 120초면 추종 중에
@@ -156,15 +182,38 @@ class FsmNode(Node):
             # ⚠️ libi_perception 이 안 떠 있으면 이 명령에 아무도 응답하지 않고
             #    timeout_sec 뒤 failure 가 된다. 예전처럼 조용히 안 도는 게 아니라
             #    "추종 실패"로 관제에 뜬다.
-            "follow": FleetCmdDriver(self, "follow_admin", timeout_sec=3600.0).bind(cmd_pub),
+            "follow": FleetCmdDriver(self, "follow_admin", timeout_sec=3600.0,
+                                     stop_action="follow_stop").bind(cmd_pub),
             # 주차장으로 goto. `home` 이 아니라 `goal` 인 이유는 위 return_x 주석 참고.
             "return_dock": FleetCmdDriver(
                 self, "goal",
                 args_fn=lambda: {"x": return_x, "y": return_y, "yaw": return_yaw},
             ).bind(cmd_pub),
         }
-        self._drivers["return_arm"] = ArmHomeDriver(
-            FleetCmdDriver(self, "arm_home").bind(cmd_pub))
+        # 복귀 5단계가 쓰는 것들.
+        #   ⚠️ 팔 홈복귀(return_arm)는 뺐다 — 이 로봇에 팔이 없다(사용자 결정 2026-07-27).
+        #      ArmHomeDriver 클래스는 남겨 둔다. 팔 로봇이 붙는 날 되살릴 자리다.
+        self._drivers["return_entrance"] = FleetCmdDriver(
+            self, "goal",
+            args_fn=lambda: {"x": entrance_x, "y": entrance_y, "yaw": entrance_yaw},
+        ).bind(cmd_pub)
+        self._drivers["return_rotate"] = YawGoalDriver(
+            FleetCmdDriver(self, "goal").bind(cmd_pub),
+            pose_fn=lambda: bb.get(self._bb, Keys.ROBOT_POSE))
+        self._drivers["return_entrance_xy"] = (entrance_x, entrance_y)
+        self._drivers["return_parking_xy"] = (return_x, return_y)
+
+        # 갈림길 정점 — 길잡이가 여기서만 잠깐 서서 사람을 확인한다. 모든 노드에서 서면
+        # arte2 레인이 0.151~0.601m 라 1~5초마다 멈춰 안내가 계속 끊긴다.
+        # 파일이 없으면 빈 목록이고 확인 동작이 그냥 꺼진다.
+        navgraph_file = self.declare_parameter("navgraph_file", "").value
+        junction_pts = load_junctions(navgraph_file) if navgraph_file else []
+        self._drivers["junctions"] = JunctionSet(
+            junction_pts, tolerance=params["working"]["arrive_tolerance_m"])
+        self.get_logger().info(
+            f"갈림길 확인: {len(junction_pts)}개 정점"
+            if junction_pts else
+            "갈림길 확인 off — navgraph_file 파라미터가 없거나 읽지 못했습니다")
 
         self.create_subscription(String, result_topic, self._on_result, 10)
 
@@ -201,6 +250,11 @@ class FsmNode(Node):
 
         결과를 기다리지 않는다 — 기다리면 노드 기동이 막힌다. 팔이 없으면(지금이 그렇다)
         실행기가 400 을 돌려주고 끝이며, 그건 정상이다.
+
+        ⚠️ [2026-07-27] `return_arm` 드라이버를 **의도적으로 안 꽂았다**(사용자 결정 —
+        이 로봇에 팔이 없다). 그래서 지금 이 함수는 아무 일도 안 한다. **팔이 달린
+        로봇을 붙일 때 여기 드라이버를 되살려야 한다** — 함수를 지우지 않고 남겨 둔 것은
+        그 자리를 잃지 않기 위해서다.
         """
         driver = self._drivers.get("return_arm")
         if driver is None:
@@ -250,6 +304,33 @@ class FsmNode(Node):
                 f"[디버그] 잠긴 브랜치: {sorted(disabled)}"
                 + (f"  ⚠️ 안전 브랜치 포함: {sorted(safety)}" if safety else ""))
         return frozenset(disabled)
+
+    def _apply_battery_auto(self, params) -> None:
+        """[디버그] 배터리로 인한 **자동 상태 전이를 끈다.**
+        param(`battery_auto:=false`) 또는 env(`LIBI_BATTERY_AUTO=0`).
+
+        배터리 값이 못 믿을 상태(센서 이상·미배선)일 때 쓴다. 값이 튀면 로봇이 순회
+        도중 제멋대로 RETURNING 으로 빠지고, 그러면 다른 어떤 기능도 검증할 수 없다.
+        끄면 복귀·순회 시작을 관제 UI 에서 직접 눌러 돌린다.
+
+        임계를 지우지 않고 **닿지 않는 값으로 바꾼다** — `BatteryCheck` 는 비교만 하므로
+        트리 구조도 화면(BT 뷰)도 그대로다. 노드가 사라지면 관제 화면이 다른 그림이 된다.
+
+          low(<=)     -1     : 배터리가 음수일 수 없으니 → RETURNING 안 뜸
+          charged(>=) 1e9    : 도달 불가 → IDLE 에서 자동 PATROL 안 나감
+          ready(>=)   -1     : **항상 참** → CHARGING 에 갇히지 않고 바로 IDLE 로 나온다
+                               (여기까지 막으면 도킹하는 순간 아무것도 못 하게 된다)
+        """
+        raw = self.declare_parameter("battery_auto", True).value
+        env = os.environ.get("LIBI_BATTERY_AUTO")
+        if env is not None:
+            raw = env.strip().lower() not in ("0", "false", "no", "off", "")
+        if raw:
+            return
+        params.setdefault("battery", {}).update(low=-1.0, charged=1e9, ready=-1.0)
+        self.get_logger().warning(
+            "[디버그] 배터리 자동 전이 OFF — 저전력 복귀·자동 순회 시작이 뜨지 않는다. "
+            "복귀는 관제 UI 에서 직접 명령할 것.")
 
     def _on_result(self, msg):
         try:

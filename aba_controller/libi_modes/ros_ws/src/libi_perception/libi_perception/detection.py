@@ -23,6 +23,18 @@ class Detection:
     image_width: int = 0
     image_height: int = 0
 
+    #: 자세 판정("Standing"/"Lying"/"Unknown"/"Calibrating"). None = 판정 소스가 없다.
+    posture: str = None
+    #: 자세 + 소실방향을 합친 최종 주행 가부.
+    #:
+    #: 기본값이 True 인 것은 의도적이다 — 옛 payload(이 필드가 없는 소스)에서 False 로
+    #: 잡으면 로봇이 보이는 대상을 두고 영영 안 움직인다. "모른다"는 "가지 마라"가 아니다.
+    motion_ok: bool = True
+    #: 이 프레임이 온 카메라("front"/"back"). 회복 BT 가 "어느 캠에서 찾았나"를 판단한다.
+    camera: str = None
+    #: 카메라 전환마다 1 증가. 전환 순간 섞여 들어온 옛 프레임을 버리는 데 쓴다.
+    camera_epoch: int = 0
+
 
 def detection_from_dict(d):
     if d is None:
@@ -34,4 +46,8 @@ def detection_from_dict(d):
         # 아직 안 보내는 소스가 있으므로 optional. 보내주면 그 값이 이긴다.
         image_width=int(d.get('image_width', 0) or 0),
         image_height=int(d.get('image_height', 0) or 0),
+        posture=d.get('posture'),
+        motion_ok=bool(d.get('motion_ok', True)),
+        camera=d.get('camera'),
+        camera_epoch=int(d.get('camera_epoch', 0) or 0),
     )

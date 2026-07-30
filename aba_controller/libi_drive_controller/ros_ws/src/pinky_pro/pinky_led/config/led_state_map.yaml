@@ -37,13 +37,17 @@ led_state:
     # 빨강 = 위험·접근 주의 (충전 solid, 고장 blink 로 가른다)
     CHARGING:        { color: [213,   0,   0], pattern: solid, period_sec: 0.0, level: 1.00 }  # #D50000 빨강 · 충전 중
     # 초록 = 이용 불가 (로봇이 다른 일 중)
-    RETURNING:       { color: [  0, 158, 115], pattern: blink, period_sec: 1.5, level: 1.00 }  # #009E73 초록 · 복귀 중
-    IDLE:            { color: [  0, 158, 115], pattern: solid, period_sec: 0.0, level: 0.15 }  # #009E73 초록 · 쉬는 중(어둡게)
+    # Okabe-Ito 의 bluish green(#009E73)을 쓰다가 순수 초록으로 바꿨다 — 파랑이 45%
+    # 섞여 있어 스트립에서 민트로 보였고, PATROL 의 청색과 헷갈렸다.
+    RETURNING:       { color: [  0, 255,   0], pattern: blink, period_sec: 1.5, level: 1.00 }  # #00FF00 초록 · 복귀 중
+    IDLE:            { color: [  0, 255,   0], pattern: solid, period_sec: 0.0, level: 0.40 }  # #00FF00 초록 · 쉬는 중(어둡게)
+    # level 을 0.15 아래로 내리지 말 것. 감마(0.15**2.2 = 0.015)를 거치면 8비트에서
+    # 2/255 까지 떨어져 거의 안 보인다. 0.40 이면 (0,34,0) 이다.
     # 파랑 = 가용 (지금 쓸 수 있다)
     PATROL:          { color: [  0, 114, 178], pattern: solid, period_sec: 0.0, level: 1.00 }  # #0072B2 청색 · 가용
     SECURITY_PATROL: { color: [  0, 114, 178], pattern: solid, period_sec: 0.0, level: 0.35 }  # #0072B2 청색 · 가용(야간, 어둡게)
-    INTERACTING:     { color: [  0, 158, 115], pattern: solid, period_sec: 0.0, level: 1.00 }  # #009E73 초록 · 응대 중
-    WORKING:         { color: [  0, 158, 115], pattern: solid, period_sec: 0.0, level: 1.00 }  # #009E73 초록 · 작업 중
+    INTERACTING:     { color: [  0, 255,   0], pattern: solid, period_sec: 0.0, level: 1.00 }  # #00FF00 초록 · 응대 중
+    WORKING:         { color: [  0, 255,   0], pattern: solid, period_sec: 0.0, level: 1.00 }  # #00FF00 초록 · 작업 중
     ERROR:           { color: [213,   0,   0], pattern: blink, period_sec: 0.5, level: 1.00 }  # #D50000 빨강 · 고장
 
     # 진짜 상태가 아니라 **상태 토픽이 끊겼다**는 표시.

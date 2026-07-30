@@ -69,6 +69,20 @@
             <param name='use_sim_time' value="$(var use_sim_time)"/>
             <param name='autostart' value="$(var autostart)"/>
             <param name='node_names' value="$(var lifecycle_nodes)"/>
+            <!-- ⚠️ nav2 기본값은 4.0 초다. 이 Pi 에서는 **모자란다.**
+
+                 2026-07-28 실측: 4코어에 load 28 (camera_sender 44% + fleet_link 33%).
+                 그 부하에서 map_server 가 4초 안에 bond 응답을 못 내면 이 매니저가
+                 활성화를 포기한다:
+                   Server map_server was unable to be reached after 4.00s by bond.
+                 그러면 AMCL 이 끝내 활성화되지 않아 `map -> odom` 이 안 나오고,
+                 하위 전부가 이렇게 터진다:
+                   Invalid frame ID "map" ... frame does not exist
+                 rviz 가 메시지를 통째로 버리는 것도 **이 결과**지 원인이 아니다.
+
+                 bond 는 살아있음 확인용이라 늘려도 주행 성능과 무관하다. 대신 진짜로
+                 죽은 노드를 알아채는 데 그만큼 늦어진다. -->
+            <param name='bond_timeout' value="20.0"/>
         </node>
     </group>
 

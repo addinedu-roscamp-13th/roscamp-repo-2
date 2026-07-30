@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QJsonObject>
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -40,6 +41,20 @@ class RobotController : public QObject {
     Q_PROPERTY(bool charging READ charging NOTIFY chargingChanged)
     Q_PROPERTY(QString robotState READ robotState NOTIFY robotStateChanged)   // 대기/순찰/안내중/작업중/에러/충전중
     Q_PROPERTY(int interactingRemaining READ interactingRemaining NOTIFY interactingRemainingChanged)
+    // 로봇 FSM 과 실제로 붙어 있는가(= /libi/fsm_state 를 한 번이라도 받았는가).
+    // 화면이 "화면을 누르면 계속 응대해요" 같은 **로봇이 해줘야 하는 약속**을 말하기 전에
+    // 이걸 봐야 한다 — 목 모드에서는 터치를 발행할 상대가 없어 그 말이 거짓이 된다
+    // (onScreenTouch 는 m_ros 가 없으면 그냥 돌아간다).
+    Q_PROPERTY(bool rosConnected READ rosConnected NOTIFY rosConnectedChanged)
+
+    // 지도 위 로봇 위치 — 안내판 그림 안의 0..1 비율과, 위를 향한 마커에 줄 회전각[도].
+    // `poseValid` 가 false 면 화면은 마커를 **안 그린다**: 위치를 모를 때 마지막으로 알던
+    // 자리를 계속 보여주면 "로봇이 저기 있다"는 거짓말이 된다. AMCL 이 죽어도 마지막 값은
+    // 남으므로 도착 여부가 아니라 **수신 신선도**로 판정한다(POSE_TTL_MS).
+    Q_PROPERTY(bool poseValid READ poseValid NOTIFY poseChanged)
+    Q_PROPERTY(double mapX READ mapX NOTIFY poseChanged)          // 그림 가로 0..1
+    Q_PROPERTY(double mapY READ mapY NOTIFY poseChanged)          // 그림 세로 0..1
+    Q_PROPERTY(double mapHeadingDeg READ mapHeadingDeg NOTIFY poseChanged)
     Q_PROPERTY(bool patrolActive READ patrolActive NOTIFY patrolActiveChanged)
     Q_PROPERTY(bool following READ following NOTIFY followingChanged)   // 관리자 추종 중
     Q_PROPERTY(QString emotion READ emotion WRITE setEmotion NOTIFY emotionChanged)
@@ -49,6 +64,10 @@ class RobotController : public QObject {
     Q_PROPERTY(QString guidePhase READ guidePhase NOTIFY guidePhaseChanged)   // idle/guiding/requesterLost/completed/failed/cancelled
     Q_PROPERTY(QString guideDestination READ guideDestination NOTIFY guideDestinationChanged)
     Q_PROPERTY(double distanceToGoal READ distanceToGoal NOTIFY distanceToGoalChanged)
+    // 등록 단계: idle / registering(영상 보고 탭) / calibrating(자세 측정) / ready
+    Q_PROPERTY(QString guideRegPhase READ guideRegPhase NOTIFY guideRegPhaseChanged)
+    // 지금 패널에 보이는 카메라. 전환하면 시점이 뒤집혀 보이므로 화면에 라벨로 띄운다.
+    Q_PROPERTY(QString currentCamera READ currentCamera NOTIFY currentCameraChanged)
 
     // 관리자 수동조작 텔레메트리
     Q_PROPERTY(double linVel READ linVel NOTIFY linVelChanged)
@@ -69,11 +88,22 @@ public:
     bool charging() const { return m_charging; }
     QString robotState() const { return m_robotState; }
     int interactingRemaining() const { return m_interactingRemaining; }
+    bool rosConnected() const { return m_rosConnected; }
+    bool poseValid() const { return m_poseValid; }
+    double mapX() const { return m_mapX; }
+    double mapY() const { return m_mapY; }
+    double mapHeadingDeg() const { return m_mapHeadingDeg; }
+    /** 현재 pose 와 목적지 정점(map 좌표) 사이 거리[m]. pose 가 없으면 -1. */
+    double distanceTo(double x, double y) const;
+    /** 화면 표시명("과학 서가") → 실제 정점 이름("과학-인문학서가"). 없으면 빈 문자열. */
+    QString waypointOf(const QString &displayName) const;
     bool patrolActive() const { return m_patrol; }
     bool following() const { return m_following; }
     QString emotion() const { return m_emotion; }
     QString taskStatus() const { return m_taskStatus; }
     QString guidePhase() const { return m_guidePhase; }
+    QString guideRegPhase() const { return m_guideRegPhase; }
+    QString currentCamera() const { return m_currentCamera; }
     QString guideDestination() const { return m_guideDest; }
     double distanceToGoal() const { return m_distance; }
     double linVel() const { return m_lin; }
@@ -107,6 +137,20 @@ public:
     // 길잡이
     Q_INVOKABLE void startGuide(const QString &destination);
     Q_INVOKABLE void cancelGuide();
+    // 등록 화면 감시 세션 — **패널이 직접 연다.**
+    //
+    // 등록하려면 카메라 영상이 필요한데, 카메라는 세션이 켜고 세션은 등록이 끝나야
+    // 시작된다. 게다가 등록 시점의 미션 상태는 INTERACTING 이라 WORKING 브랜치의
+    // GuideExec 은 tick 되지도 않는다. 그래서 여기서 `/fleet_cmd{watch}` 를 낸다.
+    Q_INVOKABLE void startGuideRegistration();
+    Q_INVOKABLE void cancelGuideRegistration();
+    Q_INVOKABLE void confirmGuideRegistration();   // 이용자를 탭해 등록이 끝났다
+
+private:
+    bool destinationXY(const QString &displayName, double *x, double *y) const;
+    void updateGuideDistance();
+
+public:
 
     // 친밀감(SR-17) / 표정
     Q_INVOKABLE void setEmotion(const QString &e);
@@ -135,7 +179,10 @@ public:
     // RobotController 수명 전체에서 유일하다(QML 쪽 Loader 가 화면을 파괴·재생성해도 화면별
     // 카운터가 아니라 이 값을 그대로 비교하면 되므로, 화면 재진입 시 재사용되는 화면-로컬
     // id와 옛 응답의 id가 우연히 같아 stale 데이터를 받아들이는 사고를 막는다).
-    Q_INVOKABLE int searchBooksAsync(const QString &query, const QString &category, bool onlyAvailable);
+    // zone 을 주면 그 서가 정점에 꽂힌 책만 서버가 걸러 준다(`/api/books?zone=`) —
+    // 지도에서 서가를 탭했을 때 쓰는 경로다. 비우면 기존 검색 그대로.
+    Q_INVOKABLE int searchBooksAsync(const QString &query, const QString &category, bool onlyAvailable,
+                                     const QString &zone = QString());
     Q_INVOKABLE int recommendAsync(const QString &purpose, const QString &interest);
 
 signals:
@@ -149,11 +196,21 @@ signals:
     void chargingChanged();
     void robotStateChanged();
     void interactingRemainingChanged();
+    void rosConnectedChanged();
+    void poseChanged();
     void patrolActiveChanged();
     void followingChanged();
+    //: 관리자가 「해제」를 누른 것이 **아니라**, 로봇이 스스로 추종을 끝냈다.
+    //  (사람을 못 찾아 회복이 포기했거나, 관제가 상태를 바꿨거나, 에러)
+    //  화면은 이때 홈으로 돌아간다 — 조작하던 관리자는 이미 자리를 떴을 가능성이 크고,
+    //  로봇도 순찰로 복귀하므로(FollowExec._release 가 PATROL 을 예약) 관리자 화면에
+    //  남아 있으면 실제 상태와 화면이 어긋난다.
+    void followEndedByRobot();
     void emotionChanged();
     void taskStatusChanged();
     void guidePhaseChanged();
+    void guideRegPhaseChanged();
+    void currentCameraChanged();
     void guideDestinationChanged();
     void distanceToGoalChanged();
     void linVelChanged();
@@ -172,12 +229,22 @@ private:
     void requestFollowGrant();
     void reportFollowRelease();
     void requestTransition(const QString &target, bool force = false);
-    void onFollowGrantReply(QNetworkReply *reply);
+    void onFollowGrantReply(bool ok, const QJsonObject &body);
+
+    // FMS 요청 — ROS2(`/panel_request`) 우선, 링크가 없으면 HTTP 로 폴백한다.
+    // cb(ok, body): ok=false 는 **통신 실패/타임아웃**이고, 거절은 ok=true + body 안의
+    // granted/accepted=false 다. 둘을 섞으면 "관제가 죽음" 과 "관제가 거절함" 이 같은
+    // 화면으로 보여 원인을 못 찾는다.
+    void fmsCall(const QString &op, const QString &httpPath, const QJsonObject &body,
+                 std::function<void(bool, QJsonObject)> cb);
     void beginFollowing();
     void setRobotState(const QString &s);
     static QString mapState(const QString &canonical);   // ROS FSM canonical(EN) → 패널 한글 표시어휘
     void setTaskStatus(const QString &s);
     void setGuidePhase(const QString &p);
+    void setGuideRegPhase(const QString &p);
+    void setCurrentCamera(const QString &c);
+    void publishWatch(const QString &camera);
     QJsonDocument httpGetJson(const QString &path, const QUrlQuery &query) const;
     // GET 을 던지고 즉시 새 id 를 반환. onReady(ok, doc) 는 성공/실패/타임아웃 어느 경로든
     // 정확히 한 번, reply->deleteLater() 이후 불린다.
@@ -194,11 +261,32 @@ private:
     RosLink *m_ros = nullptr;
     int m_interactingRemaining = 0;
     bool m_rosConnected = false;
+    bool m_poseValid = false;
+    double m_mapX = 0.5, m_mapY = 0.5, m_mapHeadingDeg = 0.0;
+    double m_poseWorldX = 0.0, m_poseWorldY = 0.0;   // map 프레임 원본(거리 계산용)
+    QTimer m_poseFreshness;
+    QTimer m_fsmFreshness;   // 상태 수신이 끊기면 rosConnected 를 되돌린다
+    // FMS 가 알려준 목적지 정점 좌표(map 프레임). 남은 거리는 이것과 현재 pose 로 잰다.
+    bool m_guideTargetValid = false;
+    double m_guideTargetX = 0.0, m_guideTargetY = 0.0;
+    QString m_guideTargetWaypoint;
     bool m_patrol = true;
     bool m_following = false;
+    //: 추종을 켠 뒤 로봇이 WORKING 인 것을 **한 번이라도 봤나.**
+    //
+    //  아래 종료 감시가 "WORKING 을 벗어났다"로 판정하는데, 승인 직후에는 아직
+    //  WORKING 이 **도착하기 전**이라 그 조건이 참이다. 그대로 두면 켜자마자 스스로
+    //  해제를 보내고, FMS 가 로봇을 IDLE 로 되돌린다 — 관리자 추종이 안 되는 것처럼 보인다.
+    //  (실측 2026-07-28: FMS 를 직접 부르면 WORKING 이 18초+ 유지되는데, 패널로 켜면
+    //   몇 초 만에 IDLE 로 돌아왔다. 차이는 이 감시뿐이었다.)
+    bool m_followSawWorking = false;
     QString m_emotion = QStringLiteral("happy");
     QString m_taskStatus = QStringLiteral("명령 대기");
     QString m_guidePhase = "idle";
+    QString m_guideRegPhase = "idle";
+    QString m_currentCamera = "none";
+    QString m_watchSessionId;      // 우리가 연 감시 세션. stop 은 이 id 로만 낸다
+    QTimer m_watchLease;           // 패널이 살아 있음을 알린다(죽으면 세션이 스스로 닫힌다)
     QString m_guideDest;
     double m_distance = 0.0;
     double m_lin = 0.0, m_ang = 0.0;

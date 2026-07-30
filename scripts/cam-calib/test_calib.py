@@ -8,6 +8,7 @@
 
   test 1  투영만 — 알려진 K + 왜곡으로 점을 투영해 calibrateCamera 가 되찾는지
   test 2  렌더링 — 합성 체커보드 이미지를 만들어 calib_client.find_corners 로 검출까지 (왜곡 없음)
+  test 3  ChArUco — 실제 촬영에 쓰는 경로(build_charuco → find_charuco)로 같은 검증
 """
 import sys
 import pathlib
@@ -16,7 +17,8 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from calib_client import find_corners            # noqa: E402  (검출 경로를 그대로 검증한다)
+from calib_client import (build_charuco,         # noqa: E402  (검출 경로를 그대로 검증한다)
+                          find_charuco, find_corners)
 
 COLS, ROWS, SQ = 9, 6, 0.038                     # 내부 코너 9x6, 한 칸 38mm
 SIZE = (480, 360)                                # picam 런타임 해상도
@@ -127,8 +129,84 @@ def test_render():
     return _report("test 2 · 렌더링+검출", K, dist, rms, check_dist=False)
 
 
+#: make_board.py 기본값과 같아야 한다 — 여기가 어긋나면 시험은 통과해도 실물이 안 맞는다.
+CH_SQUARES, CH_SQ_M, CH_DICT = (7, 5), 0.035, "DICT_4X4_50"
+
+#: 화면 가장자리로 보드를 밀어낸 자세 — **주점(cx,cy)을 잡는 건 이 장면들이다.**
+#: 가운데서만 찍으면 fx 는 맞아도 주점이 2px 씩 흔들린다(실제 촬영에서도 똑같다).
+#: 체커보드(test 2)는 보드가 잘리면 통째로 버려져 이 자세를 못 쓴다 — ChArUco 라서 쓴다.
+_POSES_EDGE = [
+    (0, 0, 0, 0.11, 0.00, 0.50), (0, 0, 0, -0.11, 0.00, 0.50),
+    (0, 0, 0, 0.00, 0.09, 0.50), (0, 0, 0, 0.00, -0.09, 0.50),
+    (20, 0, 0, 0.09, 0.07, 0.55), (-20, 0, 0, -0.09, -0.07, 0.55),
+    (0, 25, 0, 0.09, -0.07, 0.55), (0, -25, 0, -0.09, 0.07, 0.55),
+]
+
+
+def test_charuco():
+    """ChArUco 보드를 합성 렌더 → find_charuco → calibrateCamera.
+
+    체커보드(test 2)와 달리 **보드가 화면 밖으로 잘린 장면도 쓴다** — 부분 검출이 되는 게
+    ChArUco 를 쓰는 이유라, 잘린 장면에서 코너가 안 나오면 그 자체가 회귀다.
+    """
+    board, dictionary = build_charuco(CH_DICT, CH_SQUARES, CH_SQ_M, CH_SQ_M * 0.75)
+    ppm = 4000
+    bw, bh = int(CH_SQUARES[0] * CH_SQ_M * ppm), int(CH_SQUARES[1] * CH_SQ_M * ppm)
+    img = (board.generateImage((bw, bh)) if hasattr(board, "generateImage")
+           else board.draw((bw, bh)))
+    quiet = int(CH_SQ_M * ppm / 2)                    # 여백 없으면 가장자리 마커가 안 잡힌다
+    img = cv2.copyMakeBorder(img, quiet, quiet, quiet, quiet, cv2.BORDER_CONSTANT, value=255)
+
+    # ⚠️ 마커 비트는 칸보다 훨씬 작아서 480x360 으로 곧장 워프하면 앨리어싱 편향이 0.7px
+    # 씩 실린다(실측). 그러면 검출 경로가 멀쩡해도 fx 가 2% 틀어져 FAIL 로 보인다.
+    # 4배로 그린 뒤 INTER_AREA 로 줄여 실제 센서의 면적 적분에 가깝게 만든다 → 0.09px.
+    ss = 4
+    K_ss = K_TRUE.copy()
+    K_ss[:2, :] *= ss
+
+    obj_pts, img_pts, miss, partial = [], [], 0, 0
+    poses = _POSES + _POSES_EDGE
+    for pose in poses:
+        rvec, tvec = _rt_charuco(pose)
+        R, _ = cv2.Rodrigues(rvec)
+        off = -quiet / ppm                            # 렌더 이미지 (0,0) 은 보드 원점보다 여백만큼 앞
+        S = np.array([[1 / ppm, 0, off], [0, 1 / ppm, off], [0, 0, 1]])
+        H = K_ss @ np.hstack([R[:, :2], tvec]) @ S
+        big = cv2.warpPerspective(img, H, (SIZE[0] * ss, SIZE[1] * ss), borderValue=128)
+        gray = cv2.resize(big, SIZE, interpolation=cv2.INTER_AREA)
+
+        found, corners, objp, _ids = find_charuco(gray, board, dictionary)
+        if not found:
+            miss += 1
+            continue
+        if len(corners) < (CH_SQUARES[0] - 1) * (CH_SQUARES[1] - 1):
+            partial += 1
+        obj_pts.append(objp)
+        img_pts.append(corners.astype(np.float32))
+
+    print(f"\ntest 3: {len(obj_pts)}/{len(poses)} 검출 (미검출 {miss}, 부분검출 {partial})")
+    if len(obj_pts) < 6:
+        print("  → FAIL (검출이 너무 적다 — find_charuco 경로 문제)")
+        return False
+    if partial == 0:
+        print("  ! 부분검출 장면이 하나도 없다 — 부분 검출 경로가 시험되지 않았다")
+    rms, K, dist, _, _ = cv2.calibrateCamera(obj_pts, img_pts, SIZE, None, None)
+    return _report("test 3 · ChArUco", K, dist, rms, check_dist=False)
+
+
+def _rt_charuco(pose):
+    """_rt 와 같지만 ChArUco 보드 기준(원점=보드 좌하단 모서리, 크기=칸수x칸크기)."""
+    rx, ry, rz, dx, dy, z = pose
+    rvec = np.deg2rad(np.array([rx, ry, rz], float)).reshape(3, 1)
+    R, _ = cv2.Rodrigues(rvec)
+    c = np.array([[CH_SQUARES[0] * CH_SQ_M / 2], [CH_SQUARES[1] * CH_SQ_M / 2], [0.0]])
+    return rvec, -R @ c + np.array([[dx], [dy], [z]])
+
+
 if __name__ == "__main__":
     ok1 = test_projection()
     ok2 = test_render()
-    print("\n" + ("전체 PASS — 촬영해도 됩니다." if ok1 and ok2 else "★ FAIL — 촬영 전에 고쳐야 합니다."))
-    sys.exit(0 if (ok1 and ok2) else 1)
+    ok3 = test_charuco()
+    ok = ok1 and ok2 and ok3
+    print("\n" + ("전체 PASS — 촬영해도 됩니다." if ok else "★ FAIL — 촬영 전에 고쳐야 합니다."))
+    sys.exit(0 if ok else 1)

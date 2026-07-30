@@ -15,6 +15,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FMS_DIR="$(dirname "$SCRIPT_DIR")"
 VENV_PY="$FMS_DIR/backend/.venv/bin/python"
 
+# 루트 .env 를 싣는다. 없으면 app.config 의 ROBOT_DATABASE_URL 이 전역 DATABASE_URL
+# (=도서관 웹의 `aba` DB)로 폴백해 **엉뚱한 DB 를 본다.**
+#   실측: 단독 실행 시 `(1054, "Unknown column 'ip_address' in 'SELECT'")`
+#   fms_service.sh 로 띄우면 _common.sh 가 미리 실어 줘서 안 드러났다.
+REPO_ROOT="$(dirname "$FMS_DIR")"
+# shellcheck disable=SC1091
+. "$REPO_ROOT/scripts/_load_env.sh"
+
 if [ ! -x "$VENV_PY" ]; then
   echo "[ros-domain-bridge] backend/.venv 가 없습니다. 먼저 만드세요:"
   echo "  cd $FMS_DIR/backend && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt"

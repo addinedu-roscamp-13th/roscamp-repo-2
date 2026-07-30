@@ -29,6 +29,8 @@ import time
 import uuid
 from typing import Any
 
+from app import panel_bridge
+
 # ── 플릿 구성: DB(rc_robots.ip_address)에서 매 기동 시 읽어온다 ────────────
 # IP를 코드에 하드코딩해두면 DB에서 로봇 IP가 바뀔 때(예: Pinky-3 재배치) 서로
 # 어긋나서 조용히 끊긴다(2026-07-20 실제로 겪음: DB 172.30.1.83 vs 코드
@@ -590,6 +592,8 @@ def _telemetry_thread() -> None:
             )
             _cmd_pubs[cfg["key"]] = node.create_publisher(String, f"{pre}/fleet_cmd", 10)
             _cmd_vel_pubs[key] = node.create_publisher(Twist, f"{pre}/cmd_vel", 10)
+            # 패널(libi_gui) 요청 통로 — 방향이 위와 반대다(로봇이 요청, 서버가 승인).
+            panel_bridge.attach(node, String, pre)
 
         print(f"[fleet_telemetry] ROS 구독+명령링크 시작 (domain {TELEMETRY_DOMAIN_ID}, robots {list(FLEET_ROBOTS)})", flush=True)
         executor = SingleThreadedExecutor(context=ctx)

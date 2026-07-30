@@ -71,16 +71,11 @@ class DrivingDriver(BaseDriver):
         elif direction == "right":
             angular_vel = -speed * 1.0
 
-        if ros_bridge.is_active():
-            t0 = time.time()
-            while time.time() - t0 < duration:
-                ros_bridge.publish_cmd_vel(linear_vel, angular_vel)
-                time.sleep(0.1)
-            ros_bridge.publish_cmd_vel(0.0, 0.0)
-        else:
-            left, right = self._vel_to_speeds(linear_vel, angular_vel)
-            self._run_motor_cmd(left, right, duration)
-            
+        # [2026-07-29] ROS 발행 분기 제거 — twist_mux 의 manual 입력을 없애서 그 토픽은
+        # 아무도 안 듣는다. 모터를 직접 미는 경로만 남긴다(이건 twist_mux 를 안 거친다).
+        left, right = self._vel_to_speeds(linear_vel, angular_vel)
+        self._run_motor_cmd(left, right, duration)
+        
         return {"direction": direction, "distance": distance, "speed": speed, "status": "done"}
 
     def rotate(self, angle: float, speed: float) -> dict:
@@ -92,16 +87,10 @@ class DrivingDriver(BaseDriver):
         
         angular_vel = angular_speed if angle > 0 else -angular_speed
         
-        if ros_bridge.is_active():
-            t0 = time.time()
-            while time.time() - t0 < duration:
-                ros_bridge.publish_cmd_vel(0.0, angular_vel)
-                time.sleep(0.1)
-            ros_bridge.publish_cmd_vel(0.0, 0.0)
-        else:
-            left, right = self._vel_to_speeds(0.0, angular_vel)
-            self._run_motor_cmd(left, right, duration)
-            
+        # [2026-07-29] 위와 같은 이유로 ROS 발행 분기 제거.
+        left, right = self._vel_to_speeds(0.0, angular_vel)
+        self._run_motor_cmd(left, right, duration)
+        
         return {"angle": angle, "speed": speed, "status": "done"}
 
     def home(self) -> dict:
@@ -111,9 +100,8 @@ class DrivingDriver(BaseDriver):
         return {"result": "homing"}
 
     def stop(self) -> dict:
-        from app.core import ros_bridge
-        if ros_bridge.is_active():
-            ros_bridge.publish_cmd_vel(0.0, 0.0)
+        # [2026-07-29] ROS 정지 발행 제거 — 모터를 직접 세운다.
+        # 자율 제어까지 멈춰야 하면 패널 비상정지(`/cmd_vel_stop`, priority 255)를 쓴다.
         
         subprocess.run(
             ["sudo", "-n", "python3", str(self._motor_script), "stop"],

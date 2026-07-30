@@ -3,9 +3,9 @@
 # tmux 로 띄우고, 이 로봇의 상태 어댑터(amcl_pose → /robot_state)도 함께 띄운다
 # (사서 GUI 가 로봇을 그리려면 필요 — 파일 하단 주석 참고). 로봇 없이 전체 파이프라인을 검증할 때 쓴다.
 #
-#   ./sim.sh --robot Pinky-sim-1 --domain 90   # 기본
-#   ./sim.sh --robot Pinky-sim-1 --domain 90 viewer     # 가제보 GUI 포함
-#   ./sim.sh --robot Pinky-sim-1 --domain 90 --no-fsm   # fsm 창 없이
+#   ./sim.sh --robot pinky-sim-1 --domain 90   # 기본
+#   ./sim.sh --robot pinky-sim-1 --domain 90 viewer     # 가제보 GUI 포함
+#   ./sim.sh --robot pinky-sim-1 --domain 90 --no-fsm   # fsm 창 없이
 #
 # ## 이름·도메인을 왜 매번 직접 주나
 # sim 이 FMS 와 붙으려면 **로봇 이름과 도메인이 DB(rc_robots) 등록값과 같아야** 한다.

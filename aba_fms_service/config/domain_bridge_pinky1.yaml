@@ -48,7 +48,11 @@ topics:
   pinky1/cmd_vel:
     type: geometry_msgs/msg/Twist
     reversed: True
-    remap: /cmd_vel
+    # [2026-07-28] `/cmd_vel` → `/cmd_vel_fleet`. **중재를 우회하고 있었다.**
+    #   `/cmd_vel` 은 twist_mux 의 출력이다. 여기로 직접 넣으면 우선순위·잠금과
+    #   무관하게 모터 구독자에 닿고, 추종/nav2 출력과 '마지막 도착이 이긴다' 싸움이 된다.
+    #   twist_mux.yaml 의 fleet 입력이 원래 이 값을 받도록 설계돼 있었다(priority 150).
+    remap: /cmd_vel_fleet
 
   # ── libi_modes 미션 FSM (2026-07-20) ─────────────────────────────────────────
   # 상태·BT 스냅샷은 payload 안에 robot_id 가 들어 있어 서버에서 토픽을 나누지 않는다

@@ -9,7 +9,7 @@ from app.database import AdminSessionLocal, init_db
 from app.models import Admin
 from app.hardware.camera_stream import camera as camera_hw
 from app.hardware.pinky_greeting_monitor import pinky_greeting_monitor
-from app.routers import admin_follow, arm, aruco_dock, auth, camera, chat, dashboard, dev, drive, fleet, fleet_order, fsm, human_follow_robot, maps, marker_actions, mission_control, nav, pinky_yolo, robot, robot_learning, robots, ros, users, voice, webrtc_robot
+from app.routers import admin_follow, arm, aruco_dock, auth, camera, chat, dashboard, dev, drive, fleet, fleet_order, fsm, guide, human_follow_robot, maps, marker_actions, mission_control, nav, panel, pinky_yolo, robot, robot_learning, robots, ros, users, voice, webrtc_robot
 from app.security import hash_password
 
 # ── 로깅 ────────────────────────────────────────────────────────────────────
@@ -50,6 +50,8 @@ app.include_router(fsm.router)
 app.include_router(fleet.router)
 app.include_router(fleet_order.router)
 app.include_router(admin_follow.router)
+app.include_router(guide.router)
+app.include_router(panel.router)
 app.include_router(ros.router)
 app.include_router(maps.router)
 app.include_router(mission_control.router)
@@ -111,7 +113,7 @@ async def _seed():
                     is_active=True,
                 ),
                 Robot(
-                    name="Pinky-1",
+                    name="pinky-1",
                     robot_type="pinky",
                     ip_address="192.168.0.71",
                     port=9001,

@@ -35,10 +35,24 @@ from py_trees.common import Access, Status
 
 from libi_interfaces.msg import FsmState
 from libi_interfaces.srv import RequestTransition
-from std_msgs.msg import String
+from geometry_msgs.msg import Twist
+from std_msgs.msg import Bool, String
 
 from libi_modes.blackboard import Keys
 from libi_modes.registry import ANY, BRANCH_ORDER, START, TRANSITIONS
+
+#: 자율주행이 돌면 **안 되는** 상태. 이 동안 twist_mux 가 자동 제어 입력을 통째로 막는다.
+#
+# 왜 필요한가 — 지금까지는 "각 BT leaf 가 자기 목표를 끊는다"에 전적으로 기대고 있었다.
+# 그런데 leaf 가 이미 끝난 뒤(도착 판정 등)에는 끊을 주체가 사라져서, 화면은 대기인데
+# nav2 goal 이 살아 바퀴가 돌았다(2026-07-28 실측). 취소를 **기억하는지**에 의존하는 대신
+# 상태 자체로 문을 닫는다.
+#
+# 잠금은 twist_mux 의 `fsm_motion_lock`(priority 150)이라 자동 제어(follow/recovery/nav)만
+# 막고 사람 조작(manual 200 · fleet 150)은 안 막는다 — 대기 상태에서 사람이 로봇을
+# 미세 조작해야 할 때가 있고, 그것까지 막으면 복구 수단이 사라진다.
+#   설정: pinky_drive/../pinky_bringup/config/twist_mux.yaml
+MOTION_LOCKED_STATES = frozenset({"IDLE", "INTERACTING", "ERROR", "CHARGING"})
 
 _STATUS_NAME = {
     Status.SUCCESS: "SUCCESS",
@@ -105,6 +119,8 @@ class StateIO:
                  request_topic="/libi/fsm_transition_request",
                  result_topic="/libi/fsm_transition_result",
                  typed_state_topic="fsm_state_typed",
+                 motion_lock_topic="/libi/motion_lock",
+                 hold_topic="/cmd_vel_hold",
                  follow_snapshot_topic="/libi/follow_bt_snapshot",
                  follow_stale_sec=3.0,
                  service_name="request_transition"):
@@ -121,6 +137,28 @@ class StateIO:
         self._snap_pub = node.create_publisher(String, snapshot_topic, 10)
         self._result_pub = node.create_publisher(String, result_topic, 10)
         self._typed_pub = node.create_publisher(FsmState, typed_state_topic, 10)
+        # twist_mux 잠금. latched 가 아니라 매 tick 낸다 — twist_mux 는 마지막 값을
+        # 들고 있고, 우리가 안 내면 옛 값이 그대로 유효하다. 상태가 바뀌는 순간
+        # 반영돼야 하므로 상태 발행과 같은 주기로 붙여 둔다.
+        self._lock_pub = node.create_publisher(Bool, motion_lock_topic, 10)
+
+        # ── 잠금 상태의 **정지 명령** ────────────────────────────────────────
+        #
+        # 잠금(위 Bool)은 twist_mux 에서 아래 입력을 **통과시키지 않을 뿐, 0 을 만들지
+        # 않는다.** 그래서 잠긴 순간 `/cmd_vel` 은 침묵이고, 실제로 바퀴를 세우는 건
+        # 모터 워치독이다(pinky_bringup/cmd_watchdog.py, 0.5초). 즉 **최대 0.5초는
+        # 마지막 속도로 굴러간다** — 1.26×2.16m 축소맵에서 무시할 거리가 아니다.
+        #
+        # 그래서 잠근 주체가 정지도 같이 낸다: `cmd_vel_hold`(twist_mux priority 160)로
+        # 0 을 20Hz. 160 인 이유는 **잠금(150)보다 위, 비상정지(255)보다 아래**여야 하기
+        # 때문이다 — 자기가 건 잠금에 자기가 막히면 안 되고, 비상정지를 이겨서도 안 된다.
+        #
+        # ⚠️ 20Hz 인 이유: twist_mux 는 timeout(0.5s) 안에 안 오는 입력을 없는 것으로
+        #    친다. 상태 발행 주기(느릴 수 있다)에 얹으면 그 사이에 잠금이 풀린 것처럼
+        #    보여 nav2 가 다시 통과한다. 그래서 **별도 타이머**를 쓴다.
+        self._hold_pub = node.create_publisher(Twist, hold_topic, 10)
+        self._locked = False
+        node.create_timer(0.05, self._publish_hold)      # 20Hz
         node.create_subscription(String, request_topic, self._on_request_topic, 10)
         self._srv = node.create_service(RequestTransition, service_name, self._on_request_srv)
 
@@ -137,6 +175,13 @@ class StateIO:
             self._bb.register_key(key=key, access=Access.WRITE)
         for key in (Keys.BATTERY_PERCENT, Keys.IS_DOCKED, Keys.INTERACTING_REMAINING):
             self._bb.register_key(key=key, access=Access.READ)
+
+    def _publish_hold(self):
+        """잠긴 동안 0 을 20Hz 로 낸다. 안 잠겼으면 **아무것도 안 낸다** —
+        발행을 멈추면 twist_mux 가 timeout(0.5s) 뒤 이 입력을 없는 것으로 치고
+        아래 입력(추종·nav2)이 다시 통과한다."""
+        if self._locked:
+            self._hold_pub.publish(Twist())
 
     def _on_follow_snapshot(self, msg):
         try:
@@ -239,6 +284,10 @@ class StateIO:
         led = String(); led.data = current                       # LED 는 이름 원문만 본다
         self._led_pub.publish(led)
 
+        # 자율주행 잠금 — MOTION_LOCKED_STATES 주석 참고.
+        self._locked = current in MOTION_LOCKED_STATES
+        self._lock_pub.publish(Bool(data=self._locked))
+
         # remaining_sec 은 INTERACTING 일 때만 의미가 있다(UiSessionTimer 가 그 브랜치에서만
         # 쓴다). 다른 상태에선 0.0 으로 내보내 패널이 남은 카운트다운을 오인하지 않게 한다.
         remaining = self._read(Keys.INTERACTING_REMAINING) if current == "INTERACTING" else 0.0
@@ -274,7 +323,16 @@ class StateIO:
 
 
 #: 다른 프로세스의 서브트리를 붙일 자리. 이름이 곧 접합점이라 여기만 고치면 된다.
-_GRAFT_POINT = "FollowExec"
+#:
+#: 후보가 둘인 이유 — 회복 BT 는 **추종과 길잡이 양쪽에서 돈다.** 길잡이도 사람을
+#: 놓치면 반대 캠으로 찾기 때문이다(감시 세션도 트리를 돌린다. 속도만 삼킨다).
+#: 그런데 `CommandDispatch` 는 memory=False Selector 라, 길잡이 중에는 `GuideExec` 이
+#: tick 을 집어가고 `FollowExec` 은 **한 번도 안 돌아 INVALID** 로 남는다.
+#: 고정해 두면 화면에 **꺼진 노드 밑에서 무언가 돌고 있는** 그림이 나온다 — 코드는
+#: 멀쩡한데 화면만 거짓이 되는, 이 파일이 막으려는 바로 그 상황이다.
+_GRAFT_POINTS = ("FollowExec", "GuideExec")
+#: RUNNING 인 후보가 없을 때(추종·길잡이 둘 다 안 도는데 스냅샷은 온 경우) 붙일 자리.
+_GRAFT_FALLBACK = "FollowExec"
 
 
 def _kind(node) -> str:
@@ -304,15 +362,38 @@ def _kind(node) -> str:
     return cls
 
 
-def _to_dict(node, follow_subtree=None):
+def _pick_graft_point(node) -> str:
+    """지금 tick 을 쥔 접합 후보의 이름. 없으면 `_GRAFT_FALLBACK`.
+
+    추종이면 `FollowExec`, 길잡이면 `GuideExec` 이 RUNNING 이다. 둘 다 아니면(세션은
+    떴는데 미션 BT 가 다른 브랜치를 돌고 있는 등) 기본 자리에 붙인다 — 안 붙이면
+    회복 트리가 화면에서 통째로 사라져, 돌고 있는데 안 보이는 쪽으로 거짓이 된다.
+    """
+    for cand in _GRAFT_POINTS:
+        if _find_running(node, cand):
+            return cand
+    return _GRAFT_FALLBACK
+
+
+def _find_running(node, name) -> bool:
+    if node.name == name and _STATUS_NAME.get(node.status) == "RUNNING":
+        return True
+    return any(_find_running(c, name) for c in getattr(node, "children", []))
+
+
+def _to_dict(node, follow_subtree=None, graft_at=None):
     """트리 → `{name, status, children}`.
 
-    `follow_subtree` 가 있으면 `FollowExec` **밑에 붙인다.** 추종 회복 BT 는
-    libi_perception 이라는 **다른 프로세스**에서 돌아 이 트리에 존재하지 않는데,
-    관제 화면에서는 그 leaf 밑에 이어져 보여야 한다(그게 실제 실행 관계다).
+    `follow_subtree` 가 있으면 지금 도는 실행 leaf(`FollowExec`/`GuideExec`) **밑에
+    붙인다.** 추종·길잡이 회복 BT 는 libi_perception 이라는 **다른 프로세스**에서 돌아
+    이 트리에 존재하지 않는데, 관제 화면에서는 그 leaf 밑에 이어져 보여야 한다
+    (그게 실제 실행 관계다).
     """
-    children = [_to_dict(c, follow_subtree) for c in getattr(node, "children", [])]
-    if follow_subtree is not None and node.name == _GRAFT_POINT and not children:
+    if follow_subtree is not None and graft_at is None:
+        graft_at = _pick_graft_point(node)
+    children = [_to_dict(c, follow_subtree, graft_at)
+                for c in getattr(node, "children", [])]
+    if follow_subtree is not None and node.name == graft_at and not children:
         children = [follow_subtree]
     return {
         "name": node.name,

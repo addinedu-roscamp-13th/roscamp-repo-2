@@ -13,6 +13,9 @@ _KEY_BY_PROVIDER = {
     "command_received_at": Keys.COMMAND_RECEIVED_AT,
     "nav_target": Keys.NAV_TARGET,
     "robot_pose": Keys.ROBOT_POSE,
+    "requester_visible": Keys.REQUESTER_VISIBLE,
+    "requester_seen_at": Keys.REQUESTER_SEEN_AT,
+    "requester_area": Keys.REQUESTER_AREA,
 }
 
 

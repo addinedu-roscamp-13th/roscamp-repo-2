@@ -100,18 +100,17 @@ def rotate(req: RotateRequest):
 
 @router.websocket("/ws/drive")
 async def drive_ws(websocket: WebSocket):
-    """실시간 조이스틱 제어 — /cmd_vel 토픽 발행"""
-    from app.core import ros_bridge
+    """[2026-07-29 제거] 수동 조이스틱 주행.
+
+    twist_mux 에서 `cmd_vel_manual`(priority 200) 입력을 없앴다 — 시나리오에 수동 조작이
+    없는데 **자율 제어 전부를 이기는 문**만 열려 있었다. 발행자를 남겨 두면 "붙어는 있는데
+    바퀴는 안 도는" 상태가 되어 원인을 찾기 어렵다. 그래서 여기서 거절한다.
+    되살리려면: twist_mux.yaml 에 manual 입력을 되돌리고 ros_bridge 의 퍼블리셔를 복구.
+    """
     await websocket.accept()
-    try:
-        while True:
-            data = await websocket.receive_json()
-            linear = float(data.get("linear", 0.0))
-            angular = float(data.get("angular", 0.0))
-            ros_bridge.publish_cmd_vel(linear, angular)
-            await websocket.send_json({"type": "status", "ok": True, "linear": linear, "angular": angular})
-    except (WebSocketDisconnect, Exception):
-        ros_bridge.publish_cmd_vel(0.0, 0.0)
+    await websocket.send_json({"type": "error", "ok": False,
+                               "message": "수동 주행은 제거되었습니다 (twist_mux manual 입력 삭제)"})
+    await websocket.close()
 
 
 # ── 프로세스 관리 ────────────────────────────────────────────────────
@@ -624,20 +623,16 @@ class MotorMoveReq(BaseModel):
     duration: float = Field(0.5, ge=0.05, le=3.0)
 
 
+# [2026-07-29] 수동 모터 조작 제거 — 위 drive_ws 와 같은 이유(twist_mux manual 입력 삭제).
+# 정지는 **비상정지 경로**가 담당한다: libi_gui 가 `/cmd_vel_stop`(priority 255)로 0 을 낸다.
 @router.post("/motor/move")
 async def motor_move(req: MotorMoveReq):
-    from app.core import ros_bridge
-    linear = (req.left + req.right) / 2.0 / 100.0 * 0.22
-    angular = (req.right - req.left) / 2.0 / 100.0 * 2.84
-    ros_bridge.publish_cmd_vel(linear, angular)
-    await asyncio.sleep(req.duration)
-    ros_bridge.publish_cmd_vel(0.0, 0.0)
-    return {"success": True, "output": "", "error": ""}
+    raise HTTPException(status_code=410,
+                        detail="수동 주행은 제거되었습니다 (twist_mux manual 입력 삭제)")
 
 
 @router.post("/motor/stop")
 async def motor_stop():
-    from app.core import ros_bridge
-    ros_bridge.publish_cmd_vel(0.0, 0.0)
-    return {"success": True, "output": "", "error": ""}
+    raise HTTPException(status_code=410,
+                        detail="수동 주행은 제거되었습니다 — 정지는 패널 비상정지(/cmd_vel_stop)를 쓰세요")
 

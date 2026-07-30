@@ -1,7 +1,9 @@
 #include "RobotController.h"
 #include "RosLink.h"
+#include "domain.h"
 
 #include <QVariantMap>
+#include <QDateTime>
 #include <QTime>
 #include <QEventLoop>
 #include <QJsonArray>
@@ -13,6 +15,7 @@
 #include <QUrl>
 #include <QUrlQuery>
 #include <QDebug>
+#include <cmath>
 
 // 종료 시 해제 보고를 기다리는 상한. 관제 기록 정리보다 창이 안 닫히는 게 더 나쁘다.
 static constexpr int RELEASE_ON_EXIT_TIMEOUT_MS = 1200;
@@ -20,58 +23,32 @@ static constexpr int RELEASE_ON_EXIT_TIMEOUT_MS = 1200;
 // (응답이 늦어도 화면이 몇 초씩 멈추면 안 된다).
 static constexpr int ABA_SERVICE_TIMEOUT_MS = 1500;
 
-// 화면 카테고리 칩은 한글, ABA Service `/api/books` 는 영문 키를 쓴다
-// (books.py 의 CATEGORIES 와 반드시 같아야 한다).
-static QString korToApiCategory(const QString &kor) {
-    if (kor == QLatin1String("과학")) return QStringLiteral("science");
-    if (kor == QLatin1String("예술")) return QStringLiteral("art");
-    if (kor == QLatin1String("문학")) return QStringLiteral("literature");
-    if (kor == QLatin1String("인문학")) return QStringLiteral("humanities");
-    return QString();   // "전체"/빈 값 등 — 필터 없음
-}
+// 도서 JSON 변환·상태 판정·카테고리 변환·지도 좌표 변환은 전부 src/domain.h 에 있다
+// (화면도 ROS 도 모르는 순수 함수라 테스트가 그 파일만 링크한다). 여기서는 그대로 쓴다.
+using libi::apiToKorCategory;
+using libi::bookFromJson;
+using libi::korToApiCategory;
 
-static QString apiToKorCategory(const QString &api) {
-    if (api == QLatin1String("science")) return QStringLiteral("과학");
-    if (api == QLatin1String("art")) return QStringLiteral("예술");
-    if (api == QLatin1String("literature")) return QStringLiteral("문학");
-    if (api == QLatin1String("humanities")) return QStringLiteral("인문학");
-    return api;
-}
-
-// ABA Service 의 BookOut(JSON) → 화면이 쓰는 book QVariantMap.
-// 청구기호(call) 는 DB 에 아직 없어 서가 위치(shelf) 로 대신한다.
-static QVariantMap bookFromJson(const QJsonObject &o) {
-    QVariantMap m;
-    m["title"] = o.value("title").toObject().value("KR").toString();
-    m["author"] = o.value("author").toString();
-    m["call"] = o.value("shelf").toString();
-    m["category"] = apiToKorCategory(o.value("category").toString());
-    m["available"] = o.value("inStock").toBool() && !o.value("unavailable").toBool();
-    m["location"] = o.value("zone").toString();
-    return m;
-}
-
-// `name` 은 화면에 보여줄 표시 문구(하이라이트 비교에도 이 값을 쓴다), `waypoint` 는
-// 실제 waypoint.yaml 정점 이름이다 — 둘이 다른 경우가 있다("1번 테이블" 표시 ↔
-// "1번테이블" 정점, "안내데스크" 표시 ↔ "안네데스크" 정점 등). 지금은 startGuide 가
-// 목(mock)이라 표시 문구만 써도 동작하지만, 나중에 실제 ROS2 내비게이션을 붙일 때는
-// 반드시 `waypoint` 값으로 목적지를 잡아야 한다 — `name` 을 정점 이름인 줄 알고 그대로
-// 쓰면 이 프로젝트가 이미 여러 번 겪은 "화면 이름과 실제 정점 이름이 어긋나는" 버그가
-// 똑같이 재현된다.
-// `pillName` 은 지도 위 알약에만 쓰는 짧은 표기다(비우면 `name` 그대로) — 칩 목록·
-// 안내 시작·하이라이트 비교는 전부 `name`(전체 표기)을 그대로 쓴다. 알약은 글자 폭만큼
-// 스스로 커지는 자동 크기라, "1번 테이블"처럼 긴 이름이 오른쪽 끝에서 지도 밖으로
-// 삐져나가는 걸 막는 용도다(실측 확인됨).
+// `bx,by,bw,bh` 는 지도 그림(artemap.png) 안에서 그 구역 알약이 차지하는 상자다(0..1 비율).
+// 그림에 이미 이름·아이콘이 그려져 있어 화면은 알약을 다시 그리지 않는다 — 이 상자는
+// **탭 영역과 강조 테두리 위치**로만 쓴다. 값은 그림에서 실측한 것이라(색상별 경계상자)
+// 그림을 갈아끼우면 반드시 다시 재야 한다. 안 그러면 엉뚱한 곳이 눌린다.
+// `desc` 는 회원 앱 `LibraryMap.tsx` 의 구역 설명과 같은 문구를 쓴다(같은 도서관, 같은 안내).
+// `category` 는 서가일 때만 채운다 — 그 서가에 꽂힌 책을 조회할 때 zone 과 함께 쓴다
+// (과학 서가/인문학서가는 정점이 "과학-인문학서가" 하나라 zone 만으로는 안 갈린다).
 static QVariantMap makeFacility(const QString &name, const QString &waypoint,
-                                 const QString &icon, double x, double y,
-                                 const QString &pillName = QString()) {
+                                 const QString &icon, const QString &desc,
+                                 double bx, double by, double bw, double bh,
+                                 const QString &category = QString()) {
     QVariantMap m;
     m["name"] = name;
-    m["pillName"] = pillName.isEmpty() ? name : pillName;
     m["waypoint"] = waypoint;
     m["icon"] = icon;     // 이모지/표시
-    m["x"] = x;           // 지도 좌표 0..1
-    m["y"] = y;
+    m["desc"] = desc;
+    m["category"] = category;
+    m["bx"] = bx; m["by"] = by; m["bw"] = bw; m["bh"] = bh;
+    m["x"] = bx + bw / 2;   // 중심점 — 목록/정렬 등 상자가 필요 없는 곳용
+    m["y"] = by + bh / 2;
     return m;
 }
 
@@ -115,24 +92,12 @@ RobotController::RobotController(QObject *parent) : QObject(parent) {
     });
     m_batteryTimer.start();
 
-    // 길잡이 거리 카운트다운 (목)
-    m_guideTimer.setInterval(500);
-    connect(&m_guideTimer, &QTimer::timeout, this, [this]() {
-        if (m_estop) return;
-        if (m_guidePhase != QLatin1String("guiding")) return;
-        if (m_distance > 0.0) {
-            m_distance -= 0.6;
-            if (m_distance < 0.0) m_distance = 0.0;
-            emit distanceToGoalChanged();
-        }
-        if (m_distance <= 0.0) {
-            setGuidePhase(QStringLiteral("completed"));     // 목적지 도착 / 안내 종료
-            setTaskStatus(QStringLiteral("명령 대기"));
-            setRobotState(QStringLiteral("순찰"));
-            log(QStringLiteral("길잡이 완료 — 목적지 도착, 순찰 재개"));
-            m_guideTimer.stop();
-        }
-    });
+    // 길잡이 남은 거리는 pose 가 올 때마다 다시 잰다 (updateGuideDistance).
+    // **도착 판정은 여기서 하지 않는다** — 도착을 아는 건 BT(GuideExec)다. 화면이 거리
+    // 임계로 따로 판정하면 같은 것을 두 곳이 재게 되고, 값이 다르면 반드시 어긋난다
+    // (BT 가 더 관대하면 화면은 "도착"인데 로봇은 아직 가고, 반대면 그 반대).
+    // 화면은 로봇 FSM 이 WORKING 을 벗어나는 것으로 안내가 끝난 걸 안다 — 아래 attachRos.
+    connect(this, &RobotController::poseChanged, this, &RobotController::updateGuideDistance);
 }
 
 void RobotController::log(const QString &line) {
@@ -150,6 +115,75 @@ void RobotController::setRobotState(const QString &s) {
 void RobotController::setTaskStatus(const QString &s) {
     if (m_taskStatus == s) return;
     m_taskStatus = s; emit taskStatusChanged();
+}
+
+void RobotController::setGuideRegPhase(const QString &p) {
+    if (m_guideRegPhase == p) return;
+    m_guideRegPhase = p; emit guideRegPhaseChanged();
+}
+
+void RobotController::setCurrentCamera(const QString &c) {
+    if (m_currentCamera == c) return;
+    m_currentCamera = c; emit currentCameraChanged();
+}
+
+// 감시 세션을 연다/갱신한다.
+//
+// 카메라 선택의 **발행자는 로봇의 follow_node 하나뿐**이다. 패널은 세션만 열고,
+// 어느 캠을 켤지는 그 세션의 역할/인자에서 나온다 — 여기서 camera_select 를 직접
+// 내면 발행자가 둘이 되어 회복 중 서로 덮어쓴다.
+void RobotController::publishWatch(const QString &camera) {
+    if (!m_ros || m_watchSessionId.isEmpty()) return;
+    m_ros->publishFleetCmd(QStringLiteral(
+        "{\"action\":\"watch\",\"id\":\"%1\",\"args\":{\"camera\":\"%2\"}}")
+        .arg(m_watchSessionId, camera));
+}
+
+// 등록 화면에 들어간다 — **앞캠**이다.
+//
+// 이용자는 패널을 손으로 누르고 있으므로 등록 시점에는 로봇 **앞**에 있다.
+// 뒷캠으로 등록하려 하면 그 화면에는 아무도 안 나온다. 뒷캠으로 넘어가는 건
+// 출발 후 로봇이 앞장서기 시작할 때다.
+void RobotController::startGuideRegistration() {
+    if (!m_ros) { emit toast(QStringLiteral("ROS 연결이 없어 카메라를 켤 수 없습니다.")); return; }
+    if (m_watchSessionId.isEmpty())
+        m_watchSessionId = QStringLiteral("panel-%1")
+            .arg(QDateTime::currentMSecsSinceEpoch());
+    publishWatch(QStringLiteral("front"));
+    setCurrentCamera(QStringLiteral("front"));
+    setGuideRegPhase(QStringLiteral("registering"));
+    // 패널이 죽으면 stop 이 영영 안 온다. 로봇 쪽 lease 보다 촘촘히 갱신해서,
+    // 살아 있는 동안만 카메라가 켜져 있게 한다.
+    if (!m_watchLease.isActive()) {
+        m_watchLease.setInterval(10000);
+        connect(&m_watchLease, &QTimer::timeout, this,
+                [this] { publishWatch(m_currentCamera); });
+        m_watchLease.start();
+    }
+    log(QStringLiteral("길잡이 등록 화면 — 감시 세션 ") + m_watchSessionId);
+}
+
+void RobotController::confirmGuideRegistration() {
+    // 자세 기준 비율을 다시 재는 동안(약 4초)에는 로봇이 안 움직인다.
+    // 그 사실을 화면에 드러내지 않으면 "왜 안 가지"가 된다.
+    setGuideRegPhase(QStringLiteral("calibrating"));
+    QTimer::singleShot(4000, this, [this] {
+        if (m_guideRegPhase == QLatin1String("calibrating"))
+            setGuideRegPhase(QStringLiteral("ready"));
+    });
+}
+
+void RobotController::cancelGuideRegistration() {
+    if (m_watchSessionId.isEmpty()) return;
+    // **자기 세션만** 닫는다. 공용 stop 으로 닫으면 관리자 추종까지 끊길 수 있다.
+    if (m_ros)
+        m_ros->publishFleetCmd(QStringLiteral(
+            "{\"action\":\"stop\",\"id\":\"stop-%1\",\"args\":{\"session_id\":\"%1\"}}")
+            .arg(m_watchSessionId));
+    m_watchLease.stop();
+    m_watchSessionId.clear();
+    setCurrentCamera(QStringLiteral("none"));
+    setGuideRegPhase(QStringLiteral("idle"));
 }
 
 void RobotController::setGuidePhase(const QString &p) {
@@ -197,6 +231,11 @@ void RobotController::logout() {
 void RobotController::emergencyStop() {
     if (m_estop) return;
     m_estop = true; emit emergencyStoppedChanged();
+    // ⚠️ **바퀴부터 세운다.** 아래 FSM 전이(requestTransition)는 왕복이 있고 실패할 수도
+    // 있는데, 그 사이에도 추종·nav2 는 계속 /cmd_vel_follow·nav_out 을 민다.
+    // `/cmd_vel_stop` 은 twist_mux 최상위 입력(255)이라 그 전부를 즉시 이긴다.
+    // (2026-07-29 이전에는 화면 플래그만 뒤집혀서 바퀴는 그대로 돌았다.)
+    if (m_ros) m_ros->setEmergencyStop(true);
     m_lin = 0; m_ang = 0; emit linVelChanged(); emit angVelChanged();
     if (m_guidePhase == QLatin1String("guiding")) setGuidePhase(QStringLiteral("cancelled"));
     setRobotState(QStringLiteral("에러"));
@@ -213,11 +252,21 @@ void RobotController::clearEmergencyStop() {
     if (!m_estop) return;
     if (!m_isAdmin) { emit toast(QStringLiteral("관리자만 해제할 수 있습니다.")); return; }
     m_estop = false; emit emergencyStoppedChanged();
-    setRobotState(QStringLiteral("순찰"));
+    // 0 발행을 멈춘다. twist_mux 는 timeout(0.5s) 뒤 이 입력을 없는 것으로 치고,
+    // 그때부터 아래 입력(추종·nav2)이 다시 통과한다 — 즉 해제도 최대 0.5초 안에 반영된다.
+    if (m_ros) m_ros->setEmergencyStop(false);
+    // ⚠️ **로봇에게도 알려야 한다.** 예전엔 화면 플래그만 뒤집어서, 로봇 FSM 은 ERROR 인 채
+    // 남고 다음 fsm_state 가 오는 순간 화면이 다시 "에러"로 돌아갔다 — "해제를 눌러도
+    // 에러가 안 풀린다"의 정체다. emergencyStop() 이 ERROR 로 보냈으니 해제도 짝이 맞아야
+    // 한다. 전이표의 ERROR→IDLE(recovered) 간선이지만 force 를 주는 이유는 clearError()
+    // 와 같다 — 화면이 아는 상태와 로봇의 실제 상태가 어긋나 있어도 반드시 빠져나와야 한다.
+    requestTransition(QStringLiteral("IDLE"), /*force=*/true);
+    setRobotState(QStringLiteral("대기"));
     setTaskStatus(QStringLiteral("명령 대기"));
     setEmotion(QStringLiteral("happy"));
-    if (!m_patrol) { m_patrol = true; emit patrolActiveChanged(); }
-    log(QStringLiteral("비상정지 해제 — 정상 복귀"));
+    // 순찰 여부는 로봇이 정한다 — 해제했다고 화면이 "순찰 중"이라고 단정하지 않는다.
+    if (m_patrol) { m_patrol = false; emit patrolActiveChanged(); }
+    log(QStringLiteral("비상정지 해제 — IDLE 전이 요청"));
 }
 
 // ---- 관리자 작업상태/에러 복구 (관리자 수동조작 대체) ----
@@ -280,7 +329,9 @@ void RobotController::startPatrol() {
 void RobotController::startAdminFollow() {
     if (!m_isAdmin) { emit toast(QStringLiteral("관리자만 조작할 수 있습니다.")); return; }
     if (m_estop) { emit toast(QStringLiteral("비상정지 상태입니다. 먼저 에러를 해제하세요.")); return; }
-    if (m_robotState == QLatin1String("에러")) { emit toast(QStringLiteral("에러 상태에서는 추종을 시작할 수 없습니다.")); return; }
+    // QStringLiteral 이어야 한다 — QLatin1String 은 UTF-8 한글과 절대 같아지지 않아
+    // 이 차단이 통째로 안 걸린다(위 korToApiCategory 주석 참고).
+    if (m_robotState == QStringLiteral("에러")) { emit toast(QStringLiteral("에러 상태에서는 추종을 시작할 수 없습니다.")); return; }
     if (m_following) { emit toast(QStringLiteral("이미 추종 중입니다.")); return; }
     if (m_followPending) { emit toast(QStringLiteral("승인 요청 중입니다.")); return; }
     if (m_robotId.isEmpty()) {
@@ -291,31 +342,48 @@ void RobotController::startAdminFollow() {
     requestFollowGrant();
 }
 
+// FMS 요청의 단일 통로. ROS2 링크가 살아 있으면 `/panel_request` 로, 아니면 HTTP 로 간다.
+// 둘은 같은 핸들러에 닿는다(FMS app/panel_bridge.py 가 라우터 코루틴을 그대로 부른다) —
+// 그래서 아래 호출부들은 어느 통로로 갔는지 몰라도 되고, 응답 파싱도 한 벌뿐이다.
+void RobotController::fmsCall(const QString &op, const QString &httpPath,
+                              const QJsonObject &body,
+                              std::function<void(bool, QJsonObject)> cb) {
+    if (m_ros && m_ros->panelLinkUp()) {
+        m_ros->panelRequest(op, body, cb);
+        return;
+    }
+    QNetworkRequest req{QUrl(m_fmsUrl + httpPath)};
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    QNetworkReply *reply = m_net->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [reply, cb]() {
+        reply->deleteLater();
+        if (!cb) return;
+        if (reply->error() != QNetworkReply::NoError) { cb(false, QJsonObject()); return; }
+        cb(true, QJsonDocument::fromJson(reply->readAll()).object());
+    });
+}
+
 void RobotController::requestFollowGrant() {
     m_followPending = true;
     log(QStringLiteral("관리자 추종 — FMS 승인 요청 (robot_id=%1)").arg(m_robotId));
 
-    QNetworkRequest req{QUrl(m_fmsUrl + QStringLiteral("/api/robot/admin-follow/request"))};
-    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
-
     QJsonObject body;
     body[QStringLiteral("robot_id")] = m_robotId;
 
-    QNetworkReply *reply = m_net->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() { onFollowGrantReply(reply); });
+    fmsCall(QStringLiteral("follow.request"),
+            QStringLiteral("/api/robot/admin-follow/request"), body,
+            [this](bool ok, QJsonObject res) { onFollowGrantReply(ok, res); });
 }
 
-void RobotController::onFollowGrantReply(QNetworkReply *reply) {
-    reply->deleteLater();
+void RobotController::onFollowGrantReply(bool ok, const QJsonObject &body) {
     m_followPending = false;
 
-    if (reply->error() != QNetworkReply::NoError) {
-        log(QStringLiteral("추종 승인 실패 — FMS 통신 오류: %1").arg(reply->errorString()));
+    if (!ok) {
+        log(QStringLiteral("추종 승인 실패 — FMS 통신 오류/무응답"));
         emit toast(QStringLiteral("관제 서버에 연결할 수 없어 추종을 시작하지 않았습니다."));
         return;
     }
 
-    const QJsonObject body = QJsonDocument::fromJson(reply->readAll()).object();
     if (!body.value(QStringLiteral("accepted")).toBool()) {
         // reason 은 FMS 가 판단 근거를 담아 보내준다(상태·중복 등). 그대로 보여준다.
         const QString reason = body.value(QStringLiteral("reason")).toString();
@@ -328,7 +396,9 @@ void RobotController::onFollowGrantReply(QNetworkReply *reply) {
 }
 
 void RobotController::beginFollowing() {
-    m_following = true; emit followingChanged();
+    m_following = true;
+    m_followSawWorking = false;   // 아직 WORKING 을 못 봤다 (헤더 주석 참고)
+    emit followingChanged();
     setRobotState(QStringLiteral("작업중"));
     setTaskStatus(QStringLiteral("관리자 추종 중"));
     requestTransition(QStringLiteral("WORKING"));
@@ -342,7 +412,7 @@ void RobotController::beginFollowing() {
 void RobotController::stopAdminFollow() {
     if (!m_isAdmin) { emit toast(QStringLiteral("관리자만 조작할 수 있습니다.")); return; }
     if (!m_following) return;
-    m_following = false; emit followingChanged();
+    m_following = false; m_followSawWorking = false; emit followingChanged();
     setRobotState(QStringLiteral("대기"));
     setTaskStatus(QStringLiteral("명령 대기"));
     log(QStringLiteral("관리자 추종 종료"));
@@ -356,6 +426,11 @@ void RobotController::stopAdminFollow() {
 //
 // stopAdminFollow() 를 못 쓰는 이유: 그건 비동기라 요청이 나가기 전에 이벤트 루프가 끝난다.
 // 여기서는 응답까지 짧게 기다린다(종료가 몇 초씩 늘어지면 안 되므로 상한을 둔다).
+//
+// ⚠️ 여기만 ROS2 통로를 쓰지 않고 HTTP 로 남는다. 종료 경로라 이벤트 루프를 돌릴 수 없어
+//    아래처럼 QEventLoop 로 짧게 막고 기다리는데, ROS2 통로의 응답은 spin 스레드 →
+//    큐잉 시그널로 오므로 이 지역 루프에서는 도착을 보장할 수 없다. FMS 의 HTTP 라우터는
+//    그대로 살아 있으므로(폴백 경로) 이대로 동작한다.
 void RobotController::releaseFollowOnExit() {
     if (!m_following || m_robotId.isEmpty()) return;
     m_following = false;
@@ -377,19 +452,15 @@ void RobotController::releaseFollowOnExit() {
 void RobotController::reportFollowRelease() {
     if (m_robotId.isEmpty()) return;   // 승인 자체를 받은 적이 없다
 
-    QNetworkRequest req{QUrl(m_fmsUrl + QStringLiteral("/api/robot/admin-follow/release"))};
-    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
-
     QJsonObject body;
     body[QStringLiteral("robot_id")] = m_robotId;
 
-    QNetworkReply *reply = m_net->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
-        reply->deleteLater();
-        if (reply->error() != QNetworkReply::NoError)
-            log(QStringLiteral("추종 종료 보고 실패 — 관제에 추종 중으로 남을 수 있습니다: %1")
-                    .arg(reply->errorString()));
-    });
+    fmsCall(QStringLiteral("follow.release"),
+            QStringLiteral("/api/robot/admin-follow/release"), body,
+            [this](bool ok, QJsonObject) {
+                if (!ok)
+                    log(QStringLiteral("추종 종료 보고 실패 — 관제에 추종 중으로 남을 수 있습니다."));
+            });
 }
 
 // 관리자 전이 요청. 검증·감사는 FMS /api/fsm/transition 이 한다(로컬은 optimistic,
@@ -399,40 +470,128 @@ void RobotController::requestTransition(const QString &target, bool force) {
     if (m_robotId.isEmpty()) {
         log(QStringLiteral("전이 요청 불가 — ROBOT_ID 미설정")); return;
     }
-    QNetworkRequest req{QUrl(m_fmsUrl + QStringLiteral("/api/fsm/transition"))};
-    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    // ⚠️ `/api/fsm/transition` 이 **아니다.** 그쪽은 `get_current_admin` 을 요구하는데
+    // 패널에는 FMS 토큰이 없어 **모든 전이가 401 로 조용히 죽었다** — 화면의 "관리자 모드"
+    // 는 PIN 로 여는 로컬 권한일 뿐 FMS 인증이 아니다. 증상 둘:
+    //   · 관리자가 에러를 해제해도 로봇은 ERROR 인 채 → 다음 상태 수신에 화면이 도로 에러
+    //   · 비상정지가 로봇에 전달되지 않음 → 화면만 ⛔ 이고 로봇은 계속 굴러감
+    // 패널 전용 통로(허용 상태 ERROR/IDLE/PATROL)로 보낸다. 근거: app/routers/panel.py
     QJsonObject body;
     body[QStringLiteral("robot_id")] = m_robotId;
     body[QStringLiteral("target_state")] = target;
     body[QStringLiteral("force")] = force;
-    QNetworkReply *reply = m_net->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
-    connect(reply, &QNetworkReply::finished, this, [this, reply, target]() {
-        reply->deleteLater();
-        if (reply->error() != QNetworkReply::NoError)
-            log(QStringLiteral("전이 실패(%1) — %2").arg(target, reply->errorString()));
+    fmsCall(QStringLiteral("panel.transition"),
+            QStringLiteral("/api/robot/panel/transition"), body,
+            [this, target](bool ok, QJsonObject o) {
+        if (!ok) {
+            log(QStringLiteral("전이 실패(%1) — 관제 무응답").arg(target));
+            return;
+        }
+        // 거절도 실패다. 조용히 넘어가면 화면만 바뀌고 로봇은 그대로인 상태가 다시 생긴다.
+        if (!o.value(QStringLiteral("accepted")).toBool()) {
+            const QString why = o.value(QStringLiteral("reason")).toString();
+            log(QStringLiteral("전이 거절(%1) — %2").arg(target, why));
+            emit toast(why.isEmpty() ? QStringLiteral("전이가 거절되었습니다.") : why);
+        }
     });
 }
 
+// `destination` 은 화면 표시명("과학 서가")이다. FMS 에는 **정점 이름**("과학-인문학서가")을
+// 보내야 한다 — 둘은 다르고, 표시명을 그대로 보내면 "그런 정점 없음"으로 거절된다.
+QString RobotController::waypointOf(const QString &displayName) const {
+    for (const QVariant &v : facilities()) {
+        const QVariantMap m = v.toMap();
+        if (m["name"].toString() == displayName) return m["waypoint"].toString();
+    }
+    return QString();
+}
+
+// 목적지 정점의 map 좌표. 남은 거리 계산용 — 화면이 거리를 지어내지 않게 한다.
+bool RobotController::destinationXY(const QString &displayName, double *x, double *y) const {
+    const QString wp = waypointOf(displayName);
+    if (wp.isEmpty()) return false;
+    // waypoint.yaml 은 로봇 쪽 파일이라 GUI 는 안 읽는다. FMS 응답(target)에 실려 온 값을 쓴다.
+    if (!m_guideTargetValid || m_guideTargetWaypoint != wp) return false;
+    *x = m_guideTargetX; *y = m_guideTargetY;
+    return true;
+}
+
+// 안내는 **FMS 를 거친다.** 패널이 로봇 토픽에 직접 명령을 넣으면 BT(GuideExec)를 건너뛰어
+// 요청자를 놓쳐도 아무도 멈추지 않고, fleet_cmd 봉투(id)가 없어 조용히 버려지며, 전이와
+// 주행이 다른 채널이라 순서도 보장되지 않는다. 근거는 aba_fms_service/app/routers/guide.py 상단.
 void RobotController::startGuide(const QString &destination) {
     if (m_estop) { emit toast(QStringLiteral("비상정지 상태입니다.")); return; }
+    if (m_robotId.isEmpty()) { emit toast(QStringLiteral("ROBOT_ID 가 없어 안내를 요청할 수 없습니다.")); return; }
+
+    const QString waypoint = waypointOf(destination);
+    if (waypoint.isEmpty()) { emit toast(QStringLiteral("모르는 목적지입니다: ") + destination); return; }
+
     m_guideDest = destination; emit guideDestinationChanged();
-    m_distance = 24.0; emit distanceToGoalChanged();
-    setGuidePhase(QStringLiteral("guiding"));
-    setRobotState(QStringLiteral("안내중"));
-    requestTransition(QStringLiteral("WORKING"));
-    setTaskStatus(QStringLiteral("사용자 명령 수행 중"));
+    setGuidePhase(QStringLiteral("requesting"));
     setEmotion(QStringLiteral("interest"));
-    log(QStringLiteral("길잡이 시작 → ") + destination);
     if (m_mode != QLatin1String("guide")) setMode(QStringLiteral("guide"));
-    m_guideTimer.start();
+    log(QStringLiteral("길잡이 요청 → ") + destination + QStringLiteral(" (") + waypoint + QStringLiteral(")"));
+
+    QJsonObject body{{"robot_id", m_robotId}, {"waypoint", waypoint}};
+    fmsCall(QStringLiteral("guide.request"),
+            QStringLiteral("/api/robot/guide/request"), body,
+            [this, destination, waypoint](bool ok, QJsonObject o) {
+        // 승인 없이는 시작하지 않는다(fail-closed) — 관제가 모르는 주행이 도는 것이
+        // 이 승인 절차가 막으려는 상황이다. 관리자 추종과 같은 원칙.
+        // ROS2 통로에서는 **무응답도 여기로 온다**(RosLink 의 타임아웃) — 토픽은 아무도
+        // 안 듣고 있어도 발행이 성공하므로, 그게 없으면 여기 도달을 못 한다.
+        if (!ok) {
+            setGuidePhase(QStringLiteral("failed"));
+            emit toast(QStringLiteral("관제에 연결할 수 없어 안내를 시작하지 못했습니다."));
+            log(QStringLiteral("길잡이 요청 실패 — 관제 무응답"));
+            return;
+        }
+        if (!o.value("granted").toBool()) {
+            setGuidePhase(QStringLiteral("failed"));
+            const QString reason = o.value("reason").toString();
+            emit toast(reason.isEmpty() ? QStringLiteral("안내가 거절되었습니다.") : reason);
+            log(QStringLiteral("길잡이 거절 — ") + reason);
+            return;
+        }
+        const QJsonObject t = o.value("target").toObject();
+        m_guideTargetX = t.value("x").toDouble();
+        m_guideTargetY = t.value("y").toDouble();
+        m_guideTargetWaypoint = waypoint;
+        m_guideTargetValid = true;
+        setGuidePhase(QStringLiteral("guiding"));
+        // 출발하면 로봇이 앞장서고 이용자는 뒤에 남는다 — 감시 캠이 뒤로 넘어간다.
+        // (실제 전환은 로봇의 follow_node 가 한다. 여기는 화면 라벨만 맞춘다.)
+        setCurrentCamera(QStringLiteral("back"));
+        setTaskStatus(QStringLiteral("사용자 명령 수행 중"));
+        updateGuideDistance();
+        log(QStringLiteral("길잡이 승인 — 안내 시작"));
+    });
+}
+
+// 남은 거리는 **실제 위치와 목적지 좌표**로 잰다. 예전엔 24.0m 를 타이머로 깎기만 했는데,
+// 지도에 실제 로봇이 뜨는 지금은 그 숫자가 곧바로 거짓말로 드러난다(마커는 제자리인데
+// 거리만 줄어든다). 위치를 모르면 음수로 두고 화면이 숫자를 안 띄운다.
+void RobotController::updateGuideDistance() {
+    double x = 0, y = 0;
+    const double d = destinationXY(m_guideDest, &x, &y) ? distanceTo(x, y) : -1.0;
+    if (qFuzzyCompare(d + 1.0, m_distance + 1.0)) return;
+    m_distance = d;
+    emit distanceToGoalChanged();
 }
 
 void RobotController::cancelGuide() {
-    if (m_guidePhase != QLatin1String("guiding")) return;
+    if (m_guidePhase != QLatin1String("guiding") && m_guidePhase != QLatin1String("requesterLost")) return;
+    // **먼저 멈추라고 보내고** 화면을 정리한다(fail-open). 응답을 기다렸다가 화면을 바꾸면
+    // 관제가 죽었을 때 "취소를 눌렀는데 아무 일도 안 일어나는" 상태가 된다.
+    if (!m_robotId.isEmpty()) {
+        QJsonObject body{{"robot_id", m_robotId}};
+        // 콜백이 없다 — 응답을 기다리지 않는 게 fail-open 의 요점이다.
+        fmsCall(QStringLiteral("guide.release"),
+                QStringLiteral("/api/robot/guide/release"), body, nullptr);
+    }
     setGuidePhase(QStringLiteral("cancelled"));
     setTaskStatus(QStringLiteral("명령 대기"));
-    setRobotState(QStringLiteral("순찰"));
-    if (!m_patrol) { m_patrol = true; emit patrolActiveChanged(); }
+    m_guideTargetValid = false;
     m_guideTimer.stop();
     log(QStringLiteral("길잡이 취소 (사용자)"));
 }
@@ -476,19 +635,43 @@ void RobotController::setGripper(double v) { if (!m_isAdmin) return; m_gripper =
 // 실제 정점과 무관한 이름을 썼다. x,y 는 회원 앱과 같은 스키마 배치의 중심점(0..1)이다.
 QVariantList RobotController::facilities() const {
     QVariantList f;
-    f << makeFacility(QStringLiteral("화장실"), QStringLiteral("화장실"), QStringLiteral("🚻"), 0.185, 0.075);
-    f << makeFacility(QStringLiteral("미술작품"), QStringLiteral("미술작품"), QStringLiteral("🖼"), 0.465, 0.075);
-    f << makeFacility(QStringLiteral("수거함"), QStringLiteral("수거함"), QStringLiteral("📥"), 0.56, 0.23);
-    f << makeFacility(QStringLiteral("1번 테이블"), QStringLiteral("1번테이블"), QStringLiteral("🪑"), 0.74, 0.255,
-                       QStringLiteral("1번"));
-    f << makeFacility(QStringLiteral("2번 테이블"), QStringLiteral("2번테이블"), QStringLiteral("🪑"), 0.87, 0.255,
-                       QStringLiteral("2번"));
-    f << makeFacility(QStringLiteral("예술서가"), QStringLiteral("예술서가"), QStringLiteral("🖌"), 0.13, 0.475);
-    f << makeFacility(QStringLiteral("문학서가"), QStringLiteral("문학서가"), QStringLiteral("📖"), 0.13, 0.755);
-    f << makeFacility(QStringLiteral("과학 서가"), QStringLiteral("과학-인문학서가"), QStringLiteral("🔬"), 0.37, 0.405);
-    f << makeFacility(QStringLiteral("인문학서가"), QStringLiteral("과학-인문학서가"), QStringLiteral("🎓"), 0.47, 0.63);
-    f << makeFacility(QStringLiteral("출입구"), QStringLiteral("도서관출입구"), QStringLiteral("🚪"), 0.86, 0.54);
-    f << makeFacility(QStringLiteral("안내데스크"), QStringLiteral("안네데스크"), QStringLiteral("ℹ"), 0.815, 0.925);
+    // [2026-07-30] 옛 `분류함` 정점은 `미정` 이 됐다(도서관에서 없어졌고, 지도 그림을 다시
+    // 그려야 무엇이 될지 정해진다). 여기에 카드를 만들지 않는 이유가 그거다 — 이 목록의
+    // bx/by/bw/bh 는 패널 지도 **그림에서 실측한** 값이라, 그림이 없으면 지어낼 수 없다
+    // (넣게 되면 tools/measure_map_boxes.py 로 그 칸을 재서 추가할 것).
+    f << makeFacility(QStringLiteral("화장실"), QStringLiteral("화장실"), QStringLiteral("🚻"),
+                      QStringLiteral("화장실입니다. 남녀 공용으로 각 1칸씩 있어요."),
+                      0.139, 0.031, 0.207, 0.100);
+    f << makeFacility(QStringLiteral("미술작품"), QStringLiteral("미술작품"), QStringLiteral("🖼"),
+                      QStringLiteral("도서관에 전시된 미술작품 구역입니다. 로봇이 순찰하며 지나가요."),
+                      0.344, 0.030, 0.227, 0.106);
+    f << makeFacility(QStringLiteral("수거함"), QStringLiteral("수거함"), QStringLiteral("📥"),
+                      QStringLiteral("다 본 책이나 반납할 책을 넣어두면 로봇이 거둬 갑니다."),
+                      0.599, 0.098, 0.053, 0.249);
+    f << makeFacility(QStringLiteral("1번 테이블"), QStringLiteral("1번테이블"), QStringLiteral("🪑"),
+                      QStringLiteral("열람 테이블입니다. 회원 앱 「도서 요청」에서 자리로 받기를 고르면 로봇이 여기로 책을 가져다 줘요."),
+                      0.691, 0.148, 0.111, 0.188);
+    f << makeFacility(QStringLiteral("2번 테이블"), QStringLiteral("2번테이블"), QStringLiteral("🪑"),
+                      QStringLiteral("열람 테이블입니다. 회원 앱 「도서 요청」에서 자리로 받기를 고르면 로봇이 여기로 책을 가져다 줘요."),
+                      0.815, 0.148, 0.109, 0.188);
+    f << makeFacility(QStringLiteral("예술서가"), QStringLiteral("예술서가"), QStringLiteral("🖌"),
+                      QStringLiteral("미술·디자인·음악·사진 서가입니다."),
+                      0.122, 0.353, 0.054, 0.268, QStringLiteral("예술"));
+    f << makeFacility(QStringLiteral("과학 서가"), QStringLiteral("과학-인문학서가"), QStringLiteral("🔬"),
+                      QStringLiteral("과학·수학·자연 서가입니다."),
+                      0.284, 0.371, 0.230, 0.086, QStringLiteral("과학"));
+    f << makeFacility(QStringLiteral("인문학서가"), QStringLiteral("과학-인문학서가"), QStringLiteral("🎓"),
+                      QStringLiteral("철학·역사·사회 서가입니다."),
+                      0.453, 0.483, 0.051, 0.311, QStringLiteral("인문학"));
+    f << makeFacility(QStringLiteral("출입구"), QStringLiteral("도서관출입구"), QStringLiteral("🚪"),
+                      QStringLiteral("도서관 출입구입니다."),
+                      0.940, 0.416, 0.048, 0.259);
+    f << makeFacility(QStringLiteral("문학서가"), QStringLiteral("문학서가"), QStringLiteral("📖"),
+                      QStringLiteral("소설·시·고전이 있는 서가입니다."),
+                      0.124, 0.622, 0.050, 0.267, QStringLiteral("문학"));
+    f << makeFacility(QStringLiteral("안내데스크"), QStringLiteral("안네데스크"), QStringLiteral("ℹ"),
+                      QStringLiteral("대여 신청한 도서를 여기서 사서에게 받아요. 궁금한 점도 안내데스크에서 물어볼 수 있어요."),
+                      0.709, 0.873, 0.226, 0.091);
     return f;
 }
 
@@ -549,12 +732,16 @@ int RobotController::httpGetAsync(const QString &path, const QUrlQuery &query,
 
 // searchBooks() 와 같은 조회, 화면 프로퍼티 바인딩에서 직접 부르지 않도록 비동기로 분리한
 // 버전. SearchScreen.qml 전용 — onlyAvailable 필터도 동일하게 클라이언트에서 마저 거른다.
-int RobotController::searchBooksAsync(const QString &query, const QString &category, bool onlyAvailable) {
+int RobotController::searchBooksAsync(const QString &query, const QString &category, bool onlyAvailable,
+                                      const QString &zone) {
     QUrlQuery q;
     if (!query.trimmed().isEmpty()) q.addQueryItem(QStringLiteral("q"), query.trimmed());
     const QString apiCat = korToApiCategory(category);
     if (!apiCat.isEmpty()) q.addQueryItem(QStringLiteral("category"), apiCat);
-    q.addQueryItem(QStringLiteral("limit"), QStringLiteral("30"));
+    // 서가 조회는 그 서가에 꽂힌 책 **전부**가 나와야 한다 — 검색 결과처럼 30권에서 자르면
+    // 뒤쪽 책이 조용히 빠져 "여기 없는 책"이 된다.
+    if (!zone.isEmpty()) q.addQueryItem(QStringLiteral("zone"), zone);
+    q.addQueryItem(QStringLiteral("limit"), zone.isEmpty() ? QStringLiteral("30") : QStringLiteral("200"));
 
     return httpGetAsync(QStringLiteral("/api/books"), q,
         [this, onlyAvailable](int id, bool ok, const QJsonDocument &doc) {
@@ -562,7 +749,10 @@ int RobotController::searchBooksAsync(const QString &query, const QString &categ
             if (ok) {
                 for (const QJsonValue &v : doc.array()) {
                     QVariantMap m = bookFromJson(v.toObject());
-                    if (onlyAvailable && !m["available"].toBool()) continue;
+                    // **"서가에 있는가"로 거른다** — 화면 칩 문구가 그렇게 말한다.
+                    // available(=빌릴 수 있는가)로 거르면 훼손 처리된 책이 서가에
+                    // 꽂혀 있는데도 사라져, 찾으러 온 사람이 헛걸음한다.
+                    if (onlyAvailable && !m["inStock"].toBool()) continue;
                     out << m;
                 }
             }
@@ -608,7 +798,10 @@ QVariantList RobotController::searchBooks(const QString &query, const QString &c
     const QJsonDocument doc = httpGetJson(QStringLiteral("/api/books"), q);
     for (const QJsonValue &v : doc.array()) {
         QVariantMap m = bookFromJson(v.toObject());
-        if (onlyAvailable && !m["available"].toBool()) continue;
+        // **"서가에 있는가"로 거른다** — 화면 칩 문구가 그렇게 말한다.
+                    // available(=빌릴 수 있는가)로 거르면 훼손 처리된 책이 서가에
+                    // 꽂혀 있는데도 사라져, 찾으러 온 사람이 헛걸음한다.
+                    if (onlyAvailable && !m["inStock"].toBool()) continue;
         out << m;
     }
     return out;
@@ -657,20 +850,68 @@ QString RobotController::mapState(const QString &c) {
     if (c == "PATROL")          return QStringLiteral("순찰");
     if (c == "SECURITY_PATROL") return QStringLiteral("보안순찰");
     if (c == "WORKING")         return QStringLiteral("작업중");
-    if (c == "INTERACTING")     return QStringLiteral("응대중");
+    // [2026-07-30] "응대중" → "이용중". 이 상태의 실제 뜻은 **방문객이 패널을 잡고 있어
+    // 로봇이 멈춰 있다** 이고, fleet_node 도 그래서 배차에서 뺀다(fleet_node.cpp:869).
+    // "안내"는 길잡이(WORKING·GuideExec)가 이미 쓰는 말이라 쓰면 두 상태가 안 갈린다.
+    if (c == "INTERACTING")     return QStringLiteral("이용중");
     if (c == "CHARGING")        return QStringLiteral("충전중");
     if (c == "RETURNING")       return QStringLiteral("복귀중");
     if (c == "ERROR")           return QStringLiteral("에러");
     return c;   // 미지 상태는 원문 표시
 }
 
+// 이 시간 넘게 새 pose 가 안 오면 "위치를 모른다"로 되돌린다. AMCL 이 죽거나 브릿지가
+// 끊겨도 마지막 값은 그대로 남아 있어서, 안 지우면 화면이 있지도 않은 자리에 로봇을
+// 계속 그린다 (libi_perception DetectionReceiver 의 TTL 과 같은 이유 — 모르는 걸 안다고
+// 하지 않는다). AMCL 은 보통 1Hz 이상 발행하므로 5초면 충분히 여유롭다.
+static constexpr int POSE_TTL_MS = 5000;
+
+double RobotController::distanceTo(double x, double y) const {
+    if (!m_poseValid) return -1.0;
+    return std::hypot(x - m_poseWorldX, y - m_poseWorldY);
+}
+
 void RobotController::attachRos(RosLink *ros) {
     m_ros = ros;
+
+    // 상태 수신이 끊기면 "붙어 있다"를 되돌린다. 한 번 받았다고 영구 true 로 두면,
+    // 브릿지가 죽은 뒤에도 상단바가 "화면을 누르면 계속"이라고 말한다 — 눌러도 전달될
+    // 상대가 없는데. pose 와 같은 원칙(모르는 것을 안다고 하지 않는다).
+    // /libi/fsm_state 는 BT tick 주기로 오므로 여유롭게 잡는다.
+    m_fsmFreshness.setSingleShot(true);
+    m_fsmFreshness.setInterval(POSE_TTL_MS);
+    connect(&m_fsmFreshness, &QTimer::timeout, this, [this]() {
+        if (!m_rosConnected) return;
+        m_rosConnected = false;
+        emit rosConnectedChanged();
+        log(QStringLiteral("로봇 상태 수신 끊김"));
+    });
+
+    m_poseFreshness.setSingleShot(true);
+    m_poseFreshness.setInterval(POSE_TTL_MS);
+    connect(&m_poseFreshness, &QTimer::timeout, this, [this]() {
+        if (!m_poseValid) return;
+        m_poseValid = false;
+        emit poseChanged();
+        log(QStringLiteral("위치 수신 끊김 — 지도에서 로봇 마커를 숨깁니다"));
+    });
+
+    connect(ros, &RosLink::poseReceived, this, [this](double x, double y, double yaw) {
+        m_poseWorldX = x; m_poseWorldY = y;
+        m_mapX = libi::mapToImageU(y);
+        m_mapY = libi::mapToImageV(x);
+        m_mapHeadingDeg = libi::mapYawToImageRotationDeg(yaw);
+        m_poseValid = true;
+        m_poseFreshness.start();
+        emit poseChanged();
+    });
+
     connect(ros, &RosLink::fsmStateReceived, this,
         [this](QString state, double remaining, QString errorCode,
                double battery, bool docked) {
             Q_UNUSED(errorCode); Q_UNUSED(docked);
-            m_rosConnected = true;
+            if (!m_rosConnected) { m_rosConnected = true; emit rosConnectedChanged(); }
+            m_fsmFreshness.start();   // 끊기면 되돌린다 — 아래 setup 참고
             setRobotState(mapState(state));
             const int r = static_cast<int>(remaining + 0.5);
             if (r != m_interactingRemaining) { m_interactingRemaining = r; emit interactingRemainingChanged(); }
@@ -680,6 +921,45 @@ void RobotController::attachRos(RosLink *ros) {
             }
             const bool ch = (state == "CHARGING");
             if (ch != m_charging) { m_charging = ch; emit chargingChanged(); }
+
+            // 안내가 끝난 걸 아는 건 BT 다. GuideExec 이 도착(SUCCESS)하면 WorkingBranch 가
+            // task_done 으로 WORKING 을 빠져나온다 — 화면은 그걸 보고 끝낸다. 거리 임계로
+            // 화면이 따로 판정하면 BT 와 두 벌이 되어 반드시 어긋난다.
+            // 실패(요청자 이탈·주행 실패)도 같은 경로로 WORKING 을 벗어나므로, 지금은
+            // 둘을 구분하지 못한다 — 구분하려면 fsm_state 에 사유가 실려야 한다.
+            if (m_guidePhase == QLatin1String("guiding") && state != QLatin1String("WORKING")) {
+                setGuidePhase(QStringLiteral("completed"));
+                setTaskStatus(QStringLiteral("명령 대기"));
+                m_guideTargetValid = false;
+                log(QStringLiteral("길잡이 종료 — 로봇이 WORKING 을 벗어남 (") + state + QStringLiteral(")"));
+            }
+
+            // 관리자 추종도 같다 — **길잡이에만 있고 여기엔 없었다.**
+            //
+            // `m_following` 을 되돌리는 곳이 「해제」 버튼과 GUI 종료뿐이라, 로봇이 다른
+            // 이유로 WORKING 을 벗어나면(관제 취소·배터리·에러·stop_request·미션 타임아웃)
+            // 패널만 계속 "추종 중"으로 남았다. 그러면 다음 시도가 startAdminFollow() 의
+            // `if (m_following)` 에서 **HTTP 를 보내지도 못하고** 막힌다 —
+            // 화면엔 "이미 추종 중입니다" 만 뜨고 원인이 안 보인다.
+            // 실측 2026-07-28: 추종이 두 번 연속 안 됐다.
+            //
+            // FMS 승인 기록도 같이 정리한다. 로봇은 이미 WORKING 을 나갔으므로 그 기록만
+            // 남으면 이번엔 관제 쪽에서 "승인 기록이 남아 있습니다" 로 막힌다.
+            // ⚠️ **WORKING 을 한 번 본 뒤에만** 종료로 친다.
+            // 승인 직후에는 WORKING 이 아직 도착 전이라 `state != "WORKING"` 이 참이고,
+            // 그대로 두면 켜자마자 스스로 해제를 보내 FMS 가 로봇을 IDLE 로 되돌린다.
+            // (실측 2026-07-28: FMS 를 직접 부르면 WORKING 이 18초+ 유지되는데 패널로
+            //  켜면 몇 초 만에 IDLE. 차이는 이 감시뿐이었다.)
+            if (m_following && state == QLatin1String("WORKING"))
+                m_followSawWorking = true;
+            if (m_following && m_followSawWorking && state != QLatin1String("WORKING")) {
+                m_following = false; m_followSawWorking = false; emit followingChanged();
+                setTaskStatus(QStringLiteral("명령 대기"));
+                log(QStringLiteral("관리자 추종 종료 — 로봇이 WORKING 을 벗어남 (") + state + QStringLiteral(")"));
+                reportFollowRelease();
+                // 관리자가 끝낸 게 아니다 — 화면을 홈으로 돌린다(위 시그널 주석 참고).
+                emit followEndedByRobot();
+            }
         });
 }
 
@@ -690,6 +970,6 @@ void RobotController::onScreenTouch() {
     m_ros->publishTouch();
     if (m_robotState == QStringLiteral("순찰")) {
         m_ros->publishFleetCmd(QStringLiteral("{\"action\":\"ui_touch\"}"));
-        log(QStringLiteral("화면 터치 — 응대 진입 요청(ui_touch)"));
+        log(QStringLiteral("화면 터치 — 이용중 진입 요청(ui_touch)"));
     }
 }

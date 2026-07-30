@@ -20,10 +20,11 @@ fms_service/
 │   ├── start.sh
 │   └── stop.sh
 ├── config/
-│   ├── domain_bridge_pinky1.yaml    Pinky-1 domain 88 ↔ server domain 86
-│   ├── domain_bridge_pinky2.yaml    Pinky-2 domain 89 ↔ server domain 86
-│   └── domain_bridge_pinky3.yaml    Pinky-3 domain 87 ↔ server domain 86
+│   ├── domain_bridge_pinky{1,2,3}.yaml  ⚠️ 손으로 만든 구본(88/89/87) — 안 쓴다
+│   ├── domain_bridge.template.yaml      실제로 쓰는 틀
+│   └── generated/                       gen_domain_bridges.py 가 DB 기준으로 생성
 ├── scripts/
+│   ├── gen_domain_bridges.py        .env → rc_robots 반영 후, DB 기준 브릿지 생성/기동
 │   └── deploy_fleet_link.py         로봇 3대 fleet_link 배포/검증
 ├── frontend/                        React 19 + TanStack Router + shadcn/ui + Vite
 └── desktop_gui/                    PyQt desktop GUI

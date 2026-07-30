@@ -15,6 +15,8 @@ import threading
 import time
 from typing import Any
 
+from app.core.nav_goal_tracker import NavGoalTracker
+
 # ── 공유 상태 (스레드 세이프 읽기/쓰기) ──────────────────────
 _lock = threading.Lock()
 _state: dict[str, Any] = {
@@ -49,28 +51,30 @@ def set_target(target: str) -> bool:
     return True
 
 
+#: 이 노드가 속도를 내보내는 토픽.
+#
+# ⚠️ `/cmd_vel` 이 **아니다.** 바퀴로 가는 문은 twist_mux 하나뿐이다
+#    (pinky_bringup/config/twist_mux.yaml). 여기는 `manual` 입력(priority 200)이라
+#    다른 어떤 자동 제어보다 우선한다 — 사람이 잡으면 사람이 이긴다.
+#
+# [2026-07-29] 수동 주행 발행 제거 — twist_mux 의 manual 입력을 없앴다.
+#   남겨 두면 토픽은 나가는데 아무도 안 듣는 상태라 "붙었는데 안 움직인다"로 나타난다.
+#   정지는 패널 비상정지(`/cmd_vel_stop`, priority 255)가 담당한다.
+
+
 def get_cmd_vel_info() -> dict[str, Any]:
-    """현재 타겟/발행 타입/수신측(구독자) 정보."""
-    info: dict[str, Any] = {
+    """[2026-07-29] 수동 발행 경로가 사라져 항상 빈 정보다.
+
+    엔드포인트를 지우지 않고 남긴 이유: 대시보드가 이 키들을 읽고 있고, 없으면 화면이
+    깨진다. 값이 0/None 이라는 것 자체가 "이 경로는 없다"는 뜻이다.
+    """
+    return {
         "target": _desired_target,
         "cmd_vel_type": None,
         "subscriber_count": 0,
         "subscriber_types": [],
+        "removed": "manual drive removed 2026-07-29 (twist_mux manual input deleted)",
     }
-    node = _node
-    if node is None:
-        return info
-    try:
-        info["cmd_vel_type"] = getattr(node, "_cmd_vel_type", None)
-        subs = [
-            e for e in node.get_subscriptions_info_by_topic("/cmd_vel")
-            if e.node_name != node.get_name()
-        ]
-        info["subscriber_count"] = len(subs)
-        info["subscriber_types"] = sorted({e.topic_type for e in subs})
-    except Exception:
-        pass
-    return info
 
 
 def is_active() -> bool:
@@ -98,29 +102,16 @@ def clear_map() -> None:
 
 
 def publish_cmd_vel(linear: float, angular: float) -> bool:
-    """rclpy로 /cmd_vel 발행. 실패 시 False 반환."""
-    global _node
-    if _node is None:
-        return False
-    try:
-        from geometry_msgs.msg import Twist, TwistStamped
-        twist = Twist()
-        twist.linear.x = float(linear)
-        twist.angular.z = float(angular)
+    """[2026-07-29 제거] 수동 주행 발행.
 
-        stamped = TwistStamped()
-        stamped.header.stamp = _node.get_clock().now().to_msg()
-        stamped.header.frame_id = "base_link"
-        stamped.twist = twist
+    twist_mux 의 `cmd_vel_manual`(priority 200) 입력을 없앴다 — 시나리오에 수동 조작이
+    없는데 **자율 제어 전부를 이기는 문**만 열려 있었다(pinky_bringup/config/twist_mux.yaml).
+    퍼블리셔를 남겨 두면 토픽은 나가는데 아무도 안 듣는 상태가 되어, "붙었는데 안 움직인다"
+    로 나타난다. 그래서 발행 자체를 없애고 여기서 False 를 돌려준다.
 
-        if _node._cmd_vel_type == "twist":
-            _node._cmd_pub.publish(twist)
-        else:
-            _node._cmd_pub.publish(stamped)
-        return True
-    except Exception:
-        return False
-
+    정지가 필요하면 **비상정지 경로**를 쓴다: libi_gui 가 `/cmd_vel_stop`(priority 255).
+    """
+    return False
 
 def publish_nav_goal(x: float, y: float, yaw: float) -> bool:
     """Nav2 /goal_pose 발행 (map 프레임 기준)."""
@@ -293,8 +284,8 @@ def _bridge_thread() -> None:
                 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
                 self._cmd_vel_type = None
                 self._cmd_pub = None
-                self._apply_cmd_vel_type(self._wanted_cmd_vel_type())
-                self.create_timer(0.5, self._sync_cmd_vel_pub)
+                # [2026-07-29] /cmd_vel_manual 퍼블리셔·타입 동기화 타이머 제거
+                #   (twist_mux 의 manual 입력을 없앴다 — publish_cmd_vel 주석 참고)
                 self._nav_goal_pub = self.create_publisher(PoseStamped, "/goal_pose", 10)
                 self._initial_pose_pub = self.create_publisher(PoseWithCovarianceStamped, "/initialpose", 10)
                 # 대시보드용 구독(scan/odom/map/plan/cmd_vel_raw/costmap/battery)은
@@ -308,7 +299,6 @@ def _bridge_thread() -> None:
                     self.create_subscription(Odometry, "/odom", self._on_odom, 10)
                     self.create_subscription(OccupancyGrid, "/map", self._on_map, QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL, history=QoSHistoryPolicy.KEEP_LAST))
                     self.create_subscription(Path, "/plan", self._on_plan, 10)
-                    self.create_subscription(Twist, "/cmd_vel_raw", self._on_cmd_vel_twist, 10)
 
                     # ── Nav2 대시보드(nav2_web_server) 흡수 ──────────────────
                     # local/global costmap: costmap / costmap_raw 둘 다 시도
@@ -325,18 +315,53 @@ def _bridge_thread() -> None:
                         Float32, "/battery/voltage",
                         lambda m: self._on_battery("voltage", m.data), 10)
 
-                # TF: map -> base_link (0.1초마다 pose 갱신)
-                self._tf_buffer = Buffer()
-                self._tf_listener = TransformListener(self._tf_buffer, self, spin_thread=False)
+                # 지도 위 내 위치를 어디서 얻나 — 모드에 따라 다르다.
+                #
+                # [2026-07-28] 경량 모드에서는 **TF 를 아예 안 쓴다.**
+                #
+                #   왜: `TransformListener` 는 `/tf` 를 통째로 구독하고 **모든 메시지를
+                #   파이썬에서 역직렬화**한다. 이 로봇의 `/tf` 는 bringup 오도메트리만으로도
+                #   30Hz 다(bringup.py:95). FLEET_LINK_LITE 로 대시보드 구독을 다 껐는데도
+                #   이 프로세스가 코어의 33% 를 쓰고 있었고(2026-07-28 실측, 4코어 91% 포화),
+                #   남은 상시 비용 중 가장 큰 후보가 이것이었다.
+                #
+                #   대신 `/amcl_pose` 를 직접 구독한다. AMCL 은 로봇이 update_min_d(0.02m)
+                #   이상 움직였을 때만 내므로, 이 로봇 속도(0.07m/s)에서 최대 3.5msg/s 이고
+                #   **정지 중에는 0** 이다. 30Hz 역직렬화가 사라진다.
+                #
+                #   바꿔도 되는 이유: **주행 판정은 이 pose 를 안 쓴다.** BT 의 도착 판정과
+                #   fleet_node 의 배차는 노트북 robot_state_adapter 가 같은 `/amcl_pose` 를
+                #   받아 `/robot_state` 로 낸다(providers.py 도 같은 타입으로 구독 중이다).
+                #   여기 pose 는 robot_agent HTTP 조회와 로그용이다.
+                #
+                #   대가: AMCL 갱신 사이에는 최대 2cm 만큼 값이 낡는다. 화면 표시용으로는
+                #   무의미한 오차다.
+                #
+                # ⚠️ 비-lite(대시보드) 모드는 그대로 둔다 — `_transform_origin_to_map` 이
+                #    costmap origin(odom 프레임)을 map 으로 옮기는 데 TF 버퍼가 필요하다.
+                #    그 경로는 costmap 구독과 함께만 살아 있다.
                 self._pose_frame_used = None
                 self._last_tf_warn = 0.0
-                self.create_timer(0.1, self._update_pose_from_tf)
+                if os.getenv("FLEET_LINK_LITE"):
+                    self._tf_buffer = None
+                    self._tf_listener = None
+                    self.create_subscription(
+                        PoseWithCovarianceStamped, "/amcl_pose", self._on_amcl_pose, 10)
+                    self.get_logger().info(
+                        "[POSE] 경량 모드 — /amcl_pose 직접 구독 (TF 미사용)")
+                else:
+                    self._tf_buffer = Buffer()
+                    self._tf_listener = TransformListener(
+                        self._tf_buffer, self, spin_thread=False)
+                    self.create_timer(0.2, self._update_pose_from_tf)
 
                 # NavigateToPose 액션 클라이언트 + 완료대기 상태
                 self._nav_action = ActionClient(self, NavigateToPose, "navigate_to_pose")
                 self._goal_done = threading.Event()
                 self._goal_result = False
-                self._active_goal_handle = None
+                #: 목표 핸들의 수명(보관·세대·선취소)을 다루는 순수 상태기.
+                #: 여기 두면 ROS 없이 단위테스트가 된다 — tests/test_nav_goal_tracker.py
+                self._goals = NavGoalTracker()
 
                 # slam_toolbox 서비스 클라이언트
                 self._save_map_client = self.create_client(SaveMap, "/slam_toolbox/save_map")
@@ -386,7 +411,22 @@ def _bridge_thread() -> None:
                 with _lock:
                     _state["battery"] = {**_state["battery"], key: value}
 
+            def _on_amcl_pose(self, msg) -> None:
+                """경량 모드의 pose 출처. `/amcl_pose` 는 **이미 map 프레임**이라 변환이 없다."""
+                p = msg.pose.pose
+                with _lock:
+                    _state["tf_pose"] = {
+                        "x": p.position.x,
+                        "y": p.position.y,
+                        "yaw": quat_to_yaw(p.orientation),
+                    }
+                if self._pose_frame_used != "amcl":
+                    self._pose_frame_used = "amcl"
+                    self.get_logger().info("[POSE] /amcl_pose 수신 시작.")
+
             def _update_pose_from_tf(self) -> None:
+                if self._tf_buffer is None:
+                    return          # 경량 모드 — `_on_amcl_pose` 가 대신한다
                 last_err = None
                 for base in self.BASE_FRAME_CANDIDATES:
                     try:
@@ -484,38 +524,62 @@ def _bridge_thread() -> None:
                     return False
 
             def send_nav_goal(self, x, y, yaw) -> bool:
+                """완료를 기다리지 않고 목표만 던진다(BT 의 `goal` 명령이 쓰는 경로).
+
+                ⚠️ **응답 콜백을 반드시 달아야 한다.** 예전엔 `send_goal_async()` 의 future 를
+                그냥 버렸다. 그러면 `_on_goal_response` 가 영영 안 불려 `_active_goal_handle`
+                이 채워지지 않고, 결국 `cancel_active_goal()` 이 **어떤 주행도 취소하지
+                못한다** — 배달·순회·복귀·길잡이 전부. 길잡이의 "사람을 놓치면 멈춘다" 가
+                화면에만 뜨고 로봇은 계속 달리던 원인이 이것이다.
+                (반면 블로킹 경로인 `nav_to()` 는 처음부터 콜백을 달고 있었다.)
+                """
                 if not self._ensure_nav_action(2.0):
                     self.get_logger().error("navigate_to_pose 액션서버 없음")
                     return False
-                self._nav_action.send_goal_async(self._make_goal(x, y, yaw))
+                gen = self._goals.begin()
+                self._nav_action.send_goal_async(self._make_goal(x, y, yaw)) \
+                    .add_done_callback(lambda f, g=gen: self._on_goal_response(f, g))
                 self.get_logger().info(f"[WEB] send goal: x={x:.2f}, y={y:.2f}, yaw={yaw:.2f}")
                 return True
 
-            def _on_goal_response(self, future):
-                gh = future.result()
-                if not gh.accepted:
+            def _on_goal_response(self, future, generation=None):
+                try:
+                    gh = future.result()
+                except Exception as e:      # noqa: BLE001 — 콜백 예외가 executor 를 죽인다
+                    self.get_logger().error(f"goal 응답 처리 실패: {e}")
                     self._goal_result = False
                     self._goal_done.set()
                     return
-                self._active_goal_handle = gh
-                gh.get_result_async().add_done_callback(self._on_goal_result)
+                self._goals.on_response(gh, generation)
+                if self._goals.active_handle is not gh:
+                    # 거절됐거나, 낡은 세대이거나, 응답보다 취소가 먼저 왔다.
+                    # 어느 쪽이든 이 목표는 진행하지 않는다.
+                    if gh is None or not getattr(gh, "accepted", True):
+                        self._goal_result = False
+                        self._goal_done.set()
+                    return
+                gh.get_result_async().add_done_callback(
+                    lambda f, g=generation: self._on_goal_result(f, g))
 
-            def _on_goal_result(self, future):
+            def _on_goal_result(self, future, generation=None):
+                # ⚠️ 세대를 안 가리면 **이전 목표의 결과가 새 목표의 완료로 보고된다.**
+                #    fire-and-forget 로 A 를 보낸 뒤 nav_to(B) 가 대기에 들어갔을 때
+                #    A 의 결과가 도착하면, B 는 아직 출발도 안 했는데 A 의 성공/실패를
+                #    자기 결과로 받는다 — 도착하지 않았는데 다음 단계로 넘어간다.
+                if not self._goals.is_current(generation):
+                    return
                 try:
                     self._goal_result = (
                         future.result().status == self._GoalStatus.STATUS_SUCCEEDED)
-                except Exception:
+                except Exception:      # noqa: BLE001 — 콜백 예외가 executor 를 죽인다
                     self._goal_result = False
-                self._active_goal_handle = None
+                self._goals.clear()
                 self._goal_done.set()
 
             def cancel_active_goal(self) -> None:
-                gh = self._active_goal_handle
-                if gh is not None:
-                    try:
-                        gh.cancel_goal_async()
-                    except Exception:
-                        pass
+                # 핸들이 아직 없으면 취소 의사만 남는다(응답 시점에 갚는다).
+                # 그냥 돌아가면 잠시 뒤 핸들이 도착해 로봇이 계속 달린다.
+                self._goals.cancel()
 
             def nav_to(self, x, y, yaw, stop_event=None, wait_action_sec: float = None) -> bool:
                 """완료까지 블로킹(미션 워커 스레드용).
@@ -531,9 +595,12 @@ def _bridge_thread() -> None:
                     return False
                 self._goal_done.clear()
                 self._goal_result = False
+                # 블로킹 경로도 같은 추적기를 지난다. begin() 을 빼면 세대가 안 올라가서
+                # 직전 목표의 응답이 이 목표의 것으로 오인된다.
+                gen = self._goals.begin()
                 self._nav_action.send_goal_async(
                     self._make_goal(x, y, yaw)
-                ).add_done_callback(self._on_goal_response)
+                ).add_done_callback(lambda f, g=gen: self._on_goal_response(f, g))
                 while not self._goal_done.is_set():
                     if stop_event is not None and stop_event.is_set():
                         self.cancel_active_goal()
@@ -560,49 +627,9 @@ def _bridge_thread() -> None:
                 self.get_logger().info(f"[WEB] SLAM save_map 요청: name='{name}'")
                 return True
 
-            def _wanted_cmd_vel_type(self) -> str:
-                try:
-                    sub_types = {
-                        e.topic_type for e in self.get_subscriptions_info_by_topic("/cmd_vel")
-                        if e.node_name != self.get_name()
-                    }
-                except Exception:
-                    sub_types = set()
-                has_stamped = any("TwistStamped" in t for t in sub_types)
-                has_twist = any(t.rsplit("/", 1)[-1] == "Twist" for t in sub_types)
-
-                if has_twist:
-                    return "twist"
-                if has_stamped:
-                    return "twist_stamped"
-                return "twist"
-
-            def _apply_cmd_vel_type(self, wanted: str) -> None:
-                if wanted == self._cmd_vel_type and self._cmd_pub is not None:
-                    return
-                if self._cmd_pub is not None:
-                    self.destroy_publisher(self._cmd_pub)
-                if wanted == "twist":
-                    self._cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
-                else:
-                    self._cmd_pub = self.create_publisher(TwistStamped, "/cmd_vel", 10)
-                self._cmd_vel_type = wanted
-                self.get_logger().info(
-                    f"/cmd_vel 퍼블리셔 타입 = {wanted} (target={_desired_target})"
-                )
-
-            def _sync_cmd_vel_pub(self) -> None:
-                self._apply_cmd_vel_type(self._wanted_cmd_vel_type())
-
-            def _on_cmd_vel_twist(self, msg: Twist) -> None:
-                out = TwistStamped()
-                out.header.stamp = self.get_clock().now().to_msg()
-                out.header.frame_id = "base_link"
-                out.twist = msg
-                if self._cmd_vel_type == "twist":
-                    self._cmd_pub.publish(msg)
-                else:
-                    self._cmd_pub.publish(out)
+            # [2026-07-29] _wanted_cmd_vel_type / _apply_cmd_vel_type / _sync_cmd_vel_pub /
+            #   _on_cmd_vel_twist 제거 — 수동 주행 발행 경로 자체가 사라졌다
+            #   (publish_cmd_vel 주석 참고: twist_mux 의 manual 입력 삭제).
 
             def _on_scan(self, msg: LaserScan) -> None:
                 with _lock:

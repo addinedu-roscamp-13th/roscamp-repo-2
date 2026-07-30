@@ -63,9 +63,45 @@ def _save_locations(locs: dict | None) -> None:
             print(f"[fleet_link] location '{nm}' 저장 실패: {e}", flush=True)
 
 
+#: 세션을 **여는** 명령. 이 실행기는 실행도 안 하고 **답도 하지 않는다.**
+#
+# 완료를 아는 쪽이 답해야 한다. 세션의 완료는 `libi_perception/follow_node.py` 의
+# `RemoteControl` 이 안다 — 감시 역할은 시작 즉시, 주행 역할은 세션이 끝날 때 답한다.
+# 여기서 "접수했다"를 결과로 내면 그게 **완료 신호로 소비된다.**
+#
+# ⚠️ 실측 2026-07-28 — 이걸 몰라서 두 번 헛돌았다.
+#    처음엔 이 액션들이 `BT_LAYER_ACTIONS` 에 **없어서** 아래 폴스루가 "알 수 없는 action"
+#    **실패** 결과를 냈고 세션이 시작 즉시 끝났다. 그래서 집합에 넣었는데, 그건 결과를
+#    `ok=false` → `ok=true` 로 바꿨을 뿐 **결과를 안 보내게 만든 게 아니었다.**
+#    세션은 여전히 즉시 끝났다 — 이번엔 "성공"으로. 증상:
+#      · 관리자 추종을 눌러도 로봇이 안 움직인다 (FollowExec 이 첫 tick 에 SUCCESS)
+#      · `/fleet_cmd` 에 `stop` 이 **한 번도** 안 나간다
+#        (`FleetCmdDriver.poll()` 이 결과를 집으며 `_pending_id` 를 비워, 뒤이은
+#         `stop()` 이 보낼 id 가 없어 조용히 return 한다)
+#      · `/libi/follow_bt_snapshot` 이 `Following[TRACKING]` 을 영원히 발행한다
+#
+#    "집합에 넣으면 해결"이 아니라 **"답하지 않아야 해결"** 이다.
+SESSION_ACTIONS = frozenset({"follow_admin", "guide_watch", "watch"})
+
 #: libi_modes BT 가 소유하는 명령. 이 실행기는 수락만 하고 실행하지 않는다.
 #  (BT 가 처리한 뒤 실행 층 액션 goal/arm_home/... 으로 되돌아온다)
-BT_LAYER_ACTIONS = frozenset({"navigate"})
+#
+# 위 세션 명령과 달리 이쪽은 **즉시 답해도 된다.** 답이 곧 완료를 뜻하지 않는 명령이거나
+# (`navigate`/`guide` 는 BT 가 다시 `goal` 로 내려보낸다), 답을 기다리는 소비자가 없다
+# (`stop` 은 `FleetCmdDriver.stop()` 이 쏘고 결과를 안 본다).
+BT_LAYER_ACTIONS = frozenset({
+    "navigate", "guide", "stop", "follow_stop",
+}) | SESSION_ACTIONS
+
+
+def should_publish_result(action: str, ok: bool) -> bool:
+    """이 명령의 결과를 `/fleet_cmd_result` 로 낼까.
+
+    세션 명령은 **접수에 성공했을 때만** 침묵한다(`SESSION_ACTIONS` 주석 참고).
+    접수 자체가 실패했으면 답해야 한다 — 그건 세션이 안 열렸다는 뜻이고, 아무도 답을
+    안 하면 부른 쪽이 드라이버 타임아웃(추종은 3600초)까지 매달린다.
+    """
+    return not (ok and action in SESSION_ACTIONS)
 
 
 def _dispatch(action: str, args: dict) -> tuple[bool, int, Any, str]:
@@ -199,6 +235,26 @@ def _dispatch(action: str, args: dict) -> tuple[bool, int, Any, str]:
 
         return True, 200, {"success": True, "name": name, "path": path}, ""
 
+    if action == "stop":
+        # ── 유일한 예외: `stop` 은 여기서도 **주행을 끊는다** ────────────────
+        #
+        # 실측 신고(2026-07-28): "응대중인데 계속 바퀴가 움직임".
+        #
+        # BT 는 브랜치가 선점당하면 `DriverAction.terminate()` 에서 `driver.stop()` 을
+        # 부르고, `FleetCmdDriver.stop()` 이 이 액션을 보낸다. 그런데 `stop` 이
+        # BT_LAYER_ACTIONS 에 있어 아래 분기로 흘러 **"수락만" 하고 끝났다.**
+        # 세션(follow/guide/watch)은 follow_node 가 자기 id 로 닫지만, 그쪽은
+        # `/cmd_vel` 만 다룬다 — `goal` 로 내보낸 nav2 목표는 **아무도 안 끊었다.**
+        # 그래서 순회 중 방문객이 패널을 만져도 로봇은 다음 정점으로 계속 갔다.
+        #
+        # 세션 종료와 주행 취소는 소비자가 달라 겹치지 않는다. 그리고 이 레포의 원칙
+        # 그대로다 — **멈추는 것은 중복돼도 안전, 조종하는 것은 중복되면 위험.**
+        # 취소할 목표가 없으면 아무 일도 일어나지 않는다.
+        if ros_bridge.is_active():
+            ros_bridge.cancel_nav()
+        return True, 202, {"accepted": True, "handled_by": "bt",
+                           "cancelled_nav": ros_bridge.is_active()}, ""
+
     if action in BT_LAYER_ACTIONS:
         # ── BT 층 명령 — 여기서 실행하지 않는다 ──────────────────────────────
         # `/fleet_cmd` 에는 소비자가 둘이다:
@@ -290,10 +346,13 @@ def _link_thread() -> None:
                 result_pub.publish(String(data=payload))
 
         def run_and_reply(cmd: dict) -> None:
+            action = str(cmd.get("action", ""))
             try:
-                ok, status, data, msg = _dispatch(cmd["action"], cmd.get("args") or {})
+                ok, status, data, msg = _dispatch(action, cmd.get("args") or {})
             except Exception as e:
                 ok, status, data, msg = False, 500, None, f"{type(e).__name__}: {e}"
+            if not should_publish_result(action, ok):
+                return
             publish_result(cmd["id"], ok, status, data, msg)
 
         def on_cmd(msg: "String") -> None:

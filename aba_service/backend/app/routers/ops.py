@@ -9,6 +9,7 @@ FMS 가 죽어 있어도 **화면은 떠야 한다** — 로봇 정보만 비고
 그래서 FMS 호출 실패는 예외가 아니라 `linked: false` 로 응답에 표시한다.
 """
 
+import os
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -32,8 +33,13 @@ from ..security import get_current_admin
 
 router = APIRouter(prefix="/api/admin/ops", tags=["ops"])
 
-#: 분류(sort) 주문의 대상 — 개별 도서가 아니라 반납함에 쌓인 것을 한 번에 옮긴다.
-SORT_CARGO = "반납 도서 일괄"
+#: [시연용] `DEMO_FLEET=1` 로 띄우면 로봇 목록을 FMS 텔레메트리 대신 `DemoRobotState`
+#: 로 채운다. 촬영 때 실물 1대(`Pinky-3`)만 잡혀서 카드가 한 장뿐인 걸 피하려는 것이다.
+#:
+#: FMS 링크 자체는 그대로 살려 둔다 — 지도의 노드·간선(`/waypoints`)과 작업 큐는 FMS
+#: 정본에서 오므로, FMS 를 죽여서 대체시키면 지도가 빈 상자가 된다. 그래서 "연결을
+#: 끊는" 게 아니라 "로봇 목록만 갈아끼우는" 방식이다. 기본값은 꺼짐이라 운영에는 영향 없다.
+DEMO_FLEET = os.getenv("DEMO_FLEET", "") == "1"
 
 #: 작업 지시 종류 — 로봇이 수행할 수 있는 일. **화면의 입력 폼도 이 표에서 나온다.**
 #:
@@ -71,15 +77,19 @@ TASK_KINDS = [
         "hint": "목적지는 그 도서의 서가로 자동 지정됩니다.",
     },
     {
-        "key": "sort",
-        "label": "분류",
-        "desc": "반납 도서를 분류대에서 정리",
+        # [2026-07-30] "분류"(sort) 는 실제 운영에서 없어져 삭제했다 — "분류대" 라는
+        # 진짜 waypoint 가 애초에 없어서, 프런트가 `테이블-1번-좌` 를 pickup/dropoff
+        # 양쪽에 몰래 채워 보내던 플레이스홀더였다. 그 자리를 "수거"가 대신한다.
+        "key": "collect",
+        "label": "수거",
+        "desc": "수거함 바구니 교체(반납 도서 회수)",
         "mode": "order",
-        "order_kind": "delivery",
-        "fields": ["pickup", "dropoff"],
-        # 개별 도서가 아니라 반납함에 쌓인 것을 한 번에 옮긴다.
-        "fixed_book": SORT_CARGO,
-        "hint": "대상은 «반납 도서 일괄» 로 고정입니다. 반납함 → 분류대.",
+        "order_kind": "collect",
+        # 출발지·목적지·대상 전부 고정이라 사람이 고를 게 없다 — 복귀(RETURNING)의
+        # "목적지가 도크로 고정"과 같은 성질이다. 다리 구성은
+        # `fleet_orchestrator.decompose_collection()` 참고.
+        "fields": [],
+        "hint": "수거함으로 가서 바구니를 교체합니다. 로봇만 지정(선택)하면 됩니다.",
     },
     {
         "key": "tidy",
@@ -187,7 +197,7 @@ def dashboard(db: Session = Depends(get_db), _: AdminUser = Depends(get_current_
     )
 
     ok, snap = fms_client.fleet_snapshot()
-    robots = snap.get("robots", []) if ok else []
+    robots = [] if DEMO_FLEET else (snap.get("robots", []) if ok else [])
     ok_orders, orders = fms_client.list_orders()
 
     def count(status: str) -> int:
@@ -257,7 +267,7 @@ def robots(
     대체한다 — 실제 텔레메트리가 하나라도 있으면 이 분기는 절대 타지 않는다.
     """
     ok, snap = fms_client.fleet_snapshot()
-    robots = snap.get("robots", []) if ok else []
+    robots = [] if DEMO_FLEET else (snap.get("robots", []) if ok else [])
     if not robots:
         robots = [
             {
@@ -326,7 +336,7 @@ def _resolve_order(spec: dict, body: OrderRequest, db: Session) -> tuple[str, st
     """종류 정의에 따라 (대상, 출발지, 목적지)를 확정한다.
 
     "필요 없는 필드는 안 받고, 없는 필드는 채워 넣는다" — 진열의 목적지는 도서의 서가에서
-    나오고, 분류의 대상은 «반납 도서 일괄» 로 고정이다.
+    나오고, 수거는 출발지·목적지 둘 다 없다(수거함 고정, `fields: []`).
     """
     fields = spec["fields"]
 
@@ -355,10 +365,16 @@ def _resolve_order(spec: dict, body: OrderRequest, db: Session) -> tuple[str, st
                 detail=f"«{target}» 의 서가를 찾을 수 없어 진열 목적지를 정할 수 없습니다",
             )
         dropoff = hit.zone
-    else:
+    elif "dropoff" in fields:
         dropoff = body.dropoff.strip()
         if not dropoff:
             raise HTTPException(status_code=400, detail="목적지를 선택해 주세요")
+    else:
+        # "dropoff" 가 fields 에 없으면 이 종류엔 목적지 개념 자체가 없다(수거처럼
+        # 출발지에서 안 움직이고 끝난다) — 예전엔 이 갈래가 없어서 `auto_dropoff` 가
+        # 아닌 모든 종류가 무조건 dropoff 를 요구했다(우연히 7종 전부가 dropoff 필드를
+        # 가져서 안 드러났을 뿐인 구멍).
+        dropoff = ""
 
     return target, pickup, dropoff
 

@@ -9,10 +9,25 @@ runs is still an open question — it needs /scan and /cmd_vel, which belong to 
 Pi, so it may end up deployed there rather than on the mission PC. Parameterising the
 transports keeps that a launch-time decision instead of a code change.
 """
+import time
+
 from . import config
+from . import session as sess
 from .control_loop import ControlLoop
 from .detection_receiver import DetectionReceiver
 from .tcp_detection_source import TcpDetectionSource
+
+
+def _latched_qos():
+    """발행자는 반드시 TRANSIENT_LOCAL 이어야 한다.
+
+    ROS2 호환 규칙상 발행자 VOLATILE + 구독자 TRANSIENT_LOCAL 조합은 **연결 자체가
+    안 된다.** 늦게 뜬 송출기가 현재 선택을 곧바로 받게 하려면 이쪽이 durable 이어야 한다.
+    """
+    from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+    return QoSProfile(depth=1,
+                      reliability=ReliabilityPolicy.RELIABLE,
+                      durability=DurabilityPolicy.TRANSIENT_LOCAL)
 
 
 class FollowSession:
@@ -96,38 +111,91 @@ def snapshot_dict(node):
 
 
 class RemoteControl:
-    """`/fleet_cmd` 왕복으로 세션을 켜고 끈다. 미션 BT(libi_modes)가 이걸로 부른다.
+    """`/fleet_cmd` 왕복으로 세션을 켜고 끈다. 미션 BT(libi_modes)와 패널이 이걸로 부른다.
 
     ## 새 프로토콜을 만들지 않는다
     로봇에는 이미 `/fleet_cmd`(JSON) → 실행 → `/fleet_cmd_result` 왕복이 있고,
     libi_modes 의 모든 액션 leaf 가 그 위에서 돈다(`FleetCmdDriver`). 추종만 별도
     채널을 두면 id 대조·타임아웃·취소를 한 벌 더 만들게 된다. 같은 통로를 쓴다.
 
+    ## 세 가지 역할
+        follow_admin  관리자 추종 — 앞캠, 제어 루프가 /cmd_vel 을 만든다
+        guide_watch   길잡이 감시 — 뒷캠, 주행은 nav2 가 하고 여기는 눈만 된다
+        watch         등록 화면 감시 — 패널이 직접 연다. 주행 없음
+
+    `watch` 는 **등록 데드락**을 푼다: 등록하려면 카메라가 필요한데 카메라는 세션이
+    켜고 세션은 등록 후 시작된다. 게다가 등록 시점의 미션 상태는 INTERACTING 이라
+    WORKING 브랜치의 GuideExec 은 tick 되지도 않는다.
+
     ## 결과를 언제 돌려주나
     추종 세션은 **스스로 끝나지 않는다.** 관리자가 멈추거나(success) 회복이 소진돼
     사람을 놓치면(failure) 끝난다. 그래서 `start` 직후에 결과를 내지 않고, 세션이
     실제로 끝난 tick 에 낸다 — 그래야 BT 의 `poll()` 이 "추종 중"을 running 으로 본다.
+    감시 전용 세션(guide/watch)은 주행을 안 하므로 시작 즉시 수락 결과를 낸다.
 
-    ## 취소
-    `FleetCmdDriver.stop()` 은 액션 이름이 아니라 `"stop"` 을 보낸다(id 는
-    `stop-<원래id>`). 그래서 여기서도 `stop` 을 받아 세션을 끊는다.
+    ## 카메라 선택은 여기가 **유일한** 발행자다
+    미션 BT 도 회복 BT 도 직접 발행하지 않는다. 발행자가 둘이면 회복 중 서로 덮어쓴다.
     """
 
-    #: 이 노드가 반응하는 액션. libi_modes 의 FollowExec.handles 와 같은 이름이어야 한다.
-    START_ACTION = 'follow_admin'
+    #: 세션을 여는 액션 → 역할. libi_modes 의 leaf handles 와 같은 이름이어야 한다.
+    START_ACTIONS = {
+        'follow_admin': sess.FOLLOW,
+        'guide_watch': sess.GUIDE,
+        'watch': sess.WATCH,
+    }
     STOP_ACTIONS = ('stop', 'follow_stop')
 
     def __init__(self, node, session, cmd_topic='fleet_cmd',
-                 result_topic='fleet_cmd_result'):
-        from std_msgs.msg import String
+                 result_topic='fleet_cmd_result', sessions=None, now=time.monotonic):
+        from std_msgs.msg import Bool, Float32, String
         self._node = node
         self._session = session
         self._log = node.get_logger()
-        self._active_id = None
+        self._now = now
+        self._sessions = sessions or sess.SessionManager(config.SESSION_LEASE_SEC)
+        self._active_id = None                 # 결과를 돌려줘야 하는 주행 세션 id
         self._result_pub = node.create_publisher(String, result_topic, 10)
         self._snap_pub = node.create_publisher(String, FOLLOW_SNAPSHOT_TOPIC, 10)
+        self._cam_pub = node.create_publisher(String, config.CAMERA_SELECT_TOPIC,
+                                              _latched_qos())
+        self._vis_pub = node.create_publisher(Bool, config.REQUESTER_VISIBLE_TOPIC, 10)
+        self._area_pub = node.create_publisher(Float32, config.REQUESTER_AREA_TOPIC, 10)
+        self._Bool, self._Float32, self._String = Bool, Float32, String
+        self._last_cam_pub_at = 0.0
+        self._get_detection = None             # 감시 역할일 때 쓰는 검출 조회
+        self._start_session_fn = None          # 역할을 실어 세션을 켜는 콜백
         node.create_subscription(String, cmd_topic, self._on_cmd, 10)
 
+    def bind_session_starter(self, start_session):
+        """역할을 실어 세션을 켜는 콜백. 노드가 주입한다(여기는 rclpy 를 모른다)."""
+        self._start_session_fn = start_session
+
+    def _start_session(self, role):
+        if self._start_session_fn is not None:
+            self._start_session_fn(role)
+        else:
+            self._session.start()
+
+    def bind_detection(self, get_detection):
+        """감시(guide/watch) 세션이 볼 검출 조회기. 없으면 가시성을 발행하지 않는다."""
+        self._get_detection = get_detection
+
+    def request_camera(self, name):
+        """회복 BT 가 탐색 중 반대 캠을 보고 싶을 때 부른다.
+
+        발행자가 하나라는 규칙(`camera_select` 는 이 클래스만 낸다)을 지키려고, 회복
+        BT 는 여기에 **요청만** 한다 — 직접 내면 발행자가 둘이 되어 서로 덮어쓴다.
+
+        ⚠️ 탐색 구간 노드는 **매 tick** 이걸 부른다(20Hz). 그때마다 발행하면 latched
+        토픽에 초당 20개가 쌓인다. 값이 실제로 바뀔 때만 즉시 내고, 나머지는 평소
+        주기(`CAMERA_SELECT_HZ`)에 맡긴다.
+        """
+        if name == self._sessions.camera_for():
+            return
+        self._sessions.override_camera(name)
+        self._publish_camera(force=True)
+
+    # ── 명령 수신 ────────────────────────────────────────────────────────
     def _on_cmd(self, msg):
         import json
         try:
@@ -135,16 +203,66 @@ class RemoteControl:
         except (ValueError, TypeError):
             return
         action = str(cmd.get('action', '')).strip()
-        if action == self.START_ACTION:
-            # 이미 돌고 있으면 이전 세션을 실패로 닫고 새 id 로 갈아탄다 — 두 세션이
-            # 같은 cmd_vel 을 동시에 밀면 로봇이 떨린다.
+        cmd_id = cmd.get('id')
+        args = cmd.get('args') or {}
+        now = self._now()
+
+        role = self.START_ACTIONS.get(action)
+        if role is not None:
+            # 주행 중인 세션은 감시 요청에 밀리지 않는다.
+            #
+            # 관리자가 추종으로 로봇을 몰고 있는데 이용자가 패널에서 길잡이 목적지를
+            # 고르면 등록 화면이 `watch` 를 연다. 그걸 그대로 받으면 **움직이던 로봇의
+            # 제어 루프가 그 자리에서 꺼진다.** 사람을 따라가던 로봇이 이유 없이 서는
+            # 것은 조작하던 관리자에게 설명되지 않는다.
+            # 거절 이유를 돌려주면 패널이 "관리자 추종 중" 이라고 말할 수 있다.
+            if role == sess.WATCH and self._sessions.driving:
+                self._reply(cmd_id, False, '관리자 추종 중이라 등록 화면을 열 수 없습니다')
+                return
+            # 이미 주행 세션이 돌고 있으면 **실제로 멈추고** 갈아탄다.
+            #
+            # ⚠️ 결과만 실패로 돌려주고 제어 루프를 안 세우면, 그 루프가 계속 20Hz 로
+            #    PID 속도를 발행한다. 새 세션이 길잡이면 nav2 와 옛 추종 PID 가 동시에
+            #    `/cmd_vel` 을 밀어 로봇이 떨거나 엉뚱하게 움직인다 — 중재자가 없어
+            #    마지막에 도착한 메시지가 이긴다.
             if self._active_id is not None:
-                self._reply(self._active_id, False, '새 추종 요청으로 대체됨')
-            self._active_id = cmd.get('id')
-            self._session.start()
-            self._log.info(f'추종 시작 (id={self._active_id})')
-        elif action in self.STOP_ACTIONS and self._active_id is not None:
-            self._session.stop()
+                self._session.stop()
+                self._reply(self._active_id, False, '새 세션 요청으로 대체됨')
+                self._active_id = None
+            self._sessions.start(cmd_id, role, now, camera=args.get('camera'))
+            # 세션은 **역할과 무관하게** 켠다. 감시 역할도 회복 트리가 돌아야
+            # 사람을 놓쳤을 때 반대 캠으로 바꿔 볼 수 있기 때문이다 —
+            # 안 켜면 길잡이는 놓친 뒤 아무것도 안 하고 유예만 센다.
+            # 대신 감시 역할에서는 속도를 **삼킨다**(아래 _start_session).
+            self._start_session(role)
+            if role in sess.DRIVING_ROLES:
+                self._active_id = cmd_id
+            else:
+                # 감시 세션은 스스로 끝나지 않고 주행도 안 한다. 붙들고 있으면
+                # 보낸 쪽이 타임아웃까지 기다린다.
+                self._reply(cmd_id, True, f'{role} 감시 시작')
+            self._publish_camera(force=True)
+            self._log.info(f'{role} 세션 시작 (id={cmd_id}, cam={self._sessions.camera_for()})')
+        elif action in self.STOP_ACTIONS:
+            target = sess.target_session_id(cmd_id, args)
+            if self._sessions.stop(target):
+                # 세션은 역할과 무관하게 켜므로(감시도 회복 트리가 돌아야 한다)
+                # **닫을 때도 역할과 무관하게** 멈춘다. `_active_id` 로 감싸면
+                # guide/watch 의 루프가 세션이 닫힌 뒤에도 계속 tick 되어,
+                # 이미 끝난 안내가 카메라 전환을 계속 요청한다.
+                self._session.stop()
+                self._active_id = None
+                self._publish_camera(force=True)
+                self._log.info(f'세션 종료 (id={target})')
+            else:
+                # 안 맞으면 **아무 일도 안 일어난다** — 제어 루프가 계속 20Hz 로
+                # `/cmd_vel` 을 미는데 화면과 미션 BT 는 이미 빠져나와 있다.
+                # 조용히 흘리면 "종료를 눌렀는데 로봇이 계속 움직인다"로만 드러나고
+                # 원인을 찾을 실마리가 남지 않는다. 실제로 그것 때문에 헤맸다
+                # (2026-07-28, BT 화면: FollowExec 회색 + Following[TRACKING] 파랑).
+                self._log.warning(
+                    f'종료 요청이 어느 세션도 안 가리킨다 (요청={target}, '
+                    f'현재={self._sessions.session_id or "없음"}) — 세션은 그대로 돈다')
 
     def publish_snapshot(self):
         """추종 상태를 `FollowExec` 밑에 붙일 서브트리로 내보낸다.
@@ -171,8 +289,49 @@ class RemoteControl:
         out.data = json.dumps({'tree': payload}, ensure_ascii=False)
         self._snap_pub.publish(out)
 
+    # ── 발행 ────────────────────────────────────────────────────────────
+    def _publish_camera(self, force=False):
+        """카메라 선택을 **주기적으로 다시 낸다.**
+
+        한 번만 내면 송출기의 만료 워치독이 스스로 `none` 으로 떨어뜨려 영상이 끊긴다.
+        그 워치독은 발행자가 죽었을 때 카메라가 계속 켜져 있는 것을 막으려고 둔 것이라,
+        여기서 갱신해 주는 것이 짝이다.
+        """
+        now = self._now()
+        period = 1.0 / config.CAMERA_SELECT_HZ if config.CAMERA_SELECT_HZ > 0 else 0.0
+        if not force and (now - self._last_cam_pub_at) < period:
+            return
+        self._last_cam_pub_at = now
+        self._cam_pub.publish(self._String(data=self._sessions.camera_for()))
+
+    def _publish_requester(self):
+        """감시 역할일 때만 요청자 가시성·크기를 낸다.
+
+        면적은 **보일 때만** 낸다. 안 보일 때 0 을 내면 받는 쪽이 '아주 멀다' 로 읽어
+        소실과 원거리가 구별되지 않는다.
+        """
+        if self._sessions.role not in (sess.GUIDE, sess.WATCH):
+            return
+        if self._get_detection is None:
+            return
+        det = self._get_detection()
+        visible = bool(det is not None and getattr(det, 'is_owner', False)
+                       and getattr(det, 'motion_ok', True))
+        self._vis_pub.publish(self._Bool(data=visible))
+        if visible:
+            self._area_pub.publish(self._Float32(data=float(det.area)))
+
     def tick(self):
         """세션 tick 뒤에 부른다. 끝났으면 결과를 돌려준다."""
+        now = self._now()
+        if self._sessions.sweep(now):
+            # 패널이 죽어 stop 이 안 왔다. 카메라를 끄지 않으면 아무도 안 보는데
+            # 계속 켜져 있고, 그 사실을 아무도 모른다.
+            self._log.info('세션 lease 만료 — 닫습니다')
+            self._session.stop()
+            self._active_id = None
+        self._publish_camera()
+        self._publish_requester()
         self.publish_snapshot()
         if self._active_id is None:
             return
@@ -182,6 +341,7 @@ class RemoteControl:
         self._reply(self._active_id, state == 'success',
                     '중단됨' if state == 'success' else '추종 실패 — 대상을 놓쳤습니다')
         self._log.info(f'추종 종료 ({state}, id={self._active_id})')
+        self._sessions.stop(self._active_id)
         self._active_id = None
 
     def _reply(self, cmd_id, ok, msg):
@@ -224,12 +384,22 @@ def main(args=None):
             self._scan = ScanProvider(self, scan_topic)
             self._cmd = CmdPublisher(self, cmd_topic)
             self._receiver = DetectionReceiver(TcpDetectionSource(host, port))
-            self.session = FollowSession(self._make_loop, publish=self._cmd.publish)
+            #: 지금 세션의 역할. `_make_loop` 과 `_publish_for_role` 이 읽는다.
+            self._session_role = sess.FOLLOW
+            # 종료 정지도 **역할을 거쳐** 나간다. `_cmd.publish` 를 직접 주면 길잡이·감시
+            # 세션이 끝날 때(stop 명령·WATCH lease 만료)도 (0,0) 이 나가서, nav2 가 몰고
+            # 있는 주행을 한 번 밟는다 — 연속 경합은 아니지만 그 순간 로봇이 움찔한다.
+            self.session = FollowSession(self._make_loop, publish=self._publish_for_role)
             self.remote = RemoteControl(
                 self, self.session,
                 cmd_topic=self.get_parameter('cmd_topic').value,
                 result_topic=self.get_parameter('result_topic').value,
             )
+            # 감시(guide/watch) 세션이 요청자 가시성을 발행하려면 검출을 봐야 한다.
+            # 이게 없으면 `/libi/requester_visible` 발행자가 여전히 없는 셈이라
+            # GuideExec 이 '감시 없음' 으로 읽고 사람을 놓쳐도 계속 간다.
+            self.remote.bind_detection(self._get_detection)
+            self.remote.bind_session_starter(self._start_session_for)
             if self.get_parameter('autostart').value:
                 self.session.start()
             self.create_timer(1.0 / config.TICK_HZ, self._tick)
@@ -244,14 +414,48 @@ def main(args=None):
             self.session.tick()
             self.remote.tick()
 
+        def _start_session_for(self, role):
+            """역할을 기억해 두고 세션을 켠다. `_make_loop` 이 그 값을 읽는다."""
+            self._session_role = role
+            self.session.start()
+
+        def _publish_for_role(self, lin, ang):
+            """감시 역할(guide/watch)에서는 속도를 **삼킨다.**
+
+            회복 트리는 감시 세션에서도 돌아야 한다 — 사람을 놓쳤을 때 반대 캠으로
+            바꿔 보는 일을 그 트리가 하기 때문이다. 하지만 길잡이 주행은 nav2 가
+            하므로, 여기서 속도를 내면 **두 주체가 같은 `/cmd_vel` 을 민다.**
+            그래서 트리는 돌리되 바퀴는 안 돌린다(회전 구간은 그냥 기다림이 된다).
+            """
+            if getattr(self, '_session_role', sess.FOLLOW) in sess.DRIVING_ROLES:
+                self._cmd.publish(lin, ang)
+
         def _make_loop(self):
             return ControlLoop(
                 get_detection=self._get_detection,
                 get_scan=self._scan.get,
-                publish=self._cmd.publish,
+                publish=self._publish_for_role,
                 cfg=config,
                 now=lambda: self.get_clock().now().nanoseconds / 1e9,
+                # 회복 BT 가 반대 캠을 보려면 세션의 카메라를 잠시 바꿔야 한다.
+                # 발행은 여전히 RemoteControl 한 곳에서만 나간다 — 여기서는 세션
+                # 상태만 바꾸고, 다음 발행 주기에 그 값이 실려 나간다.
+                select_camera=self.remote.request_camera,
+                peek_people=self._peek_people,
+                # 정위치 캠이 역할에서 나온다 — 추종은 앞, 길잡이·등록감시는 뒤.
+                role=getattr(self, '_session_role', sess.FOLLOW),
             )
+
+        def _peek_people(self):
+            """반대 캠에 사람이 몇 명 보이나.
+
+            지금은 검출 채널이 owner 하나만 실어 보내므로 "보이면 1, 아니면 0"이다.
+            여러 명을 세려면 AI 서버가 후보 수를 같이 보내야 한다 — 그때 여기만 고친다.
+            (한 명일 때만 반응한다는 규칙은 이미 트리 쪽에 있으므로, 이 근사는
+             '여럿이면 무반응'을 못 지킬 뿐 위험한 쪽으로 틀리지는 않는다.)
+            """
+            det = self._get_detection()
+            return 1 if det is not None else 0
 
         def _get_detection(self):
             self._receiver.update()

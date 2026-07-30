@@ -1,4 +1,5 @@
 # All values are reference starting points for tuning — not hard requirements.
+import os as _os
 
 # Detection
 MIN_CONFIDENCE = 0.42          # YOLO person confidence floor
@@ -27,3 +28,37 @@ COAST_LIMIT = 30              # max consecutive missed frames still output (pred
 
 # HSV histogram
 HSV_BINS = 16                 # per channel; total 48-d (H+S+V)
+
+# ── 자세 게이트 ────────────────────────────────────────────────────────────
+# Unknown 이 이만큼 **연속**되면 정지. 즉시 정지로 두면 안 되는 이유: 자세 판정은
+# 어깨 2점·골반 2점의 신뢰도가 전부 기준을 넘어야 나오는데, 사람이 옆으로 서 있기만
+# 해도 반대쪽이 가려져 Unknown 이 난다. 정상 추종 중에 계속 멈칫하게 된다.
+#
+# [2026-07-28] 10 → 25. 현장에서 **정상 추종 중에 자꾸 멈칫**했다.
+#   15fps 기준 10프레임 = 0.67초. 사람이 몸을 돌리거나 옆모습이 되는 흔한 상황에서
+#   그 정도는 쉽게 연속으로 뜬다. 25프레임 = 약 1.7초로 늘려 진짜 놓쳤을 때만 선다.
+#   (Unknown 이 아니라 **Lying** 이 나오면 이 카운터와 무관하게 즉시 멈춘다 —
+#    쓰러진 사람에게 다가가지 않는 규칙은 그대로다. posture_gate.py 참고)
+UNKNOWN_STOP_FRAMES = 25
+# 자세 추론 주기(프레임). 1 = 매 프레임. 프레임 예산(15fps → 66ms)을 넘기면 3 으로
+# 올린다 — 자세는 프레임 단위로 바뀌지 않으므로 직전 판정을 유지해도 손실이 작다.
+#
+# [2026-07-28] 3 으로 올렸다가 **되돌렸다.** 두 가지 이유다:
+#   ① 대가가 크다 — 보정(Calibrating)이 표본 수 기준이라 3 이면 등록 직후 로봇이
+#      멈춰 있는 시간이 **3배**가 된다. tests/test_pose_estimator.py 가 이걸 잡았다.
+#   ② 근거가 없었다 — 포화된 기계는 **Pi** 이고 자세 추론은 **노트북**에서 돈다.
+#      노트북이 병목이라는 측정을 하지 않은 채 올린 값이었다.
+#   올리려면 먼저 AI 서버의 프레임 처리 시간을 재고, 66ms(15fps 예산)를 넘는지 확인할 것.
+POSE_EVERY_N_FRAMES = 1
+# yolo_pose 는 이 저장소 **밖**의 별개 저장소다. 상대경로로 짚으면 안 된다
+# (aba_project/yolo_pose 를 가리켜 import 가 실패한다). 환경변수로 덮어쓸 수 있다.
+YOLO_POSE_DIR = _os.environ.get("LIBI_YOLO_POSE_DIR", "/home/ane/personal_repo/yolo_pose")
+# 자세 전용 2차 모델. 검출 가중치(weights/best.pt)는 task=detect 라 키포인트를 못 낸다.
+# 이미 받아져 있는 파일을 기본값으로 둔다 — 이름만 주면 ultralytics 가 네트워크에서
+# 받으려 하고, 로봇·서버가 오프라인이면 거기서 멈춘다.
+POSE_WEIGHTS = _os.environ.get(
+    "LIBI_POSE_WEIGHTS", _os.path.join(YOLO_POSE_DIR, "yolo11n-pose.pt"))
+
+# ── 소실 방향 게이트 ────────────────────────────────────────────────────────
+EXIT_EDGE_MARGIN_RATIO = 0.08   # 프레임 가장자리로 볼 비율(폭·높이 각각)
+EXIT_AREA_SURGE = 8000.0        # 면적 속도(px^2/frame)가 이보다 크면 코앞으로 본다

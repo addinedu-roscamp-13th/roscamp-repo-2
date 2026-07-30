@@ -220,15 +220,25 @@ def main() -> None:
                     choices=["none", "vertical", "horizontal", "both"],
                     help="picam 전용. robot_agent/.env 의 CAMERA_FLIP 과 반드시 같아야 한다")
     ap.add_argument("--quality", type=int, default=None, help="JPEG 품질 (기본: picam 80, usb 95)")
+    ap.add_argument("--res", default=None, metavar="WxH",
+                    help="해상도 override (예: 640x480). 기본은 각 런타임 값 — "
+                         "**쓸 파이프라인과 같은 해상도로만** 뽑을 것. K 는 해상도 전용이다")
     a = ap.parse_args()
 
-    # 런타임 값. 바꾸면 캘리브 결과가 그 해상도 전용이 되므로 인자로 열어두지 않는다.
+    # 기본은 런타임 값 그대로. --res 는 런타임을 다른 해상도로 새로 짤 때만 쓴다
+    # (예: 도킹 코드를 picam 640x480 으로 만드는 경우). 화각이 모드마다 달라질 수 있어
+    # 480x360 결과를 4/3 배 스케일하는 것보다 그 해상도로 다시 뽑는 편이 안전하다.
     if a.source in ("picam", "test"):
         width, height, fps = 480, 360, 15          # camera_stream.py:_loop_rpicam
         quality = 80 if a.quality is None else a.quality
     else:
         width, height, fps = 640, 480, 30          # perception_server.py:_camera_frames 협상값
         quality = 95 if a.quality is None else a.quality
+    if a.res:
+        try:
+            width, height = (int(v) for v in a.res.lower().split("x"))
+        except ValueError:
+            raise SystemExit(f"--res 형식: 640x480 (받은 값: {a.res!r})")
 
     latest = Latest()
     meta = {"source": a.source, "width": width, "height": height, "fps": fps,

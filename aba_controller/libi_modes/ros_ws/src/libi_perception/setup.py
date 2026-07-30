@@ -20,6 +20,8 @@ setup(
     entry_points={
         'console_scripts': [
             'follow_node = libi_perception.follow_node:main',
+            # 통행 금지 마스크 발행. libi_pi.sh --dyn-obstacle 로만 뜬다(기본 꺼짐).
+            'keepout_node = libi_perception.keepout_mask:main',
         ],
     },
 )

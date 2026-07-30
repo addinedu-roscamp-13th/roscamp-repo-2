@@ -63,7 +63,19 @@ bt_navigator:
     robot_base_frame: base_link
     odom_topic: odom
     bt_loop_duration: 10
-    default_server_timeout: 20
+    # ⚠️ nav2 기본값은 20(ms)다. 이 로봇에서는 **너무 짧다.**
+    #
+    # 2026-07-28 실측: Pi 4코어에 load 21 (camera_sender 44% + fleet_link 33%).
+    # 그 상태에서 bt_navigator 가 planner_server 로 재계획을 걸면 20ms 안에
+    # goal ack 를 못 받고, 그러면 주행 전체가 abort 된다:
+    #   Passing new path to controller  →  Timed out ... compute_path_to_pose
+    #   →  Goal failed  →  Cancellation was successful. Stopping the robot.
+    # 증상은 "조금 가다 서기를 반복한다"로 보인다. 계획도 제어도 멀쩡한데
+    # **응답 대기 시간만 모자란 것**이라 로그를 안 보면 원인이 안 드러난다.
+    #
+    # 200ms 는 ack 만 기다리는 시간이지 계획 시간이 아니다 — 늘려도 주행이
+    # 굼떠지지 않는다. 근본 해결은 CPU 부하를 줄이는 것이다(카메라 fps 등).
+    default_server_timeout: 200
     wait_for_service_timeout: 1000
     action_server_result_timeout: 900.0
     navigators: ["navigate_to_pose", "navigate_through_poses"]
@@ -137,7 +149,14 @@ controller_server:
       desired_linear_vel: 0.07      # [2026-07-15] 0.09→0.07  더 천천히 주행(좁은 방 정밀·드리프트↓)
       max_linear_accel: 0.3         # [m/s^2]
       max_linear_decel: 0.5         # [m/s^2]
-      max_angular_vel: 0.15         # [2026-07-15] 0.7→0.15  회전 느리게(좁은 방 정밀·드리프트↓)
+      # [2026-07-28] 0.15 → 0.5. **0.15 는 기능을 망가뜨리고 있었다.**
+      #   순회 루트가 지그재그라 노드마다 ~90° 를 도는데
+      #     90° = 1.571 / 0.15 = 10.5초,  180° = 21.0초
+      #   그런데 `arrive_resend_sec` 이 10초라, 회전이 끝나기 0.5초 전에 재전송이 나가
+      #   goal 을 취소하고 회전을 **처음부터 다시** 시킨다 → 영영 안 끝난다.
+      #   실측(2026-07-28): `/cmd_vel` linear.x 가 12초 연속 0, 레인 하나에 22~26초.
+      #   (같은 로봇의 회복 BT 는 0.55 rad/s 로 훑는다 — 하드웨어는 충분히 낸다)
+      max_angular_vel: 0.5
 
       # 경로 추종 관련
       # [2026-06-30] 1m×2m 작은 맵 + 6cm 로봇에 맞춰 lookahead 축소
@@ -162,7 +181,9 @@ controller_server:
       rotate_to_heading_min_angle: 0.35
 
       # 3) 회전 속도 (in-place 회전일 때 angular vel)
-      rotate_to_heading_angular_vel: 0.15   # [2026-07-15] 0.7→0.15  제자리 회전도 느리게(각속도 통일)
+      # [2026-07-28] 0.15 → 0.5. 근거는 위 max_angular_vel 주석(회전 10.5초 vs 재전송 10초).
+      #   0.5 면 90° 가 3.1초, 180° 가 6.3초라 재전송 주기 안에 확실히 끝난다.
+      rotate_to_heading_angular_vel: 0.5
 
       # 4) 회전할 때는 전진 속도 0에 가깝게 (거의 제자리 회전)
       max_angular_accel: 3.2
@@ -188,7 +209,23 @@ controller_server:
       #   그래서 ① 감속 구간을 맵 축척에 맞춰 좁히고 ② 하한을 실제로 내려간 값으로 낮춘다.
       #   0.12m 는 최단 레인(0.062m)의 두 배쯤 — 짧은 레인은 전 구간 감속, 나머지는
       #   desired_linear_vel 로 달리다 마지막 0.12m 에서 부드럽게 줄어든다.
-      approach_velocity_scaling_dist: 0.12
+      #
+      # [2026-07-28] 0.12 → 0.16. **사용자 결정** — 노드 근처에서 뚝 끊기지 말고
+      #   조금씩 줄어들며 들어가게 한다.
+      #
+      #   ⚠️ 대가를 알고 쓴다. fleet_node 의 선행 통과(prefetch_radius 0.14,
+      #      scripts/laptop/fms_service.sh)보다 **감속이 먼저 시작된다**:
+      #        감속 시작 0.16  >  다음 노드 허가 0.14
+      #      즉 경유 노드에서도 0.02m 만큼은 감속에 들어간 뒤 새 목표를 받는다.
+      #      선행 통과의 "안 서고 이어 달린다" 효과가 그만큼 줄어든다.
+      #
+      #      prefetch 를 0.16 위로 올려 되살릴 수는 **없다** — fleet_node 가 반경을
+      #      레인 길이의 절반으로 깎는데(fleet_node.cpp:679) 순회 레인이 0.32m 라
+      #      상한이 정확히 0.16 이다.
+      #
+      #      노드마다 주춤하는 게 거슬리면 이 값을 0.10 으로 내리는 것이 정답이다
+      #      (허가 0.14 밖으로 빠져 경유 노드에서 감속이 아예 안 걸린다).
+      approach_velocity_scaling_dist: 0.16
       min_approach_linear_velocity: 0.02   # 0.05 → 0.02  하한이 높으면 감속 자체가 안 보인다
       inflation_cost_scaling_factor: 10.0
       regulated_linear_scaling_min_radius: 0.20   # [2026-06-30] 0.5 → 0.20
@@ -206,8 +243,22 @@ local_costmap:
       global_frame: odom
       robot_base_frame: base_footprint
       rolling_window: true
-      width: 3
-      height: 3
+      # [2026-07-28] 3 → 2. **로컬 창이 맵 전체보다 컸다.**
+      #   맵 arte3 = 63×108 px @ 0.02m = 1.26m × 2.16m = 6,804 셀
+      #   3×3 창   = 150×150 @ 0.02m                   = 22,500 셀  ← 맵의 3.3배
+      #   2×2 창   = 100×100                           = 10,000 셀
+      # 매 update(2Hz)마다 이 셀 전부에 장애물 표시 + 인플레이션을 돈다. 2.25배 줄었다.
+      #
+      # 2m(반경 1.0m)로 잡은 근거 — 필요 반경은
+      #   RPP max_lookahead_dist 0.30 (:159) + 인플레 0.09 + 로봇반경 0.06 = 0.45
+      #   + backup 회복 0.15  →  최악 0.60m
+      # 이라 1m 창(반경 0.5m)은 **모자라고** 2m 창이 최소 안전값이다.
+      #
+      # ⚠️ **정수만 받는다.** nav2 가 `int map_width_meters_` 로 선언한다
+      #    (/opt/ros/jazzy/include/nav2_costmap_2d/nav2_costmap_2d/costmap_2d_ros.hpp:399,402).
+      #    1.5 같은 실수를 쓰면 파라미터 타입 불일치로 **costmap 이 아예 안 뜬다.**
+      width: 2
+      height: 2
       resolution: 0.02
       robot_radius: 0.06        # [2026-07-15] 0.11 → 0.06 되돌림 — 실물 바퀴간격 0.0961m 기준. inflation(0.08)보다 크면 감쇠구간이 사라져 8cm 띠 전체가 253(통행불가)이 된다
       #footprint: '[[0.06, 0.06], [0.06, -0.06], [-0.06, -0.06], [-0.06, 0.06]]'
@@ -215,7 +266,12 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 5.0      # [2026-06-30] 10.0 → 5.0
-        inflation_radius: 0.08        # [2026-07-15] 0.20 → 0.08 되돌림 — 맵 여유(0.04~0.18m)보다 커서 자유공간이 전부 덮였음
+        # [2026-07-28] 0.08 → 0.09. nav2 1.3.12 로 올린 뒤 기동이 SIGABRT 로 죽었다:
+        #   ERROR: configured inflation radius (0.080) is smaller than the computed
+        #          inscribed radius (0.088) of your footprint
+        # inscribed = robot_radius(0.06) + footprint_padding(0.03) 근사 ≈ 0.088 이라
+        # 그보다 커야 한다. 맵 여유(0.04~0.18)를 최대한 지키려고 딱 넘기는 값으로 둔다.
+        inflation_radius: 0.09        # [2026-07-15] 0.20 → 0.08 되돌림 — 맵 여유(0.04~0.18m)보다 커서 자유공간이 전부 덮였음
       # [2026-07-20] voxel_layer(3D VoxelLayer) → obstacle_layer(2D) 교체.
       # 관측원이 2D 라이다(/scan_filtered) 하나뿐이라 3D 복셀·복셀맵 발행이 불필요한 CPU 낭비였음.
       # global_costmap 의 obstacle_layer 와 동일 설정. 장애물 표시/회피 동작은 그대로.
@@ -271,7 +327,12 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 5.0      # [2026-06-30] 10.0 → 5.0
-        inflation_radius: 0.08        # [2026-07-15] 0.20 → 0.08 되돌림 — 맵 여유(0.04~0.18m)보다 커서 자유공간이 전부 덮였음
+        # [2026-07-28] 0.08 → 0.09. nav2 1.3.12 로 올린 뒤 기동이 SIGABRT 로 죽었다:
+        #   ERROR: configured inflation radius (0.080) is smaller than the computed
+        #          inscribed radius (0.088) of your footprint
+        # inscribed = robot_radius(0.06) + footprint_padding(0.03) 근사 ≈ 0.088 이라
+        # 그보다 커야 한다. 맵 여유(0.04~0.18)를 최대한 지키려고 딱 넘기는 값으로 둔다.
+        inflation_radius: 0.09        # [2026-07-15] 0.20 → 0.08 되돌림 — 맵 여유(0.04~0.18m)보다 커서 자유공간이 전부 덮였음
       always_send_full_costmap: True
 
 # The yaml_filename does not need to be specified since it going to be set by defaults in launch.
@@ -361,6 +422,11 @@ velocity_smoother:
     deadband_velocity: [0.0, 0.0, 0.0]
     velocity_timeout: 1.0
 
+# ⚠️ [2026-07-28] **이 노드는 지금 안 뜬다.** navigation_launch.xml 에서 뺐다 —
+#    폴리곤이 둘 다 enabled:False 라 cmd_vel_smoothed → cmd_vel 통과만 하고 있었고,
+#    그 자리는 velocity_smoother 의 `cmd_vel_smoothed → cmd_vel` 리맵이 대신한다.
+#    아래 설정은 **되살릴 때 쓰라고 남겨 둔 것**이다. 되살리는 절차는
+#    navigation_launch.xml 머리말의 ①②③ 참고(세 곳을 같이 되돌려야 한다).
 collision_monitor:
   ros__parameters:
     base_frame_id: "base_link"

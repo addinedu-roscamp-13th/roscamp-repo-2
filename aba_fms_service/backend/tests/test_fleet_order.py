@@ -143,3 +143,22 @@ def test_unknown_kind_is_rejected(client):
     r = client.post("/api/fleet/order",
                     json={"kind": "patrol", "dropoff": "복도-1"})
     assert r.status_code == 422
+
+
+# ── 수거 (collect) — book/pickup/dropoff 전부 없다 ───────────────────────────
+
+def test_collect_order_needs_nothing_at_all(client):
+    """dropoff 조차 안 보내도 된다 — 다른 kind 였다면 422(`test_order_without_dropoff_is_rejected`)."""
+    r = client.post("/api/fleet/order", json={"kind": "collect"})
+    assert r.status_code == 200, r.text
+
+
+def test_collect_order_has_four_legs_and_no_second_navigate(client):
+    _ = client.post("/api/fleet/order", json={"kind": "collect"})
+    task = client.get("/api/fleet/orders").json()["orders"][0]
+    assert task["task_type"] == "collect"
+    assert task["leg_count"] == 4
+    assert [l["type"] for l in task["legs"]] == [
+        "navigate", "perform_action", "perform_action", "perform_action",
+    ]
+    assert len(task["leg_labels"]) == 4

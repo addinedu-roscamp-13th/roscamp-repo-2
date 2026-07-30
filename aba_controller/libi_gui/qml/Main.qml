@@ -62,33 +62,26 @@ ApplicationWindow {
     Component { id: adminControlC;AdminControlScreen {} }
     Component { id: followC;      FollowScreen {} }
 
-    // 추종이 시작되면 영상 화면으로, 끝나면 관리자 화면으로 돌아온다. 화면 전환을 QML 이
-    // 맡으므로 RobotController 와 PerceptionClient 는 서로를 몰라도 된다.
+    // 추종이 시작되면 영상 화면으로, 끝나면 돌아온다. 화면 전환을 QML 이 맡으므로
+    // RobotController 와 PerceptionClient 는 서로를 몰라도 된다.
+    //
+    // **어디로 돌아가느냐는 누가 끝냈느냐로 갈린다:**
+    //   관리자가 「해제」   → 관리자 화면 (그 사람이 아직 앞에 있다)
+    //   로봇이 스스로 종료 → 홈 (사람을 못 찾아 포기했거나 관제가 상태를 바꿨다.
+    //                        로봇도 순찰로 복귀하므로 관리자 화면에 남으면 어긋난다)
     Connections {
         target: controller
         function onFollowingChanged() {
             if (controller.following) controller.setMode("follow");
             else if (controller.mode === "follow") controller.setMode("adminControl");
         }
-    }
-
-    // INTERACTING 안내: 남은초 표시, 5초 이하면 "곧 이동합니다" 상단 경고 모달
-    Rectangle {
-        id: interactBanner
-        visible: controller.robotState === "응대중"
-        anchors { top: parent.top; left: parent.left; right: parent.right }
-        height: 72
-        // 응대중은 위험 상태가 아니다 — LED 규칙(빨강=위험)과 맞춰 남은시간과 무관하게 초록 유지.
-        color: S.success
-        z: 90
-        Text {
-            anchors.centerIn: parent
-            color: "white"; font.pixelSize: 26; font.bold: true
-            text: controller.interactingRemaining <= 5
-                  ? "곧 이동합니다 (" + controller.interactingRemaining + "초)"
-                  : "응대 중 · " + controller.interactingRemaining + "초 후 순찰 재개"
+        function onFollowEndedByRobot() {
+            controller.setMode("home");
         }
     }
+
+    // INTERACTING 안내는 화면을 덮지 않는다 — 상단바(TopBar.qml)의 알약이 남은 시간을
+    // 보여준다. 여기 있던 배너/모달은 그 자리에서 상단바와 화면을 가려서 없앴다.
 
     // 비상정지 오버레이 (관리자 로그인/조작 화면에서는 숨겨 해제 흐름 허용)
     Rectangle {

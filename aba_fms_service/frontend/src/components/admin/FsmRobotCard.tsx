@@ -22,15 +22,21 @@ import { cn } from "@/lib/utils";
 
 // 상태별 배지 색. 상태 **이름**은 여기 적지 않는다 — 키가 없으면 기본색으로 떨어진다.
 // (전이 박스는 GET /api/fsm/model 이 정본이고, 색은 표현일 뿐이다.)
+//
+// ⚠️ 로봇 LED 와 **같은 색 축**을 쓴다 — pinky_led/config/led_state_map.yaml.
+//    파랑 = 가용 / 초록 = 이용 불가(로봇이 일하는 중) / 빨강 = 접근 주의.
+//    예전엔 CHARGING 이 초록이라 어드민에선 "가용"으로, 로봇에선 빨강으로 보였다.
+//    LED 가 깜빡이는 두 상태(RETURNING·ERROR)는 배지에서 ring 으로 표시한다 —
+//    화면에서 깜빡이게 하면 관제 화면 전체가 산만해진다.
 const BADGE_TONE: Record<string, string> = {
   PATROL: "bg-blue-100 text-blue-700",
-  WORKING: "bg-orange-100 text-orange-700",
-  CHARGING: "bg-emerald-100 text-emerald-700",
-  RETURNING: "bg-amber-100 text-amber-700",
-  INTERACTING: "bg-cyan-100 text-cyan-700",
-  SECURITY_PATROL: "bg-violet-100 text-violet-700",
-  IDLE: "bg-slate-100 text-slate-600",
-  ERROR: "bg-rose-100 text-rose-700",
+  SECURITY_PATROL: "bg-blue-50 text-blue-600", // LED 도 같은 청색, 휘도만 낮다
+  IDLE: "bg-emerald-50 text-emerald-600", // LED 초록 15% — 쉬는 중
+  INTERACTING: "bg-emerald-100 text-emerald-700",
+  WORKING: "bg-emerald-100 text-emerald-700",
+  RETURNING: "bg-emerald-100 text-emerald-700 ring-1 ring-emerald-500", // LED blink 1.5s
+  CHARGING: "bg-red-100 text-red-700",
+  ERROR: "bg-red-100 text-red-700 ring-2 ring-red-500", // LED blink 0.5s
 };
 
 // [sim 전용] 로봇 도메인의 sim_battery.py 에 잔량을 밀어 넣는다. 실물엔 렌더되지 않는다.

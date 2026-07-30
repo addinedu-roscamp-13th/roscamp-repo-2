@@ -19,7 +19,7 @@
 한 줄에 하나씩 JSONL 로 남긴다. 시각은 전부 **이 프로세스의 벽시계**로 통일한다 —
 FMS 이벤트의 `ts` 와 로봇 ROS 시각이 서로 다른 기준이라, 그대로 섞으면 순서가 어긋난다.
 
-    {"t": 3.42, "kind": "pose",  "robot": "Pinkysim", "state": "WORKING", "x": .., "y": ..}
+    {"t": 3.42, "kind": "pose",  "robot": "pinky-sim-1", "state": "WORKING", "x": .., "y": ..}
     {"t": 3.51, "kind": "event", "seq": 7, "text": "복도-5 도착", ...}
 
 ## 실행

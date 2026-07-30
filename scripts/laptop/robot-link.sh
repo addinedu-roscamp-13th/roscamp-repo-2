@@ -35,7 +35,7 @@ for a in "$@"; do
 done
 
 # 브릿지 접두사 규칙 — gen_domain_bridges.py 와 같아야 한다:
-# 이름에서 -,_,공백 제거 후 첫 글자만 소문자. "Pinky-3"→pinky3, "Pinkysim"→pinkysim
+# 이름에서 -,_,공백 제거 후 첫 글자만 소문자. "pinky-3"→pinky3, "pinkysim"→pinkysim
 key_of() { printf '%s' "$1" | tr -d '_ -' | sed 's/^\(.\)/\L\1/'; }
 
 # DB 조회용 파이썬(pymysql 필요) — 시스템 python3 엔 없어서 서비스 venv 를 찾는다.

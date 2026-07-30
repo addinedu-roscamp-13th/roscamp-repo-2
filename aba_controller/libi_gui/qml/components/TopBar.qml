@@ -33,6 +33,20 @@ Rectangle {
             pillColor: S.ledColorFor(controller.robotState)
             text: controller.robotState
         }
+
+        // 응대 세션이 끝나기 직전 경고. 예전엔 화면 위를 덮는 배너였는데 상단바까지 가려
+        // 배터리·비상정지가 안 보였다 — 상태 알약 옆 한 자리로 옮기고, 평소엔 아예 안 띄운다.
+        //
+        // "화면을 누르면 계속"은 **로봇이 해줘야 하는 약속**이라 rosConnected 일 때만 말한다.
+        // 목 모드에서는 onScreenTouch 가 발행할 상대가 없어(RobotController.cpp:756) 눌러도
+        // 세션이 안 늘어난다 — 그 상태에서 이 문구를 띄우면 화면이 거짓말을 한다.
+        StatusPill {
+            visible: controller.robotState === "이용중" && controller.interactingRemaining <= 5
+            anchors.verticalCenter: parent.verticalCenter
+            pillColor: S.warning
+            text: "곧 이동합니다 " + controller.interactingRemaining + "초"
+                  + (controller.rosConnected ? " · 화면을 누르면 계속" : "")
+        }
     }
 
     Row {

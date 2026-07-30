@@ -3,6 +3,7 @@
     <file>qml/Main.qml</file>
     <file>qml/Style.js</file>
     <file>qml/assets/arte_logo.png</file>
+    <file>qml/assets/artemap.png</file>
     <file>qml/assets/emotion/basic.gif</file>
     <file>qml/assets/emotion/happy.gif</file>
     <file>qml/assets/emotion/hello.gif</file>
@@ -19,6 +20,7 @@
 <file>qml/components/BookRowSkeleton.qml</file>
     <file>qml/components/TopBar.qml</file>
     <file>qml/components/MapView.qml</file>
+    <file>qml/components/BookDetailModal.qml</file>
     <file>qml/components/ScreenHeader.qml</file>
     <file>qml/screens/HomeScreen.qml</file>
     <file>qml/screens/GuideScreen.qml</file>

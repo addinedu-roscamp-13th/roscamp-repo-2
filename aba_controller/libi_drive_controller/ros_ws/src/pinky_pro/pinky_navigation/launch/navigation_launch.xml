@@ -10,14 +10,31 @@
     <arg name="container_name" default="nav2_container"/>
     <arg name="use_respawn" default="False"/>
     <arg name="log_level" default="info"/>
+    <!-- [2026-07-28] collision_monitor 제거. 두 폴리곤이 2026-07-21 부터 enabled:False 라
+         하는 일이 cmd_vel_smoothed → cmd_vel 통과뿐이었다. 노드를 빼는 대신
+         velocity_smoother 의 출력을 /cmd_vel 로 직접 리맵한다.
+         ⚠️ 되살릴 때는 **네 곳을 같이** 되돌린다:
+           ① 아래 lifecycle_nodes 에 'collision_monitor' 추가
+              (빠뜨리면 lifecycle_manager 가 없는 노드를 기다려 nav2 전체가 activate 안 된다)
+           ② bringup_launch.xml / gz_bringup_launch.xml 의 lifecycle_nodes_nav 에도 추가.
+              그쪽이 이 파일로 값을 **넘겨 ①의 기본값을 덮으므로**, 여기만 고치면 무효다
+           ③ velocity_smoother 의 `cmd_vel_smoothed → cmd_vel_nav_out` 리맵 제거
+              (안 지우면 smoother 와 monitor 가 같은 토픽을 함께 민다)
+           ④ collision_monitor 노드 블록 복원 (composable / standalone 양쪽)
+           ⑤ **nav2_params*.yaml 의 `cmd_vel_out_topic` 을 `cmd_vel_nav_out` 으로 고친다.**
+              지금 값은 `cmd_vel` 인데, 그건 twist_mux 도입 전 값이다. 그대로 되살리면
+              이 노드만 중재를 우회해 nav2·추종·수동조작과 마지막 메시지 싸움이 된다
+              (pinky_bringup/config/twist_mux.yaml). 사슬은 이렇게 이어져야 한다:
+                velocity_smoother → cmd_vel_smoothed → collision_monitor → cmd_vel_nav_out → twist_mux
+         파라미터(폴리곤 좌표·토픽)는 nav2_params*.yaml 에 그대로 남겨 뒀다 — 쓰지 않는
+         설정이라 값을 고치지 않고, 되살리는 사람이 ⑤ 를 하도록 여기에 적어 둔다. -->
     <arg name="lifecycle_nodes" default="['controller_server',
                        'smoother_server',
                        'planner_server',
                        'behavior_server',
                        'bt_navigator',
                        'waypoint_follower',
-                       'velocity_smoother',
-                       'collision_monitor']"/>
+                       'velocity_smoother']"/>
     
     <load_composable_node target="$(var container_name)" if="$(var use_composition)">    
         <composable_node pkg="nav2_controller" plugin="nav2_controller::ControllerServer" name="controller_server">            
@@ -55,6 +72,10 @@
 
             <remap from="/tf" to="tf"/>
             <remap from="/tf_static" to="tf_static"/>
+            <!-- 회복 동작(spin/backup/wait/drive_on_heading)이 원래 /cmd_vel 직행이었다.
+                 controller_server 와 달리 여기엔 cmd_vel 리맵이 없어 velocity_smoother
+                 조차 안 거쳤다. twist_mux 입력으로 뺀다 — pinky_bringup/config/twist_mux.yaml -->
+            <remap from="cmd_vel" to="cmd_vel_recovery"/>
         </composable_node>  
 
         <composable_node pkg="nav2_bt_navigator" plugin="nav2_bt_navigator::BtNavigator" name="bt_navigator">            
@@ -76,7 +97,7 @@
             <remap from="/tf_static" to="tf_static"/>
         </composable_node>  
 
-        <composable_node pkg="nav2_velocity_smoother" plugin="nav2_velocity_smoother::VelocitySmoother" name="velocity_smoother">            
+        <composable_node pkg="nav2_velocity_smoother" plugin="nav2_velocity_smoother::VelocitySmoother" name="velocity_smoother">
             <param from="$(var params_file)"/>
             <param name="use_sim_time" value="$(var use_sim_time)"/>
             <param name="autostart" value="$(var autostart)"/>
@@ -84,15 +105,8 @@
             <remap from="/tf" to="tf"/>
             <remap from="/tf_static" to="tf_static"/>
             <remap from="cmd_vel" to="cmd_vel_nav"/>
-        </composable_node>
-
-        <composable_node pkg="nav2_collision_monitor" plugin="nav2_collision_monitor::CollisionMonitor" name="collision_monitor">
-            <param from="$(var params_file)"/>
-            <param name="use_sim_time" value="$(var use_sim_time)"/>
-            <param name="autostart" value="$(var autostart)"/>
-
-            <remap from="/tf" to="tf"/>
-            <remap from="/tf_static" to="tf_static"/>
+            <!-- collision_monitor 를 뺐으므로 여기가 최종 출구다. -->
+            <remap from="cmd_vel_smoothed" to="cmd_vel_nav_out"/>
         </composable_node>
 
         <composable_node pkg="nav2_lifecycle_manager" plugin="nav2_lifecycle_manager::LifecycleManager" name="lifecycle_manager_navigation">
@@ -143,6 +157,10 @@
 
             <remap from="/tf" to="tf"/>
             <remap from="/tf_static" to="tf_static"/>
+            <!-- 회복 동작(spin/backup/wait/drive_on_heading)이 원래 /cmd_vel 직행이었다.
+                 controller_server 와 달리 여기엔 cmd_vel 리맵이 없어 velocity_smoother
+                 조차 안 거쳤다. twist_mux 입력으로 뺀다 — pinky_bringup/config/twist_mux.yaml -->
+            <remap from="cmd_vel" to="cmd_vel_recovery"/>
         </node>
 
         <node pkg="nav2_bt_navigator" exec="bt_navigator" name="bt_navigator" output="screen">
@@ -174,22 +192,16 @@
             <remap from="/tf" to="tf"/>
             <remap from="/tf_static" to="tf_static"/>
             <remap from="cmd_vel" to="cmd_vel_nav"/>
-        </node>
-
-        <node pkg="nav2_collision_monitor" exec="collision_monitor" name="collision_monitor" output="screen">
-            <param name='respawn' value="$(var use_respawn)"/>
-            <param name='respawn_delay' value="2.0"/>
-            <param name='log_level' value="$(var log_level)"/>
-            <param from="$(var params_file)"/>
-
-            <remap from="/tf" to="tf"/>
-            <remap from="/tf_static" to="tf_static"/>
+            <!-- collision_monitor 를 뺐으므로 여기가 최종 출구다. -->
+            <remap from="cmd_vel_smoothed" to="cmd_vel_nav_out"/>
         </node>
 
         <node pkg="nav2_lifecycle_manager" exec="lifecycle_manager" name="lifecycle_manager_navigation" output="screen">
             <param name='use_sim_time' value="$(var use_sim_time)"/>
             <param name='autostart' value="$(var autostart)"/>
             <param name='node_names' value="$(var lifecycle_nodes)"/>
+            <!-- 기본 4.0 초는 이 Pi 부하에서 모자란다 — 근거는 localization_launch.xml 의 같은 항목. -->
+            <param name='bond_timeout' value="20.0"/>
         </node>
     </group>
 

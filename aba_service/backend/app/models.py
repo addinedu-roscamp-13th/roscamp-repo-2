@@ -399,7 +399,7 @@ class TaskLog(Base):
     )
     task_id: Mapped[str] = mapped_column(String(64), nullable=False, comment="FMS task_id")
     kind: Mapped[str] = mapped_column(
-        String(32), nullable=False, comment="작업 종류 (transfer/sort/patrol ...)"
+        String(32), nullable=False, comment="작업 종류 (transfer/collect/patrol ...)"
     )
     robot: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="수행 로봇")
     status: Mapped[str] = mapped_column(
