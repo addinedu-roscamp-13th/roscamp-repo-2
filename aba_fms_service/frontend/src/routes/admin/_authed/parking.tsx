@@ -739,6 +739,10 @@ function ParkingPage() {
     const W = frame.width;
     const H = frame.height;
     ctx.clearRect(0, 0, W, H);
+    // 카메라가 180° 돌려 장착돼 있어 영상에 rotate(180deg) 를 건다.
+    // 오버레이는 CSS 변환을 안 받으므로(글자가 뒤집히면 안 되니까) 좌표를 직접 뒤집어
+    // 영상과 같은 '표시 공간'에 그린다:  가로 MX(u)=W-u,  세로 H-cy.
+    const MX = (u: number) => W - u;
 
     // 로봇 진행축(화면 중앙 세로 기준선)
     ctx.strokeStyle = "rgba(255,255,255,0.35)";
@@ -753,7 +757,7 @@ function ParkingPage() {
     // 검출된 모든 마커 박스 — 색이 지정된 마커는 그 색으로 칠하고 색 이름을 라벨에 붙인다.
     for (const m of detect.markers ?? []) {
       const side = m.side_px;
-      const x = m.cx - side / 2;
+      const x = MX(m.cx) - side / 2;
       const y = H - m.cy - side / 2;
       const selected = targetMarkerId == null || m.id === targetMarkerId;
       // 실시간 감지 색(liveColors) 우선, 없으면 지정 매핑(colorMap)
@@ -795,7 +799,7 @@ function ParkingPage() {
       const zNear = Bg / (H - 2 - Ag); // 화면 최하단이 보는 가장 가까운 바닥 (≈14cm)
       const zWall = wallCm != null ? Math.max(wallCm / 100, zNear + 0.03) : 0.6;
       const fx = CAM_FX_PX * (W / 480); // fx 캘리브레이션은 480px 프레임 기준
-      const uOf = (x: number, z: number) => W / 2 + (fx * x) / z;
+      const uOf = (x: number, z: number) => W / 2 - (fx * x) / z;   // MX 와 동일한 가로 반전
       const vOf = (z: number) => Ag + Bg / z;
       const railX = PINKY_WIDTH_M / 2;
       // 근접도에 따라 전체 톤 하나로: 여유 초록 / 20cm 이내 노랑 / 10cm 이내 빨강
@@ -865,7 +869,7 @@ function ParkingPage() {
     let distCm: number | null, latCm: number | null, bearing: number, yawDeg: number | null;
     if (tele && (typeof tele.ex === "number" || typeof tele.offset === "number")) {
       ex = (typeof tele.ex === "number" ? tele.ex : tele.offset) as number;
-      mx = (W / 2) * (1 + ex);
+      mx = MX((W / 2) * (1 + ex));
       my = H * 0.4; // 텔레메트리에는 세로 좌표가 없어 화면 40% 높이에 가상 배치
       sidePx = typeof tele.dist === "number" && (tele.dist as number) < 1 ? (tele.dist as number) * W : 30;
       distCm = typeof tele.wall_cm === "number" ? (tele.wall_cm as number)
@@ -875,7 +879,7 @@ function ParkingPage() {
       yawDeg = typeof tele.yaw_deg === "number" ? (tele.yaw_deg as number) : null;
     } else if (targetMarker) {
       // 대기 중이거나(폴링 detect) 도킹 초기라 텔레메트리에 아직 ex가 없을 때
-      mx = targetMarker.cx;
+      mx = MX(targetMarker.cx);
       my = H - targetMarker.cy;
       sidePx = targetMarker.side_px;
       ex = targetMarker.ex;
@@ -2581,7 +2585,7 @@ function ParkingPage() {
                 muted
                 playsInline
                 className="absolute inset-0 h-full w-full object-contain"
-                style={{ transform: "scaleY(-1)", opacity: webRtcReady ? 1 : 0.25 }}
+                style={{ transform: "rotate(180deg)", opacity: webRtcReady ? 1 : 0.25 }}
               />
             )}
             {webRtcFailed && (
@@ -2590,7 +2594,7 @@ function ParkingPage() {
                 src={dockBase + CAM_STREAM + "?w=320&q=35&fps=10&e=" + camEpoch}
                 alt="로봇 카메라"
                 className="absolute inset-0 h-full w-full object-contain"
-                style={{ transform: "scaleY(-1)" }}
+                style={{ transform: "rotate(180deg)" }}
                 onError={() => setTimeout(() => setCamEpoch((v) => v + 1), 1000)}
               />
             )}

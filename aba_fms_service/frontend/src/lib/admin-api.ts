@@ -1181,6 +1181,15 @@ export const adminApi = {
     request<VoiceExecuteResult>("/api/voice/command", { method: "POST", body: JSON.stringify({ command_text, confirm }) }),
   voiceTasks: (commands: string[], confirm: boolean) =>
     request<VoiceExecuteResult>("/api/voice/tasks", { method: "POST", body: JSON.stringify({ commands, confirm }) }),
+
+  // ── 색 주차 (색 → 매핑된 마커 도킹) — 중앙이 로봇 스냅샷/도킹을 프록시 ──────────
+  parkPerceive: (robotId: number) =>
+    request<ParkPerceive>(`/api/park/perceive?robot_id=${robotId}`),
+  parkByColor: (robotId: number, color: string, confirm: boolean) =>
+    request<ParkResult>("/api/park/by-color", {
+      method: "POST",
+      body: JSON.stringify({ robot_id: robotId, color, confirm }),
+    }),
 };
 
 // ── FSM + BT (2단계) ─────────────────────────────────────────────────────────
@@ -1321,6 +1330,43 @@ export interface MarkerActionInput {
   action_type: MarkerActionType;
   params?: Record<string, unknown> | null;
   enabled: boolean;
+}
+
+export interface ParkMarkerColor {
+  name: string;
+  chromatic: boolean;
+  hue?: number;
+  ratio?: number;
+}
+export interface ParkMarker {
+  id: number;
+  size_frac: number;
+  ex: number;
+  cx: number;
+  color?: ParkMarkerColor | null;
+}
+export interface ParkColorMap {
+  marker_id: number;
+  color: string;
+  label: string | null;
+  action_type: MarkerActionType;
+  enabled: boolean;
+}
+export interface ParkPerceive {
+  frame: { width: number; height: number };
+  markers: ParkMarker[];
+  spoken: string;
+  mapping: ParkColorMap[];
+  robot: { id: number; name: string };
+}
+export interface ParkResult {
+  success: boolean;
+  spoken: string;
+  requires_confirm?: boolean;
+  marker_id?: number;
+  visible?: boolean;
+  robot?: string;
+  mapping?: ParkColorMap[];
 }
 
 export interface LocationActionItem {

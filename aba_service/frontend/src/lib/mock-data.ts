@@ -12,14 +12,15 @@ export type Book = {
   forWhom: Record<string, string[]>;
 };
 
+/** 이름은 초기 스캐폴드 잔재로 STORE 지만, 가리키는 곳은 서점이 아니라 도서관 분관이다. */
 export const STORE = {
   name: {
-    KR: "가산 에듀인에듀점",
-    EN: "Gasan Eduin-Edu",
-    ZH: "加山 Eduin-Edu 店",
-    VI: "Gasan Eduin-Edu",
+    KR: "가산 에듀인에듀 도서관",
+    EN: "Gasan Eduin-Edu Library",
+    ZH: "加山 Eduin-Edu 图书馆",
+    VI: "Thư viện Gasan Eduin-Edu",
   },
-  short: "가산 에듀인에듀점",
+  short: "가산 에듀인에듀 도서관",
 };
 
 export const BOOKS: Book[] = [
@@ -163,12 +164,14 @@ export const BOOKS: Book[] = [
   },
 ];
 
+// mock 도서의 zone 코드(A/B/C…) → 사람이 읽는 이름. 지도 그리기에는 더 이상 쓰지 않는다
+// (그건 `LibraryMap.tsx` 가 arte3 격자에서 직접 뽑는다) — 챗봇 답변의 라벨 용도만 남았다.
+// 서점 시절의 「북카페」는 실제 도서관 지도(waypoint.yaml)에 없는 구역이라 뺐다.
 export const ZONES = [
-  { id: "A", label: "문학", x: 8, y: 10, w: 40, h: 32, color: "bg-rose-200" },
-  { id: "B", label: "예술", x: 52, y: 10, w: 40, h: 32, color: "bg-amber-200" },
-  { id: "C", label: "과학", x: 8, y: 48, w: 40, h: 32, color: "bg-sky-200" },
-  { id: "CAFE", label: "북카페 ☕", x: 52, y: 48, w: 24, h: 32, color: "bg-orange-200" },
-  { id: "WC", label: "화장실", x: 80, y: 48, w: 12, h: 32, color: "bg-stone-200" },
+  { id: "A", label: "문학서가", color: "bg-rose-200" },
+  { id: "B", label: "예술서가", color: "bg-amber-200" },
+  { id: "C", label: "과학·인문학서가", color: "bg-sky-200" },
+  { id: "WC", label: "화장실", color: "bg-stone-200" },
 ];
 
 export const QUICK_CHIPS = {

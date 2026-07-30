@@ -9,7 +9,7 @@ from app.database import AdminSessionLocal, init_db
 from app.models import Admin
 from app.hardware.camera_stream import camera as camera_hw
 from app.hardware.pinky_greeting_monitor import pinky_greeting_monitor
-from app.routers import admin_follow, arm, aruco_dock, auth, camera, chat, dashboard, dev, drive, fleet, fleet_order, fsm, guide, human_follow_robot, maps, marker_actions, mission_control, nav, panel, pinky_yolo, robot, robot_learning, robots, ros, users, voice, webrtc_robot
+from app.routers import admin_follow, arm, aruco_dock, auth, camera, chat, dashboard, dev, drive, fleet, fleet_order, fsm, guide, human_follow_robot, maps, marker_actions, mission_control, nav, panel, park, pinky_yolo, robot, robot_learning, robots, ros, users, voice, webrtc_robot
 from app.security import hash_password
 
 # ── 로깅 ────────────────────────────────────────────────────────────────────
@@ -63,6 +63,7 @@ app.include_router(human_follow_robot.router)
 app.include_router(webrtc_robot.router)
 app.include_router(aruco_dock.router)
 app.include_router(marker_actions.router)
+app.include_router(park.router)
 app.include_router(voice.router)
 
 @app.get("/api/health")

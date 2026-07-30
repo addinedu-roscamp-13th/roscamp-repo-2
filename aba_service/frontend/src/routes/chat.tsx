@@ -8,7 +8,7 @@ import {
   reserveFromSheet,
 } from "@/components/BookDetailSheet";
 import { BotConfirmCard } from "@/components/BotConfirmCard";
-import { LANGS, useI18n } from "@/lib/i18n";
+import { useI18n } from "@/lib/i18n";
 import { QUICK_CHIPS, BOOKS, ZONES, type Book } from "@/lib/mock-data";
 import {
   detectCategory,
@@ -27,7 +27,7 @@ import { Send, Map as MapIcon, X, Menu, Mic } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { useSpeechRecognition, useSpeechSupported } from "@/lib/use-speech";
+import { useRealtimeVoice } from "@/lib/use-realtime-voice";
 import { z } from "zod";
 
 // 홈·검색의 마이크가 인식이 끝나면 여기로 그 문장을 그대로 들고 온다.
@@ -203,7 +203,7 @@ function booksContext(books: Book[], lang: "KR" | "EN" | "ZH" | "VI"): string {
   return books
     .map((b) => {
       const tags = (b.forWhom[lang] ?? []).join(" ");
-      const stock = b.inStock ? "available" : "out of stock";
+      const stock = b.inStock ? "available to borrow" : "currently on loan";
       return `- "${b.title[lang]}" by ${b.author} | category: ${b.category} | location: ${b.zone} ${b.shelf} | ${stock} | ${b.summary[lang] ?? ""} ${tags}`;
     })
     .join("\n");
@@ -238,7 +238,7 @@ function buildSystemPrompt(
   ];
   if (books.length > 0) {
     lines.push(
-      "Here are real books currently in the store database. Recommend ONLY from this list,",
+      "Here are real books currently in the library catalog. Recommend ONLY from this list,",
       "mention each book's shelf location, and do not invent titles that are not listed:",
       booksContext(books, lang),
     );
@@ -359,12 +359,12 @@ export function makeReply(
     return {
       text:
         lang === "KR"
-          ? "화장실은 오른쪽 끝, 북카페 옆에 있어요."
+          ? "화장실은 오른쪽 통로 안쪽 끝, 미술작품 구역 옆에 있어요."
           : lang === "EN"
-            ? "The restroom is at the far right, next to the book café."
+            ? "The restroom is at the far end of the right-hand aisle, next to the art display."
             : lang === "ZH"
-              ? "洗手间在最右侧,书咖旁边。"
-              : "Nhà vệ sinh ở cuối bên phải, cạnh quán cà phê sách.",
+              ? "洗手间在右侧通道尽头,美术作品区旁边。"
+              : "Nhà vệ sinh ở cuối lối đi bên phải, cạnh khu trưng bày mỹ thuật.",
       showMap: true,
     };
   }
@@ -407,16 +407,16 @@ export function makeReply(
     return {
       text:
         lang === "KR"
-          ? `『${found.title.KR}』은(는) ${found.zone} ${found.shelf}에 있어요. ${found.inStock ? "재고 있음 ✅" : "현재 품절입니다."}`
-          : `'${found.title[lang]}' is at ${found.zone}. ${found.inStock ? "In stock." : "Sold out."}`,
+          ? `『${found.title.KR}』은(는) ${found.zone} ${found.shelf}에 있어요. ${found.inStock ? "대출 가능 ✅" : "현재 대출 중입니다."}`
+          : `'${found.title[lang]}' is at ${found.zone}. ${found.inStock ? "Available to borrow." : "Currently on loan."}`,
       showMap: found.inStock,
     };
   }
   return {
     text:
       lang === "KR"
-        ? "저희 도서관은 문학(A)·예술(B)·과학(C) 코너로 구성돼 있어요. 분야나 책 제목을 알려주시면 위치까지 안내해드릴게요."
-        : "Our store has Literature (A), Art (B) and Science (C) sections. Tell me a field or title and I'll guide you.",
+        ? "저희 도서관은 문학(A)·예술(B)·과학(C) 서가로 구성돼 있어요. 분야나 책 제목을 알려주시면 위치까지 안내해드릴게요."
+        : "Our library has Literature (A), Art (B) and Science (C) sections. Tell me a field or title and I'll guide you.",
   };
 }
 
@@ -479,7 +479,8 @@ function MessageMarkdown({ text }: { text: string }) {
   );
 }
 
-// Resolve a book's zone code (e.g. "A-2") to a ZONES entry for the store map.
+// Resolve a book's zone code (e.g. "A-2") to a ZONES entry — the shelf label shown
+// next to the book in the library map sheet.
 function zoneFor(book: Book) {
   const prefix = book.zone.split("-")[0];
   return ZONES.find((z) => z.id === prefix) ?? null;
@@ -491,8 +492,8 @@ function greetingFor(lang: "KR" | "EN" | "ZH" | "VI") {
     : lang === "EN"
       ? "Hi! I'm LiBi, your library guide. Ask me about any book, topic or facility."
       : lang === "ZH"
-        ? "您好,我是书店向导 LiBi,请随意询问任何书籍或设施。"
-        : "Xin chào! Tôi là LiBi, hướng dẫn viên nhà sách.";
+        ? "您好,我是图书馆向导 LiBi,请随意询问任何书籍或设施。"
+        : "Xin chào! Tôi là LiBi, hướng dẫn viên thư viện.";
 }
 
 function ChatPage() {
@@ -513,12 +514,8 @@ function ChatPage() {
   // 연타가 두 번째 응답으로 pendingCall 을 덮어쓸 수 있다.
   const busy = sending || pendingCall !== null;
 
-  // 음성 입력 — 홈/검색 마이크와 달리 여기선 인식된 문장을 검색어가 아니라
-  // 그대로 LiBi 에게 보낸다(도구 호출까지 이어짐).
-  const speechSupported = useSpeechSupported();
-  const speechLang = LANGS.find((l) => l.code === lang)?.speech ?? "ko-KR";
-  const { listening, transcript, start, stop } =
-    useSpeechRecognition(speechLang);
+  // 음성 입력은 브라우저 SpeechRecognition 이 아니라 OpenAI Realtime 이다(아래 `voice`).
+  // 홈/검색의 "말하면 검색어로" 마이크와 달리, 여기선 음성 자체가 대화 한 턴이다.
 
   const scrollRef = useRef<HTMLDivElement>(null);
   // 화면에 그리는 Msg[] 와 별개로, 모델에 보낼 원본 이력을 따로 둔다.
@@ -541,17 +538,6 @@ function ChatPage() {
     );
   }, [lang]);
 
-  // 인식이 끝나면(침묵 감지로 자동 정지) 그 문장을 그대로 보낸다 — 홈 화면의
-  // "말하면 자동으로 넘어간다" 패턴과 같다.
-  useEffect(() => {
-    if (!listening && transcript.trim() && !busy) {
-      const text = transcript.trim();
-      const id = setTimeout(() => void send(text), 400);
-      return () => clearTimeout(id);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [listening, transcript]);
-
   // 홈/검색 마이크가 `?q=` 로 문장을 들고 오면 도착하자마자 한 번 보낸다.
   const autoSentRef = useRef(false);
   useEffect(() => {
@@ -572,6 +558,30 @@ function ChatPage() {
       ...m,
       { id: Math.random().toString(36) + "b", role: "bot", text, ...extra },
     ]);
+
+  const addUserMessage = (text: string) =>
+    setMessages((m) => [
+      ...m,
+      { id: Math.random().toString(36) + "u", role: "user", text },
+    ]);
+
+  // 음성 대화(OpenAI Realtime, 누르고 말하기). 화면 챗과 같은 도구 레이어를 쓰므로
+  // 말로 시킨 대여 신청도 확인 카드를 거친다. 전사·응답은 같은 말풍선 목록에 쌓아
+  // 타이핑 대화와 음성 대화가 하나의 흐름으로 이어지게 한다.
+  const voice = useRealtimeVoice({
+    onUserText: (text) => {
+      if (!text) return;
+      addUserMessage(text);
+      historyRef.current.push({ role: "user", content: text });
+    },
+    onBotText: (text) => {
+      if (!text) return;
+      addBotMessage(text);
+      historyRef.current.push({ role: "assistant", content: text });
+    },
+    onToolResult: (text, books) => addBotMessage(text, { books }),
+    onConfirm: (pending) => setPendingCall(pending),
+  });
 
   const buildMessages = (): ChatTurn[] => [
     historyRef.current[0],
@@ -920,11 +930,19 @@ function ChatPage() {
 
           {/* input (fixed at bottom) */}
           <div className="shrink-0 border-t border-border bg-card p-3 safe-bottom">
-            {listening && (
+            {voice.talking ? (
               <p className="mb-2 text-center text-xs font-bold text-primary">
-                🎙️ {tr("listening")}
+                🎙️ {tr("listening")} — 버튼에서 손을 떼면 전송돼요
               </p>
-            )}
+            ) : voice.status === "connecting" ? (
+              <p className="mb-2 text-center text-xs font-bold text-muted-foreground">
+                음성 연결 중…
+              </p>
+            ) : voice.lastError ? (
+              <p className="mb-2 text-center text-xs font-semibold text-destructive">
+                {voice.lastError}
+              </p>
+            ) : null}
             <form
               onSubmit={(e) => {
                 e.preventDefault();
@@ -944,29 +962,38 @@ function ChatPage() {
               </button>
 
               <input
-                value={listening ? transcript : input}
+                value={input}
                 onChange={(e) => setInput(e.target.value)}
-                placeholder={listening ? tr("listening") : tr("chatPh")}
-                disabled={busy}
-                readOnly={listening}
+                placeholder={voice.talking ? tr("listening") : tr("chatPh")}
+                disabled={busy || voice.talking}
                 className="h-11 flex-1 rounded-full border border-border bg-background px-4 text-sm outline-none focus:border-primary disabled:opacity-60"
               />
 
-              {speechSupported && (
-                <button
-                  type="button"
-                  onClick={() => (listening ? stop() : start())}
-                  disabled={busy}
-                  aria-label="voice input"
-                  className={`relative flex size-11 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-40 ${
-                    listening
-                      ? "voice-pulse bg-accent text-accent-foreground"
+              {/* 누르고 말하기 — 누르는 동안만 마이크가 켜지고, 떼면 그 발화로 응답한다.
+                  setPointerCapture 를 걸어 버튼 밖으로 손가락이 밀려도 뗌(up)을 받는다. */}
+              <button
+                type="button"
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                  void voice.pressStart();
+                }}
+                onPointerUp={() => voice.pressStop()}
+                onPointerCancel={() => voice.pressStop()}
+                onContextMenu={(e) => e.preventDefault()}
+                disabled={busy}
+                aria-label="hold to talk"
+                aria-pressed={voice.talking}
+                className={`relative flex size-11 shrink-0 touch-none select-none items-center justify-center rounded-full transition-colors disabled:opacity-40 ${
+                  voice.talking
+                    ? "voice-pulse bg-accent text-accent-foreground"
+                    : voice.status === "connecting"
+                      ? "bg-secondary text-secondary-foreground opacity-60"
                       : "bg-secondary text-secondary-foreground"
-                  }`}
-                >
-                  <Mic className="size-5" />
-                </button>
-              )}
+                }`}
+              >
+                <Mic className="size-5" />
+              </button>
 
               <button
                 type="submit"
@@ -1014,7 +1041,7 @@ function ChatPage() {
                   </div>
                 )}
 
-                {/* 실제 arte2 맵 + waypoint 기준 구역 박스 (가로). 책의 zone 이 곧 정점 이름이라
+                {/* 실제 arte3 격자 + waypoint 기준 평면도 (가로). 책의 zone 이 곧 정점 이름이라
                 그대로 넘기면 해당 구역이 강조된다. */}
                 <LibraryMap activeZone={focusBook ? focusBook.zone : null} />
                 <button

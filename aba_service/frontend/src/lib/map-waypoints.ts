@@ -37,5 +37,10 @@ export const WAYPOINTS: MapWaypoint[] = [
 /** 예전엔 복도(경유점)를 걸러내는 필터였다 — 지금 목록엔 애초에 안 들어 있어 그대로 별칭. */
 export const NAMED_WAYPOINTS = WAYPOINTS;
 
-/** 로봇이 실제로 주행하는 점유격자 지도(관제 실시간 위치용, `robots.tsx`). */
-export const MAP_IMAGE = "/map/arte3.png";
+/**
+ * 로봇이 실제로 주행하는 점유격자 지도(관제 실시간 위치용, `robots.tsx`).
+ *
+ * ⚠️ `public/map/` 이 아니라 `public/maps/` 다 — 앞의 이름은 빌드 후 `dist/map/` 디렉터리가
+ * 되어 SPA 의 `/map` 라우트와 충돌한다(nginx 가 `/map` → 301 `/map/` → 403 을 내준다).
+ */
+export const MAP_IMAGE = "/maps/arte3.png";

@@ -299,6 +299,8 @@ class ParkPConfig(BaseModel):
     recall_timeout_s: float = Field(12.0, ge=1.0, le=60.0)
     # 카메라 전용 복구에서 한 방향으로 훑는 시간. 지나면 반대 방향으로 더 넓게 훑는다.
     recall_sweep_s: float = Field(2.5, ge=0.3, le=20.0)
+    # odom 기반 전역좌표 복구 사용 여부. 위 _park_loop 주석의 실측 이슈 때문에 기본 꺼짐.
+    recall_use_odom: bool = False
     recall_creep_lin: float = Field(0.10, ge=0.0, le=0.4)     # 회전으로 못 찾을 때 전진 속도
     lost_grace: int = Field(6, ge=1, le=60)                   # 이 프레임까지는 그냥 정지 대기
 
@@ -569,8 +571,14 @@ async def _park_loop(cfg: ParkPConfig) -> None:
                     _state.update(phase="lost", message="메모리 큐로도 마커를 못 찾음 — 중단")
                     break
 
-                recalled = _recalled_marker(cfg.recall_samples)
-                odom = _odom()
+                # ★ 카메라 전용 복구를 기본으로 쓴다(recall_use_odom=False).
+                #   odom 기반 전역좌표 복구는 실측에서 마커 위치를 엉뚱하게 복원했다
+                #   (2026-07-29: 로봇 (1.761,0.522) yaw -31.9°, 실제 마커는 앞쪽 0.2~0.8m 인데
+                #    recalled=(1.707,-0.644) = 뒤쪽 -y 1.17m → -60.8° 로 헛돌다 timeout).
+                #   같은 시점 path 의 gx/gy 는 정상이라 _to_global/odom 조합에 부호·드리프트
+                #   문제가 있는 것으로 보인다. 원인 규명 전까지는 켜지 않는다.
+                recalled = _recalled_marker(cfg.recall_samples) if cfg.recall_use_odom else None
+                odom = _odom() if cfg.recall_use_odom else None
                 if recalled is None or odom is None:
                     # ★ odom 이 없다고 포기하면 안 된다. 주행 중 분실은 정상적으로 일어나고,
                     #   그때마다 중단되면 주차가 성립하지 않는다(실측 2026-07-29: memory_len=35 인데

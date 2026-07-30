@@ -24,13 +24,14 @@ const ZOOM_MAX = 8.0;
 // arte3.pgm → public/maps/arte3.png 로 미리 변환해둔 정적 배경. 로봇 연결 여부와
 // 무관하게 항상 뜨도록(편집은 로봇 없이도 가능해야 함) 라이브 occupancy grid 대신
 // 이 고정 이미지+메타데이터를 쓴다. arte3.yaml 값과 반드시 일치해야 한다.
-// (arte3 는 arte2 와 resolution/origin/dims 동일, pgm 픽셀만 갱신 — STATIC_MAP 불변.)
+// (resolution/dims 는 arte2 와 같지만 **origin 은 다르다** — arte2 는 [-0.184, -1.949],
+//  arte3 는 [-0.248, -1.958]. arte2 값을 물려쓰면 정점이 통째로 밀린다.)
 const MAP_IMAGE_SRC = "/maps/arte3.png";
 const STATIC_MAP: MapMeta = {
   width: 63,
   height: 108,
   resolution: 0.02,
-  origin: { x: -0.184, y: -1.949, yaw: 0 },
+  origin: { x: -0.248, y: -1.958, yaw: 0 },
 };
 
 // 순회(patrol) 루프 간선 — 이 노드열의 연속쌍(닫힌 루프)을 빨강으로 그려 순회 경로를
