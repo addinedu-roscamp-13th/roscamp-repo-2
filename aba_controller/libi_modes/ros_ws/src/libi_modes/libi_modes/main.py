@@ -37,7 +37,7 @@ from libi_modes import tree as tree_mod
 from libi_modes.blackboard import Keys
 from libi_modes.common.junctions import JunctionSet, load_junctions
 from libi_modes.registry import BRANCH_ORDER
-from libi_modes.ros.fleet_cmd_driver import FleetCmdDriver, YawGoalDriver
+from libi_modes.ros.fleet_cmd_driver import FleetCmdDriver, NudgeDriver, YawGoalDriver
 from libi_modes.ros.handy_action_driver import ArmStubDriver, HandyActionDriver
 from libi_modes.ros.providers import RosProviders
 from libi_modes.ros.state_io import StateIO
@@ -106,6 +106,9 @@ class FsmNode(Node):
         cmd_topic = self.declare_parameter("cmd_topic", "fleet_cmd").value
         result_topic = self.declare_parameter("result_topic", "fleet_cmd_result").value
         home_location = self.declare_parameter("home_location", "charger").value
+        # 도킹 미세 이동이 쓰는 twist_mux 입력. **`/cmd_vel` 이 아니다** —
+        # 직접 발행 금지는 twist_mux.yaml 이 정한 것이고, 그 문이 있어서 비상정지가 이긴다.
+        dock_nudge_topic = self.declare_parameter("dock_nudge_topic", "/cmd_vel_dock").value
 
         # 복귀 목적지 — **주차장 정점의 좌표와 자세**.
         #
@@ -117,19 +120,25 @@ class FsmNode(Node):
         # yaw 0 = +x 방향 = 입구·안내데스크 쪽(관제 화면에서 위쪽). waypoint.yaml 의
         # `주차장` 자세와 같은 값이다.
         #
-        # [2026-07-27] 복귀가 **5단계로 쪼개졌다.** 예전에는 goal 하나로 압축돼 있었다.
+        # [2026-07-30] 복귀 단계 재편 — 뒷캠 ArUco 정밀 주차.
         #
         #   ① 주차장 입구 이동   nav2 주행                    GoToParkingEntrance
-        #   ② 주차장 쪽 회전     지금은 좌표 기반             FaceParking   ← 앞캠 ArUco 자리
-        #   ③ 주차장 이동        nav2 주행                    GoToParking
-        #   ④ 180° 회전          충전 단자가 뒤에 있다         TurnAround
-        #   ⑤ 정렬               지금은 자리만                AlignDock     ← 뒷캠 ArUco 자리
+        #   ② 접근 자세 회전     절대각(approach_yaw_rad)      FaceApproachYaw
+        #   ③ nav2 목표 해제     바퀴를 외부에 넘기기 전       ReleaseNav
+        #   ④ ArUco 접근 6cm     **다른 저장소가 수행**        ArucoApproach
+        #   ⑤ 3cm 개루프 후진    cmd_vel_dock 정속 발행        DockNudge
+        #   ⑥ 안정화 대기        시간으로 넘긴다               DockSettle
         #
-        # ②⑤에 마커를 붙일 때 트리 배선은 안 바뀐다 — leaf 구현만 갈아끼우면 된다.
-        # (park_dock 연결은 여전히 미결: scripts/drive-pi/dock/README.md)
-        return_x = float(self.declare_parameter("return_x", -0.001).value)
-        return_y = float(self.declare_parameter("return_y", -0.033).value)
-        return_yaw = float(self.declare_parameter("return_yaw", 0.0).value)
+        # 없앤 것: `GoToParking`(nav2 로 주차장 정점까지) · `TurnAround`(180°).
+        # ②가 한 번에 접근 자세로 돌리므로 둘 다 필요 없어졌고, AMCL 오차가 충전 단자
+        # 폭보다 큰 마지막 구간을 nav2 에게 맡기지 않는 것이 이 재편의 요점이다.
+        #
+        # ⚠️ `return_x/y/yaw` 는 이제 **트리가 안 쓴다**(`GoToParking` 이 없어졌다).
+        #    선언만 남겨 둔다 — 이 값을 넘기는 런치 파일이 있고, 선언을 지우면 그쪽이
+        #    "undeclared parameter" 로 죽는다. 주차장 좌표 판정은 `dock_confirm.py` 몫이다.
+        self.declare_parameter("return_x", -0.001)
+        self.declare_parameter("return_y", -0.033)
+        self.declare_parameter("return_yaw", 0.0)
         # 주차장 **입구** 정점. arte2 navgraph 의 `주차장입구`.
         entrance_x = float(self.declare_parameter("entrance_x", 0.6005).value)
         entrance_y = float(self.declare_parameter("entrance_y", -0.0333).value)
@@ -218,15 +227,11 @@ class FsmNode(Node):
             #    "추종 실패"로 관제에 뜬다.
             "follow": FleetCmdDriver(self, "follow_admin", timeout_sec=3600.0,
                                      stop_action="follow_stop").bind(cmd_pub),
-            # 주차장으로 goto. `home` 이 아니라 `goal` 인 이유는 위 return_x 주석 참고.
-            "return_dock": FleetCmdDriver(
-                self, "goal",
-                args_fn=lambda: {"x": return_x, "y": return_y, "yaw": return_yaw},
-            ).bind(cmd_pub),
         }
         # 복귀 5단계가 쓰는 것들.
         #   ⚠️ 팔 홈복귀(return_arm)는 뺐다 — 이 로봇에 팔이 없다(사용자 결정 2026-07-27).
         #      ArmHomeDriver 클래스는 남겨 둔다. 팔 로봇이 붙는 날 되살릴 자리다.
+        ret = params.get("returning", {})
         self._drivers["return_entrance"] = FleetCmdDriver(
             self, "goal",
             args_fn=lambda: {"x": entrance_x, "y": entrance_y, "yaw": entrance_yaw},
@@ -235,7 +240,55 @@ class FsmNode(Node):
             FleetCmdDriver(self, "goal").bind(cmd_pub),
             pose_fn=lambda: bb.get(self._bb, Keys.ROBOT_POSE))
         self._drivers["return_entrance_xy"] = (entrance_x, entrance_y)
-        self._drivers["return_parking_xy"] = (return_x, return_y)
+        # ③ 바퀴를 외부에 넘기기 전에 nav2 목표를 끊는다.
+        #
+        # ①은 x·y 만 보고 성공하고, 성공한 단계는 stop 을 안 보낸다 — 그래서 입구 goal 이
+        # 살아 있는 채로 ④가 시작될 수 있다. 예전엔 `GoToParking` 이 새 goal 로 선점해
+        # 줬는데 그 단계를 없애면서 선점 주체가 사라졌다(codex 리뷰, 2026-07-30).
+        # `stop` 은 fleet_link 에서 `ros_bridge.cancel_nav()` 로 간다 — 취소할 목표가
+        # 없으면 아무 일도 안 일어난다.
+        self._drivers["return_nav_release"] = FleetCmdDriver(self, "stop").bind(cmd_pub)
+        # ④ 뒷캠 ArUco 정밀 접근 — **이 저장소에 구현이 없다.** `/fleet_cmd` 로 넘기고
+        #    `/fleet_cmd_result` 를 기다릴 뿐이다.
+        #
+        # ⚠️ **답하는 쪽이 하나여야 한다.** 둘이 답하면 **먼저 온 결과로 ⑤가 시작된다** —
+        #    즉 로봇이 아직 접근 중인데 3cm 후진이 겹친다. 팔에서 이미 밟은 함정이다
+        #    (CLAUDE.md `LIBI_ARM_VIA_BT`).
+        #
+        # ⚠️ 기본값이 `"dock"` 이 **아닌** 이유: 그 이름은 fleet_link 가 이미 잡아
+        #    `park_dock`(라인 트레이싱, **실물 미검증**)을 실제로 돌린다. 즉 외부 노드가
+        #    없어도 로봇이 움직이고 성공 결과까지 낸다 — 뒷캠 ArUco 인 줄 알고 있는데
+        #    다른 알고리즘이 도는, 가장 나쁜 종류의 조용한 실패다.
+        #    `aruco_dock` 은 fleet_link 가 모르는 이름이라 `400 알 수 없는 action` 이
+        #    **즉시** 돌아온다 → 재시도 소진 → fault → ERROR. 시끄럽게 실패한다.
+        #    외부 노드를 붙이는 날: 그 노드가 이 이름을 듣게 하면 끝이다.
+        #    (`park_dock` 을 쓰고 싶으면 `-p dock_action:=dock` 로 되돌린다)
+        dock_action = self.declare_parameter("dock_action", "aruco_dock").value
+        self._drivers["return_aruco"] = FleetCmdDriver(
+            self, str(dock_action),
+            timeout_sec=float(ret.get("aruco_timeout_sec", 180.0)),
+        ).bind(cmd_pub)
+        # 도킹 동안 **뒷캠을 선택 상태로** 만든다. 안 하면 대기 캠이라 8틱에 한 번
+        # (STANDBY_EVERY=8, 15fps → 1.9Hz)만 갱신돼 시각 서보가 못 돈다.
+        # `camera_select` 발행자는 follow_node 하나라는 규칙이 있어(follow_node.py) 그쪽에
+        # 요청하는 통로를 쓴다 — GuideExec 이 이미 쓰는 액션이다.
+        # stop_action 은 `follow_stop`: 세션만 닫고 주행은 안 끊는다.
+        self._drivers["return_back_cam"] = FleetCmdDriver(
+            self, "guide_watch", args_fn=lambda: {"camera": "back"},
+            timeout_sec=3600.0, stop_action="follow_stop").bind(cmd_pub)
+        # ⑤ 마지막 몇 cm — 마커가 화각을 벗어나는 구간이라 시간으로 민다.
+        self._drivers["return_nudge"] = NudgeDriver(
+            self, dock_nudge_topic,
+            distance_m=float(ret.get("nudge_distance_m", 0.03)),
+            speed_mps=float(ret.get("nudge_speed_mps", -0.08)))
+
+        # 도킹 탈출 — 나갈 때 **앞으로** 민다(부호가 양수인 것 말고는 ⑤와 같은 드라이버).
+        # 벽에서 9cm 안쪽은 costmap 통행불가라 nav2 가 시작 격자에서 경로를 못 낸다.
+        #   근거·수치: common/undock.py 머리말
+        self._drivers["undock"] = NudgeDriver(
+            self, dock_nudge_topic,
+            distance_m=float(ret.get("undock_distance_m", 0.06)),
+            speed_mps=abs(float(ret.get("nudge_speed_mps", -0.08))))
 
         # 갈림길 정점 — 길잡이가 여기서만 잠깐 서서 사람을 확인한다. 모든 노드에서 서면
         # arte2 레인이 0.151~0.601m 라 1~5초마다 멈춰 안내가 계속 끊긴다.

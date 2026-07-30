@@ -47,8 +47,12 @@ def _run(fault_at=None):
     for i in range(TICKS):
         mode = reader.get(Keys.CURRENT_MODE)
         if mode == "RETURNING":
-            drivers["return_dock"]._poll_sequence = ["success"]
-            world["docked"] = True   # sim world: pose reaches the charger as soon as it tries
+            # sim world: pose reaches the charger as soon as it tries. `AlreadyDocked`
+            # 가 그걸 보고 복귀 5단계를 통째로 건너뛰므로 단계별 드라이버를 조작할
+            # 필요가 없다 — 이 소크가 보는 것은 상태 순환이지 도킹 절차가 아니다.
+            # ([2026-07-30] 예전엔 `return_dock` 드라이버를 성공으로 밀었는데, 그
+            #  드라이버는 `GoToParking` 과 함께 없어졌다.)
+            world["docked"] = True
         if mode == "CHARGING":
             world["battery"] = min(100.0, world["battery"] + 2.0)
         if mode in ("PATROL", "SECURITY_PATROL", "WORKING"):

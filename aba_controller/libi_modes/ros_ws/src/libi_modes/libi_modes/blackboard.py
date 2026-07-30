@@ -44,6 +44,14 @@ class Keys:
     REQUESTER_AREA = "requester_area"
     COMMAND_RECEIVED_AT = "command_received_at"
     DOCK_RETRY_COUNT = "dock_retry_count"
+    #: 이번 도킹에 대한 undock 을 이미 했나. **원샷 래치**다.
+    #
+    # `is_docked` 는 주차장 정점 반경 0.12m 판정(dock_confirm.py)이라, 6cm 나온 뒤에도
+    # 여전히 참이다. 브랜치 루트가 `memory=False` 라 그대로 두면 **매 tick 다시 6cm 를
+    # 민다.** 반대로 반경을 벗어나는 것으로 판정하면 충전소를 충분히 못 벗어난 채
+    # 건너뛴다. 그래서 "나왔다"를 위치가 아니라 사실로 기억한다.
+    # 다시 도킹하면(`is_docked` 가 거짓→참) 지운다.
+    UNDOCK_DONE = "undock_done"
     ERROR_CODE = "error_code"
     # [디버그] 잠긴 상태 브랜치 집합. IsMode 가 여기 든 상태면 FAILURE → Selector 가 건너뜀.
     # main.py 가 param/env 로 1회 seed. 비어있으면(기본) 동작 변화 없음.

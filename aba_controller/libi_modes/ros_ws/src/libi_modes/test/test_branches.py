@@ -5,10 +5,11 @@ import py_trees
 from py_trees.common import Status
 
 from libi_modes.blackboard import Keys
+from libi_modes.common import undock
 from libi_modes.branches import (
     charging, error, idle, interacting, patrol, returning, security_patrol, working,
 )
-from test.fakes import PARAMS, FakeDriver, all_drivers
+from test.fakes import PARAMS, FakeDoneDriver, FakeDriver, all_drivers
 
 
 # ── CHARGING ──────────────────────────────────────────────────────────────────
@@ -82,6 +83,16 @@ def test_idle_resume_request_frees_stopped_robot(seed, read, tick):
     assert read(Keys.CURRENT_MODE) == "PATROL"
 
 
+def _gate():
+    """도킹 탈출 게이트 대역. 세 주행 브랜치가 **필수**로 받는다.
+
+    기본값을 안 준 이유: 배선을 빠뜨리면 그 경로로 나갈 때 nav2 가 "경로 없음"으로
+    실패하는데 증상이 도킹과 멀리 떨어져 나타난다. 조립 단계에서 터지는 편이 낫다.
+    """
+    return undock.create(FakeDriver(), distance_m=0.06, timeout_sec=8.0,
+                         retry_max=3, now_fn=lambda: 0.0)
+
+
 # ── PATROL ────────────────────────────────────────────────────────────────────
 
 _PATROLLING = {Keys.CURRENT_MODE: "PATROL", Keys.BATTERY_PERCENT: 60.0,
@@ -93,7 +104,7 @@ _PATROLLING = {Keys.CURRENT_MODE: "PATROL", Keys.BATTERY_PERCENT: 60.0,
 def test_patrol_keeps_driving(seed, read, tick):
     seed(**_PATROLLING)
     driver = FakeDriver()
-    assert tick(patrol.create(PARAMS, driver)) == Status.RUNNING
+    assert tick(patrol.create(PARAMS, driver, undock_gate=_gate())) == Status.RUNNING
     assert read(Keys.CURRENT_MODE) == "PATROL"
     assert driver.started
 
@@ -101,7 +112,7 @@ def test_patrol_keeps_driving(seed, read, tick):
 def test_patrol_nav_never_self_completes(seed, tick):
     """Even a driver reporting success means "lap done" — patrol is endless."""
     seed(**_PATROLLING)
-    assert tick(patrol.create(PARAMS, FakeDriver(["success"]))) == Status.RUNNING
+    assert tick(patrol.create(PARAMS, FakeDriver(["success"]), undock_gate=_gate())) == Status.RUNNING
 
 
 def test_patrol_waits_between_nodes_without_failing(seed, read, tick):
@@ -113,7 +124,7 @@ def test_patrol_waits_between_nodes_without_failing(seed, read, tick):
     """
     seed(**{Keys.CURRENT_MODE: "PATROL", Keys.BATTERY_PERCENT: 60.0})   # 명령 없음
     driver = FakeDriver()
-    assert tick(patrol.create(PARAMS, driver)) == Status.RUNNING
+    assert tick(patrol.create(PARAMS, driver, undock_gate=_gate())) == Status.RUNNING
     assert read(Keys.CURRENT_MODE) == "PATROL"
     assert not driver.started, "목적지도 없이 nav2 를 부르면 안 된다"
 
@@ -121,7 +132,7 @@ def test_patrol_waits_between_nodes_without_failing(seed, read, tick):
 def test_patrol_arrival_is_not_the_end(seed, read, tick):
     """한 노드에 도착해도 순회는 계속된다 — 도착은 '한 노드 지났다'는 뜻이다."""
     seed(**{**_PATROLLING, Keys.ROBOT_POSE: {"x": 1.0, "y": 0.0}})      # 이미 목적지
-    assert tick(patrol.create(PARAMS, FakeDriver())) == Status.RUNNING
+    assert tick(patrol.create(PARAMS, FakeDriver(), undock_gate=_gate())) == Status.RUNNING
     assert read(Keys.CURRENT_MODE) == "PATROL"
     assert read(Keys.ACTIVE_COMMAND) is None, "다음 노드를 받으려면 슬롯을 비운다"
 
@@ -129,7 +140,7 @@ def test_patrol_arrival_is_not_the_end(seed, read, tick):
 def test_patrol_low_battery_returns_and_stops_motors(seed, read, tick):
     seed(**{**_PATROLLING, Keys.BATTERY_PERCENT: 10.0})
     driver = FakeDriver()
-    assert tick(patrol.create(PARAMS, driver)) == Status.SUCCESS
+    assert tick(patrol.create(PARAMS, driver, undock_gate=_gate())) == Status.SUCCESS
     assert read(Keys.CURRENT_MODE) == "RETURNING"
     assert driver.stopped, "motors must be halted before the transition"
 
@@ -137,21 +148,21 @@ def test_patrol_low_battery_returns_and_stops_motors(seed, read, tick):
 def test_patrol_task_assigned_to_working(seed, read, tick):
     seed(**{Keys.CURRENT_MODE: "PATROL", Keys.BATTERY_PERCENT: 60.0,
             Keys.LAST_COMMAND: "task_assigned"})
-    assert tick(patrol.create(PARAMS, FakeDriver())) == Status.SUCCESS
+    assert tick(patrol.create(PARAMS, FakeDriver(), undock_gate=_gate())) == Status.SUCCESS
     assert read(Keys.CURRENT_MODE) == "WORKING"
 
 
 def test_patrol_ui_touch_to_interacting(seed, read, tick):
     seed(**{Keys.CURRENT_MODE: "PATROL", Keys.BATTERY_PERCENT: 60.0,
             Keys.LAST_COMMAND: "ui_touch"})
-    assert tick(patrol.create(PARAMS, FakeDriver())) == Status.SUCCESS
+    assert tick(patrol.create(PARAMS, FakeDriver(), undock_gate=_gate())) == Status.SUCCESS
     assert read(Keys.CURRENT_MODE) == "INTERACTING"
 
 
 def test_patrol_stop_request_to_idle(seed, read, tick):
     seed(**{Keys.CURRENT_MODE: "PATROL", Keys.BATTERY_PERCENT: 60.0,
             Keys.LAST_COMMAND: "stop_request"})
-    assert tick(patrol.create(PARAMS, FakeDriver())) == Status.SUCCESS
+    assert tick(patrol.create(PARAMS, FakeDriver(), undock_gate=_gate())) == Status.SUCCESS
     assert read(Keys.CURRENT_MODE) == "IDLE"
 
 
@@ -164,7 +175,7 @@ def test_security_patrol_keeps_patrolling(seed, read, tick):
             Keys.ACTIVE_COMMAND: "navigate",
             Keys.NAV_TARGET: {"x": 1.0, "y": 0.0, "yaw": 0.0},
             Keys.ROBOT_POSE: {"x": 1.0, "y": 0.0}})       # 이미 목적지
-    assert tick(security_patrol.create(PARAMS, FakeDriver())) == Status.RUNNING
+    assert tick(security_patrol.create(PARAMS, FakeDriver(), undock_gate=_gate())) == Status.RUNNING
     assert read(Keys.CURRENT_MODE) == "SECURITY_PATROL"
     assert read(Keys.ACTIVE_COMMAND) is None, "다음 노드를 받으려면 슬롯을 비운다"
 
@@ -172,7 +183,7 @@ def test_security_patrol_keeps_patrolling(seed, read, tick):
 def test_security_patrol_stop_request_to_idle(seed, read, tick):
     seed(**{Keys.CURRENT_MODE: "SECURITY_PATROL", Keys.BATTERY_PERCENT: 60.0,
             Keys.LAST_COMMAND: "stop_request"})
-    assert tick(security_patrol.create(PARAMS, FakeDriver())) == Status.SUCCESS
+    assert tick(security_patrol.create(PARAMS, FakeDriver(), undock_gate=_gate())) == Status.SUCCESS
     assert read(Keys.CURRENT_MODE) == "IDLE"
 
 
@@ -180,20 +191,20 @@ def test_security_patrol_ignores_task_assignment(seed, read, tick):
     """Night duty is not interruptible by day work."""
     seed(**{Keys.CURRENT_MODE: "SECURITY_PATROL", Keys.BATTERY_PERCENT: 60.0,
             Keys.LAST_COMMAND: "task_assigned"})
-    assert tick(security_patrol.create(PARAMS, FakeDriver())) == Status.RUNNING
+    assert tick(security_patrol.create(PARAMS, FakeDriver(), undock_gate=_gate())) == Status.RUNNING
     assert read(Keys.CURRENT_MODE) == "SECURITY_PATROL"
 
 
 def test_security_patrol_ignores_ui_touch(seed, read, tick):
     seed(**{Keys.CURRENT_MODE: "SECURITY_PATROL", Keys.BATTERY_PERCENT: 60.0,
             Keys.LAST_COMMAND: "ui_touch"})
-    assert tick(security_patrol.create(PARAMS, FakeDriver())) == Status.RUNNING
+    assert tick(security_patrol.create(PARAMS, FakeDriver(), undock_gate=_gate())) == Status.RUNNING
     assert read(Keys.CURRENT_MODE) == "SECURITY_PATROL"
 
 
 def test_security_patrol_low_battery_returns(seed, read, tick):
     seed(**{Keys.CURRENT_MODE: "SECURITY_PATROL", Keys.BATTERY_PERCENT: 10.0})
-    assert tick(security_patrol.create(PARAMS, FakeDriver())) == Status.SUCCESS
+    assert tick(security_patrol.create(PARAMS, FakeDriver(), undock_gate=_gate())) == Status.SUCCESS
     assert read(Keys.CURRENT_MODE) == "RETURNING"
 
 
@@ -235,7 +246,7 @@ def test_working_dispatches_navigate(seed, read, tick):
             Keys.NAV_TARGET: {"x": 1.0, "y": 2.0, "yaw": 0.0},
             Keys.ROBOT_POSE: {"x": 0.0, "y": 0.0}})
     nav, arm = FakeDriver(), FakeDriver()
-    assert tick(working.create(PARAMS, nav, arm, clock=lambda: 1.0)) == Status.RUNNING
+    assert tick(working.create(PARAMS, nav, arm, undock_gate=_gate(), clock=lambda: 1.0)) == Status.RUNNING
     assert nav.started and not arm.started
 
 
@@ -247,7 +258,7 @@ def test_working_rejects_navigate_without_a_target(seed, read, tick):
     """
     seed(**{Keys.CURRENT_MODE: "WORKING", Keys.ACTIVE_COMMAND: "navigate"})
     nav, arm = FakeDriver(), FakeDriver()
-    tick(working.create(PARAMS, nav, arm, clock=lambda: 1.0))
+    tick(working.create(PARAMS, nav, arm, undock_gate=_gate(), clock=lambda: 1.0))
     assert not nav.started
     assert read(Keys.ACTIVE_COMMAND) is None, "실행할 수 없는 명령은 슬롯을 비워야 한다"
 
@@ -255,13 +266,13 @@ def test_working_rejects_navigate_without_a_target(seed, read, tick):
 def test_working_dispatches_perform_action_to_arm(seed, tick):
     seed(**{Keys.CURRENT_MODE: "WORKING", Keys.ACTIVE_COMMAND: "perform_action"})
     nav, arm = FakeDriver(), FakeDriver()
-    tick(working.create(PARAMS, nav, arm, clock=lambda: 1.0))
+    tick(working.create(PARAMS, nav, arm, undock_gate=_gate(), clock=lambda: 1.0))
     assert arm.started and not nav.started
 
 
 def test_working_waits_with_no_command(seed, read, tick):
     seed(**{Keys.CURRENT_MODE: "WORKING", Keys.COMMAND_RECEIVED_AT: 0.0})
-    assert tick(working.create(PARAMS, FakeDriver(), FakeDriver(), clock=lambda: 1.0)) == Status.RUNNING
+    assert tick(working.create(PARAMS, FakeDriver(), FakeDriver(), undock_gate=_gate(), clock=lambda: 1.0)) == Status.RUNNING
     assert read(Keys.CURRENT_MODE) == "WORKING"
 
 
@@ -269,7 +280,7 @@ def test_working_command_timeout_to_error(seed, read, tick):
     """WORKING has no battery exit, so without this the robot is stuck for good."""
     seed(**{Keys.CURRENT_MODE: "WORKING", Keys.COMMAND_RECEIVED_AT: 0.0})
     now = {"t": 0.0}
-    root = working.create(PARAMS, FakeDriver(), FakeDriver(), clock=lambda: now["t"])
+    root = working.create(PARAMS, FakeDriver(), FakeDriver(), undock_gate=_gate(), clock=lambda: now["t"])
     assert tick(root) == Status.RUNNING, "grace period starts on entry, not at epoch"
     now["t"] = 200.0
     assert tick(root) == Status.SUCCESS
@@ -282,7 +293,7 @@ def test_working_does_not_time_out_immediately_on_entry(seed, read, tick):
     freshly-assigned robot straight to ERROR."""
     import time
     seed(**{Keys.CURRENT_MODE: "WORKING", Keys.COMMAND_RECEIVED_AT: 0.0})
-    root = working.create(PARAMS, FakeDriver(), FakeDriver())   # real time.monotonic
+    root = working.create(PARAMS, FakeDriver(), FakeDriver(), undock_gate=_gate())   # real time.monotonic
     assert tick(root, times=3) == Status.RUNNING
     assert read(Keys.CURRENT_MODE) == "WORKING"
 
@@ -290,7 +301,7 @@ def test_working_does_not_time_out_immediately_on_entry(seed, read, tick):
 def test_working_timeout_window_resets_on_each_command(seed, read, tick):
     seed(**{Keys.CURRENT_MODE: "WORKING", Keys.COMMAND_RECEIVED_AT: 150.0})
     now = {"t": 200.0}
-    root = working.create(PARAMS, FakeDriver(), FakeDriver(), clock=lambda: now["t"])
+    root = working.create(PARAMS, FakeDriver(), FakeDriver(), undock_gate=_gate(), clock=lambda: now["t"])
     assert tick(root) == Status.RUNNING, "only 50s since the last command"
     assert read(Keys.CURRENT_MODE) == "WORKING"
 
@@ -298,52 +309,66 @@ def test_working_timeout_window_resets_on_each_command(seed, read, tick):
 def test_working_timeout_does_not_fire_while_executing(seed, read, tick):
     seed(**{Keys.CURRENT_MODE: "WORKING", Keys.ACTIVE_COMMAND: "navigate",
             Keys.COMMAND_RECEIVED_AT: 0.0})
-    assert tick(working.create(PARAMS, FakeDriver(), FakeDriver(), clock=lambda: 200.0)) == Status.RUNNING
+    assert tick(working.create(PARAMS, FakeDriver(), FakeDriver(), undock_gate=_gate(), clock=lambda: 200.0)) == Status.RUNNING
     assert read(Keys.CURRENT_MODE) == "WORKING"
 
 
 def test_working_task_done_to_patrol(seed, read, tick):
     seed(**{Keys.CURRENT_MODE: "WORKING", Keys.LAST_COMMAND: "task_done"})
-    assert tick(working.create(PARAMS, FakeDriver(), FakeDriver(), clock=lambda: 1.0)) == Status.SUCCESS
+    assert tick(working.create(PARAMS, FakeDriver(), FakeDriver(), undock_gate=_gate(), clock=lambda: 1.0)) == Status.SUCCESS
     assert read(Keys.CURRENT_MODE) == "PATROL"
 
 
 def test_working_task_failed_to_patrol(seed, read, tick):
     seed(**{Keys.CURRENT_MODE: "WORKING", Keys.LAST_COMMAND: "task_failed"})
-    assert tick(working.create(PARAMS, FakeDriver(), FakeDriver(), clock=lambda: 1.0)) == Status.SUCCESS
+    assert tick(working.create(PARAMS, FakeDriver(), FakeDriver(), undock_gate=_gate(), clock=lambda: 1.0)) == Status.SUCCESS
     assert read(Keys.CURRENT_MODE) == "PATROL"
 
 
 def test_working_stop_request_to_idle(seed, read, tick):
     seed(**{Keys.CURRENT_MODE: "WORKING", Keys.LAST_COMMAND: "stop_request"})
-    assert tick(working.create(PARAMS, FakeDriver(), FakeDriver(), clock=lambda: 1.0)) == Status.SUCCESS
+    assert tick(working.create(PARAMS, FakeDriver(), FakeDriver(), undock_gate=_gate(), clock=lambda: 1.0)) == Status.SUCCESS
     assert read(Keys.CURRENT_MODE) == "IDLE"
 
 
 def test_working_clears_active_command_when_done(seed, read, tick):
     seed(**{Keys.CURRENT_MODE: "WORKING", Keys.ACTIVE_COMMAND: "navigate"})
-    tick(working.create(PARAMS, FakeDriver(["success"]), FakeDriver(), clock=lambda: 1.0))
+    tick(working.create(PARAMS, FakeDriver(["success"]), FakeDriver(), undock_gate=_gate(), clock=lambda: 1.0))
     assert read(Keys.ACTIVE_COMMAND) is None, "next command can't be dispatched otherwise"
 
 
 # ── RETURNING ─────────────────────────────────────────────────────────────────
 # [2026-07-27] 한 leaf(ReturnNavigation) → 5단계 시퀀스로 바뀌었다.
-#   GoToParkingEntrance → FaceParking → GoToParking → TurnAround → AlignDock
+# [2026-07-30] 뒷캠 ArUco 정밀 주차로 재편했다.
+#   GoToParkingEntrance → FaceApproachYaw → ReleaseNav → ArucoApproach → DockNudge → DockSettle
+#   없앤 것: GoToParking(nav2 로 주차장 정점) · TurnAround(180°)
 # 팔 홈복귀는 없앴다(이 로봇에 팔이 없다 — 사용자 결정).
 
 
-def _returning(**over):
+class _Clock:
+    """앞으로만 가는 시험용 시계. `DockSettle` 이 시간으로 넘어가므로 필요하다."""
+
+    def __init__(self, t=0.0):
+        self.t = float(t)
+
+    def __call__(self):
+        return self.t
+
+
+def _returning(clock=None, **over):
     """5단계 복귀 브랜치. 좌표·드라이버를 갈아끼울 수 있게 감싼다."""
     d = all_drivers()
     d.update(over)
     return returning.create(
         PARAMS,
         entrance_driver=d["return_entrance"],
-        dock_driver=d["return_dock"],
         rotate_driver=d["return_rotate"],
+        nav_release_driver=d["return_nav_release"],
+        aruco_driver=d["return_aruco"],
+        back_cam_driver=d["return_back_cam"],
+        nudge_driver=d["return_nudge"],
         entrance_xy=d["return_entrance_xy"],
-        parking_xy=d["return_parking_xy"],
-        clock=lambda: 0.0)
+        clock=clock or _Clock())
 
 
 def test_returning_drives_to_the_entrance_first(seed, tick):
@@ -354,46 +379,80 @@ def test_returning_drives_to_the_entrance_first(seed, tick):
     assert entrance.started is True
 
 
-def _walk_the_steps(root, tick, seed, *, docked):
+def _walk_the_steps(root, tick, clock):
     """각 단계의 목표에 로봇을 실제로 데려다 놓으며 시퀀스를 끝까지 민다.
 
     도착 판정이 **실좌표 거리**라, pose 를 안 옮기면 첫 단계에서 영원히 RUNNING 이다
-    (그게 이 설계의 요점이다 — 명령 수락을 도착으로 치지 않는다)."""
-    entrance, parking = (0.6, 0.0), (0.0, 0.0)
+    (그게 이 설계의 요점이다 — 명령 수락을 도착으로 치지 않는다).
+
+    ③ReleaseNav·④ArucoApproach·⑤DockNudge 는 대역 드라이버가 즉시 성공하므로 pose
+    조작이 없다. ⑥DockSettle 만 시계를 요구한다."""
+    entrance = (0.6, 0.0)
     poses = [
-        {"x": entrance[0], "y": entrance[1], "yaw": 0.0},   # ① 입구 도착
-        {"x": entrance[0], "y": entrance[1], "yaw": math.pi},  # ② 주차장 쪽을 봄
-        {"x": parking[0], "y": parking[1], "yaw": math.pi},  # ③ 주차장 도착
-        {"x": parking[0], "y": parking[1], "yaw": 0.0},      # ④ 180° 돌아섬
+        {"x": entrance[0], "y": entrance[1], "yaw": math.pi},  # ① 입구 도착 (자세는 아직)
+        {"x": entrance[0], "y": entrance[1], "yaw": 0.0},      # ② 접근 자세로 돌아섬
     ]
     status = None
     for pose in poses:
         py_trees.blackboard.Blackboard.set(Keys.ROBOT_POSE, pose)
         status = tick(root)
-    py_trees.blackboard.Blackboard.set(Keys.IS_DOCKED, docked)
-    for _ in range(3):
-        status = tick(root)
-        if py_trees.blackboard.Blackboard.get(Keys.CURRENT_MODE) != "RETURNING":
-            break        # 전이가 일어난 tick 을 본다 — 더 돌면 IsMode 가 떨어진다
     return status
 
 
-def test_returning_docked_to_charging(seed, read, tick):
-    """마지막 단계(AlignDock)가 **실제 도킹 확인**(is_docked)을 요구한다.
-
-    이 확인을 빼면 로봇이 충전소에 닿지도 않은 채 CHARGING 을 선언한다."""
+def test_returning_reaches_charging_after_the_settle(seed, read, tick):
+    """③④⑤를 지나 ⑥ 안정화 대기가 끝나면 CHARGING 을 선언한다."""
+    clock = _Clock()
     seed(**{Keys.CURRENT_MODE: "RETURNING", Keys.IS_DOCKED: False})
-    status = _walk_the_steps(_returning(), tick, seed, docked=True)
+    root = _returning(clock=clock)
+    _walk_the_steps(root, tick, clock)
+    clock.t += PARAMS["returning"]["settle_sec"]
+    status = None
+    for _ in range(3):
+        status = tick(root)
+        if read(Keys.CURRENT_MODE) != "RETURNING":
+            break        # 전이가 일어난 tick 을 본다 — 더 돌면 IsMode 가 떨어진다
     assert status == Status.SUCCESS
     assert read(Keys.CURRENT_MODE) == "CHARGING"
 
 
-def test_returning_without_dock_confirmation_stays_returning(seed, read, tick):
-    """도착만으로는 부족하다 — is_docked 가 없으면 CHARGING 으로 안 넘어간다."""
+def test_returning_holds_through_the_settle(seed, read, tick):
+    """안정화 대기가 안 끝났으면 CHARGING 으로 안 넘어간다.
+
+    즉시 넘기면 개루프 후진의 관성이 남은 채로 "충전 중"이 선언된다."""
+    clock = _Clock()
     seed(**{Keys.CURRENT_MODE: "RETURNING", Keys.IS_DOCKED: False})
-    status = _walk_the_steps(_returning(), tick, seed, docked=False)
+    root = _returning(clock=clock)
+    status = _walk_the_steps(root, tick, clock)
     assert status == Status.RUNNING
     assert read(Keys.CURRENT_MODE) == "RETURNING"
+
+
+def test_returning_runs_aruco_then_nudge_in_order(seed, tick):
+    """④가 성공하기 전에는 ⑤가 시작되지 않는다.
+
+    두 단계가 겹치면 로봇이 아직 마커를 보고 접근하는 중에 개루프 후진이 겹쳐
+    거리가 통째로 틀어진다. 순서가 이 재편의 전부다."""
+    aruco, nudge = FakeDriver(["running", "success"]), FakeDoneDriver()
+    clock = _Clock()
+    seed(**{Keys.CURRENT_MODE: "RETURNING", Keys.IS_DOCKED: False})
+    root = _returning(clock=clock, return_aruco=aruco, return_nudge=nudge)
+    _walk_the_steps(root, tick, clock)
+    assert aruco.started is True
+    assert nudge.started is False, "ArUco 접근이 끝나기 전에 후진이 시작됐다"
+    tick(root)                       # ④ success → ⑤ 시작
+    assert nudge.started is True
+
+
+def test_returning_releases_nav_before_the_aruco_approach(seed, tick):
+    """nav2 목표를 놓기 전에 외부 도킹이 시작되면, 죽은 입구 goal 이 ArUco 접근과
+    바퀴를 두고 다툰다(codex 리뷰 2026-07-30)."""
+    release, aruco = FakeDriver(["running", "success"]), FakeDriver()
+    clock = _Clock()
+    seed(**{Keys.CURRENT_MODE: "RETURNING", Keys.IS_DOCKED: False})
+    root = _returning(clock=clock, return_nav_release=release, return_aruco=aruco)
+    _walk_the_steps(root, tick, clock)
+    assert release.started is True
+    assert aruco.started is False, "nav2 를 놓기 전에 ArUco 접근이 시작됐다"
 
 
 def test_returning_step_failure_never_returns_failure(seed, tick):

@@ -1,4 +1,4 @@
-"""복귀 진입부 5단계와, 그 실패를 흡수하는 데코레이터.
+"""복귀 진입부 6단계와, 그 실패를 흡수하는 데코레이터.
 
 ## 왜 흡수 데코레이터가 필요한가
 
@@ -8,21 +8,54 @@
 일어나지 않는다.
 
 기존 `ReturnNavigation` 이 재시도 소진 시 "FAILURE 대신 fault + RUNNING" 을 유지하도록
-일부러 짜여 있던 이유가 그것이다. 5단계로 쪼개면 그 보호가 단계마다 사라지므로,
+일부러 짜여 있던 이유가 그것이다. 단계로 쪼개면 그 보호가 단계마다 사라지므로,
 각 단계를 이 데코레이터로 감싼다.
 
 ## 왜 회전에 새 /cmd_vel 발행자를 만들지 않나
 
 같은 x·y 에 목표 yaw 만 다른 `goal` 을 보내면 nav2 가 제자리 회전으로 처리한다.
-이 시스템에는 `/cmd_vel` 중재자(twist_mux)가 없어서 **발행자를 늘리는 것 자체가
-위험**이다 — 마지막에 도착한 명령이 이기므로, 발행자가 하나 늘 때마다 조용한
-경합 창이 하나 늘어난다.
+회전 때문에 발행자를 늘릴 이유가 없다.
 
-## 2단계·5단계는 ArUco 로 갈아끼울 자리다
+⚠️ 아래 ⑤단계(`DockNudge`)는 예외적으로 속도를 직접 낸다. 다만 `/cmd_vel` 로
+   **직접 내지 않는다** — twist_mux 의 `dock` 입력(`cmd_vel_dock`, priority 120)으로
+   보낸다. `/cmd_vel` 직접 발행은 twist_mux.yaml 이 금지한 것이고, 그 금지는
+   "마지막에 도착한 명령이 이긴다"를 없애려고 만든 문이다.
 
-`FaceParking` 은 지금 좌표만으로 각도를 낸다. nav2 가 방금 그 AMCL 로 입구까지
-왔으므로 같은 추정으로 각도만 내는 건 더 쉬운 문제다. 마커가 정말 필요해지는 곳은
-**마지막 몇 cm**(`AlignDock`)다 — 거기서만 AMCL 오차가 충전 단자 폭보다 커진다.
+## [2026-07-30] 6단계 재편 — 뒷캠 ArUco 정밀 주차
+
+    ① GoToParkingEntrance   주차장 입구로 주행           (그대로)
+    ② FaceApproachYaw       접근 자세로 회전 (절대각)     ← 좌표 계산 → 고정각
+    ③ ReleaseNav            nav2 목표를 끊어 바퀴를 놓는다
+    ④ ArucoApproach         뒷캠 ArUco 로 6cm 까지        ← **다른 저장소가 수행**
+    ⑤ DockNudge             정속 개루프로 3cm 후진
+    ⑥ DockSettle            멈춰 서서 안정화 후 도킹으로 침
+
+**없앤 것: `GoToParking` · `TurnAround`.** ②가 이제 "주차장 쪽"이 아니라
+**접근 자세**(충전 단자가 뒤에 오는 각도)로 돌리므로, 180° 를 따로 돌 필요가 없고
+nav2 로 주차장 정점까지 가는 구간도 ArUco 접근이 대신한다.
+
+⚠️ **④는 이 저장소에 없다.** `/fleet_cmd{action}` 왕복으로 넘긴다(드라이버 주입).
+   답하는 쪽이 **하나여야 한다** — 둘이 답하면 먼저 온 결과로 다음 단계가 시작되고,
+   아무도 안 답하면 timeout 까지 서 있는다. 팔(`LIBI_ARM_VIA_BT`)에서 같은 함정을
+   이미 밟았다. CLAUDE.md 참고.
+
+## ⚠️ ③ ReleaseNav 가 왜 필요한가 (2026-07-30, codex 리뷰에서 나왔다)
+
+`_GoalStep` 은 **x·y 거리만** 보고 SUCCESS 를 낸다(yaw 는 안 본다). 그리고 성공으로 끝난
+단계는 `terminate` 에서 `driver.stop()` 을 부르지 않는다 — 그래야 다음 단계가 방금 낸
+주행을 자기 stop 으로 죽이지 않는다. 즉 **①이 끝나도 그 nav2 목표는 살아 있다.**
+
+예전에는 그게 문제가 안 됐다. 바로 뒤 `GoToParking` 이 새 nav2 goal 을 내서 **선점**했기
+때문이다. 그 단계를 없애면서 선점해 줄 주체가 사라졌다. 특히 이 경로가 위험하다:
+
+    로봇이 입구 좌표에 이미 서 있고 yaw 도 이미 접근 각도 근처다
+      → ① x·y 만 보고 즉시 SUCCESS (entrance_yaw 로 가라는 nav2 목표는 살아 있음)
+      → ② 이미 허용오차 안이라 **goal 을 한 번도 안 보내고** SUCCESS (선점 없음)
+      → ArUco 접근이 시작되는데 nav2 는 아직 옛 목표로 회전을 시도한다
+
+그래서 외부에 바퀴를 넘기기 **직전에 명시적으로 놓는다.** 오늘 배운 것과 모순이 아니다 —
+`NavGoalTracker.begin()` 에서 취소를 없앤 건 "계속 가야 하는데 끊었다"라서였고, 여기는
+**정말로 멈춰야 하는 자리**다(제어 주체가 다른 프로세스로 넘어간다).
 """
 import math
 import time
@@ -32,6 +65,7 @@ from py_trees.common import Access, Status
 
 from libi_modes import blackboard as bb
 from libi_modes.blackboard import Keys
+from libi_modes.common.driver_action import DriverAction
 
 
 def wrap_angle(a: float) -> float:
@@ -221,71 +255,118 @@ class AlreadyDocked(py_trees.behaviour.Behaviour):
         return Status.SUCCESS if bb.get(self.blackboard, Keys.IS_DOCKED) else Status.FAILURE
 
 
-class AlignDock(py_trees.behaviour.Behaviour):
-    """정렬 후 **실제 도킹 확인**을 기다린다. 정렬 동작 자리는 뒷캠 ArUco 로 교체한다.
+class BackCamOn(py_trees.behaviour.Behaviour):
+    """도킹 동안 **뒷캠을 선택 상태로 유지한다.** 절대 끝나지 않는다.
 
-    ## 지금 하는 일 — `is_docked` 를 기다린다
+    ## 왜 필요한가 — 대기 캠은 1.9Hz 다
 
-    정렬을 위한 미세 이동은 아직 없다(그 자리가 ArUco 몫이다). 하지만 **도킹 확인까지
-    빼면 안 된다.** 즉시 SUCCESS 를 돌려주면 `SetNextMode("CHARGING")` 이 뒤따라
-    로봇이 충전소에 닿지도 않은 채 "충전 중"이 된다 — 화면은 멀쩡한데 배터리는
-    계속 떨어진다.
+    `camera_sender` 는 선택되지 않은 캠을 **8틱에 한 번만** 잡는다
+    (`STANDBY_EVERY=8`, 15fps → 0.53초). 복귀 중에는 추종 세션이 없어 `camera_select` 가
+    front/none 이므로 뒷캠이 그 상태다. 그 프레임으로 12Hz 시각 서보를 돌리면
+    HOMING(0.10m/s)에서 프레임 사이 **5.3cm** 를 간다 — 못 쓴다.
 
-    `is_docked` 는 실제 확인 신호다(`dock_confirm.py` 가 주차장 정점 반경으로 판정하고,
-    정밀 주차가 붙으면 그쪽이 신호 주체가 된다 — 그때도 이 leaf 는 안 바뀐다).
+    `guide_watch{camera:back}` 를 내면 `follow_node` 가 `/libi/camera_select` 를 back 으로
+    발행하고(그 토픽의 발행자는 follow_node 하나라는 규칙이 있다), 그러면 뒷캠이 매 프레임
+    15fps 가 된다.
 
-    확인이 안 오면 timeout 후 FAILURE → `AbsorbFailure` 가 재시도하고, 소진되면
-    fault 를 세운다.
+    ## 왜 절대 안 끝나는가
+
+    이 leaf 는 `ReturnAndWatch`(Parallel, SuccessOnOne)의 자식이다. **SUCCESS 를 내면
+    그 순간 Parallel 이 성공으로 끝나 복귀가 통째로 중단된다.** FAILURE 는 정책과
+    무관하게 Parallel 을 죽인다. 그래서 어느 쪽도 내지 않는다 — 세션의 수명은
+    Parallel 이 끝날 때 `terminate(INVALID)` 가 닫는다. 그게 정확히 원하는 수명이다:
+    도킹이 성공하든 fault 로 빠지든, 나갈 때 뒷캠 선택이 풀린다.
     """
 
-    def __init__(self, timeout_sec: float, now_fn, name: str = "AlignDock"):
+    def __init__(self, driver, name: str = "BackCamOn"):
         super().__init__(name=name)
-        self.timeout_sec = float(timeout_sec)
+        self.driver = driver
+        self._sent = False
+
+    def initialise(self):
+        self._sent = False
+
+    def update(self):
+        if not self._sent:
+            self.driver.start()
+            self._sent = True
+        return Status.RUNNING
+
+    def terminate(self, new_status):
+        if self._sent:
+            self.driver.stop()          # follow_stop — 세션만 닫고 주행은 안 끊는다
+        self._sent = False
+
+
+class DockSettle(py_trees.behaviour.Behaviour):
+    """마지막 미세 이동이 끝난 뒤 이만큼 서 있다가 **도킹으로 친다.**
+
+    ## [2026-07-30] `is_docked` 를 기다리지 않는다 (사용자 결정)
+
+    예전 `AlignDock` 은 `is_docked` 를 기다렸다. 그 신호를 내는 건 `dock_confirm.py` 이고
+    판정 근거는 **주차장 정점 반경 0.12m** 다 — 즉 위치 판정이다. 앞 단계가 ArUco 로
+    6cm 까지 붙고 다시 3cm 를 밀고 난 뒤에는 그 반경 안에 이미 들어와 있어서, 기다려 봐야
+    아무것도 검증하지 못한다. 검증하는 척하는 게이트는 없느니만 못하다.
+
+    그래서 **시간으로 넘긴다.** 이 대기가 하는 일은 하나다: 개루프 후진이 끝난 직후의
+    관성·바퀴 되튐이 가라앉을 시간을 주고 나서 CHARGING 을 선언하는 것.
+
+    ⚠️ 진짜 접촉 확인(전류·전압 상승 등)이 생기면 **여기가 그 자리다.** 그때는 시간이
+       아니라 그 신호를 기다리게 바꾼다.
+    """
+
+    def __init__(self, settle_sec: float, now_fn, name: str = "DockSettle"):
+        super().__init__(name=name)
+        self.settle_sec = float(settle_sec)
         self._now = now_fn
         self._started_at = None
 
     def setup(self, **kwargs):
         self.blackboard = self.attach_blackboard_client(name=self.name)
-        self.blackboard.register_key(key=Keys.IS_DOCKED, access=Access.READ)
+        self.blackboard.register_key(key=Keys.UNDOCK_DONE, access=Access.WRITE)
 
     def initialise(self):
         self._started_at = None
 
     def update(self):
-        if bb.get(self.blackboard, Keys.IS_DOCKED):
-            return Status.SUCCESS
         now = self._now()
         if self._started_at is None:
             self._started_at = now
-        if now - self._started_at >= self.timeout_sec:
-            return Status.FAILURE
+        if now - self._started_at >= self.settle_sec:
+            # 도킹이 **여기서** 끝난다. 그래서 탈출 래치도 여기서 푼다 — 나갈 때 다시
+            # 밀어야 한다(`common/undock.py`). 주행 브랜치의 게이트는 인스턴스가 셋이라
+            # 그쪽에서 전이를 보고 풀면 서로 다른 인스턴스가 남의 래치를 지운다.
+            self.blackboard.set(Keys.UNDOCK_DONE, False)
+            return Status.SUCCESS
         return Status.RUNNING
 
 
-def create_return_steps(*, entrance_driver, dock_driver, rotate_driver,
-                        entrance_xy, parking_xy, tolerance, resend_sec, timeout_sec,
-                        yaw_tolerance_rad, retry_max, dock_confirm_sec=90.0,
+def create_return_steps(*, entrance_driver, rotate_driver, nav_release_driver,
+                        aruco_driver, nudge_driver,
+                        entrance_xy, approach_yaw, tolerance, resend_sec, timeout_sec,
+                        yaw_tolerance_rad, retry_max, settle_sec=1.0,
                         now_fn=time.monotonic):
-    """5단계 시퀀스를 만든다. 각 단계는 실패 흡수 데코레이터로 감싼다."""
-    def _face_yaw(pose):
-        if pose is None:
-            return None
-        return math.atan2(parking_xy[1] - pose["y"], parking_xy[0] - pose["x"])
-
-    def _turn_around_yaw(pose):
-        if pose is None or pose.get("yaw") is None:
-            return None
-        return wrap_angle(pose["yaw"] + math.pi)
+    """6단계 시퀀스를 만든다. 각 단계는 실패 흡수 데코레이터로 감싼다."""
+    # 목표 각도는 **절대각**이다. 예전엔 현재 pose 와 주차장 좌표로 atan2 를 냈는데,
+    # 그건 "주차장을 바라본다"라서 뒤이어 180° 를 더 돌아야 했다(TurnAround). 지금은
+    # 한 번에 접근 자세로 간다 — 충전 단자가 뒤에 있으므로 뒷캠이 마커를 본다.
+    def _approach_yaw(pose):
+        # 위치를 모르면 회전을 시작하지 않는다 — 실행 층이 좌표 없이 goal 을 못 만든다
+        # (`YawGoalDriver` 는 현재 x·y 에 목표 yaw 만 붙여 보낸다).
+        return None if pose is None else approach_yaw
 
     steps = [
         _GoalStep("GoToParkingEntrance", entrance_driver, entrance_xy,
                   tolerance, resend_sec, timeout_sec, now_fn),
-        _YawStep("FaceParking", rotate_driver, _face_yaw,
+        _YawStep("FaceApproachYaw", rotate_driver, _approach_yaw,
                  yaw_tolerance_rad, timeout_sec, now_fn),
-        _GoalStep("GoToParking", dock_driver, parking_xy,
-                  tolerance, resend_sec, timeout_sec, now_fn),
-        _YawStep("TurnAround", rotate_driver, _turn_around_yaw,
-                 yaw_tolerance_rad, timeout_sec, now_fn),
-        AlignDock(dock_confirm_sec, now_fn),
+        # ③ 바퀴를 외부에 넘기기 전에 nav2 목표를 명시적으로 끊는다 (위 주석 참고).
+        #    취소할 목표가 없으면 아무 일도 안 일어난다 — 멈추는 것은 중복돼도 안전하다.
+        DriverAction(nav_release_driver, "ReleaseNav"),
+        # ④ 다른 저장소가 수행한다. 여기서는 명령을 내고 결과를 기다릴 뿐이다.
+        DriverAction(aruco_driver, "ArucoApproach"),
+        # ⑤ 개루프. 드라이버가 자기 타이머로 정속을 밀고 시간이 되면 스스로 멈춘다.
+        DriverAction(nudge_driver, "DockNudge"),
+        DockSettle(settle_sec, now_fn),
     ]
     return [AbsorbFailure(s, retry_max) for s in steps]

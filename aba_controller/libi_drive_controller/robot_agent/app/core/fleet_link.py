@@ -171,6 +171,15 @@ def should_publish_result(action: str, ok: bool) -> bool:
     return not (ok and action in SESSION_ACTIONS)
 
 
+#: `_link_thread()` 가 만든 ROS context. marker_dock 이 같은 context 에 노드를 만든다.
+_ctx = None
+
+
+def get_context():
+    """fleet_link 의 ROS context. 아직 안 떴으면 None."""
+    return _ctx
+
+
 def _dispatch(action: str, args: dict) -> tuple[bool, int, Any, str]:
     """(ok, status, data, msg) — ok=False 는 HTTP 라면 에러 응답이었을 상황."""
     from app.core import locations, mission, ros_bridge
@@ -334,6 +343,15 @@ def _dispatch(action: str, args: dict) -> tuple[bool, int, Any, str]:
         # 다시 이 함수를 부를 때(goal/arm_home/…) 일어난다.
         return True, 202, {"accepted": True, "handled_by": "bt"}, ""
 
+    if action == "aruco_dock":
+        # 뒷캠 ArUco 정밀 도킹. BT `ReturningBranch` 의 ④단계(`ArucoApproach`)가 부른다.
+        #
+        # 아래 `dock`(라인 트레이싱 park_dock)과 **별개 구현**이다. BT 의 `dock_action`
+        # 기본값이 이쪽을 가리킨다 — 이름을 나눈 이유는 `libi_modes/main.py` 주석 참고
+        # (같은 이름이면 의도치 않은 알고리즘이 조용히 대신 돈다).
+        from app.core import marker_dock
+        return marker_dock.run_dock(**{k: v for k, v in args.items() if v is not None})
+
     if action == "dock":
         # 정밀 도킹(주차). BT 의 ReturningBranch 가 nav2 로 입구까지 온 다음 이걸 부른다.
         #
@@ -389,6 +407,11 @@ def _link_thread() -> None:
         dom = os.environ.get("ROS_DOMAIN_ID")
         rclpy.init(context=ctx, domain_id=int(dom) if dom else None)
         node = rclpy.create_node("fleet_link", context=ctx)
+        # [2026-07-30] 마커 도킹(marker_dock)이 **같은 context 에** 전용 노드를 만든다.
+        # 노드 하나를 두 executor 가 돌리는 게 아니라(그쪽은 자기 노드만 spin_once) 안전하고,
+        # 새 context 를 init 하면 shutdown·오류복구·도메인 일치 책임이 하나 더 생긴다.
+        global _ctx
+        _ctx = ctx
 
         qos_latched = QoSProfile(
             depth=1,
@@ -443,6 +466,13 @@ def _link_thread() -> None:
             # 정지 계열은 인라인 즉시 실행 — 워커가 블로킹돼 있어도 정지 보장.
             # ⚠️ 실행 **전에** 세대를 올린다. 큐에 이미 쌓인 주행 명령이 정지 뒤에 실행돼
             #    로봇이 다시 출발하는 것을 막는다(_cmd_gen 주석의 순서 역전).
+            # [2026-07-30] 마커 도킹 취소도 **여기서** 한다. 워커는 `aruco_dock` 을
+            # 블로킹으로 수행 중이라 큐에 넣어 봐야 이 도킹이 끝나야 꺼낸다 — 즉 BT 가
+            # 포기한 뒤에도 바퀴가 계속 돈다. 정지가 인라인인 이유와 정확히 같다.
+            if action in ("stop", "mission_stop", "schedule_stop", "follow_stop"):
+                from app.core import marker_dock
+                if marker_dock.request_cancel():
+                    print(f"[fleet_link] {action} → 진행 중인 마커 도킹 취소", flush=True)
             if action in ("mission_stop", "schedule_stop"):
                 bump_generation()
                 run_and_reply(cmd)

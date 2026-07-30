@@ -69,6 +69,12 @@ def _to(x, y):
 
 # ── 분류 (Selector 에서 서로 안 잡아먹는가) ──────────────────────────────────
 
+def _gate():
+    """도킹 탈출 게이트 대역 — `working.create` 가 필수로 받는다(test_branches 와 같은 이유)."""
+    from libi_modes.common import undock
+    return undock.create(FakeDriver(), distance_m=0.06, timeout_sec=8.0,
+                         retry_max=3, now_fn=lambda: 0.0)
+
 def test_navigation_exec_does_not_claim_guide(seed):
     """`navigate` 담당은 `guide` 를 건드리지 않는다 — 건드리면 GuideExec 이 죽는다."""
     seed(**{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(1, 1)})
@@ -238,7 +244,7 @@ def _working(nav=None, guide=None, stop=None):
     from .fakes import PARAMS
     return working.create(PARAMS, nav or FakeDriver(), FakeDriver(), None,
                           guide or FakeDriver(), stop or FakeDriver(),
-                          clock=lambda: 100.0)
+                          clock=lambda: 100.0, undock_gate=_gate())
 
 
 def test_arrival_takes_the_robot_out_of_working(seed, read, tick):

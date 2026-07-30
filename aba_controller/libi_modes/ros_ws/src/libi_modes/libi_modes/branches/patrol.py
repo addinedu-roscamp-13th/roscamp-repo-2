@@ -16,7 +16,7 @@ _COMMAND_MAP = {
 }
 
 
-def create(params: dict, driver) -> py_trees.behaviour.Behaviour:
+def create(params: dict, driver, *, undock_gate) -> py_trees.behaviour.Behaviour:
     """PatrolBranch — roam the library waiting for work.
 
     SuccessOnOne means the moment the watchdog Selector decides on an exit, the Parallel
@@ -30,6 +30,11 @@ def create(params: dict, driver) -> py_trees.behaviour.Behaviour:
         memory=False,
         children=[
             IsMode("PATROL"),
+            # 도킹 자세에서 빠져나온다 — **주행을 내기 전에.** 벽에서 9cm 안쪽은
+            # costmap 이 통행불가(253)라 nav2 가 시작 격자에서 경로를 못 만든다.
+            # 도킹 상태가 아니면(평소) 즉시 통과하고 아무 일도 안 한다.
+            #   근거·수치: common/undock.py 머리말
+            undock_gate,
             py_trees.composites.Parallel(
                 name="PatrolAndWatch",
                 policy=ParallelPolicy.SuccessOnOne(),

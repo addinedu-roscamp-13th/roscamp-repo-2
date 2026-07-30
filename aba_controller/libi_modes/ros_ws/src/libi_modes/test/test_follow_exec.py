@@ -27,10 +27,16 @@ def _dispatch(root):
 
 # ── dispatch ──────────────────────────────────────────────────────────────────
 
+def _gate():
+    """도킹 탈출 게이트 대역 — `working.create` 가 필수로 받는다(test_branches 와 같은 이유)."""
+    from libi_modes.common import undock
+    return undock.create(FakeDriver(), distance_m=0.06, timeout_sec=8.0,
+                         retry_max=3, now_fn=lambda: 0.0)
+
 def test_follow_admin_reaches_the_follow_driver(seed, read, tick):
     seed(**{Keys.CURRENT_MODE: "WORKING", Keys.ACTIVE_COMMAND: "follow_admin"})
     nav, arm, follow = FakeDriver(), FakeDriver(), FakeDriver()
-    root = working.create(PARAMS, nav, arm, follow, clock=lambda: 1.0)
+    root = working.create(PARAMS, nav, arm, follow, undock_gate=_gate(), clock=lambda: 1.0)
     assert tick(root) == Status.RUNNING
     assert read(Keys.CURRENT_MODE) == "WORKING"
     assert follow.started
@@ -43,14 +49,14 @@ def test_navigate_does_not_reach_the_follow_driver(seed, tick):
             Keys.NAV_TARGET: {"x": 1.0, "y": 2.0, "yaw": 0.0},
             Keys.ROBOT_POSE: {"x": 0.0, "y": 0.0}})
     nav, arm, follow = FakeDriver(), FakeDriver(), FakeDriver()
-    tick(working.create(PARAMS, nav, arm, follow, clock=lambda: 1.0))
+    tick(working.create(PARAMS, nav, arm, follow, undock_gate=_gate(), clock=lambda: 1.0))
     assert nav.started and not follow.started
 
 
 def test_perform_action_does_not_reach_the_follow_driver(seed, tick):
     seed(**{Keys.CURRENT_MODE: "WORKING", Keys.ACTIVE_COMMAND: "perform_action"})
     nav, arm, follow = FakeDriver(), FakeDriver(), FakeDriver()
-    tick(working.create(PARAMS, nav, arm, follow, clock=lambda: 1.0))
+    tick(working.create(PARAMS, nav, arm, follow, undock_gate=_gate(), clock=lambda: 1.0))
     assert arm.started and not follow.started
 
 
@@ -58,7 +64,7 @@ def test_follow_session_end_clears_active_command(seed, read, tick):
     """A finished follow must release the slot so the adapter can dispatch again."""
     seed(**{Keys.CURRENT_MODE: "WORKING", Keys.ACTIVE_COMMAND: "follow_admin"})
     root = working.create(PARAMS, FakeDriver(), FakeDriver(),
-                          FakeDriver(["success"]), clock=lambda: 1.0)
+                          FakeDriver(["success"]), clock=lambda: 1.0, undock_gate=_gate())
     tick(root)
     assert read(Keys.ACTIVE_COMMAND) is None
 
@@ -77,7 +83,7 @@ def test_follow_session_end_takes_the_robot_out_of_working(seed, read, tick):
     """
     seed(**{Keys.CURRENT_MODE: "WORKING", Keys.ACTIVE_COMMAND: "follow_admin"})
     root = working.create(PARAMS, FakeDriver(), FakeDriver(),
-                          FakeDriver(["success"]), clock=lambda: 1.0)
+                          FakeDriver(["success"]), clock=lambda: 1.0, undock_gate=_gate())
     tick(root)
     # 성공은 Sequence 가 끝까지 가므로 RequestTransition 이 같은 tick 에 적용하고
     # NEXT_MODE 를 지운다 — 결과는 CURRENT_MODE 에서 본다 (test_guide_exec 와 같다).
@@ -93,7 +99,7 @@ def test_follow_failure_also_leaves_working(seed, read, tick):
     """
     seed(**{Keys.CURRENT_MODE: "WORKING", Keys.ACTIVE_COMMAND: "follow_admin"})
     root = working.create(PARAMS, FakeDriver(), FakeDriver(),
-                          FakeDriver(["failure"]), clock=lambda: 1.0)
+                          FakeDriver(["failure"]), clock=lambda: 1.0, undock_gate=_gate())
     tick(root)
     assert read(Keys.NEXT_MODE) == "PATROL", "세션이 접혔으면 WORKING 에 갇히면 안 된다"
 
@@ -103,7 +109,7 @@ def test_follow_failure_also_leaves_working(seed, read, tick):
 def test_follow_exec_precedes_awaiting_command():
     """Running("AwaitingCommand") always succeeds, so anything after it is unreachable."""
     root = working.create(PARAMS, FakeDriver(), FakeDriver(), FakeDriver(),
-                          clock=lambda: 1.0)
+                          clock=lambda: 1.0, undock_gate=_gate())
     names = [c.name for c in _dispatch(root).children]
     assert names[-1] == "AwaitingCommand"
     assert names.index("FollowExec") < names.index("AwaitingCommand")
@@ -139,13 +145,13 @@ def test_unwired_follow_does_not_kill_the_tick(seed, tick):
     """An exception here would unwind out of rclpy.spin() and kill the whole mission node,
     taking PATROL, RETURNING and ERROR handling down with one unwired command."""
     seed(**{Keys.CURRENT_MODE: "WORKING", Keys.ACTIVE_COMMAND: "follow_admin"})
-    root = working.create(PARAMS, FakeDriver(), FakeDriver(), None, clock=lambda: 1.0)
+    root = working.create(PARAMS, FakeDriver(), FakeDriver(), None, undock_gate=_gate(), clock=lambda: 1.0)
     tick(root)      # must not raise
 
 
 def test_unwired_follow_is_logged(seed, tick, caplog):
     seed(**{Keys.CURRENT_MODE: "WORKING", Keys.ACTIVE_COMMAND: "follow_admin"})
-    root = working.create(PARAMS, FakeDriver(), FakeDriver(), None, clock=lambda: 1.0)
+    root = working.create(PARAMS, FakeDriver(), FakeDriver(), None, undock_gate=_gate(), clock=lambda: 1.0)
     with caplog.at_level(logging.ERROR):
         tick(root)
     assert "follow_admin" in caplog.text
@@ -165,7 +171,7 @@ def test_unwired_follow_logs_once_not_every_tick(seed, tick, caplog):
 def test_unwired_follow_releases_the_command_slot(seed, read, tick):
     """Failing the command must clear active_command, or dispatch stays wedged on it."""
     seed(**{Keys.CURRENT_MODE: "WORKING", Keys.ACTIVE_COMMAND: "follow_admin"})
-    root = working.create(PARAMS, FakeDriver(), FakeDriver(), None, clock=lambda: 1.0)
+    root = working.create(PARAMS, FakeDriver(), FakeDriver(), None, undock_gate=_gate(), clock=lambda: 1.0)
     tick(root)
     assert read(Keys.ACTIVE_COMMAND) is None
 
@@ -182,7 +188,7 @@ def test_unwired_follow_ends_in_error_not_a_dead_node(seed, read, tick):
     now = {"t": 0.0}
     seed(**{Keys.CURRENT_MODE: "WORKING", Keys.ACTIVE_COMMAND: "follow_admin"})
     root = working.create(PARAMS, FakeDriver(), FakeDriver(), None,
-                          clock=lambda: now["t"])
+                          clock=lambda: now["t"], undock_gate=_gate())
 
     assert tick(root) == Status.RUNNING          # follow failed, slot released
     assert read(Keys.CURRENT_MODE) == "WORKING"
