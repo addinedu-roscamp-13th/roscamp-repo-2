@@ -16,6 +16,10 @@ MIGRATIONS = [
     # db/add_book_unavailable_column.sql 과 동일 — 실행 지점을 여기로 옮긴다.
     "ALTER TABLE cb_books "
     "ADD COLUMN IF NOT EXISTS unavailable TINYINT(1) NOT NULL DEFAULT 0",
+    # 로봇팔용 서가 좌표. 컬럼명이 `tier`/`row` 가 아니라 `shelf_*` 인 이유:
+    # `row` 는 MariaDB 예약어라 백틱 없이는 문법 오류가 난다(파이썬 속성명은 tier/row).
+    "ALTER TABLE cb_books ADD COLUMN IF NOT EXISTS shelf_tier INT NOT NULL DEFAULT 0",
+    "ALTER TABLE cb_books ADD COLUMN IF NOT EXISTS shelf_row INT NOT NULL DEFAULT 0",
     "ALTER TABLE cb_loans ADD COLUMN IF NOT EXISTS is_demo TINYINT(1) NOT NULL DEFAULT 0",
     "ALTER TABLE cb_reservations ADD COLUMN IF NOT EXISTS is_demo TINYINT(1) NOT NULL DEFAULT 0",
     "ALTER TABLE cb_delivery_requests ADD COLUMN IF NOT EXISTS is_demo TINYINT(1) NOT NULL DEFAULT 0",

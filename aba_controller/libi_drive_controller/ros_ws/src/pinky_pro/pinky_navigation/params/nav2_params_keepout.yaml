@@ -78,9 +78,17 @@ bt_navigator:
     global_frame: map
     robot_base_frame: base_link
     odom_topic: odom
-    bt_loop_duration: 10
+    # [2026-07-30] 10 → 30 (ms). **nav2_params.yaml 과 같은 값이어야 한다** — 런처가
+    #   `--keepout` 일 때만 이 파일을 쓰므로, 한쪽만 고치면 필터를 켠 순간 최적화가 조용히
+    #   사라진다. 근거는 nav2_params.yaml 의 같은 항목 주석에 있다(BT 가 100Hz→33Hz).
+    bt_loop_duration: 30
     # 20(ms)는 이 Pi 부하에서 짧다 — 근거는 nav2_params.yaml 의 같은 항목 주석.
-    default_server_timeout: 200
+    # [2026-07-30] 200 → 500. 근거·실측은 nav2_params.yaml 의 같은 항목 주석에 있다
+    #   (요약: 웨이포인트 preempt 때 BT 의 FollowPath halt 가 이 시간 안에 취소
+    #    결과를 못 받으면 목표가 abort 되고 로봇이 20초 멈춘다. Pi 가 시간의 76%
+    #    스로틀 중이라 200ms 로는 모자랐다). **두 파일을 같은 값으로 유지할 것** —
+    #    이쪽은 --dyn-obstacle 켤 때만 쓰여서, 어긋나면 그때만 재현되는 버그가 된다.
+    default_server_timeout: 500
     wait_for_service_timeout: 1000
     action_server_result_timeout: 900.0
     navigators: ["navigate_to_pose", "navigate_through_poses"]

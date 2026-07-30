@@ -3,13 +3,13 @@
 #    로봇마다 config/generated/domain_bridge_<key>.yaml 을 만든다.
 #    도메인을 바꾸려면 이 파일이 아니라 관제 패널의 로봇 등록에서 domain_id 를 고친다.
 #
-# {NAME}({IP}, ROS_DOMAIN_ID={FROM_DOMAIN}) ↔ 서버 도메인 86 중계.
-# 텔레메트리/상태({FROM_DOMAIN}→86, /{KEY}/* 개명)와 명령(86→{FROM_DOMAIN}, reversed)을 함께 담당한다.
+# {NAME}({IP}, ROS_DOMAIN_ID={FROM_DOMAIN}) ↔ 서버 도메인 111 중계.
+# 텔레메트리/상태({FROM_DOMAIN}→111, /{KEY}/* 개명)와 명령(111→{FROM_DOMAIN}, reversed)을 함께 담당한다.
 # 로봇은 무수정 — 서버에서만 실행: ros2 run domain_bridge domain_bridge <이 파일>
 # QoS 는 publisher 자동 매칭(기본값)을 사용한다 (amcl_pose·map·fleet_status 는 TRANSIENT_LOCAL).
 name: bridge_{KEY}
 from_domain: {FROM_DOMAIN}
-to_domain: 86
+to_domain: 111
 topics:
   amcl_pose:
     type: geometry_msgs/msg/PoseWithCovarianceStamped
@@ -36,7 +36,7 @@ topics:
   fleet_cmd_result:
     type: std_msgs/msg/String
     remap: /{KEY}/fleet_cmd_result
-  # 역방향 명령: 86의 /{KEY}/fleet_cmd 구독 → 88에 /fleet_cmd 발행
+  # 역방향 명령: 서버 도메인(to_domain)의 /{KEY}/fleet_cmd 구독 → 로봇 도메인(from_domain)에 /fleet_cmd 발행
   {KEY}/fleet_cmd:
     type: std_msgs/msg/String
     reversed: True
@@ -69,7 +69,7 @@ topics:
   libi/fsm_transition_result:
     type: std_msgs/msg/String
     remap: /libi/fsm_transition_result
-  # 역방향: 서버(86)의 전이 요청을 로봇 도메인으로. domain_bridge 는 서비스를 중계하지
+  # 역방향: 서버(111)의 전이 요청을 로봇 도메인으로. domain_bridge 는 서비스를 중계하지
   # 못하므로(YAML 에 services 키 없음) 상관 id 를 실은 요청/결과 토픽 쌍을 쓴다.
   libi/fsm_transition_request:
     type: std_msgs/msg/String

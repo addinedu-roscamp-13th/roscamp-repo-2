@@ -6,7 +6,7 @@
 CPU 가 포화되어 502/504 가 발생했다. 이 모듈은 데이터 흐름을 push 로 뒤집고,
 명령(goal/mission 등)도 HTTP 대신 ROS2 토픽으로 보낸다:
 
-  로봇1(도메인88)·로봇2(89)·로봇3(87) ─(domain_bridge, /pinky{N}/*)→ 서버 도메인 86
+  로봇들(도메인 117~119) ─(domain_bridge, /pinky{N}/*)→ 서버 도메인 111
   → 본 모듈의 rclpy 노드가 구독·캐시 → /api/control/state 는 캐시에서 즉시 응답.
   ← 명령은 /pinky{N}/fleet_cmd 발행 → 브릿지 reversed 중계 → 로봇 fleet_link 실행
     → /pinky{N}/fleet_cmd_result 로 결과 회신 (id 상관관계, send_command()).
@@ -14,7 +14,7 @@ CPU 가 포화되어 502/504 가 발생했다. 이 모듈은 데이터 흐름을
 - 텔레메트리 5종(amcl_pose/map/plan/battery)에 더해 로봇 fleet_link 모듈이
   /fleet_status(미션, 2초 하트비트)·/fleet_costmaps(5초)를 발행한다 — HTTP 폴링 0.
 - 레거시 ros_bridge(프로세스 env 도메인 88, 조이스틱 등)와 분리된 **별도 rclpy
-  Context** 를 도메인 86으로 고정 생성한다.
+  Context** 를 서버 도메인(app/ros_domains.py, 기본 111)으로 고정 생성한다.
 - 공유기 멀티캐스트 차단 환경이므로 로봇 쪽 ROS_STATIC_PEERS=192.168.0.19 가 전제
   (로봇의 /home/robotPrj/rosPkg/ros_source.sh 또는 pm2_start_*.sh 에 설정됨).
 
@@ -29,6 +29,7 @@ import time
 import uuid
 from typing import Any
 
+from app.ros_domains import domain_for
 from app import panel_bridge
 
 # ── 플릿 구성: DB(rc_robots.ip_address)에서 매 기동 시 읽어온다 ────────────
@@ -102,7 +103,10 @@ def _load_fleet_robots() -> dict[str, dict[str, Any]]:
         print(f"[fleet_telemetry] FLEET_ROBOTS DB 로드 실패, 빈 목록으로 진행: {e}", flush=True)
     return result
 
-TELEMETRY_DOMAIN_ID = 86
+# [2026-07-30] 86 을 여기 직접 적던 것을 단일 출처로 옮겼다 — 근거는 app/ros_domains.py.
+# (형제 셋이 86 을 따로따로 들고 있었고, 그중 ros_bridge 만 셸의 로봇 도메인을 타서
+#  서버 노드가 로봇 /cmd_vel 에 끼어들었다.)
+TELEMETRY_DOMAIN_ID = domain_for("LIBI_TELEMETRY_DOMAIN_ID")
 FRESH_SEC = 30.0        # 이 시간 안에 아무 수신도 없으면 캐시를 stale 로 판정(HTTP 폴백)
 PLAN_MAX_POINTS = 400   # /plan 다운샘플 상한 (ros_bridge 와 동일 정책)
 CMD_TIMEOUT_SEC = 3.0   # 명령 결과 대기 기본값 (기존 HTTP TIMEOUT_SEC 과 동일 체감)

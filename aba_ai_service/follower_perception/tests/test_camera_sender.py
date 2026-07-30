@@ -227,7 +227,10 @@ def test_sleep_subtracts_work_time_so_fps_is_actually_reached(monkeypatch):
     ticks = iter([0.0, 0.04, 1.0, 1.04, 2.0, 2.04])
     run(_frames(1, 2), None, FakeSender(), CameraSelect(expiry_sec=5),
         orient_front=lambda f: f, orient_back=lambda f: f,
-        fps=10.0, now=lambda: next(ticks), max_frames=2)
+        fps=10.0, now=lambda: next(ticks), max_frames=2,
+        # 이 테스트가 재는 건 **sleep 예산**이지 대기캠 게이팅이 아니다.
+        # 게이팅을 켜 두면 건너뛴 프레임만큼 루프가 더 돌아 위 시계가 소진된다.
+        standby_every=0)
 
     # delay=0.1, 처리 0.04  →  0.06 만 자야 한다 (0.1 이 아니라)
     assert slept == pytest.approx([0.06, 0.06], abs=1e-9)
@@ -243,6 +246,87 @@ def test_sleep_never_negative_when_work_exceeds_budget(monkeypatch):
     ticks = iter([0.0, 0.5, 1.0, 1.5])      # 한 장에 0.5초 — 예산 0.1 초과
     run(_frames(1, 2), None, FakeSender(), CameraSelect(expiry_sec=5),
         orient_front=lambda f: f, orient_back=lambda f: f,
-        fps=10.0, now=lambda: next(ticks), max_frames=2)
+        fps=10.0, now=lambda: next(ticks), max_frames=2,
+        # 이 테스트가 재는 건 **sleep 예산**이지 대기캠 게이팅이 아니다.
+        # 게이팅을 켜 두면 건너뛴 프레임만큼 루프가 더 돌아 위 시계가 소진된다.
+        standby_every=0)
 
     assert slept == [0.0, 0.0]
+
+
+# ── 대기 캠 저주기 게이팅 (2026-07-30) ────────────────────────────────────────
+#
+# 순회 중(`camera_select == none`)에는 아무것도 송출하지 않는데 예전에는 **두 캠을 매
+# 프레임 다 잡았다**. 선택을 캡처 뒤에 봤기 때문이다. 여기서 못 박는 계약 셋:
+#   ① 선택된 캠은 **항상 매 프레임** (fps 를 낮추는 변경이 아니다)
+#   ② 대기 캠은 `standby_every` 마다 한 번 (장치는 열려 있어야 한다 — 회복 트리가
+#      반대 캠으로 사람을 찾는다: follow_node._peek_people)
+#   ③ 두 슬롯 다 계속 기록된다 (frame_tap 머리말의 계약, 주기만 낮아진다)
+
+def _count_captures(select, standby_every, max_frames=10):
+    """무한 제너레이터로 돌리고 (캡처수, 총틱수) 를 돌려준다.
+
+    ⚠️ `run(max_frames=)` 는 **틱이 아니라 캡처 수**(seq)를 센다. seq 는 어느 한쪽이라도
+       잡히면 오르므로, 선택된 캠이 있으면 seq == 틱이고 none 이면 seq == 저주기 캡처 수다.
+       틱은 시계 호출로 센다(fps=0 이라 sleep 이 없어 틱당 정확히 한 번 불린다).
+    """
+    got = {"front": 0, "back": 0}
+
+    def gen(tag):
+        i = 0
+        while True:
+            got[tag] += 1
+            i += 1
+            yield np.full((4, 4, 3), i % 250, dtype=np.uint8)
+
+    ticks = [0]
+
+    def clock():
+        ticks[0] += 1
+        return ticks[0] * 0.001
+
+    run(gen("front"), gen("back"), FakeSender(), select,
+        orient_front=lambda f: f, orient_back=lambda f: f,
+        fps=0, now=clock, max_frames=max_frames, standby_every=standby_every)
+    return got, ticks[0]
+
+
+def test_selected_camera_is_captured_every_frame():
+    """앞캠을 골랐으면 앞캠은 매 프레임 — 검출 주기가 안 줄어야 한다."""
+    sel = CameraSelect(expiry_sec=1e9)
+    sel.set("front", 0.0)
+    got, ticks = _count_captures(sel, standby_every=8, max_frames=16)
+    assert got["front"] == ticks == 16, f"선택된 캠이 건너뛰어졌다: {got}, ticks={ticks}"
+    assert got["back"] <= 3, f"대기 캠이 안 줄었다: {got}"
+
+
+def test_standby_camera_is_throttled_not_stopped():
+    """대기 캠은 **멈추지 않고** 저주기로 돈다 — 장치가 닫히면 회복 경로가 깨진다."""
+    sel = CameraSelect(expiry_sec=1e9)
+    sel.set("front", 0.0)
+    got, _ = _count_captures(sel, standby_every=8, max_frames=24)
+    assert got["back"] > 0, "대기 캠이 아예 안 돈다 — 워밍업 지연이 생긴다"
+    assert got["back"] <= got["front"] // 4, f"충분히 안 줄었다: {got}"
+
+
+def test_none_selection_throttles_both():
+    """순회 중(none)에는 둘 다 저주기 — 여기가 절감의 대부분이다."""
+    got, ticks = _count_captures(CameraSelect(expiry_sec=1e9), standby_every=8, max_frames=4)
+    # 캡처 4장을 얻는 데 틱이 8배 가까이 들었어야 한다 = 1/8 로 줄었다는 뜻
+    assert ticks >= got["front"] * 6, f"none 인데 거의 매 틱 잡는다: {got}, ticks={ticks}"
+    assert got["back"] == got["front"], f"두 캠이 같이 줄어야 한다: {got}"
+
+
+def test_standby_every_zero_restores_old_behaviour():
+    """0 이면 게이팅 없음 — 되돌림 스위치가 실제로 동작해야 한다."""
+    got, ticks = _count_captures(CameraSelect(expiry_sec=1e9), standby_every=0, max_frames=6)
+    assert got["front"] == 6 and got["back"] == 6 and ticks == 6, (got, ticks)
+
+
+def test_both_slots_still_written_under_gating():
+    """frame_tap 계약(둘 다 기록)은 게이팅 뒤에도 유지된다 — 주기만 낮아진다."""
+    sel = CameraSelect(expiry_sec=1e9)
+    sel.set("front", 0.0)
+    _count_captures(sel, standby_every=4, max_frames=12)
+    assert frame_tap.read("front") is not None
+    assert frame_tap.read("back") is not None

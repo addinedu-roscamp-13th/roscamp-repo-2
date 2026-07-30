@@ -44,10 +44,24 @@ case " $CAM_ARGS " in
   *) ROT=0 ;;
 esac
 CALIB_BASE="$REPO_ROOT/config/camera"
-if [ "$ROT" = "0" ]; then CALIB="$CALIB_BASE/picam_640x480.npz"; else CALIB="$CALIB_BASE/picam_640x480_rot${ROT}.npz"; fi
-echo "[image-sender] rotate=${ROT}° → 이 스트림에 맞는 캘리브: ${CALIB#$REPO_ROOT/}"
+
+# ⚠️ [2026-07-30] 캘리브 파일명이 **해상도로 갈린다.** 예전엔 640x480 을 하드코딩했는데,
+#    `--width` 를 내리면(오늘 480 으로 내렸다) K 가 프레임 기하와 안 맞는다 —
+#    fx/fy/cx/cy 가 전부 픽셀 단위라 해상도에 비례하기 때문이다.
+#    틀린 K 로 solvePnP 를 돌리면 **거리가 틀리고 마커 도킹이 조용히 어긋난다**
+#    (에러가 안 난다. 로봇이 엉뚱한 자리에 선다). 그래서 --width 를 따라간다.
+case " $CAM_ARGS " in
+  *" --width "*) CAM_W="$(printf '%s\n' "$CAM_ARGS" | sed -n 's/.*--width \([0-9]*\).*/\1/p')" ;;
+  *) CAM_W=640 ;;                                  # camera_sender.py --width 기본값
+esac
+CAM_H=$(( CAM_W * 3 / 4 ))
+CALIB_NAME="picam_${CAM_W}x${CAM_H}"
+if [ "$ROT" = "0" ]; then CALIB="$CALIB_BASE/${CALIB_NAME}.npz"; else CALIB="$CALIB_BASE/${CALIB_NAME}_rot${ROT}.npz"; fi
+echo "[image-sender] ${CAM_W}x${CAM_H} rotate=${ROT}° → 이 스트림에 맞는 캘리브: ${CALIB#$REPO_ROOT/}"
 [ -f "$CALIB" ] || echo "[image-sender] ⚠ 그 파일이 없습니다. rotate_calib.py 로 만드세요:
-    python3 scripts/cam-calib/rotate_calib.py config/camera/picam_640x480.npz $ROT"
+    python3 scripts/cam-calib/rotate_calib.py config/camera/${CALIB_NAME}.npz $ROT
+  (원본 ${CALIB_NAME}.npz 자체가 없으면 그 해상도로 체스보드 촬영부터 해야 합니다 —
+   다른 해상도의 K 를 그대로 쓰면 거리가 틀립니다.)"
 
 # camera_sender 는 이제 `/libi/camera_select` 를 구독해 어느 캠을 내보낼지 정한다.
 # ROS 를 source 하지 않으면 rclpy import 가 실패해 **구독 없이** 뜨고, 그러면 BT 가

@@ -36,8 +36,16 @@ class RequestTransition(py_trees.behaviour.Behaviour):
     그래서 `state_io` 가 패널 전이를 적용할 때 `hold_until` 을 찍어 두고, 그 시각까지는
     여기서 **BT 가 스스로 하는 전이를 미룬다.** 누른 상태가 사람 눈에 보일 만큼 남는다.
 
-    미루는 것이지 버리는 것이 아니다 — `next_mode` 를 지우지 않으므로 유지 시간이 지나면
-    그 전이가 그대로 일어난다. 그동안 다른 이탈 조건이 새 값을 쓰면 새 값이 이긴다.
+    `next_mode` 를 지우지 않으므로, **같은 브랜치가 다음 tick 에도 이 leaf 까지 도달한다면**
+    유지가 끝난 뒤 그 전이가 그대로 일어난다.
+
+    ⚠️ [2026-07-30] **그 도달이 보장되는 건 IDLE·CHARGING·ERROR 뿐이다.** PATROL·WORKING 은
+       exit 조건이 `Parallel` 안에 있어서(`watchdog.exit_watchdog` 의 trailing `Running()`),
+       조건이 안 뜬 tick 은 `Parallel` 이 RUNNING 이 되고 루트 `Sequence` 가 이 leaf 앞에서
+       멈춘다. 즉 그 브랜치에서 한 번 막힌 전이는 **미뤄지는 게 아니라 유실된다.**
+       그래서 명령 유래 전이는 아래 `_held` 에서 아예 막지 않는다 — 명령이 매칭된 tick 은
+       반드시 이 leaf 까지 오므로, 그 tick 에 통과시키는 것만이 유일하게 확실한 지점이다.
+       (유실 자체는 main.py `_tick()` 이 경고로 드러낸다.)
 
     ⚠️ ERROR 는 막지 않는다. 고장은 유지 시간과 무관하게 즉시 반영돼야 한다.
     ⚠️ 패널 전이 자체는 이 leaf 를 거치지 않는다 (`state_io.apply_pending`). 그래서 유지
@@ -55,10 +63,17 @@ class RequestTransition(py_trees.behaviour.Behaviour):
         self.blackboard = self.attach_blackboard_client(name=self.name)
         self.blackboard.register_key(key=Keys.CURRENT_MODE, access=Access.WRITE)
         self.blackboard.register_key(key=Keys.NEXT_MODE, access=Access.WRITE)
+        self.blackboard.register_key(key=Keys.COMMANDED_MODE, access=Access.WRITE)
         self.blackboard.register_key(key=Keys.HOLD_UNTIL, access=Access.READ)
 
     def _held(self, target: str) -> bool:
         if target in _ALWAYS_ALLOWED:
+            return False
+        # 명령 유래(task_assigned·ui_touch·task_done·task_failed·stop_request)는 뚫는다.
+        # 유지 시간의 목적은 "로봇이 스스로 사람의 결정을 되돌리는 것"을 막는 것이고,
+        # 관제·패널 명령은 그 사람의 결정 자체다. 막으면 배차·터치·복귀가 조용히 사라진다
+        # (실측 2026-07-30: manual_hold_sec=300 에서 task_assigned 두 건이 유실).
+        if bb.get(self.blackboard, Keys.COMMANDED_MODE) == target:
             return False
         until = bb.get(self.blackboard, Keys.HOLD_UNTIL)
         now = (self.clock or time.monotonic)()
@@ -69,7 +84,8 @@ class RequestTransition(py_trees.behaviour.Behaviour):
         if not target:
             return Status.FAILURE
         if self._held(target):
-            return Status.FAILURE      # next_mode 는 남겨 둔다 — 유지가 끝나면 다시 시도
+            return Status.FAILURE      # next_mode 는 남겨 둔다 — 클래스 주석의 ⚠️ 참고
         self.blackboard.set(Keys.CURRENT_MODE, target)
         self.blackboard.set(Keys.NEXT_MODE, None)
+        self.blackboard.set(Keys.COMMANDED_MODE, None)
         return Status.SUCCESS

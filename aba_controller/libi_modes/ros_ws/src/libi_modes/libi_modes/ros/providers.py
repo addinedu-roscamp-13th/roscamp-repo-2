@@ -38,6 +38,8 @@ from geometry_msgs.msg import PoseWithCovarianceStamped
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool, Float32, Float64, String
 
+from libi_modes.registry import TRANSITION_TRIGGERS
+
 #: `/amcl_pose` 는 TRANSIENT_LOCAL 로 발행된다 — 기본 QoS(VOLATILE)로 구독하면
 #: 아무것도 못 받는다. 조용히 위치가 안 오면 NavigationExec 이 영영 도착 판정을
 #: 못 하므로, 여기서 QoS 를 틀리면 증상이 "로봇이 안 멈춘다" 로 나타난다.
@@ -58,7 +60,8 @@ class RosProviders:
                  nav_actions=("navigate",),
                  guide_actions=("guide",),
                  arm_actions=("perform_action",),
-                 follow_actions=("follow_admin",)):
+                 follow_actions=("follow_admin",),
+                 fsm_triggers=TRANSITION_TRIGGERS):
         self._node = node
         self._log = node.get_logger()
         self._mission_actions = set(mission_actions)
@@ -80,6 +83,11 @@ class RosProviders:
         #    되지 않고**, FollowExec 은 ACTIVE_COMMAND 만 보므로 드라이버를 꽂아도
         #    영영 안 잡힌다 (ArmExec 이 예전에 같은 이유로 죽어 있었다).
         self._follow_actions = set(follow_actions)
+        # FSM 전이를 일으키는 명령 이름. **이 집합 밖의 액션은 명령 슬롯에 넣지 않는다** —
+        # `/fleet_cmd` 는 실행층(robot_agent)과 공용 토픽이라, 넣으면 실행층 몫의 액션
+        # (mission_stop·slam_*·dock…)이 아직 소비 안 된 전이 트리거를 덮어써 그 전이가
+        # 조용히 사라진다. 근거와 실측은 registry.TRANSITION_TRIGGERS 주석에 있다.
+        self._fsm_triggers = set(fsm_triggers)
 
         self._battery = None
         self._docked = None
@@ -87,6 +95,15 @@ class RosProviders:
         self._last_command = None
         self._active_command = None
         self._nav_target = None
+        #: 팔 명령의 args 원본. `HandyActionDriver` 가 이걸 읽어 `ArmTask` goal 을 만든다.
+        #
+        # ⚠️ 예전에는 팔 args 를 **아무도 보관하지 않았다.** `_on_cmd` 의 팔 갈래가
+        #    `active_command` 만 세우고 args 를 버렸고, 드라이버는
+        #    `FleetCmdDriver(self, "perform_action")` 에 `args_fn` 이 없어 `{}` 를 발행했다.
+        #    즉 어느 책을 어디서 집으라는 정보가 통째로 사라지고 있었다(팔이 스텁이라 안 드러났다).
+        self._arm_args = None
+        #: 그 팔 명령의 `/fleet_cmd` id. 완료 결과를 이 id 로 올려야 FMS 가 다리를 닫는다.
+        self._arm_cmd_id = None
         self._robot_pose = None
         self._command_received_at = 0.0
         self._ui_last_touch_at = 0.0
@@ -222,8 +239,20 @@ class RosProviders:
             # ArmExec 은 ACTIVE_COMMAND 만 보므로 **영원히 안 잡혔다**.
             # 이름을 그대로 쓴다 — 매핑을 두면 ArmExec.handles 와 어긋날 여지가 생긴다.
             self._active_command = action
-        else:
+            # args 를 **보관한다.** 이게 없으면 어느 책을 어디서 집으라는 정보가 사라진다
+            # (위 `_arm_args` 주석 참고). 중계 드라이버가 tick 시점에 이걸 읽는다.
+            self._arm_args = dict(cmd.get("args") or {})
+            self._arm_cmd_id = str(cmd.get("id") or "")
+        elif action in self._fsm_triggers:
             self._last_command = action
+        else:
+            # ⚠️ **여기서 아무것도 하지 않는 것이 핵심이다.** 예전에는 이 갈래가
+            #    `self._last_command = action` 이었고, 그래서 실행층 몫의 액션
+            #    (`mission_stop`·`slam_save_map`·`dock`…)이 FSM 의 단일 슬롯을 차지했다.
+            #    그러면 같은 tick 에 먼저 온 전이 트리거가 덮여 **그 전이가 유실된다**
+            #    (실측 2026-07-30: 주문 취소의 task_failed → mission_stop 순서).
+            #    슬롯을 건드리지 않으면 앞서 온 트리거가 그대로 살아 다음 tick 에 소비된다.
+            self._log.debug(f"FSM 트리거가 아닌 액션은 무시한다(실행층 몫): {action}")
 
     def _on_pose(self, msg):
         p = msg.pose.pose.position
@@ -257,6 +286,8 @@ class RosProviders:
             "ui_last_touch_at": lambda: self._ui_last_touch_at,
             "active_command": lambda: self._active_command,
             "nav_target": lambda: self._nav_target,
+            "arm_args": lambda: self._arm_args,
+            "arm_cmd_id": lambda: self._arm_cmd_id,
             "robot_pose": lambda: self._robot_pose,
             "requester_visible": self._fresh_requester_visible,
             "requester_seen_at": lambda: self._requester_seen_at,

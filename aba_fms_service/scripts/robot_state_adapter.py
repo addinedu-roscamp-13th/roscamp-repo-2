@@ -7,7 +7,7 @@
 `battery/percent`, `fleet_status` 만 낸다. 그래서 **로봇→fleet_node 고리가 비어 있고,
 fleet_node 가 로봇을 0대로 본다 → 배차가 아예 불가능**했다.
 
-이 어댑터가 그 틈을 메운다. 이미 domain_bridge 가 서버 도메인(86)으로 옮겨 놓은
+이 어댑터가 그 틈을 메운다. 이미 domain_bridge 가 서버 도메인(111)으로 옮겨 놓은
 `/pinky3/amcl_pose` 와 `/pinky3/battery/percent` 를 읽어 `/robot_state` 로 재발행한다.
 **로봇은 무수정** — 서버에서만 돈다.
 
@@ -15,8 +15,8 @@ fleet_node 가 로봇을 0대로 본다 → 배차가 아예 불가능**했다.
 `RobotState.name` 은 `FsmState.robot_id` 와 같은 키여야 fleet_node 안에서 상태가 매칭된다
 (fleet_node.cpp 주석 참고). 스크립트들이 로봇을 `pinky3` 로 부르므로 그 값을 기본으로 쓴다.
 
-## 실행 (서버, 도메인 86)
-    ROS_DOMAIN_ID=86 python3 aba_fms_service/scripts/robot_state_adapter.py --robot pinky3
+## 실행 (서버, 도메인 111)
+    ROS_DOMAIN_ID=111 python3 aba_fms_service/scripts/robot_state_adapter.py --robot pinky3
 """
 
 from __future__ import annotations

@@ -47,14 +47,42 @@ def test_cancel_before_response_still_cancels():
     assert t.active_handle is None
 
 
-def test_new_goal_cancels_previous_handle():
+def test_new_goal_does_not_cancel_previous_handle():
+    """[2026-07-30] **뒤집힌 계약.** 새 목표를 낼 때 이전 것을 취소하지 않는다.
+
+    예전에는 여기서 취소했다. 그런데 nav2 는 같은 액션에 새 goal 이 오면 선점으로
+    이전 목표를 알아서 대체한다. 명시적 취소를 보내면 nav2 가 그걸 **취소로 처리해
+    바퀴를 세운다**(`Cancellation was successful. Stopping the robot.`) — 그게 순회가
+    웨이포인트마다 멈추던 원인이었다. 자세한 실측은 nav_goal_tracker.begin() 주석.
+
+    ⚠️ 이 테스트가 깨지면 그 증상이 돌아온 것이다. 되돌리기 전에 begin() 주석부터 읽어라.
+    """
     t = NavGoalTracker()
     g1 = t.begin()
     gh1 = FakeHandle()
     t.on_response(gh1, g1)
-    t.begin()                            # 새 목표
-    assert gh1.canceled is True
-    assert t.active_handle is None
+    t.begin()                            # 새 목표 — 선점이 처리한다
+    assert gh1.canceled is False, "새 목표가 이전 것을 취소했다 — 로봇이 선다"
+    assert t.active_handle is None       # 추적은 놓는다(세대가 바뀌었으므로)
+
+
+def test_explicit_cancel_still_cancels():
+    """정지 명령 경로는 **그대로**여야 한다 — '사람을 놓치면 멈춘다'가 여기 걸려 있다."""
+    t = NavGoalTracker()
+    g = t.begin()
+    gh = FakeHandle()
+    t.on_response(gh, g)
+    assert t.cancel() is True
+    assert gh.canceled is True
+
+
+def test_generation_still_advances_without_cancel():
+    """취소는 안 해도 세대는 올라가야 한다 — 낡은 응답을 가려내는 근거다."""
+    t = NavGoalTracker()
+    g1 = t.begin()
+    g2 = t.begin()
+    assert g2 != g1
+    assert t.is_current(g2) and not t.is_current(g1)
 
 
 def test_stale_generation_response_is_dropped():

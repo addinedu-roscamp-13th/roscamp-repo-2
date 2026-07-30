@@ -64,6 +64,8 @@ interface BookFormValue {
   cover: string;
   zone: string;
   shelf: string;
+  tier: number;
+  row: number;
   in_stock: boolean;
   unavailable: boolean;
 }
@@ -75,9 +77,14 @@ const EMPTY: BookFormValue = {
   cover: CATEGORY_COVER.literature,
   zone: SHELF_WAYPOINTS[0]?.name ?? "문학서가",
   shelf: "",
+  tier: 0,
+  row: 0,
   in_stock: true,
   unavailable: false,
 };
+
+/** 층·줄은 각 3칸 고정 하드웨어다. 0 은 "정보 없음" — 팔이 시각으로 찾는다. */
+const SHELF_SLOTS = [0, 1, 2, 3];
 
 // 재고 배지·서가 현황 차트가 공유하는 3상태 색 — 이 페이지 안에서 한 가지 색 언어로 통일.
 const STATUS_COLOR = {
@@ -186,6 +193,8 @@ function BooksPage() {
     cover: CATEGORY_COVER[b.category] ?? b.cover,
     zone: b.zone,
     shelf: b.shelf,
+    tier: b.tier ?? 0,
+    row: b.row ?? 0,
     in_stock: b.in_stock,
     unavailable: b.unavailable,
   });
@@ -606,6 +615,35 @@ function BookFormFields({
           onChange={(e) => onChange({ ...value, shelf: e.target.value })}
           placeholder="예: 첫째 줄"
         />
+      </Field>
+      {/* 아래 둘은 **로봇팔이 손을 뻗을 좌표**다. 위의 `서가`는 "어느 서가"까지만
+          말해주므로, 팔은 층·줄을 따로 받아야 한다. 자유 입력이 아니라 1~3 고정 —
+          하드웨어가 3층 × 3줄이다. */}
+      <Field label="서가 층 (아래부터 1)">
+        <select
+          value={String(value.tier)}
+          onChange={(e) => onChange({ ...value, tier: Number(e.target.value) })}
+          className={selectClass}
+        >
+          {SHELF_SLOTS.map((n) => (
+            <option key={n} value={n}>
+              {n === 0 ? "정보 없음" : `${n}층`}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <Field label="서가 줄 (왼쪽부터 1)">
+        <select
+          value={String(value.row)}
+          onChange={(e) => onChange({ ...value, row: Number(e.target.value) })}
+          className={selectClass}
+        >
+          {SHELF_SLOTS.map((n) => (
+            <option key={n} value={n}>
+              {n === 0 ? "정보 없음" : `${n}번째 줄`}
+            </option>
+          ))}
+        </select>
       </Field>
       <Field label="재고">
         <select

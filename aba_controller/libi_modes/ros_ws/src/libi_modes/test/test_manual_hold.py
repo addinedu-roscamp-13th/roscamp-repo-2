@@ -9,8 +9,11 @@
 from py_trees.common import Status
 
 from libi_modes.blackboard import Keys
-from libi_modes.branches import charging
+from libi_modes.branches import charging, idle, patrol
 from libi_modes.common.request_transition import RequestTransition
+
+from test.fakes import PARAMS as FAKE_PARAMS
+from test.fakes import FakeDriver
 
 PARAMS = {"battery": {"ready": 40, "charged": 80, "low": 15}}
 
@@ -97,3 +100,51 @@ def test_charging_fault_still_wins_during_the_hold(seed, tick, read, monkeypatch
             Keys.FAULT: True, Keys.HOLD_UNTIL: clock() + 999.0})
     assert tick(charging.create(PARAMS)) == Status.SUCCESS
     assert read(Keys.CURRENT_MODE) == "ERROR"
+
+
+# ── 명령 유래 전이는 유지 시간을 뚫는다 (2026-07-30 회귀) ──────────────────────
+#
+# 실측: `manual_hold_sec` 이 2.0 → 300.0 이 된 뒤 관제가 배차해도 로봇이 IDLE 에 남았다.
+# 유지 시간의 목적은 "로봇이 스스로 사람의 결정을 되돌리는 것"을 막는 것이지, 사람이 보낸
+# 명령을 막는 것이 아니다. 그리고 PATROL·WORKING 에서 한 번 막힌 요청은 다음 tick 에
+# 재시도할 통로가 없어 **미뤄지는 게 아니라 유실된다** (request_transition.py 클래스 주석).
+
+def test_dispatch_breaks_through_the_hold(seed, tick, read, monkeypatch):
+    """배차: IDLE 에서 task_assigned → WORKING. 유지 중이어도 통해야 한다."""
+    clock = FakeClock()
+    monkeypatch.setattr("libi_modes.common.request_transition.time.monotonic", clock)
+    seed(**{Keys.CURRENT_MODE: "IDLE", Keys.BATTERY_PERCENT: 60.0,
+            Keys.LAST_COMMAND: "task_assigned", Keys.HOLD_UNTIL: clock() + 999.0})
+    assert tick(idle.create(PARAMS)) == Status.SUCCESS
+    assert read(Keys.CURRENT_MODE) == "WORKING"
+
+
+def test_panel_touch_breaks_through_the_hold(seed, tick, read, monkeypatch):
+    """패널 터치: PATROL 에서 ui_touch → INTERACTING. 유지 중이어도 통해야 한다."""
+    clock = FakeClock()
+    monkeypatch.setattr("libi_modes.common.request_transition.time.monotonic", clock)
+    seed(**{Keys.CURRENT_MODE: "PATROL", Keys.BATTERY_PERCENT: 60.0,
+            Keys.ROBOT_POSE: None, Keys.LAST_COMMAND: "ui_touch",
+            Keys.HOLD_UNTIL: clock() + 999.0})
+    assert tick(patrol.create(FAKE_PARAMS, FakeDriver())) == Status.SUCCESS
+    assert read(Keys.CURRENT_MODE) == "INTERACTING"
+
+
+def test_autonomous_transition_is_still_held(seed, tick, read):
+    """자율 전이는 여전히 막힌다 — 명령 표시가 **다른 목표**로 남아 있어도 마찬가지다."""
+    clock = FakeClock()
+    seed(**{Keys.CURRENT_MODE: "CHARGING", Keys.NEXT_MODE: "IDLE",
+            Keys.COMMANDED_MODE: "WORKING", Keys.HOLD_UNTIL: clock() + 999.0})
+    assert tick(RequestTransition(clock=clock)) == Status.FAILURE
+    assert read(Keys.CURRENT_MODE) == "CHARGING"
+
+
+def test_marker_is_cleared_on_apply(seed, tick, read):
+    """⚠️ 표시가 남으면 우연히 같은 목표를 노린 **자율** 전이까지 유지 시간을 뚫는다.
+    적용하는 순간 지운다 (남은 tick 경계 청소는 main.py `_tick()` 이 맡는다)."""
+    clock = FakeClock()
+    seed(**{Keys.CURRENT_MODE: "IDLE", Keys.NEXT_MODE: "WORKING",
+            Keys.COMMANDED_MODE: "WORKING", Keys.HOLD_UNTIL: clock() + 999.0})
+    assert tick(RequestTransition(clock=clock)) == Status.SUCCESS
+    assert read(Keys.CURRENT_MODE) == "WORKING"
+    assert read(Keys.COMMANDED_MODE) is None

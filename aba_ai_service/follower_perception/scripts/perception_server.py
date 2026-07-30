@@ -276,10 +276,32 @@ def test_pattern_frames(n=None):
         i += 1
 
 
-def _camera_frames(index):
+def _camera_frames(index, width=None, height=None):
+    """USB 캠 프레임 제너레이터. `width/height` 를 주면 캡처 해상도를 그걸로 요청한다.
+
+    ## [2026-07-30] 해상도 인자를 붙인 이유
+
+    예전에는 `CAP_PROP_*` 을 하나도 안 걸어서 **드라이버 기본 해상도**로만 돌았다.
+    `camera_sender.py` 의 `--width` 는 picamera2(앞캠)에만 전달돼서, 뒷캠은 무엇을 주든
+    640x480 이었다 — 그 사실이 코드 어디에도 안 드러나 있었다.
+
+    Pi 부하를 줄이려면 뒷캠도 같이 내려야 한다. 캡처 버퍼 복사·회전·생프레임 탭 기록이
+    전부 **픽셀 수에 비례**하기 때문이다(640x480 → 480x360 이면 픽셀이 56%).
+
+    ⚠️ **요청이 곧 적용은 아니다.** UVC 캠은 지원하지 않는 크기를 조용히 무시하고
+       가까운 값이나 기본값으로 연다. 그래서 설정 뒤 **실제 값을 읽어 찍는다** —
+       안 그러면 "줄였다고 믿는데 안 줄어든" 상태를 CPU 수치로만 뒤늦게 발견한다.
+    """
     cap = cv2.VideoCapture(index)
     if not cap.isOpened():
         print(f"[error] cannot open camera {index}"); raise SystemExit(2)
+    if width and height:
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(width))
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(height))
+        got_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        got_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        note = "" if (got_w, got_h) == (int(width), int(height)) else "  ⚠️ 요청과 다름"
+        print(f"[cam{index}] 캡처 해상도 요청 {int(width)}x{int(height)} → 실제 {got_w}x{got_h}{note}")
     try:
         while True:
             ok, frame = cap.read()

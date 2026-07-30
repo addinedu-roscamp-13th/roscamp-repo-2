@@ -133,6 +133,28 @@ def resolve_vertex(name: str) -> int:
     return table[name]
 
 
+def vertex_name(value) -> str:
+    """팔 leg 의 `at` 을 **정점 이름**으로 만든다. 숫자 인덱스면 navgraph 에서 이름을 찾는다.
+
+    왜 필요한가: 로봇 쪽 중계가 `at` **이름**에서 장소 종류를 유도한다(`*서가`→서가,
+    `*테이블`→테이블). 숫자를 그대로 보내면 유도가 실패하고 팔 goal 이 아예 안 나간다.
+    상위가 이름을 주는 것이 정상 경로지만(`ops.py` 는 zone 이름을 준다), API 는 숫자도
+    받으므로 여기서 한 번 되돌린다.
+
+    못 찾으면 **원래 값을 그대로 돌려준다** — 여기서 이름을 지어내면 정본이 둘이 된다.
+    """
+    s = str(value or "").strip()
+    if not s.lstrip("-").isdigit():
+        return s
+    try:
+        for name, idx in _load_vertex_index().items():
+            if idx == int(s):
+                return name
+    except Exception:  # noqa: BLE001 — navgraph 를 못 읽어도 배차는 계속돼야 한다
+        log.warning("[dispatch] navgraph 를 못 읽어 정점 %s 의 이름을 못 찾았다", s)
+    return s
+
+
 def _orc():
     # 순환 import 를 피하려고 호출 시점에 가져온다.
     from app import fleet_orchestrator_service as svc
@@ -186,14 +208,31 @@ def real_dispatch(task_id: str, robot: str, leg) -> str:
 
     if leg.type == LegType.PERFORM_ACTION:
         action = leg.params.get("action", "?")
-        where = leg.params.get("at", "?")
+        # 숫자 인덱스로 온 정점도 이름으로 되돌린다 — 중계가 이름에서 장소를 유도한다.
+        where = vertex_name(leg.params.get("at", "")) or "?"
         if not ARM_STUB:
             raise RuntimeError("팔 배선 없음 (LIBI_ARM_STUB=0)")
         # ── 1순위: 로봇 BT 로 보낸다 ──────────────────────────────────────
         if ARM_VIA_BT:
+            # ⚠️ [2026-07-30] **키를 하나하나 명시적으로 옮긴다.** 예전에는
+            #    `action`·`book`·`at` 셋만 복사했고, orchestrator 가 leg 에 새 키를 넣어도
+            #    **여기서 조용히 사라졌다.** 팔 계약(`object`/`from_place`/`to_place`/
+            #    `tier`/`row`/`slot`)을 추가할 때 이 줄을 같이 고쳐야 하는 이유다.
+            #
+            #    `to_place` 는 `place` 다리에서 비어 있을 수 있다 — 목적지가 테이블인지
+            #    안내데스크인지는 정점의 정체를 알아야 정해지고, 그 지식은 orchestrator 에
+            #    없다. 로봇 쪽 중계(`libi_modes/arm_task_map.py`)가 `at` 에서 유도한다.
+            #    빈 값을 보내는 것이 맞다 — 여기서 추측해 채우면 정본이 둘이 된다.
+            arm_args = {"action": action, "at": where,
+                        "book": leg.params.get("book", ""),
+                        "object": leg.params.get("object", ""),
+                        "from_place": leg.params.get("from_place", ""),
+                        "to_place": leg.params.get("to_place", ""),
+                        "tier": int(leg.params.get("tier", 0) or 0),
+                        "row": int(leg.params.get("row", 0) or 0),
+                        "slot": int(leg.params.get("slot", 0) or 0)}
             cmd_id = fleet_telemetry.send_command_async(
-                robot, action="perform_action",
-                args={"action": action, "book": leg.params.get("book", ""), "at": where},
+                robot, action="perform_action", args=arm_args,
             )
             if cmd_id:
                 log.info(

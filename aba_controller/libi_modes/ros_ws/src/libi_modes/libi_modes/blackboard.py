@@ -17,6 +17,14 @@ class Keys:
     # 예전엔 이게 없어서 nav 드라이버가 home 좌표로 하드코딩돼 있었고, 그래서
     # NavigationExec 은 "어디로 갈지"를 알 방법이 아예 없었다(죽은 코드였던 이유).
     NAV_TARGET = "nav_target"
+    # 팔 명령의 args 원본(`/fleet_cmd` 의 `args` dict). `HandyActionDriver` 가 이걸 읽어
+    # `ArmTask` goal 을 만든다. 좌표(`tier`/`row`/`slot`)는 FMS 가 실어 보내야 채워진다.
+    ARM_ARGS = "arm_args"
+    # 그 팔 명령의 `/fleet_cmd` **id**. 완료를 `/fleet_cmd_result` 로 올릴 때 이 id 를 그대로
+    # 써야 FMS 가 어느 다리가 끝났는지 안다(FMS 는 자기가 보낸 id 로만 대조한다).
+    # ⚠️ 이게 없으면 팔이 다 움직인 뒤에도 관제는 모른다 — robot_agent 의 즉시 성공 응답이
+    #    다리를 먼저 닫고, 로봇은 **팔을 뻗은 채 다음 주행을 시작한다.**
+    ARM_CMD_ID = "arm_cmd_id"
     # 로봇의 현재 위치 {x, y}. `/amcl_pose` 에서 온다.
     # NavigationExec 이 **도착**을 판정하는 근거다 — 명령 접수 응답(`/fleet_cmd_result`)은
     # "주문 받았다"는 뜻일 뿐 도착과 아무 상관이 없다. 위치를 모르면 None 이고,
@@ -44,6 +52,12 @@ class Keys:
     # 직후에만 state_io 가 채운다 — 누른 상태가 곧바로 자동 이탈로 사라지지 않게 한다.
     # 비어 있으면(평상시) 아무 영향 없다. 자세한 배경은 request_transition.py 참고.
     HOLD_UNTIL = "hold_until"
+    # 이 tick 의 next_mode 가 **명령에서 왔다**는 표시. CommandListener 만 쓴다.
+    # HOLD_UNTIL 은 **BT 자율 전이(배터리·타이머·액션 완료)만** 미뤄야 한다 — 관제·패널이
+    # 보낸 명령(task_assigned·ui_touch·task_done…)은 그 사람의 뜻이라 억제 대상이 아니다.
+    # ⚠️ **한 tick 만 산다.** main.py `_tick()` 이 tick 끝에 무조건 지운다. 남겨 두면
+    #    낡은 표시가 우연히 같은 목표를 노린 자율 전이까지 유지 시간을 뚫게 만든다.
+    COMMANDED_MODE = "commanded_mode"
 
 
 def get(blackboard, key, default=None):

@@ -29,10 +29,45 @@ class NavGoalTracker:
         return self._handle
 
     def begin(self) -> int:
-        """새 목표를 내기 직전에 부른다. 반환한 세대 번호를 응답 콜백에 실어 보낸다."""
-        prev, self._handle = self._handle, None
-        if prev is not None:
-            _safe_cancel(prev)
+        """새 목표를 내기 직전에 부른다. 반환한 세대 번호를 응답 콜백에 실어 보낸다.
+
+        ## [2026-07-30] 여기서 **이전 목표를 취소하지 않는다.** 그게 순회를 세우고 있었다
+
+        예전 코드는 `prev` 가 있으면 `_safe_cancel(prev)` 를 했다(위 ③의 원래 구현).
+        의도는 "고아 핸들을 남기지 않는다"였는데, **nav2 는 같은 액션에 새 goal 이 오면
+        선점(preemption)으로 이전 목표를 알아서 대체한다.** 즉 취소는 불필요했고,
+        불필요한 정도가 아니라 **해로웠다** — nav2 는 취소를 받으면 규정대로 바퀴를 세운다:
+
+            [navigate_to_pose] [ActionServer] Client requested to cancel the goal. Cancelling.
+            [navigate_to_pose] [ActionServer] Aborting handle.
+            [controller_server] Cancellation was successful. **Stopping the robot.**
+
+        선점이었다면 `Received goal preemption request` → `Begin navigating` 으로 끊김 없이
+        이어졌을 자리다.
+
+        ## 왜 간헐적이었나 — 경쟁 조건
+
+        `prev` 는 이전 goal 의 **응답 콜백이 도착해야** 채워진다. 그래서:
+
+            응답이 이미 왔다 → 취소 발생 → 로봇 정지 → (재시도까지 20~30초)
+            응답이 아직이다 → 취소 없음 → 깨끗한 선점 → 매끄럽게 진행
+
+        2026-07-30 실측 한 판(약 7분): 선점 22건 vs 취소 9건이 섞여 있었다. 취소는 **항상
+        새 goal 전송과 같은 순간(±0.02초)** 이었다 — 밖에서 끼어든 게 아니라 우리가 낸 것이다.
+        그날 이 증상을 열(스로틀)과 `default_server_timeout` 으로 세 번 오진했는데, 둘 다
+        **응답 타이밍을 바꿔 발생 빈도만 흔들었을 뿐** 원인이 아니었다.
+
+        ## 취소가 사라진 게 아니다
+
+        명시적 정지(`cancel()`)는 그대로다 — 그게 "사람을 놓치면 멈춘다"를 지키는 경로다.
+        바뀐 것은 **새 목표를 낼 때 이전 것을 끊지 않는다**는 것 하나뿐이고, 그 자리는
+        nav2 선점이 대신한다.
+
+        ⚠️ 되돌림 신호: 목표를 바꿨는데 **로봇이 옛 목표로 계속 가면** 선점이 안 된 것이다.
+           그때는 여기서 다시 취소해야 한다(그리고 왜 선점이 안 되는지부터 봐야 한다 —
+           보통 두 goal 이 **서로 다른 액션**으로 갈 때 그렇다. 지금은 navigate_to_pose 하나다).
+        """
+        self._handle = None
         self._generation += 1
         self._cancel_pending = False
         return self._generation

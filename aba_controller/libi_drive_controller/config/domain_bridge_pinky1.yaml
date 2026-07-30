@@ -40,8 +40,12 @@ topics:
     type: std_msgs/msg/String
     reversed: True
     remap: /fleet_cmd
-  # 역방향 속도 명령: 86의 /pinky1/cmd_vel 발행 → 로봇 도메인의 /cmd_vel
-  pinky1/cmd_vel:
-    type: geometry_msgs/msg/Twist
-    reversed: True
-    remap: /cmd_vel
+  # ── [2026-07-30] 역방향 속도 명령 — 이것 때문에 버그가 너무 많아서 뺐다 ──────────
+  # 근거·되살리는 법은 domain_bridge_pinky3.yaml 의 같은 블록에 적어 뒀다.
+  # 요약: remap 대상 `/cmd_vel` 이 **twist_mux 의 출력**이라 중재 밖에서 바퀴로 직행한다.
+  # 우선순위·잠금·비상정지가 전부 안 먹는다. 되살리려면 twist_mux 입력 토픽으로 바꿔라.
+  #
+  # pinky1/cmd_vel:
+  #   type: geometry_msgs/msg/Twist
+  #   reversed: True
+  #   remap: /cmd_vel

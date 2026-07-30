@@ -31,11 +31,14 @@ from typing import Any
 
 # 상태 어휘는 libi_modes 가 소유한다. 여기서 8종을 다시 적지 않는다.
 from app import fsm_link
+from app.ros_domains import domain_for
 from app.fsm_model import STATES
 
-# fleet_node 가 도는 도메인. 아직 확정되지 않았다 — 확정되면 배포 설정에서 넣는다.
-# 기본값은 FMS 텔레메트리와 같은 86 으로, 같은 호스트에서 함께 띄우는 것을 전제한다.
-FLEET_DOMAIN_ID = int(os.environ.get("LIBI_FLEET_DOMAIN_ID", "86"))
+# fleet_node 가 도는 도메인. 기본은 서버 도메인(app/ros_domains.py, 기본 111)이고,
+# 같은 호스트에서 함께 띄우는 것을 전제한다.
+# ⚠️ 이걸 바꾸면 fleet_node 를 띄우는 쪽도 같이 바꿔야 한다
+#    (scripts/laptop/fms_service.sh 의 `export ROS_DOMAIN_ID`).
+FLEET_DOMAIN_ID = domain_for("LIBI_FLEET_DOMAIN_ID")
 
 SRV_SUBMIT = "/fms/submit_task"
 SRV_PLUGINS = "/fms/set_plugins"

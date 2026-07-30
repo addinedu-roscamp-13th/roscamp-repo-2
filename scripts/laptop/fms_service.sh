@@ -126,14 +126,27 @@ if [ -x "$FMS/backend/.venv/bin/python" ]; then
 fi
 
 cd "$REPO_ROOT"
-tmux new-session -d -s "$SESSION" -n bridge \
-  bash -c "cd '$FMS' && echo '[bridge] 로봇 도메인 <-> 86 (DB rc_robots 기준)...' && ./scripts/ros-domain-bridge.sh; exec bash"
 
-# fleet_node(배차·교통) — 백엔드와 같은 도메인 86 에서 돈다(fleet_link 가 같은 도메인 전제).
+# ── 서버(관제) 도메인 ────────────────────────────────────────────────────────
+# [2026-07-30] **86 → 111**, 그리고 값을 여기 박지 않고 변수로 뺐다.
+#
+# 왜: 이 PC 는 루트 `.env:67` 의 `ROS_DOMAIN_ID=119`(실물 로봇 pinky-3 용)를 모든
+# 프로세스가 물려받는다. FMS 백엔드의 `ros_bridge` 가 도메인을 명시하지 않아 그 119 를
+# 그대로 타서 **로봇 도메인에 올라가 `/cmd_vel` 을 직접 발행**했다(중재 우회).
+# 백엔드는 app/ros_domains.py 로 고쳤고, 여기(fleet_node)도 같은 값을 봐야 한다 —
+# fleet_link 가 "백엔드와 fleet_node 가 같은 도메인"을 전제하기 때문이다.
+#
+# ⚠️ 이 값은 **로봇 도메인(117~119)과 절대 겹치면 안 된다.**
+SERVER_DOMAIN="${LIBI_SERVER_DOMAIN_ID:-111}"
+
+tmux new-session -d -s "$SESSION" -n bridge \
+  bash -c "cd '$FMS' && echo '[bridge] 로봇 도메인 <-> $SERVER_DOMAIN (DB rc_robots 기준)...' && ./scripts/ros-domain-bridge.sh; exec bash"
+
+# fleet_node(배차·교통) — 백엔드와 같은 서버 도메인에서 돈다(fleet_link 가 같은 도메인 전제).
 # fleet_ws 안 빌드면 colcon build. RMW/CycloneDDS 는 ~/.bashrc 설정을 따른다(bridge 와 동일).
 if [ -f "$FLEET_WS/install/setup.bash" ] || ensure_built "$FLEET_WS"; then
   tmux new-window -t "$SESSION" -n fleet-node \
-    bash -c "source /opt/ros/jazzy/setup.bash && source '$FLEET_WS/install/setup.bash' && export ROS_DOMAIN_ID=86 && echo '[fleet-node] 배차·교통 (domain 86)...' && ros2 run libi_fleet fleet_node --ros-args -p navgraph_file:='$NAVGRAPH' -p arrive_radius:=$ARRIVE_RADIUS -p prefetch_radius:=$PREFETCH_RADIUS -p patrol_route:='$PATROL_ROUTE' -p security_patrol_route:='$SECURITY_ROUTE'; exec bash"
+    bash -c "source /opt/ros/jazzy/setup.bash && source '$FLEET_WS/install/setup.bash' && export ROS_DOMAIN_ID=$SERVER_DOMAIN && echo '[fleet-node] 배차·교통 (domain $SERVER_DOMAIN)...' && ros2 run libi_fleet fleet_node --ros-args -p navgraph_file:='$NAVGRAPH' -p arrive_radius:=$ARRIVE_RADIUS -p prefetch_radius:=$PREFETCH_RADIUS -p patrol_route:='$PATROL_ROUTE' -p security_patrol_route:='$SECURITY_ROUTE'; exec bash"
 fi
 
 # 로봇 상태 어댑터 — 도메인 86 에서 돈다(fleet_node·브릿지와 같은 자리라 여기 둔다).

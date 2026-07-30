@@ -165,9 +165,16 @@ def admin_auth(admin) -> dict[str, str]:
 
 
 def make_book(
-    db_session, *, title="어린 왕자", zone="문학-1", in_stock=True, unavailable=False
+    db_session,
+    *,
+    title="어린 왕자",
+    zone="문학-1",
+    in_stock=True,
+    unavailable=False,
+    tier=0,
+    row=0,
 ) -> Book:
-    row = Book(
+    book = Book(
         title_kr=title,
         title_en=title,
         title_zh=title,
@@ -180,11 +187,13 @@ def make_book(
         shelf="1단",
         in_stock=in_stock,
         unavailable=unavailable,
+        tier=tier,
+        row=row,
     )
-    db_session.add(row)
+    db_session.add(book)
     db_session.commit()
-    db_session.refresh(row)
-    return row
+    db_session.refresh(book)
+    return book
 
 
 @pytest.fixture()

@@ -1,0 +1,53 @@
+# 로봇팔 한 동작. 주행 보드(libi_modes BT) → 팔 보드(libi_handy_controller).
+#
+# goal 하나가 동작 하나다. 순서·조립·재시도는 관제와 주행 BT 가 관리하고,
+# 팔은 받은 goal 만 수행하며 상태를 갖지 않는다.
+#
+# 왜 토픽이 아니라 액션인가 — 취소·중복방어·진행보고·서버감지를 직접 구현하지 않기
+# 위해서다. 2026-07-30 에 관제 명령이 조용히 사라지는 경로 3개를 고쳤고 그중 2개가
+# 정지 전파·명령 유실이었다. 전부 요청/결과 상관관계와 취소를 손으로 구현한 층에서 났다.
+# 상세: 옵시디언 presen/final/14 로봇팔 통합 - 토픽 대신 액션.md
+#
+# ⚠️ `from` 은 파이썬 예약어라 필드 이름으로 쓸 수 없다 (생성된 클래스 속성이 문법 오류가
+#    된다). 그래서 `from_place`/`to_place` 다.
+
+# 동작 종류. 도서는 pick/place, 바구니는 나머지 셋.
+string ACTION_PICK=pick
+string ACTION_PLACE=place
+string ACTION_UNLOAD_TO_FLOOR=unload_to_floor
+string ACTION_LOAD_FROM_BOX=load_from_box
+string ACTION_REFILL_BOX=refill_box
+
+# 집는 대상.
+string OBJECT_BOOK=book
+string OBJECT_BASKET=basket
+
+# 장소 종류. 주행 정점 이름(문학서가·1번테이블…)이 아니라 **종류**다 —
+# 팔 모션은 정점이 아니라 종류로 결정되므로, 정점이 늘어도 팔 코드는 그대로다.
+string PLACE_SHELF=서가
+string PLACE_TABLE=테이블
+string PLACE_DESK=안내데스크
+string PLACE_COLLECTION_BIN=수거함
+string PLACE_LIBI_BASKET=리비바구니
+string PLACE_FLOOR=바닥
+
+string action
+string object
+string from_place
+string to_place
+#: 도서명. 바구니 작업이면 빈 문자열.
+string book
+#: 서가 층 1~3 (아래부터 1). 서가가 아니면 0.
+uint8 tier
+#: 서가 줄 1~3 (로봇이 마주 봤을 때 왼쪽부터 1). 서가가 아니면 0.
+uint8 row
+#: 리비바구니 칸 1~3. 리비바구니가 아니면 0.
+uint8 slot
+---
+#: 성공 여부. 판단은 이것뿐이다 — 실패 종류는 나누지 않는다.
+bool ok
+#: 로그용 자유 텍스트. 비워도 된다.
+string msg
+---
+#: approach | grasp | lift | move | release
+string phase

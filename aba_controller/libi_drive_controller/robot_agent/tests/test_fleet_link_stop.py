@@ -110,3 +110,25 @@ def test_failed_session_start_is_still_reported(link):
     """접수가 실패했으면 세션이 없다 — 답을 막으면 부른 쪽이 3600초 매달린다."""
     fleet_link, _, _ = link
     assert fleet_link.should_publish_result("follow_admin", False) is True
+
+
+# ── 팔 명령 — 답하는 쪽이 하나여야 한다 ──────────────────────────────────────
+
+def test_arm_answer_is_ours_while_the_arm_is_absent(link):
+    """팔 보드가 없으면 여기서 답한다. 안 하면 FMS 는 다리 타임아웃이 없어 주문이 안 닫힌다."""
+    fleet_link, _, _ = link
+    assert fleet_link.ARM_VIA_BT is False, "기본은 팔 미배선이다"
+    assert fleet_link.should_publish_result("perform_action", True) is True
+
+
+def test_arm_answer_is_the_bts_when_relaying(link, monkeypatch):
+    """팔이 붙으면 완료를 아는 쪽은 BT 다.
+
+    여기서 "접수했다"를 결과로 내면 FMS 가 그걸 완료로 소비해 다음 주행을 시작한다 —
+    팔이 아직 뻗어 있는 채로 로봇이 움직인다(세션 명령에서 똑같이 당한 실수).
+    """
+    fleet_link, _, _ = link
+    monkeypatch.setattr(fleet_link, "ARM_VIA_BT", True)
+    assert fleet_link.should_publish_result("perform_action", True) is False
+    # 접수 자체가 실패했으면 답해야 한다 — 아무도 안 답하면 주문이 멈춘다.
+    assert fleet_link.should_publish_result("perform_action", False) is True

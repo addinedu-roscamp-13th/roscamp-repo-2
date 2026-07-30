@@ -74,6 +74,53 @@ def test_arm_leg_goes_to_robot_bt(monkeypatch):
     assert sent["args"]["action"] == "pick"
 
 
+def test_no_arm_leg_key_is_silently_dropped(monkeypatch):
+    """`leg.params` 의 키를 **하나하나 명시적으로 복사**하는 구조라 새 키가 조용히 사라진다.
+
+    실제로 그렇게 잃었다: 예전엔 `action`·`book`·`at` 셋만 복사했고 팔 계약 필드
+    (`object`/`from_place`/`to_place`/`tier`/`row`/`slot`)를 orchestrator 에 넣어도 로봇까지
+    안 갔다 — 에러도 없었다. orchestrator 에 키를 더하면 이 테스트가 먼저 깨진다.
+    """
+    from app.fleet_orchestrator import decompose_collection, decompose_delivery
+
+    sent = {}
+    monkeypatch.setattr(bridge.fleet_telemetry, "send_command_async",
+                        lambda robot, action, args=None: sent.update(args=args) or "cmd-1")
+    monkeypatch.setattr(bridge, "ARM_VIA_BT", True)
+
+    legs = decompose_delivery(book="B1", pickup="문학서가", dropoff="1번테이블",
+                              tier=2, row=3) + decompose_collection()
+    for leg in [l for l in legs if l.type == LegType.PERFORM_ACTION]:
+        bridge.real_dispatch("t1", "Pinky-3", leg)
+        missing = set(leg.params) - set(sent["args"])
+        assert not missing, f"{leg.params['action']} 다리의 키가 사라졌다: {missing}"
+
+
+def test_numeric_at_is_sent_as_a_vertex_name(monkeypatch):
+    """숫자 정점은 이름으로 되돌려 보낸다.
+
+    로봇 쪽 중계가 `at` **이름**에서 장소 종류를 유도한다(`*테이블`→테이블). 숫자를 그대로
+    보내면 유도가 실패해 팔 goal 이 아예 안 나가고, 원인은 주행 중에야 드러난다.
+    """
+    sent = {}
+    monkeypatch.setattr(bridge.fleet_telemetry, "send_command_async",
+                        lambda robot, action, args=None: sent.update(args=args) or "cmd-1")
+    monkeypatch.setattr(bridge, "ARM_VIA_BT", True)
+    monkeypatch.setattr(bridge, "_load_vertex_index", lambda: {"1번테이블": 7})
+
+    bridge.real_dispatch("t1", "Pinky-3",
+                         Leg(LegType.PERFORM_ACTION,
+                             {"action": "place", "book": "B1", "at": 7}))
+    assert sent["args"]["at"] == "1번테이블"
+
+
+def test_unknown_numeric_at_is_left_alone(monkeypatch):
+    """navgraph 에 없으면 지어내지 않는다 — 중계가 실패시키는 게 낫다."""
+    monkeypatch.setattr(bridge, "_load_vertex_index", lambda: {"1번테이블": 7})
+    assert bridge.vertex_name(99) == "99"
+    assert bridge.vertex_name("문학서가") == "문학서가"
+
+
 def test_arm_leg_falls_back_to_stub_without_link(monkeypatch):
     """브릿지 미기동·로봇 오프라인이면 조용히 멈추지 말고 스텁으로 내려간다."""
     monkeypatch.setattr(bridge.fleet_telemetry, "send_command_async",

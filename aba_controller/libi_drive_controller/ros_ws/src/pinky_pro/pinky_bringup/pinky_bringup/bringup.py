@@ -10,7 +10,6 @@ from nav_msgs.msg import Odometry
 from sensor_msgs.msg import JointState
 from tf2_ros import TransformBroadcaster
 from tf_transformations import quaternion_from_euler
-from std_msgs.msg import Float32
 
 from .cmd_watchdog import CMD_VEL_TIMEOUT_SEC, command_expired
 from .dynamixel_driver import DynamixelDriver
@@ -29,11 +28,22 @@ DYNAMIXEL_IDS = [1, 2] # [왼쪽 바퀴 ID, 오른쪽 바퀴 ID]
 JOINT_NAME_WHEEL_L = "left_wheel_joint"
 JOINT_NAME_WHEEL_R = "right_wheel_joint"
 
-PULSE_PER_ROT = 4096 
+PULSE_PER_ROT = 4096
 RPM2RAD = 2 * math.pi / 60
 
-BATTERY_VOLTAGE_TOPIC = "battery/voltage"
-LOW_BATTERY_THRESHOLD = 6.8
+# [2026-07-30] 저전압 경고를 여기서 뺐다 (`battery/voltage` 구독 + 임계 6.8V + 5초마다 WARN).
+#
+# 셋 다 이유가 있다:
+#   · 임계 6.8V 가 PinkyPro 보일러플레이트 유산인데 이 팩의 **실측 전 구간이 6.8V 이하**라
+#     (5.88~6.78V) 늘 참이었다 — 항상 켜진 경고는 경고가 아니다
+#   · 5초마다 찍혀서 진짜 경고(바로 아래 cmd_vel 워치독)가 로그에서 안 보였다
+#   · 전압을 소유한 곳은 `battery_publisher` 다. 판단도 거기 있어야 한다
+# 지금은 거기서 **퍼센트 기준**으로 1분에 한 번만 낸다(battery_publisher.py 머리말).
+
+#: `/cmd_vel` 발행자 감시 주기(초). 첫 검사는 DDS 탐색이 끝나야 의미가 있어 한 주기 뒤다.
+CMD_VEL_PUBLISHER_AUDIT_SEC = 30.0
+#: 바퀴로 가는 문을 여는 유일한 정당한 발행자.
+EXPECTED_CMD_VEL_PUBLISHER = "twist_mux"
 
 class Pinky(Node):
     def __init__(self):
@@ -94,12 +104,9 @@ class Pinky(Node):
         self.tf_broadcaster = TransformBroadcaster(self)
         self.timer = self.create_timer(1.0 / 30.0, self.update_and_publish)
 
-        self.battery_sub = self.create_subscription(
-            Float32,
-            BATTERY_VOLTAGE_TOPIC,
-            self.battery_voltage_callback,
-            10
-        )
+        self._known_cmd_vel_publishers = None
+        self.cmd_vel_audit_timer = self.create_timer(
+            CMD_VEL_PUBLISHER_AUDIT_SEC, self._audit_cmd_vel_publishers)
 
         self.x = 0.0
         self.y = 0.0
@@ -149,6 +156,66 @@ class Pinky(Node):
             f"(발행자가 죽었을 수 있습니다)")
         if not self.driver.set_double_rpm(0, 0):
             self.get_logger().error("워치독 정지 실패 — 모터가 계속 돌 수 있습니다")
+
+    def _audit_cmd_vel_publishers(self):
+        """`cmd_vel` 발행자가 twist_mux 하나인지 본다. 아니면 **이름을 대고** 경고한다.
+
+        ## 왜 여기인가
+
+        `config/twist_mux.yaml` 이 "Publisher count 가 1(twist_mux)이어야 한다"를 불변식으로
+        적어 뒀지만, 지키는 코드가 없어서 **사람이 `ros2 topic info` 를 칠 때만** 드러났다.
+        2026-07-30 순회 중 실제로 2개였다(twist_mux + fastapi_ros_bridge). 이 노드는
+        `cmd_vel` 의 **유일한 구독자**라 누가 미는지 물어볼 자격이 있는 유일한 자리다.
+
+        ## 왜 죽이지 않고 경고만 하나
+
+        · 남의 노드 발행자는 **없앨 수 없다.** DDS 에 그런 연산이 없다.
+        · 죽으면 로봇이 통째로 못 움직인다. 정체도 모르는 항목 하나로 로봇을 못 쓰게
+          만드는 건 과잉이다.
+        그래서 할 수 있는 최대는 "이름을 대고 시끄럽게 구는 것"이다.
+
+        ## 왜 GID 까지 찍나 — 2026-07-30 에 이걸 몰라서 못 가렸다
+
+        그날 발행자가 2개였는데(`twist_mux` + `fastapi_ros_bridge`) 셋 중 무엇인지 끝내
+        못 가렸다. 이름만으로는 구별이 안 되기 때문이다:
+
+          ① 죽은 프로세스의 DDS 잔재 (유령 writer)
+          ② `git pull` 전에 떠서 **옛 코드를 들고 있는** 프로세스
+             (지금 소스에는 발행자가 없다 — robot_agent/app/core/ros_bridge.py `_cmd_pub`
+              은 None 이고 대입하는 곳이 없다)
+          ③ 같은 노드 이름을 쓰는 **다른 호스트**의 프로세스
+             (aba_fms_service/backend/app/ros_bridge.py 도 노드 이름이 같다. 그쪽은
+              도메인 88 이라 119 에서는 안 보여야 하지만, 도메인 설정이 어긋나면 보인다)
+
+        GID 는 참가자마다 유일하다. **두 주기 뒤에도 같은 GID 가 남아 있으면 유령이 아니라
+        살아 있는 것**이고, 그러면 그 GID 로 프로세스를 찾으면 된다:
+
+            ros2 daemon stop && ros2 topic info /cmd_vel -v     # GID 재확인
+            ss -tunap | grep <포트>                              # 다른 호스트인지
+
+        ## 왜 한 번이 아니라 주기적인가
+
+        나중에 뜬 노드가 끼어드는 경우를 한 번짜리 검사는 못 잡는다. 대신 **목록이 바뀔
+        때만** 찍어서, 상태가 그대로면 로그를 더럽히지 않는다.
+        """
+        pubs = self.get_publishers_info_by_topic(TWIST_SUB_TOPIC_NAME)
+        seen = tuple(sorted(
+            (f"{p.node_namespace.rstrip('/')}/{p.node_name}",
+             bytes(p.endpoint_gid).hex())
+            for p in pubs))
+        if seen == self._known_cmd_vel_publishers:
+            return
+        self._known_cmd_vel_publishers = seen
+
+        strays = [f"{name} (gid={gid})" for name, gid in seen
+                  if not name.endswith(f"/{EXPECTED_CMD_VEL_PUBLISHER}")]
+        if not strays:
+            return
+        self.get_logger().error(
+            f"{TWIST_SUB_TOPIC_NAME} 발행자가 {len(seen)}개다 — 중재를 우회하는 것: "
+            f"{'; '.join(strays)} (정상: {EXPECTED_CMD_VEL_PUBLISHER} 하나). "
+            f"마지막에 도착한 메시지가 이기므로 누가 바퀴를 돌렸는지 알 수 없다. "
+            f"근거: config/twist_mux.yaml")
 
     def update_and_publish(self):
         self._check_cmd_watchdog()
@@ -220,16 +287,6 @@ class Pinky(Node):
         joint_msg.velocity = [rpm_l * RPM2RAD, rpm_r * RPM2RAD]
 
         self.joint_pub.publish(joint_msg)
-
-    def battery_voltage_callback(self, msg):
-        self.current_voltage = msg.data
-        
-        if self.current_voltage is None:
-            self.get_logger().warn("Battery voltage data has not been received yet.")
-        elif self.current_voltage <= LOW_BATTERY_THRESHOLD:
-            self.get_logger().warn(
-                f"!!! LOW BATTERY WARNING !!! Voltage: {self.current_voltage:.2f}V. Please charge the robot."
-            )
 
 
 def main(args=None):

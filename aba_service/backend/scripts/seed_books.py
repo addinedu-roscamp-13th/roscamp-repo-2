@@ -146,6 +146,23 @@ BOOKS = [
 ]
 
 
+def _assign_shelf_coords(books: list[dict]) -> None:
+    """서가별로 `tier`(층, 아래부터 1) · `row`(줄, 왼쪽부터 1) 를 1~3 × 1~3 로 채운다.
+
+    로봇팔은 정점 이름(`zone`)만으로는 손을 뻗을 수 없다 — 층·줄이 필요하다. 기존 `shelf`
+    문자열은 12권이 전부 `"셋째 줄"` 이라 층인지 줄인지 알 수 없어 변환하지 않는다.
+
+    ⚠️ **여기 값은 데모용이다.** 실물 서가에 책을 꽂은 뒤 사서 화면(도서 수정)에서 맞춰야
+    한다. 틀린 좌표면 팔이 빈 칸을 집으려 하고 `ok=false` 로 돌아온다(파손은 아니지만 실패).
+    좌표를 모르면 `0`(정보 없음)으로 두는 편이 안전하다 — 그때는 팔이 시각으로 찾는다.
+    """
+    seen: dict[str, int] = {}
+    for b in books:
+        i = seen.get(b["zone"], 0)
+        seen[b["zone"]] = i + 1
+        b["tier"], b["row"] = i // 3 + 1, i % 3 + 1
+
+
 def main() -> None:
     with engine.begin() as conn:
         # cb_loans/cb_requests 등이 cb_books 를 FK 로 참조하므로, 행이 0개라도
@@ -157,6 +174,7 @@ def main() -> None:
 
     db = SessionLocal()
     try:
+        _assign_shelf_coords(BOOKS)
         db.bulk_insert_mappings(Book, BOOKS)
         db.commit()
         by_cat: dict[str, int] = {}

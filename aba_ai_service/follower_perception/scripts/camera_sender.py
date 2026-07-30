@@ -123,19 +123,67 @@ def start_camera_select_subscriber(select, topic=CAMERA_SELECT_TOPIC):
     return t
 
 
+#: 대기 중인 캠을 몇 프레임에 한 번 잡을 것인가. 15fps 기준 8 → 약 1.9fps.
+#
+# **0 이면 게이팅 자체를 끈다**(예전처럼 둘 다 매 프레임).
+STANDBY_EVERY = 8
+
+
 def run(front_frames, back_frames, sender, select, *, orient_front, orient_back,
-        fps=15.0, now=time.monotonic, max_frames=None):
-    """캡처 → 탭 기록 → (선택된 캠만) 송출. 테스트가 그대로 부를 수 있게 분리했다."""
+        fps=15.0, now=time.monotonic, max_frames=None, standby_every=STANDBY_EVERY):
+    """캡처 → 탭 기록 → (선택된 캠만) 송출. 테스트가 그대로 부를 수 있게 분리했다.
+
+    ## [2026-07-30] 대기 캠은 저주기로 잡는다 — Pi 부하의 절반이 여기였다
+
+    예전에는 `camera_select` 가 `none` 이어도 **매 프레임 두 캠을 다 잡았다.** 선택은
+    캡처 *뒤에* 봤기 때문이다. 순회 중에는 아무것도 송출하지 않는데(`none`) 캡처·회전·
+    탭 기록이 두 벌 다 돌았다.
+
+    실측 비용 모델(2026-07-30, 3점 측정):
+        비용 ≈ 16.4%(고정) + 2.91%/fps(프레임당) + 1.66%/fps(픽셀분, 640 기준)
+    프레임당 항의 절반이 대기 캠 몫이라, 그걸 1/8 로 줄이면 60% → 약 40% 가 된다.
+
+    ## 왜 아예 끄지 않고 저주기인가
+
+    끄면 대기 캠의 V4L2 버퍼가 멈춘다. 그런데 회복 트리가 **사람을 놓쳤을 때 반대 캠으로
+    바꿔 찾는다**(`follow_node._peek_people`). 그 순간 워밍업 지연이 생기면 지연이 곧
+    실패다. 저주기로 돌리면 장치는 열려 있고 버퍼도 흐른다 — 비용만 1/8 이다.
+
+    `frame_tap` 머리말의 "camera_select 와 무관하게 둘 다 항상 기록" 계약도 **깨지지
+    않는다.** 둘 다 계속 기록되고, 대기 쪽만 갱신 주기가 낮아질 뿐이다. (2026-07-30 확인:
+    `frame_tap.read` 를 부르는 프로덕션 코드는 아직 없다 — 마커 도킹이 붙으면 그때
+    이 주기가 충분한지 다시 봐야 한다.)
+
+    ⚠️ **선택된 캠은 항상 매 프레임이다.** fps 를 낮추는 변경이 아니다 — 추종 검출
+       주기는 그대로다.
+    """
     delay = 1.0 / fps if fps > 0 else 0.0
     seq = 0
     sent = 0
+    tick = 0                    # 건너뛴 프레임도 세는 루프 카운터 (seq 는 실제 캡처만)
+    front_alive = front_frames is not None
+    back_alive = back_frames is not None
     while max_frames is None or seq < max_frames:
         t = now()
-        front = _next(front_frames)
-        back = _next(back_frames)
-        if front is None and back is None:
+        # ⚠️ 선택을 **캡처 앞으로** 옮겼다. 뒤에서 보면 이미 둘 다 잡은 뒤다.
+        choice = select.current(t)
+        standby = (standby_every <= 0) or (tick % standby_every == 0)
+        tick += 1
+        want_front = front_alive and (choice == "front" or standby)
+        want_back = back_alive and (choice == "back" or standby)
+
+        front = _next(front_frames) if want_front else None
+        back = _next(back_frames) if want_back else None
+        # 소진 판정은 **잡으려고 시도했는데 None 인 경우**만이다. 건너뛴 것을 소진으로
+        # 치면 대기 캠이 한 번 쉬는 순간 루프가 끝난다.
+        if want_front and front is None:
+            front_alive = False
+        if want_back and back is None:
+            back_alive = False
+        if not front_alive and not back_alive:
             break                          # 두 소스가 모두 끝났다
-        seq += 1
+        if front is not None or back is not None:
+            seq += 1
         if front is not None:
             front = orient_front(front)
             frame_tap.write("front", front, seq, t)
@@ -143,7 +191,6 @@ def run(front_frames, back_frames, sender, select, *, orient_front, orient_back,
             back = orient_back(back)
             frame_tap.write("back", back, seq, t)
 
-        choice = select.current(t)
         if choice != "none":
             # 고른 캠이 없으면 **아무것도 안 보낸다.** 다른 캠으로 대신 보내면
             # 받는 쪽이 뒤를 본다고 믿고 판단하는데 실제로는 앞 영상이다.
@@ -175,9 +222,19 @@ def main():
     ap.add_argument("--back-camera", dest="back_camera", type=int, default=None,
                     help="뒷캠(USB) 인덱스. 주면 앞뒤를 함께 잡고 BT 가 고른다. "
                          "목록: v4l2-ctl --list-devices")
-    ap.add_argument("--width", type=int, default=640)
+    ap.add_argument("--width", type=int, default=640,
+                    help="앞캠 캡처 폭(높이는 4:3). 뒷캠은 --back-width 로 따로 준다.")
+    ap.add_argument("--back-width", dest="back_width", type=int, default=None,
+                    help="뒷캠 캡처 폭(높이는 4:3). 안 주면 드라이버 기본값(보통 640x480). "
+                         "⚠️ UVC 캠은 지원 안 하는 크기를 조용히 무시하고 화각이 다른 모드로 "
+                         "연다 — 이 캠의 4:3 지원은 320/640/800 폭뿐이다(2026-07-30 실측). "
+                         "설정 후 실제 값을 찍으니 로그에서 ⚠️ 를 확인할 것.")
     ap.add_argument("--quality", type=int, default=70)
     ap.add_argument("--fps", type=float, default=15.0)   # lower fps = less Pi CPU/bandwidth
+    ap.add_argument("--standby-every", dest="standby_every", type=int, default=STANDBY_EVERY,
+                    help="대기 중인 캠을 몇 프레임에 한 번 잡을지 (기본 %(default)s, "
+                         "15fps 면 약 1.9fps). 0 이면 게이팅 끔(둘 다 매 프레임). "
+                         "선택된 캠은 항상 매 프레임이라 추종 검출 주기는 안 바뀐다.")
     ap.add_argument("--rotate", type=int, default=None, choices=[0, 90, 180, 270],
                     help="rotate at capture. Default: 180 for --picamera (this Pi CSI "
                          "cam is mounted upside-down), 0 otherwise. Pass --rotate 0 to disable.")
@@ -201,13 +258,38 @@ def main():
     if args.rotate is None:
         args.rotate = 180 if args.picamera else 0
 
+    # ⚠️ [2026-07-30] `--width` 는 **두 캠 모두**에 걸린다.
+    #
+    # 예전엔 picamera(앞캠)에만 전달돼서, 뒷캠은 무엇을 주든 드라이버 기본값(보통
+    # 640x480)으로 돌았다. 그런데 캡처 복사·회전·탭 기록은 전부 픽셀 수에 비례하고
+    # 뒷캠도 매 프레임 같이 돈다(`camera_select` 가 none 이어도 탭은 계속 쓴다).
+    # 즉 앞캠만 줄이면 Pi 부하는 절반만 준다.
+    #
+    # 480x360 이면 640x480 대비 픽셀이 56% 다. YOLO 는 `imgsz=640` 으로 레터박싱하므로
+    # (detector.py — imgsz 를 안 넘겨 ultralytics 기본값) 480 은 서버에서 다시 늘어난다:
+    # **연산량은 그대로고 검출 거리만 조금 준다.** 그 대가로 Pi 에서 fps 를 15 로
+    # 되돌릴 수 있다는 판단이다(2026-07-30, 10fps 는 추종 반응이 둔했다).
+    # ⚠️ 뒷캠은 `--width` 를 **안 따라간다.** 별도 `--back-width` 다.
+    #
+    # 2026-07-30 실측: 이 USB 캠(/dev/video1)이 지원하는 4:3 모드는
+    #   **320x240 · 640x480 · 800x600 뿐**이다. 480x360 을 요청하면 거부하고
+    #   **640x360(16:9)** 으로 연다 — 폭은 그대로인데 세로만 잘려 **화각이 바뀐다.**
+    #   그 상태로 YOLO·마커를 보면 조용히 다른 그림을 본다. 그래서 두 캠을 갈랐다.
+    #   (요청↔실제가 다르면 `_camera_frames` 가 ⚠️ 를 찍는다. 그게 이 사실을 잡아냈다.)
+    cap_h = int(args.width * 3 / 4)
     if args.picamera:
-        front = _picamera_frames(args.width, int(args.width * 3 / 4))
+        front = _picamera_frames(args.width, cap_h)
     elif args.test_pattern:
         front = test_pattern_frames()
     else:
-        front = _camera_frames(args.camera)
-    back = _camera_frames(args.back_camera) if args.back_camera is not None else None
+        front = _camera_frames(args.camera, args.width, cap_h)
+    if args.back_camera is None:
+        back = None
+    elif args.back_width:
+        back = _camera_frames(args.back_camera, args.back_width,
+                              int(args.back_width * 3 / 4))
+    else:
+        back = _camera_frames(args.back_camera)   # 드라이버 기본값(보통 640x480)
 
     select = CameraSelect(expiry_sec=args.select_expiry)
     sub = None if args.no_ros else start_camera_select_subscriber(select)
@@ -224,7 +306,7 @@ def main():
         run(front, back, sender, select,
             orient_front=lambda f: _orient(f, args.rotate, args.hflip, args.vflip),
             orient_back=lambda f: _orient(f, args.back_rotate, False, False),
-            fps=args.fps)
+            fps=args.fps, standby_every=args.standby_every)
     finally:
         sender.close()
         # 프로세스가 끝나면 슬롯을 지운다. 남겨두면 소비자가 죽은 프로세스의 마지막

@@ -114,6 +114,11 @@ def dispatch_to_fms(book: Book, dropoff: str, requester: str) -> str:
         pickup=book.zone,
         dropoff=dropoff,
         requester=requester,
+        # 로봇팔용 서가 좌표. `zone` 은 "어느 서가"까지만 말해주고, 팔이 손을 뻗으려면
+        # 층·줄이 필요하다. 도서 조회를 이미 여기서 하므로(`book.zone`) 같은 자리에서 보낸다 —
+        # FMS 가 도서 테이블을 다시 읽지 않게 하려는 의도다(조회 주체를 하나로 유지).
+        tier=int(book.tier or 0),
+        row=int(book.row or 0),
     )
     if not ok:
         raise HTTPException(

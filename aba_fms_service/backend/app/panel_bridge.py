@@ -2,8 +2,8 @@
 
 ## 무엇이 오가나
 
-    로봇 /panel_request  ──bridge──▶  86 /{key}/panel_request   {"id","op",...args}
-    로봇 /panel_result   ◀──bridge──  86 /{key}/panel_result    {"id","ok",...body}
+    로봇 /panel_request  ──bridge──▶  111 /{key}/panel_request   {"id","op",...args}
+    로봇 /panel_result   ◀──bridge──  111 /{key}/panel_result    {"id","ok",...body}
 
 `op` 는 기존 HTTP 엔드포인트와 1:1 이고, `...args`/`...body` 도 그 라우터의 요청/응답
 스키마 **그대로**다. 그래서 패널은 파싱 코드를 바꾸지 않고 통로만 갈아탄다.

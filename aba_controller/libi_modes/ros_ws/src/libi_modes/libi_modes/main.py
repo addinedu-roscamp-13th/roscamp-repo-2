@@ -38,6 +38,7 @@ from libi_modes.blackboard import Keys
 from libi_modes.common.junctions import JunctionSet, load_junctions
 from libi_modes.registry import BRANCH_ORDER
 from libi_modes.ros.fleet_cmd_driver import FleetCmdDriver, YawGoalDriver
+from libi_modes.ros.handy_action_driver import ArmStubDriver, HandyActionDriver
 from libi_modes.ros.providers import RosProviders
 from libi_modes.ros.state_io import StateIO
 
@@ -63,6 +64,21 @@ from libi_modes.ros.state_io import StateIO
 # ⚠️ 바꿀 때 `libi_modes/registry.py` 와 FMS 의 `app/fsm_model.py` 를 **함께** 고쳐야 한다.
 #    둘이 어긋나면 `test_fsm_registry_drift.py` 가 잡는다.
 BOOT_STATE = "IDLE"
+
+#: 팔 다리를 **실제 팔 보드**로 중계할까 (`arm_task` 액션). 기본은 아니다.
+#
+# ⚠️ **답하는 쪽이 하나여야 한다.** `/fleet_cmd{perform_action}` 은 두 프로세스가 듣는다 —
+#    이 BT 와 robot_agent 의 `fleet_link`. FMS 는 `/fleet_cmd_result` 를 **처음 받은 것**으로
+#    다리를 닫으므로, 둘이 다 답하면 팔이 아직 움직이는 중에 다음 주행이 시작된다
+#    (팔을 뻗은 채 로봇이 간다). 그래서 같은 env 한 개로 갈라 놓는다:
+#
+#      0 (기본) 팔 보드 없음. robot_agent 가 즉시 성공으로 답하고, 여기선 스텁이 통과시킨다.
+#      1        팔 보드 있음. 여기서 액션으로 중계하고 **완료를 여기서 답한다**.
+#               robot_agent 는 침묵한다(`fleet_link.ARM_ACTIONS`).
+#
+#    ⚠️ 켤 때 **robot_agent 프로세스에도 같은 env 를 주어야 한다.** 한쪽만 켜면
+#       아무도 답하지 않아(0/1 반대면 둘이 답해) 주문이 조용히 멈춘다.
+ARM_VIA_BT = os.getenv("LIBI_ARM_VIA_BT", "0") == "1"
 
 
 class _CmdPublisher:
@@ -127,6 +143,9 @@ class FsmNode(Node):
         self._apply_battery_auto(params)
 
         cmd_pub = _CmdPublisher(self, cmd_topic)
+        # 팔 완료를 FMS 에 올리는 통로. 팔을 중계할 때만 만든다 — 안 쓰는 발행자를
+        # 띄우면 "누가 답하는가"가 코드만 봐선 흐려진다(위 ARM_VIA_BT 주석).
+        self._result_pub = _CmdPublisher(self, result_topic) if ARM_VIA_BT else None
         self._providers = RosProviders(
             self, cmd_topic=cmd_topic,
             # 요청자 가시성이 이 시간 갱신되지 않으면 False(정지)로 본다.
@@ -160,7 +179,22 @@ class FsmNode(Node):
             # 좌표 없는 goal 을 보내면 fleet_link 가 KeyError 로 죽는다.
             "nav": FleetCmdDriver(self, "goal",
                                   args_fn=lambda: self._nav_args(home_location)).bind(cmd_pub),
-            "arm": FleetCmdDriver(self, "perform_action").bind(cmd_pub),
+            # 팔 — **액션 중계**다. `/fleet_cmd{perform_action}` 을 받아 팔 보드의
+            # `arm_task` 액션 서버를 부른다(2026-07-30 확정).
+            #
+            # ⚠️ 예전에는 `FleetCmdDriver(self, "perform_action")` 이었다. 그건 두 가지가
+            #    틀렸다: ① `args_fn` 이 없어 **`{}` 를 발행했다** — 어느 책을 어디서 집으라는
+            #    정보가 통째로 사라졌다. ② `/fleet_cmd` 로 되돌려 발행하니 그걸 받는 건
+            #    robot_agent 의 스텁이었고, 팔 보드까지 가는 통로가 아예 없었다.
+            #    (팔이 스텁이라 둘 다 드러나지 않았다)
+            #
+            # 취소·중복방어·진행보고를 직접 구현하지 않으려고 액션을 쓴다 —
+            # 옵시디언 `presen/final/14 로봇팔 통합 - 토픽 대신 액션.md`.
+            #
+            # ⚠️ **팔 보드가 붙기 전에는 스텁이다**(`LIBI_ARM_VIA_BT` 주석 참고).
+            "arm": (HandyActionDriver(self, lambda: self._read(Keys.ARM_ARGS),
+                                      result_fn=self._publish_arm_result)
+                    if ARM_VIA_BT else ArmStubDriver(self)),
             # 길잡이 주행 — nav 와 같은 실행 층 `goal` 이다. 다른 건 BT 층에서 누가 받느냐뿐.
             "guide": FleetCmdDriver(self, "goal",
                                     args_fn=lambda: self._nav_args(home_location)).bind(cmd_pub),
@@ -224,17 +258,27 @@ class FsmNode(Node):
 
         self._bb = py_trees.blackboard.Client(name="fsm_node")
         for key in (Keys.CURRENT_MODE, Keys.LAST_COMMAND, Keys.ACTIVE_COMMAND,
-                    Keys.DISABLED_BRANCHES):
+                    Keys.DISABLED_BRANCHES, Keys.NEXT_MODE, Keys.COMMANDED_MODE):
             self._bb.register_key(key=key, access=Access.WRITE)
         # 주행 목적지는 Topics2BB 가 쓰고 여기선 읽기만 한다 (_nav_args).
         self._bb.register_key(key=Keys.NAV_TARGET, access=Access.READ)
+        # 팔 args·id 도 같은 이유로 읽기만 한다. **등록을 빼먹으면 `_read` 가 KeyError 를
+        # 삼켜 조용히 None 이 되고**, 드라이버는 "goal 로 옮길 수 없다"로 매번 실패한다.
+        self._bb.register_key(key=Keys.ARM_ARGS, access=Access.READ)
+        self._bb.register_key(key=Keys.ARM_CMD_ID, access=Access.READ)
         self._bb.set(Keys.CURRENT_MODE, BOOT_STATE)
         self._bb.set(Keys.DISABLED_BRANCHES, disabled_branches)
+        #: 마지막으로 경고한 "적용 안 된 전이 목표". 같은 요청으로 로그를 도배하지 않는다.
+        self._stranded = None
 
         # 패널 전이를 이 시간만큼은 붙잡는다 — 안 그러면 BT 가 다음 tick 에 되돌려서
         # 관제 화면·LED 에 아무 일도 안 일어난 것처럼 보인다 (state_io.apply_pending 참고).
+        # BT 스냅샷 발행 주기(초). 0 이면 매 tick — 예전 동작이다. 기본 0.5s(2Hz)로 낮춘 이유는
+        # state_io 의 `_snap_period` 주석에 있다(75노드 JSON 직렬화가 tick 마다 돌아 CPU 34%).
         self._io = StateIO(self, robot_id,
-                           manual_hold_sec=float(params.get("manual_hold_sec", 0.0)))
+                           manual_hold_sec=float(params.get("manual_hold_sec", 0.0)),
+                           snapshot_period_sec=float(self.declare_parameter(
+                               "bt_snapshot_period_sec", 0.5).value))
         self._boot_arm_home()
         self.create_timer(1.0 / tick_hz, self._tick)
         self.get_logger().info(
@@ -332,6 +376,25 @@ class FsmNode(Node):
             "[디버그] 배터리 자동 전이 OFF — 저전력 복귀·자동 순회 시작이 뜨지 않는다. "
             "복귀는 관제 UI 에서 직접 명령할 것.")
 
+    def _publish_arm_result(self, ok: bool, msg: str) -> None:
+        """팔 동작이 끝났다고 `/fleet_cmd_result` 로 올린다 — **완료를 아는 쪽이 답한다.**
+
+        id 는 `/fleet_cmd` 로 받은 그 명령의 id 다(FMS 는 자기가 보낸 id 로만 대조하므로
+        다른 값을 쓰면 조용히 무시되고 주문이 영원히 안 닫힌다).
+
+        `status` 를 200/500 으로 채우는 이유: robot_agent 의 `publish_result` 와 같은 모양을
+        유지해야 FMS 쪽 소비자(`on_cmd_result`)가 한 가지 형태만 알면 된다.
+        """
+        cmd_id = self._read(Keys.ARM_CMD_ID)
+        if not cmd_id or self._result_pub is None:
+            self.get_logger().warning(
+                f"팔 결과를 올릴 수 없다 (id={cmd_id!r}) — 관제 다리가 안 닫힌다")
+            return
+        self._result_pub.publish_json({"id": cmd_id, "ok": bool(ok),
+                                       "status": 200 if ok else 500,
+                                       "data": None, "msg": str(msg or "")})
+        self.get_logger().info(f"팔 결과 보고 cmd={cmd_id} ok={ok} {msg}")
+
     def _on_result(self, msg):
         try:
             payload = json.loads(msg.data)
@@ -361,6 +424,24 @@ class FsmNode(Node):
         # leaf 가 소비한 명령을 provider 쪽에도 반영 (안 하면 다음 tick 에 되살아난다)
         self._providers.sync_consumed(
             self._read(Keys.LAST_COMMAND), self._read(Keys.ACTIVE_COMMAND))
+
+        # 명령 유래 표시는 **이 tick 안에서만** 유효하다. 남겨 두면 낡은 표시가 우연히 같은
+        # 목표를 노린 자율 전이까지 유지 시간을 뚫게 만든다 (blackboard.COMMANDED_MODE 참고).
+        self._bb.set(Keys.COMMANDED_MODE, None)
+
+        # ⚠️ 적용 안 된 전이 요청을 드러낸다. next_mode 가 남았는데 상태가 그대로면
+        #    **아무도 그 요청을 적용하지 않았다.** PATROL·WORKING 은 다음 tick 에 이 요청을
+        #    재시도할 통로가 없어(request_transition.py 클래스 주석) 그대로 유실된다.
+        #    이 경고가 없던 동안 배차·터치가 조용히 사라져 원인을 찾는 데 오래 걸렸다.
+        pending = self._read(Keys.NEXT_MODE)
+        if pending and after == before:
+            if pending != self._stranded:
+                self.get_logger().warning(
+                    f"전이 요청이 적용되지 않았다: {after} -> {pending} "
+                    f"(패널 유지 시간 중이거나, 브랜치가 RequestTransition 에 닿지 못했다)")
+                self._stranded = pending
+        else:
+            self._stranded = None
 
         self._io.publish(self._root)
 

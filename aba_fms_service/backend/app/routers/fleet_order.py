@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,6 +45,18 @@ class OrderRequest(BaseModel):
     dropoff: str = ""
     requester: str = ""
     priority: int = 0
+    #: 서가 좌표 — 팔이 손을 뻗을 층·줄이다. `pickup` 정점은 "어느 서가"까지만 말해준다.
+    #
+    # 원본은 `aba_service` 의 `books.tier`/`books.row` 이고, 주문을 만드는 쪽이 조회해
+    # 실어 보낸다(`delivery.py` 가 이미 `pickup=book.zone` 을 그렇게 보낸다).
+    # `0` 은 "층·줄 정보 없음" — 팔이 시각으로 찾는다. 사서가 아직 입력하지 않은 도서가
+    # 그 상태다. 여기서 추측해 채우지 않는다(틀린 칸을 잡는 것보다 못 찾는 게 낫다).
+    #
+    # ⚠️ 범위를 여기서 막는다. 실물이 3층 × 3줄이라 `tier=99` 는 존재하지 않는 칸이고,
+    #    로봇 쪽 중계는 범위 밖 좌표를 받으면 goal 을 아예 안 만든다(`arm_task_map`).
+    #    그러면 원인이 주문 접수 시점이 아니라 주행 중 실패로 뒤늦게 드러난다 — 들어올 때 막는다.
+    tier: int = Field(0, ge=0, le=3)
+    row: int = Field(0, ge=0, le=3)
 
     @model_validator(mode="after")
     def _check_kind(self) -> "OrderRequest":
@@ -83,7 +95,8 @@ async def create_order(body: OrderRequest, _: Admin = Depends(get_current_admin)
     else:
         tid = svc.orchestrator().submit_delivery(
             book=body.book, pickup=body.pickup, dropoff=body.dropoff,
-            requester=body.requester, priority=body.priority)
+            requester=body.requester, priority=body.priority,
+            tier=body.tier, row=body.row)
     return {"ok": True, "task_id": tid}
 
 

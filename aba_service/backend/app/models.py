@@ -93,6 +93,30 @@ class Book(Base):
     )
     zone: Mapped[str] = mapped_column(String(50), nullable=False, comment="도서관 내 구역 (예: A-2)")
     shelf: Mapped[str] = mapped_column(String(50), nullable=False, comment="서가 위치/줄 설명")
+    # ── [2026-07-30] 로봇팔용 서가 좌표 ──────────────────────────────────────
+    #
+    # 팔이 손을 뻗으려면 **어느 서가**(zone)만으로는 부족하고 **층·줄**이 필요하다.
+    # 서가 하나가 3층 × 3줄 = 9칸이다.
+    #
+    #   tier : 아래부터 1 (1=맨 아래, 3=맨 위)
+    #   row  : 로봇이 서가를 마주 봤을 때 왼쪽부터 1 (1~3)
+    #
+    # ⚠️ `0` 은 "정보 없음"이다. 팔은 그때 층·줄 없이 시각으로 찾는다 — 틀린 칸을 잡는 것
+    #    보다 못 찾는 게 낫다.
+    # ⚠️ 위 `shelf` 문자열은 **남겨 둔다.** 사람이 읽는 설명("창가쪽")으로 계속 쓸 수 있고,
+    #    무엇보다 되돌리기가 공짜다. 기존 값(전부 `"셋째 줄"`)은 3층인지 3번째 줄인지 알 수
+    #    없어 **자동 변환하지 않는다** — 사서가 다시 입력한다.
+    # 기준을 뒤집으면 사서가 입력한 값 전부를 다시 넣어야 한다. 바꾸지 말 것.
+    # ⚠️ DB 컬럼명은 `shelf_tier`/`shelf_row` 다 — **`row` 는 MariaDB 예약어**라 컬럼 이름으로
+    #    쓰면 따옴표 없는 원시 SQL 에서 깨진다. 파이썬 속성명은 인터페이스와 같게 `tier`/`row`.
+    tier: Mapped[int] = mapped_column(
+        "shelf_tier", Integer, nullable=False, default=0, server_default="0",
+        comment="서가 층 1~3 (아래부터 1). 0=정보 없음",
+    )
+    row: Mapped[int] = mapped_column(
+        "shelf_row", Integer, nullable=False, default=0, server_default="0",
+        comment="서가 줄 1~3 (마주 봤을 때 왼쪽부터 1). 0=정보 없음",
+    )
     in_stock: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, comment="대출 가능 여부 (0=대출 중, 1=대출가능)"
     )

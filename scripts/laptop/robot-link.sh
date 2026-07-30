@@ -20,7 +20,9 @@
 set -eo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../_common.sh"
 
-FMS_DOMAIN="${LIBI_FMS_DOMAIN:-86}"
+# [2026-07-30] 서버 도메인 86 → 111. 기본값은 fms_service.sh·app/ros_domains.py 와 같아야 한다
+# (다르면 어댑터가 브릿지가 옮겨 놓은 토픽을 못 찾고, 증상은 "관제에 로봇이 안 뜬다" 뿐이다).
+FMS_DOMAIN="${LIBI_FMS_DOMAIN:-${LIBI_SERVER_DOMAIN_ID:-111}}"
 STATE_DIR="${TMPDIR:-/tmp}/libi-robot-link"
 mkdir -p "$STATE_DIR"
 

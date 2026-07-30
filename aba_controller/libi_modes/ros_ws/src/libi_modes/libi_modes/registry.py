@@ -30,6 +30,26 @@ BRANCH_ORDER = [
 START = "[*]"
 ANY = "(any)"
 
+#: FSM 전이를 일으키는 명령 이름 **전부**. 브랜치들의 `_COMMAND_MAP` 키 합집합이다.
+#
+# ⚠️ **왜 화이트리스트가 필요한가** — `/fleet_cmd` 는 FSM 과 실행층(robot_agent)이 **같이 쓰는
+#    토픽**이다. 그래서 `mission_stop`·`slam_save_map`·`dock` 처럼 FSM 과 무관한 액션도 같은
+#    토픽으로 흐른다. 예전에는 분류 안 된 액션이 전부 FSM 의 **단일 명령 슬롯**
+#    (`ros/providers.py` `_last_command`)에 들어갔고, 그러면 아직 소비되지 않은 전이 트리거를
+#    덮어써 그 전이가 **조용히 사라진다.**
+#
+#    실측 2026-07-30: 주문 취소가 `task_failed` 직후(마이크로초 간격) `mission_stop` 을 쏜다
+#    (`fleet_orchestrator.py:361-362`). BT tick 은 100ms 라 둘이 같은 tick 에 들어오고,
+#    `mission_stop` 이 슬롯을 덮어 **WORKING→PATROL 복귀가 유실됐다.**
+#
+# ⚠️ 새 트리거를 브랜치에 추가하면 **여기도 넣어야 한다.** 안 넣으면 그 명령은 FSM 에 영영
+#    도달하지 않는다. `test/test_fleet_cmd_slot.py` 가 이 집합과 브랜치 맵의 일치를 지킨다.
+TRANSITION_TRIGGERS = frozenset({
+    "task_assigned", "task_done", "task_failed", "stop_request",
+    "ui_touch", "ui_close", "resume_request", "security_patrol_request",
+    "recovered",
+})
+
 TRANSITIONS = [
     # [2026-07-22] RETURNING -> IDLE. 부팅 상태로 RETURNING 을 쓰면 켜자마자 AMCL 수렴
     # 전에 주행을 시작하고, 충전소에 이미 있어도 왕복한다. 팔 자세 문제는 부팅 시

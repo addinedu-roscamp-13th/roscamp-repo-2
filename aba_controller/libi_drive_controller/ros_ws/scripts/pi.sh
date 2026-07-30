@@ -123,8 +123,32 @@ fi
 #
 # 프로세스를 나누면 안 죽고, lifecycle 도 정상 활성화된다(Managed nodes are active).
 # 대가는 프로세스 수와 intra-process 통신을 못 쓰는 것뿐이다.
+#
+# ── [2026-07-30] 범인을 좁혔다: 컴포지션이 아니라 GraphicsMagick 이다 ──────────
+#
+# `map_server` 의 libmap_io.so 가 GraphicsMagick 을 링크한다:
+#     ldd $(ros2 pkg prefix nav2_map_server)/lib/libmap_io.so | grep -i magick
+#       libGraphicsMagick++-Q16.so.12 · libGraphicsMagick-Q16.so.3
+# GraphicsMagick 은 전역 초기화와 **자기 시그널 핸들러**를 심는다 — 위 `Magick: abort…` 가
+# 정확히 그 핸들러의 출력이다. 즉 "한 프로세스에 전부"가 아니라 **"GraphicsMagick 을 같이
+# 올린 것"** 이 문제였다. 그리고 map_server 는 localization_launch.xml 에만 있다.
+#
+# 그래서 **navigation 절반만** 컴포즈한다(`use_composition_nav:=True`).
+#   컨테이너 안 : controller · planner · behavior · bt_navigator · smoother ·
+#                 waypoint_follower · velocity_smoother · lifecycle_manager_navigation  (8→1)
+#   밖에 남김   : map_server(GraphicsMagick 격리) · amcl · lifecycle_manager_localization
+#
+# 왜 이득인가: 실측 load 25~28 / idle 7% 인데 **sy 40% · ctxsw 33,608/s** 였다. 계산이 아니라
+# 프로세스마다 따로 갖는 DDS participant(수신 스레드+discovery)와 프로세스 경계 통신 비용이다.
+# ⚠️ zero-copy 는 아직 아니다 — launch 에 use_intra_process_comms 설정이 없다. participant
+#    7개가 사라지는 이득만 본다. 직렬화까지 없애려면 컴포저블 노드에 extra_arg 로
+#    use_intra_process_comms=true 를 붙여야 하고, 그건 1단계가 안정된 뒤에 따로 한다.
+#
+# 되돌리기: 아래 줄에서 `use_composition_nav:=True` 한 토막만 지운다(그러면 예전 동작).
+# 첫 기동 확인: `ros2 component list` 로 8개가 붙었는지 + nav2 로그의 "Managed nodes are active".
+#   컨테이너가 죽으면 nav2 가 통째로 내려간다 — 그때는 위 한 토막을 지우고 재기동한다.
 tmux new-window -t "$SESSION" -n nav2 \
-  bash -c "$ROS_SETUP && echo '[nav2] 하드웨어(/scan) 대기 중...' && for i in \$(seq 1 30); do ros2 topic list 2>/dev/null | grep -q '/scan' && break; sleep 1; done && ros2 launch pinky_navigation bringup_launch.xml map:='$MAP_PATH' use_composition:=False $NAV2_PARAMS_ARG; exec bash"
+  bash -c "$ROS_SETUP && echo '[nav2] 하드웨어(/scan) 대기 중...' && for i in \$(seq 1 30); do ros2 topic list 2>/dev/null | grep -q '/scan' && break; sleep 1; done && ros2 launch pinky_navigation bringup_launch.xml map:='$MAP_PATH' use_composition:=False use_composition_nav:=True $NAV2_PARAMS_ARG; exec bash"
 
 if [ -f "$INIT_POSE" ] && [ -n "$INIT_DOCK" ]; then
   tmux new-window -t "$SESSION" -n init-pose \
@@ -139,10 +163,25 @@ if [ "$WITH_FSM" = true ]; then
   # 닿지 않는 값으로 바꿀 뿐이라 BT 구조·관제 화면은 그대로다(main.py `_apply_battery_auto`).
   FSM_BATTERY_ARG=""
   [ "$BATTERY_AUTO" = false ] && FSM_BATTERY_ARG=" -p battery_auto:=false"
+
+  # [2026-07-30] BT tick 10 → 5Hz. 코드 기본값은 10.0 이다(libi_modes/main.py:87).
+  #
+  # 왜: 실측(Pi 4코어) fsm_node 가 CPU **33.9%** 를 썼다. tick 마다 88노드 트리를 순회하고
+  # 상태·잠금·LED·타입 토픽 4개를 발행한다. 그 부하에서 nav2 제어 루프가 주기를 놓쳤고
+  # (`Control loop missed its desired rate of 10.0000 Hz`) 순회가 20초씩 멈췄다.
+  # 이 FSM 이 다루는 시간 상수는 UI 타임아웃 20초·목표 재발행 30초·명령 타임아웃 120초다 —
+  # 5Hz(200ms)로도 한참 빠르다.
+  #
+  # ⚠️ 안전 확인: 모션 잠금(`/libi/motion_lock`)은 twist_mux 에서 `timeout: 0.0`(만료 없음)이라
+  #    발행 주기가 안전에 영향을 주지 않는다. 잠금 중 0속도 발행(`cmd_vel_hold`)은 state_io 의
+  #    **별도 20Hz 타이머**라 이 값과 무관하다. 대가는 명령 수신→전이 반응이 최대 200ms 로
+  #    늘어나는 것뿐이다.
+  # 되돌리려면 `FSM_TICK_HZ=10 ./pi.sh …` 또는 아래 기본값을 10 으로.
+  FSM_TICK_HZ="${FSM_TICK_HZ:-5}"
   FSM_BATTERY_NOTE=""
   [ "$BATTERY_AUTO" = false ] && FSM_BATTERY_NOTE="  ⚠️ 배터리 자동 전이 OFF (복귀는 관제 UI 에서 직접)"
   tmux new-window -t "$SESSION" -n fsm \
-    bash -c "$LIBI_MODES_SETUP && echo '[fsm] libi_modes 미션 FSM (robot_id=$FSM_ROBOT_ID)...$FSM_BATTERY_NOTE' && ros2 run libi_modes fsm_node --ros-args -p robot_id:=$FSM_ROBOT_ID$FSM_BATTERY_ARG; exec bash"
+    bash -c "$LIBI_MODES_SETUP && echo '[fsm] libi_modes 미션 FSM (robot_id=$FSM_ROBOT_ID, tick ${FSM_TICK_HZ}Hz)...$FSM_BATTERY_NOTE' && ros2 run libi_modes fsm_node --ros-args -p robot_id:=$FSM_ROBOT_ID -p tick_hz:=$FSM_TICK_HZ$FSM_BATTERY_ARG; exec bash"
 fi
 
 if [ "$WITH_LED" = true ]; then
