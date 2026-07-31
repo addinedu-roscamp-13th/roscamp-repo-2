@@ -85,3 +85,52 @@ def test_value_matches_eager_conversion():
     msg = _scan(n=720, dist=1.5)
     node.cb(msg)
     assert p.get() == to_degree_indexed(msg)
+
+
+# ── 신선도 ───────────────────────────────────────────────────────────────────
+#
+# [2026-07-31] 예전에는 마지막으로 받은 스캔을 **영원히** 최신처럼 돌려줬다.
+# 라이다가 멈춰도 소비자는 알 방법이 없어 몇 분 전 그림으로 회피를 판단했다.
+
+
+class _Clock:
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        return self.t
+
+
+def test_stale_scan_reads_as_no_scan():
+    clock = _Clock()
+    node = _FakeNode()
+    p = ScanProvider(node, "/scan", max_age=1.0, now=clock)
+    node.cb(_scan())
+    assert p.get(), "방금 받은 스캔인데 비었다"
+
+    clock.t = 1.5                      # max_age 를 넘겼다
+    assert p.get() == [], "오래된 스캔을 최신처럼 돌려줬다"
+
+
+def test_fresh_scan_clears_the_stale_state():
+    """라이다가 돌아오면 다시 쓴다 — 한 번 stale 이었다고 영영 막으면 안 된다."""
+    clock = _Clock()
+    node = _FakeNode()
+    p = ScanProvider(node, "/scan", max_age=1.0, now=clock)
+    node.cb(_scan())
+    clock.t = 1.5
+    assert p.get() == []
+
+    clock.t = 1.6
+    node.cb(_scan())                   # 새 스캔 도착
+    assert p.get(), "스캔이 돌아왔는데 계속 막고 있다"
+
+
+def test_max_age_zero_disables_the_check():
+    """라이다 없이 굴리는 구성을 위해 끌 수 있어야 한다(config 주석)."""
+    clock = _Clock()
+    node = _FakeNode()
+    p = ScanProvider(node, "/scan", max_age=0.0, now=clock)
+    node.cb(_scan())
+    clock.t = 10_000.0
+    assert p.get(), "검사가 꺼져 있는데 비웠다"

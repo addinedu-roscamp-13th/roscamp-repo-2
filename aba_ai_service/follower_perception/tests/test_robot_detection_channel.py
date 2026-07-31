@@ -93,6 +93,35 @@ def test_robot_side_parses_what_we_send():
     assert parsed.bbox == (1.0, 2.0, 3.0, 4.0)
 
 
+def test_frame_resolution_rides_along():
+    """[2026-07-31] 이 파일이 못 잡아 실제로 물렸던 구멍.
+
+    좌표(`cx`/`area`)만 보내고 해상도를 안 보내면, 받는 쪽 PID 는 640 이라고
+    **가정**한다(`libi_perception/pid.py:47-54`). 스트림을 320 으로 내린 뒤로는
+    그 가정이 "사람이 화면 정중앙인데 늘 왼쪽에 있다"로 나타나 로봇이 계속 돌았다.
+
+    폭은 좌표를 만든 프레임에서 나와야 한다 — 앞뒤 캠 폭이 달라져도 자동으로 맞는다.
+    """
+    import numpy as np
+    from libi_perception.detection import detection_from_dict
+    from libi_perception.pid import FollowPID
+    from libi_perception import config
+
+    robot = _FakeRobot()
+    send = _make_detection_sink("127.0.0.1", robot.port)
+    send(_det(cx=160.0, area=2500.0), np.zeros((240, 320, 3), dtype=np.uint8))
+    robot.wait()
+
+    parsed = detection_from_dict(robot.lines[-1])
+    assert parsed.image_width == 320
+    assert parsed.image_height == 240
+
+    # 폭이 실제로 조향을 고치는지까지 본다 — 키만 실리고 안 쓰이면 무의미하다.
+    _, ang = FollowPID(config).compute(parsed.cx, parsed.area, 0.05,
+                                       image_width=parsed.image_width)
+    assert abs(ang) < 1e-9, f"정중앙인데 각속도가 {ang} 다 — 해상도 환산이 안 걸렸다"
+
+
 def test_missing_owner_sends_null():
     """안 보이는 프레임은 null 을 보낸다 — 받는 쪽이 None 을 그대로 통과시키는 계약이다."""
     robot = _FakeRobot()

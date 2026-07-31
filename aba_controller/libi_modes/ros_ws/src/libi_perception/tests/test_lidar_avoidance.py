@@ -4,7 +4,8 @@ from libi_perception.lidar_avoidance import apply_avoidance
 
 def _cfg(**over):
     base = dict(MIN_DIST=0.20, AVOID_DIST=0.40, AVOID_KP=0.50,
-                FRONT_ARC_DEG=15, SIDE_ARC=(20, 71), ANGULAR_Z_MAX=0.60)
+                FRONT_ARC_DEG=15, SIDE_ARC=(16, 71), ANGULAR_Z_MAX=0.60,
+                FRONT_MIN_SAMPLES=5)
     base.update(over)
     return SimpleNamespace(**base)
 
@@ -13,8 +14,53 @@ def _clear_scan():
     return [10.0] * 360
 
 
-def test_no_scan_unchanged():
-    assert apply_avoidance(0.1, 0.2, [], _cfg()) == (0.1, 0.2)
+# ── 라이다를 못 볼 때 (fail-safe) ────────────────────────────────────────────
+
+
+def test_no_scan_blocks_forward():
+    """예전엔 그대로 통과시켰다 — 라이다가 죽으면 회피 없이 전속 전진이었다."""
+    lin, ang = apply_avoidance(0.1, 0.2, [], _cfg())
+    assert lin == 0.0, "앞을 못 보는데 전진했다"
+    assert ang == 0.2, "회전까지 막을 이유는 없다"
+
+
+def test_no_scan_leaves_reverse_alone():
+    """막는 방향은 앞뿐이다. 후진까지 끊으면 붙었을 때 빠져나올 수단이 사라진다."""
+    lin, _ = apply_avoidance(-0.05, 0.0, [], _cfg())
+    assert lin == -0.05
+
+
+def test_front_arc_without_returns_blocks_forward():
+    """스캔은 오는데 **전방만** 비었다 — 유리·역광이면 실제로 그렇다.
+
+    `arc` 는 표본이 없으면 10.0(=멀다)을 주므로, 개수를 따로 안 세면
+    "앞이 뻥 뚫렸다"와 구별되지 않는다.
+    """
+    scan = _clear_scan()
+    for d in range(-15, 16):
+        scan[d % 360] = 0.0          # 0.0 = 측정 실패(scan_provider 의 표기)
+    lin, _ = apply_avoidance(0.12, 0.0, scan, _cfg())
+    assert lin == 0.0
+
+
+def test_front_coverage_check_off_when_zero():
+    lin, _ = apply_avoidance(0.12, 0.0, [0.0] * 360, _cfg(FRONT_MIN_SAMPLES=0))
+    assert lin == 0.12
+
+
+# ── 아크 경계 ────────────────────────────────────────────────────────────────
+
+
+def test_no_gap_between_front_and_side_arcs():
+    """[2026-07-31] 16~19° 와 341~344° 가 어느 아크에도 안 들어갔다.
+
+    그 방향 장애물은 전방 감속에도 측면 조향에도 안 잡혀 조용히 무시됐다.
+    """
+    for deg in (16, 19, 341, 344):
+        scan = _clear_scan()
+        scan[deg] = 0.20
+        lin, ang = apply_avoidance(0.12, 0.0, scan, _cfg())
+        assert lin != 0.12 or ang != 0.0, f"{deg}° 장애물이 아무 영향도 못 줬다"
 
 
 def test_clear_path_unchanged():

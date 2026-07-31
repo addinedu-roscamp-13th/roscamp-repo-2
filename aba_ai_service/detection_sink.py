@@ -19,15 +19,39 @@ ROBOT_HOST = os.environ.get("ROBOT_DETECTION_HOST", "127.0.0.1")
 ROBOT_PORT = int(os.environ.get("ROBOT_DETECTION_PORT", "6000"))
 
 
-def detection_to_dict(det):
+def detection_to_dict(det, frame=None):
     """libi_perception.detection.detection_from_dict 가 읽는 payload 형태.
 
     bbox 는 list 로 내보낸다 — tuple 은 JSON 왕복 후 어차피 list 가 되므로,
     보내는 쪽에서 맞춰야 양쪽 계약이 실제로 같아진다.
+
+    ## [2026-07-31] `frame` 을 받아 `image_width` 를 싣는다
+
+    `cx`·`area` 는 **이 프레임의 픽셀 좌표**다. 받는 쪽 PID 는 그것을 기준 폭
+    (640)으로 환산할 준비가 이미 돼 있는데(`libi_perception/pid.py:47-54`),
+    해상도를 못 받으면 `config.IMAGE_WIDTH=640` 이라고 **가정**한다.
+
+    2026-07-30 에 스트리밍을 320x240 으로 내리면서(`scripts/all/libi_pi.sh` 의
+    `--width 320`) 그 가정이 실제로 틀어졌다:
+
+      · 조향: 화면 중심을 320 으로 잡는데 실제 중심은 160 → 사람이 정중앙에 있어도
+        `e_cx=160px` 이라 deadzone(45)을 넘어 **한쪽으로 계속 돈다**.
+      · 거리: `sqrt(area)` 가 선형으로 작아져 화면을 꽉 채워도 123 → `TARGET_SIZE=280`
+        에 영영 못 닿아 **전진이 안 멈춘다**(LiDAR 하드 스톱만이 받친다).
+
+    같은 이유로 `follower_perception/ai_server.py` 의 동명 함수는 이미 이 값을 싣지만,
+    실제 배포 경로(`scripts/ai-server.sh` → `perception_server.py`)가 쓰는 것은
+    **이 함수**다. 그래서 여기에도 넣는다.
+
+    ⚠️ 그쪽 함수로 갈아타는 것은 답이 아니다 — 거기엔 `posture`/`motion_ok`/`camera`/
+       `camera_epoch` 가 없어서, 받는 쪽이 `motion_ok` 를 기본값 True 로 채워
+       **쓰러진 사람 앞에서 서는 게이트가 통째로 무력화된다.**
+
+    `frame` 을 안 주면 키를 안 넣는다 — 받는 쪽이 예전처럼 640 가정으로 떨어진다.
     """
     if det is None:
         return None
-    return {
+    out = {
         "cx": det.cx, "cy": det.cy, "area": det.area, "bbox": list(det.bbox),
         "track_id": det.track_id, "is_owner": det.is_owner,
         "confidence": det.confidence, "is_predicted": det.is_predicted,
@@ -38,6 +62,11 @@ def detection_to_dict(det):
         "camera": getattr(det, "camera", None),
         "camera_epoch": int(getattr(det, "camera_epoch", 0) or 0),
     }
+    if frame is not None:
+        h, w = frame.shape[:2]
+        out["image_width"] = int(w)
+        out["image_height"] = int(h)
+    return out
 
 
 class RobotDetectionSink:

@@ -381,7 +381,10 @@ def main(args=None):
             host = self.get_parameter('detection_host').value
             port = int(self.get_parameter('detection_port').value)
 
-            self._scan = ScanProvider(self, scan_topic)
+            # max_age: 이보다 오래된 스캔은 없는 것으로 본다 — 라이다가 멈춘 채로
+            # 옛 그림을 보고 회피 판단을 하지 않도록. 0 이면 검사가 꺼진다(config 주석).
+            self._scan = ScanProvider(self, scan_topic,
+                                      max_age=config.SCAN_MAX_AGE_SEC)
             self._cmd = CmdPublisher(self, cmd_topic)
             self._receiver = DetectionReceiver(TcpDetectionSource(host, port))
             #: 지금 세션의 역할. `_make_loop` 과 `_publish_for_role` 이 읽는다.

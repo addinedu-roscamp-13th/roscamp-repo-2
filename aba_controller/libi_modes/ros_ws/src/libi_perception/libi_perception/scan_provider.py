@@ -1,4 +1,5 @@
 import math
+import time
 
 from sensor_msgs.msg import LaserScan
 from rclpy.qos import qos_profile_sensor_data
@@ -48,11 +49,25 @@ class ScanProvider:
     ⚠️ 구독 자체는 그대로 둔다. 세션마다 만들고 없애면 그게 더 위험하다(rclpy 에서
        콜백 안 엔티티 생성·소멸은 실행기 상태를 흔든다). 남는 비용은 DDS 수신과
        역직렬화뿐이고, 그건 C 레벨이라 위 파이썬 루프보다 훨씬 싸다.
+
+    ## [2026-07-31] 오래된 스캔은 없는 것으로 돌려준다
+
+    예전에는 마지막으로 받은 스캔을 **영원히** 최신인 것처럼 돌려줬다. 라이다가
+    멈춰도 소비자는 그 사실을 알 방법이 없어, 몇 분 전 그림을 보고 회피 판단을 했다.
+    `max_age` 를 넘기면 빈 리스트를 돌려준다 — 그러면 `apply_avoidance` 가 전진을
+    막는다. 시간은 **수신 시각**(monotonic)으로 잰다. 메시지 stamp 가 아니라 그것이
+    "센서가 지금도 말하고 있나"에 답하는 값이다.
     """
 
-    def __init__(self, node, topic):
+    def __init__(self, node, topic, max_age=0.0, now=time.monotonic):
         self._msg = None
         self._cache = None
+        self._at = None
+        self._max_age = float(max_age)
+        self._now = now
+        self._stale = False               # 경고를 상태 전이에서 한 번만 찍으려고
+        get_logger = getattr(node, 'get_logger', None)
+        self._log = get_logger() if get_logger is not None else None
         node.create_subscription(LaserScan, topic, self._cb,
                                  qos_profile_sensor_data)
 
@@ -60,8 +75,28 @@ class ScanProvider:
         # 참조만 잡는다. 변환은 소비자가 요구할 때 — 위 주석 참고.
         self._msg = msg
         self._cache = None
+        self._at = self._now()
+        if self._stale:
+            self._stale = False
+            if self._log is not None:
+                self._log.info('LiDAR 스캔이 돌아왔습니다 — 전진 차단을 풉니다')
+
+    def _is_stale(self):
+        if self._max_age <= 0 or self._at is None:
+            return False                  # 검사 꺼짐, 또는 아직 한 장도 안 받음
+        return (self._now() - self._at) > self._max_age
 
     def get(self):
+        if self._is_stale():
+            # 조용히 빈 값을 주면 "왜 안 가지"의 원인이 안 남는다. 상태가 바뀔 때
+            # 한 번만 찍는다 — 20Hz 로 부르는 자리라 매번 찍으면 로그가 묻힌다.
+            if not self._stale:
+                self._stale = True
+                if self._log is not None:
+                    self._log.warning(
+                        f'LiDAR 스캔이 {self._max_age}s 넘게 안 옵니다 — '
+                        f'전방을 못 보므로 전진을 막습니다')
+            return []
         if self._cache is None and self._msg is not None:
             self._cache = to_degree_indexed(self._msg)
         return self._cache if self._cache is not None else []

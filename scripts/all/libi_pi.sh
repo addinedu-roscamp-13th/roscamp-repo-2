@@ -106,11 +106,17 @@ DYN_OBSTACLE_NEAR_AREA="${DYN_OBSTACLE_NEAR_AREA:-0}"   # 0 = 정책 자체가 �
 # 배터리 자동 전이. "" = 미지정 → 아래에서 물어본다. true/false = 플래그로 명시됨.
 BATTERY_AUTO=""
 DOMAIN_ID=""
-# ── 패널 화면 ───────────────────────────────────────────────────────────────
+# ── 패널 화면 (로봇 LCD) ────────────────────────────────────────────────────
 #
-# 로봇 화면에 **정지 이미지 한 장**을 전체화면으로 띄운다. **기본 켜짐**이다.
+# 로봇 **LCD(240x240 SPI)** 에 정지 이미지 한 장을 띄운다. **기본 켜짐**이다.
 #   --panel <경로>  다른 이미지를 쓴다
 #   --no-panel      안 띄운다
+#
+# ⚠️ **X(DISPLAY)로 띄우면 LCD 에 안 나온다.** 처음에 `eog -f` 로 했다가 틀렸다:
+#   이 Pi 에는 물리 프레임버퍼가 없다(`/dev/fb*` 자체가 없고 `xrandr` 은 DUMMY0/1/2 뿐).
+#   X 로 그린 화면은 **VNC(:5900)로 붙어야만** 보이고 LCD 로는 한 픽셀도 안 간다.
+#   LCD 는 SPI 로 직접 그린다 — `lcd_ctrl.py` 가 그 통로다(root 필요).
+#   리사이즈는 그쪽이 알아서 한다(`_loop_static` 의 `resize((240,240))`).
 #
 # ⚠️ 왜 libi_gui 가 아니라 PNG 인가 — **실측이다(2026-07-31).**
 #   같은 Pi 에서 libi_gui 를 VNC 모드로 띄우니 **코어 하나의 30%**(4코어 중 7.5%)를
@@ -118,16 +124,17 @@ DOMAIN_ID=""
 #     · VNC QPA 는 GL 컨텍스트가 없어 `QT_QUICK_BACKEND=software` 가 강제 — 래스터가 전부 CPU
 #     · `qml/components/RobotFace.qml` 의 idleBob 이 `loops: Animation.Infinite` — 화면이
 #       멈추질 않으니 1280x800 프레임버퍼를 계속 다시 칠한다
-#   같은 화면을 캡처한 PNG 를 eog 로 띄우면 **0.0%** 다(RES 58MB, 로딩에 1.45초 쓰고 끝).
-#   주행·BT·추종이 이미 3코어를 쓰는 Pi 라 그 7.5% 를 그림 한 장에 쓸 이유가 없다.
+#   LCD 정지 이미지는 **코어의 6.5%**(기계 전체 1.6%)다. 0 은 아니지만 1/5 이다.
+#   주행·BT·추종이 이미 3코어를 쓰는 Pi 라 그 차이가 그대로 여유가 된다.
 #
 #   움직이는 패널이 정말 필요해지면 되돌리는 게 아니라 **idleBob 부터 끄고 다시 잰다.**
 #
+# ⚠️ 이 데몬은 **스택을 내려도 안 죽는다**(kill.sh 가 안 건드린다). 일부러 그렇다 —
+#    로봇을 세워 둬도 얼굴은 떠 있는 게 낫다. 끄려면:
+#      sudo python3 aba_controller/libi_drive_controller/robot_agent/app/hardware/lcd_ctrl.py stop
+#
 #: 빈 값 = 안 띄움(--no-panel). 아래 인자 처리에서 기본 경로가 채워진다.
 PANEL_IMAGE="__default__"
-#: 로봇의 X 디스플레이. 실물은 물리 모니터가 없고 DUMMY0 + VNC(:5900) 구성이라,
-#: 여기 띄운 화면은 뷰어로 붙어서 본다.
-PANEL_DISPLAY="${PANEL_DISPLAY:-:0}"
 
 # 값을 받는 플래그가 **다음 플래그를 값으로 먹지 않게** 막는다.
 #   `--ai --no-back`  →  AI_IP="--no-back" 이 비어 있지 않아 검증을 통과하고,
@@ -475,21 +482,25 @@ if [ "$WITH_DYN_OBSTACLE" = true ]; then
     bash -c "cd '$REPO_ROOT' && echo '[keepout] 통행 금지 마스크 발행 (부채꼴 ${DYN_OBSTACLE_FAN_DEG}° / TTL ${DYN_OBSTACLE_TTL}s)' && source /opt/ros/jazzy/setup.bash && source '$REPO_ROOT/aba_controller/libi_modes/ros_ws/install/setup.bash' && ros2 run libi_perception keepout_node --ros-args -p fan_deg:=$DYN_OBSTACLE_FAN_DEG -p ttl_sec:=$DYN_OBSTACLE_TTL -p near_area_max:=$DYN_OBSTACLE_NEAR_AREA; exec bash"
 fi
 
-# ── 5) 패널 화면 (기본 켜짐 · --no-panel 로 끈다) ───────────────────────────
-# 정지 이미지 한 장을 전체화면으로. CPU 근거는 PANEL_IMAGE 선언부 주석 참고 — 0.0% 다.
+# ── 5) 패널 화면 — 로봇 LCD (기본 켜짐 · --no-panel 로 끈다) ─────────────────
+# 근거·수치는 PANEL_IMAGE 선언부 주석 참고 (X 로는 LCD 에 안 나온다 · 코어 6.5%).
 [ "$PANEL_IMAGE" = "__default__" ] && PANEL_IMAGE="$REPO_ROOT/config/panel/libi_panel.png"
 if [ -n "$PANEL_IMAGE" ]; then
+  LCD_CTRL="$REPO_ROOT/aba_controller/libi_drive_controller/robot_agent/app/hardware/lcd_ctrl.py"
+  # 어느 실패든 **경고만 하고 계속 간다.** 그림 한 장 때문에 주행 스택을 못 띄우면 손해가 크다.
   if [ ! -f "$PANEL_IMAGE" ]; then
-    # 죽이지 않는다. 그림 한 장 때문에 주행 스택 전체를 못 띄우면 손해가 더 크다.
     echo "[libi_pi] ⚠ 패널 이미지가 없습니다 — 건너뜁니다: $PANEL_IMAGE" >&2
-  elif ! command -v eog >/dev/null 2>&1; then
-    echo "[libi_pi] ⚠ eog 가 없습니다 — 패널을 건너뜁니다 (sudo apt install eog)" >&2
+  elif [ ! -f "$LCD_CTRL" ]; then
+    echo "[libi_pi] ⚠ lcd_ctrl.py 가 없습니다 — 패널을 건너뜁니다: $LCD_CTRL" >&2
   else
-    echo "[libi_pi] ── 패널 (정지 이미지, DISPLAY=$PANEL_DISPLAY)"
-    # ⚠️ `-f`(전체화면)만 준다. eog 는 창 관리자가 없어도 뜬다.
-    #    실물은 물리 모니터가 없으므로 **VNC(:5900)로 붙어야 보인다.**
-    tmux new-window -t "$SESSION" -n panel \
-      bash -c "echo '[panel] $PANEL_IMAGE → DISPLAY=$PANEL_DISPLAY (정지 이미지, CPU 0%)' && DISPLAY='$PANEL_DISPLAY' eog -f '$PANEL_IMAGE'; exec bash"
+    # ⚠️ `sudo -n`(비대화)로 준다. 비밀번호를 물으면 기동이 거기서 멈춘다
+    #    (kill.sh 의 LED 소등이 같은 이유로 `-n` 을 쓴다).
+    # lcd_ctrl.py 는 스스로 데몬화해서 즉시 반환한다 — tmux 창이 필요 없다.
+    if sudo -n python3 "$LCD_CTRL" image "$PANEL_IMAGE" 2>/dev/null | grep -q '^OK'; then
+      echo "[libi_pi] ── 패널 → LCD 240x240 ($(basename "$PANEL_IMAGE"))"
+    else
+      echo "[libi_pi] ⚠ LCD 표시 실패 — 건너뜁니다 (sudo -n 이 막혔거나 SPI 가 없다)" >&2
+    fi
   fi
 fi
 

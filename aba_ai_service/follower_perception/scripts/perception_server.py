@@ -43,10 +43,29 @@ def _status_line(matcher):
 
 def _hud_text(img, text, org, color, scale=0.6, thick=2):
     """Readable HUD text: thick black outline behind, colored text on top (BGR)."""
+    # 외곽선을 `thick + 3` 고정으로 두면 얇은 글자(thick=1, 저해상도)에서 검은 테두리가
+    # 글자를 덮는다. 두께에 비례시킨다 — thick=2 에서 5 라 예전과 같은 값이다.
     cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0),
-                thick + 3, cv2.LINE_AA)
+                thick * 2 + 1, cv2.LINE_AA)
     cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, color,
                 thick, cv2.LINE_AA)
+
+
+#: HUD 치수를 맞춘 기준 프레임 폭. 이 폭에서 k=1 이라 예전과 픽셀 단위로 같다.
+HUD_REF_WIDTH = 640.0
+#: 축소 하한. 완전 비례(320 폭에서 k=0.5)로 줄이면 패널이 확대해 띄우지 않는 경우
+#: 글자를 못 읽는다. 0.6 은 "작아지되 읽히는" 선이다 — 필요하면 여기만 만진다.
+HUD_MIN_SCALE = 0.6
+
+
+def _hud_scale(width):
+    """프레임 폭에 맞춘 HUD 배율.
+
+    글자·선 두께·여백이 전부 640 폭 기준 픽셀 상수였다. 스트리밍을 320x240 으로
+    내리자(`scripts/all/libi_pi.sh` `--width 320`) 같은 글자가 화면의 두 배 비중을
+    차지해 영상을 가렸다. 상수를 해상도마다 다시 고르는 대신 배율 하나로 묶는다.
+    """
+    return max(HUD_MIN_SCALE, float(width) / HUD_REF_WIDTH)
 
 
 #: COCO-17 골격 연결. yolo11n-pose 가 내는 키포인트 순서 그대로다.
@@ -68,7 +87,7 @@ _POSTURE_COLORS = {
 _POSTURE_UNKNOWN_COLOR = (170, 170, 170)
 
 
-def _draw_skeleton(vis, keypoints, conf_min, color):
+def _draw_skeleton(vis, keypoints, conf_min, color, k=1.0):
     """crop 좌표 키포인트를 원본 프레임 좌표로 옮겨 그린다.
 
     `PoseEstimator` 는 owner bbox **crop** 에만 pose 를 돌리므로 좌표가 crop 기준이다
@@ -83,18 +102,25 @@ def _draw_skeleton(vis, keypoints, conf_min, color):
     for i in range(len(xy)):
         c = float(conf[i]) if conf is not None else 0.0
         pts.append(None if c < conf_min else (int(xy[i][0]) + ox, int(xy[i][1]) + oy))
+    line_w = max(1, int(round(2 * k)))
+    dot_r = max(1, int(round(3 * k)))
     for a, b in _COCO_EDGES:
         if a < len(pts) and b < len(pts) and pts[a] and pts[b]:
-            cv2.line(vis, pts[a], pts[b], color, 2, cv2.LINE_AA)
+            cv2.line(vis, pts[a], pts[b], color, line_w, cv2.LINE_AA)
     for p in pts:
         if p:
-            cv2.circle(vis, p, 3, color, -1, cv2.LINE_AA)
+            cv2.circle(vis, p, dot_r, color, -1, cv2.LINE_AA)
 
 
 def draw_overlay(frame, det, *, cands=None, pick=None, cmd=None, status_extra="",
                  pose=None):
     vis = frame.copy()
     h, w = vis.shape[:2]
+    # 아래 글자 크기·두께·여백은 전부 640 폭 기준 상수였다. 프레임 폭에 맞춰 한 번에
+    # 줄인다(`_hud_scale`). 640 에서는 k=1 이라 예전과 완전히 같은 그림이다.
+    k = _hud_scale(w)
+    thick = max(1, int(round(2 * k)))
+    pad = max(2, int(round(8 * k)))
     # thirds guide lines: left / center / right direction zones
     for x in (w // 3, 2 * w // 3):
         cv2.line(vis, (x, 0), (x, h), (70, 70, 70), 1)
@@ -104,18 +130,19 @@ def draw_overlay(frame, det, *, cands=None, pick=None, cmd=None, status_extra=""
         x1, y1, x2, y2 = (int(v) for v in c.bbox)
         is_pick = pick is not None and c.track_id == pick.track_id
         col = (0, 255, 255) if is_pick else (170, 170, 170)   # pick=yellow
-        cv2.rectangle(vis, (x1, y1), (x2, y2), col, 2 if is_pick else 1)
+        cv2.rectangle(vis, (x1, y1), (x2, y2), col, thick if is_pick else 1)
         if is_pick:
-            cv2.putText(vis, "register target", (max(0, x1), max(34, y1 - 8)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 2)
+            cv2.putText(vis, "register target",
+                        (max(0, x1), max(int(34 * k), y1 - pad)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5 * k, col, thick)
     # owner box on top (after registration)
     if det is not None and det.is_owner:
         x1, y1, x2, y2 = (int(v) for v in det.bbox)
         color = (0, 165, 255) if det.is_predicted else (0, 255, 0)
-        cv2.rectangle(vis, (x1, y1), (x2, y2), color, 2)
+        cv2.rectangle(vis, (x1, y1), (x2, y2), color, thick)
         label = "OWNER (predicted)" if det.is_predicted else "OWNER"
-        cv2.putText(vis, label, (max(0, x1), max(20, y1 - 8)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        cv2.putText(vis, label, (max(0, x1), max(int(20 * k), y1 - pad)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6 * k, color, thick)
 
         # 자세 — 스켈레톤과 판정을 같이 그린다.
         #
@@ -127,23 +154,27 @@ def draw_overlay(frame, det, *, cands=None, pick=None, cmd=None, status_extra=""
         pcol = _POSTURE_COLORS.get(posture, _POSTURE_UNKNOWN_COLOR)
         kp = getattr(pose, "last_keypoints", None) if pose is not None else None
         if kp is not None:
-            _draw_skeleton(vis, kp, pose.conf_min, pcol)
+            _draw_skeleton(vis, kp, pose.conf_min, pcol, k)
         if posture:
             # 주행 허용 여부까지 같이 낸다. 자세와 주행은 별개다 — PostureGate 는
             # 한 번 Lying 을 보면 Standing 이 몇 프레임 이어질 때까지 계속 막는다.
             gate = "" if getattr(det, "motion_ok", True) else "  [motion blocked]"
             _hud_text(vis, f"POSTURE: {posture}{gate}",
-                      (max(0, x1), min(vis.shape[0] - 8, y2 + 24)), pcol, 0.6, 2)
+                      (max(0, x1), min(h - pad, y2 + int(24 * k))),
+                      pcol, 0.6 * k, thick)
     if cmd is not None:
         state = cmd.get("state", "")
         scol = {"IDLE": (200, 200, 200), "FOLLOWING": (0, 255, 0),
                 "PEEK": (0, 255, 255), "SEARCHING": (0, 165, 255)}.get(state, (0, 0, 255))
-        _hud_text(vis, f"STATE: {state}", (12, 40), scol, 0.9, 2)      # state (semantic)
+        _hud_text(vis, f"STATE: {state}", (int(12 * k), int(40 * k)),
+                  scol, 0.9 * k, thick)                                # state (semantic)
         txt = (f"cmd_vel  lin.x={cmd['linear_x']:+.2f}  ang.z={cmd['angular_z']:+.2f}"
                f"   [{cmd['drive']} | {cmd['turn']}]")
-        _hud_text(vis, txt, (12, 72), (255, 0, 0), 0.62, 2)            # blue (BGR)
+        _hud_text(vis, txt, (int(12 * k), int(72 * k)),
+                  (255, 0, 0), 0.62 * k, thick)                        # blue (BGR)
     if status_extra:
-        _hud_text(vis, status_extra, (12, vis.shape[0] - 12), (0, 0, 255), 0.62, 2)  # red (BGR)
+        _hud_text(vis, status_extra, (int(12 * k), h - int(12 * k)),
+                  (0, 0, 255), 0.62 * k, thick)                        # red (BGR)
     return vis
 
 
@@ -184,8 +215,9 @@ def serve_loop(conn, frames, perception, *, poll_cmd=None, jpeg_quality=80,
         # 로봇의 libi_perception 으로 주인 검출을 직접 보낸다(선택). 이 채널이 없으면
         # 로봇 쪽 제어 루프는 더미 스텁만 받는다 — 회복 BT 가 진짜 검출을 한 번도
         # 못 본다는 뜻이다. 안 보이는 프레임은 null 을 보내는 것이 계약이다.
+        # 프레임을 같이 넘겨 해상도를 실어 보낸다(detection_sink.detection_to_dict).
         if detection_sink is not None:
-            detection_sink(det)
+            detection_sink(det, frame)
         cands = perception.last_cands
         # before registration, highlight which candidate the 등록 button would pick
         pick = None if perception.matcher.is_registered \
@@ -385,6 +417,9 @@ def _make_detection_sink(host, port):
     링크가 끊겨도 추론 루프를 죽이지 않는다(`RobotDetectionSink.send` 가 예외를 삼키고
     다음 send 에서 재연결한다). 주인이 안 보이는 프레임은 **null 을 보낸다** —
     받는 쪽 `detection_from_dict(None)` 이 None 을 그대로 통과시키는 계약이다.
+
+    ⚠️ 프레임을 같이 넘긴다. 좌표(`cx`/`area`)를 만든 쪽이 자기 해상도를 말해야
+       받는 쪽 PID 가 환산할 수 있다 — 이유는 `detection_sink.detection_to_dict` 참고.
     """
     import os
     import sys
@@ -397,8 +432,8 @@ def _make_detection_sink(host, port):
     sink = RobotDetectionSink(host, port)
     print(f"[ok] 로봇 검출 채널 → {host}:{port}")
 
-    def send(det):
-        sink.send(detection_to_dict(det))
+    def send(det, frame=None):
+        sink.send(detection_to_dict(det, frame))
 
     return send
 
@@ -413,7 +448,7 @@ def _run_local_show(frames, perception, cmd_sink=None, policy=None, detection_si
         perception.run(frame)
         det = perception.get_latest()
         if detection_sink is not None:
-            detection_sink(det)
+            detection_sink(det, frame)
         cands = perception.last_cands
         pick = None if perception.matcher.is_registered \
             else perception._pick_central(cands, frame)

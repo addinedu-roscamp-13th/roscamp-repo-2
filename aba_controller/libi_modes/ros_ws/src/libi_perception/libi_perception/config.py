@@ -56,7 +56,28 @@ STOP_DIST = 0.25              # front-arc hard stop (m). 0 이면 끔
 AVOID_DIST = 0.40             # side-arc shy-away threshold (m)
 AVOID_KP = 0.50
 FRONT_ARC_DEG = 15            # +/- degrees around 0 (front)
-SIDE_ARC = (20, 71)          # degrees range for a side arc (start, stop-exclusive)
+# [2026-07-31] 20 → 16. **어느 아크에도 안 들어가는 각도가 있었다.**
+#   전방은 345~359°·0~15°, 측면은 20~70°·290~340° 였다 —
+#   **16~19° 와 341~344° 가 비어** 그 방향의 장애물은 감속에도 조향에도 안 잡혔다.
+#   16 으로 붙이면 좌 16~70°, 우 290~344° 가 되어 공백도 중복도 없다.
+SIDE_ARC = (16, 71)          # degrees range for a side arc (start, stop-exclusive)
+
+# ---- LiDAR 건강성 (fail-safe) ----
+# [2026-07-31] 회피가 **조용히 꺼지는** 두 경우를 막는다.
+#
+#   예전에는 스캔이 비어 있으면 `apply_avoidance` 가 속도를 그대로 통과시켰다.
+#   즉 라이다가 죽거나 아직 안 올라왔으면 **회피 없이 전속 전진**이었고, 그 사실이
+#   어디에도 안 드러났다. 앞을 못 보면 앞으로 가지 않는 것이 맞다.
+#
+#   ⚠️ **전진만** 막는다. 후진과 회전은 살린다 — 못 보는 것은 앞이고, 이미 붙어 있을 때
+#      빠져나올 수단까지 없애면 안 된다. (STOP_DIST 와 같은 규칙이다)
+#
+#   ⚠️ /scan 이 없는 곳에 추종 노드를 띄우면 이 값 때문에 **전진이 아예 안 된다.**
+#      그건 의도다. 라이다 없이 굴릴 거면 0 으로 꺼라.
+SCAN_MAX_AGE_SEC = 1.0        # 이보다 오래된 스캔은 없는 것으로 본다. 0 이면 검사 끔
+# 전방 아크(±FRONT_ARC_DEG = 31칸)에서 이만큼도 못 채우면 "앞을 못 본다"로 본다.
+# sllidar C1 은 스캔당 1000+ 포인트라 정상이면 31칸이 거의 다 찬다. 0 이면 검사 끔.
+FRONT_MIN_SAMPLES = 5
 
 # ---- miss / search ----
 N_MISS_FRAMES = 40            # consecutive None before TRACKING -> SEARCHING

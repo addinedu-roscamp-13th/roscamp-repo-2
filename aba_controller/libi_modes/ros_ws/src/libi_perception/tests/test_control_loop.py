@@ -22,6 +22,16 @@ def _det():
                      track_id=1, is_owner=True, confidence=0.9, is_predicted=False)
 
 
+def _clear_scan():
+    """장애물 없는 스캔.
+
+    ⚠️ 예전엔 여기가 `lambda: []` 였다. [2026-07-31] 부터 **빈 스캔은 "라이다를 못
+    본다"**는 뜻이고 전진이 막힌다(`lidar_avoidance.apply_avoidance`). "앞이 뚫렸다"를
+    말하려면 실제로 뚫린 스캔을 줘야 한다.
+    """
+    return [10.0] * 360
+
+
 class _Clock:
     def __init__(self):
         self.t = 0.0
@@ -40,7 +50,7 @@ class _Pub:
 
 def test_tracks_when_detection_present():
     pub = _Pub()
-    loop = ControlLoop(get_detection=lambda: _det(), get_scan=lambda: [],
+    loop = ControlLoop(get_detection=lambda: _det(), get_scan=_clear_scan,
                        publish=pub, cfg=_cfg(), now=_Clock())
     loop.tick()
     assert loop.state == 'TRACKING'
@@ -50,7 +60,7 @@ def test_tracks_when_detection_present():
 def test_transitions_to_searching_after_misses():
     det_box = {'v': _det()}
     pub = _Pub()
-    loop = ControlLoop(get_detection=lambda: det_box['v'], get_scan=lambda: [],
+    loop = ControlLoop(get_detection=lambda: det_box['v'], get_scan=_clear_scan,
                        publish=pub, cfg=_cfg(N_MISS_FRAMES=3), now=_Clock())
     loop.tick()                       # tracking
     det_box['v'] = None
@@ -62,7 +72,7 @@ def test_transitions_to_searching_after_misses():
 def test_searching_reacquire_returns_to_tracking():
     det_box = {'v': _det()}
     pub = _Pub()
-    loop = ControlLoop(get_detection=lambda: det_box['v'], get_scan=lambda: [],
+    loop = ControlLoop(get_detection=lambda: det_box['v'], get_scan=_clear_scan,
                        publish=pub, cfg=_cfg(N_MISS_FRAMES=1), now=_Clock())
     loop.tick()
     det_box['v'] = None
@@ -76,7 +86,7 @@ def test_searching_reacquire_returns_to_tracking():
 def test_search_timeout_ends():
     clock = _Clock()
     pub = _Pub()
-    loop = ControlLoop(get_detection=lambda: None, get_scan=lambda: [],
+    loop = ControlLoop(get_detection=lambda: None, get_scan=_clear_scan,
                        publish=pub, cfg=_cfg(N_MISS_FRAMES=1), now=clock)
     # need one detection first so tracking starts; use a togglable source
     calls = {'n': 0}
@@ -85,7 +95,7 @@ def test_search_timeout_ends():
         calls['n'] += 1
         return _det() if calls['n'] == 1 else None
 
-    loop2 = ControlLoop(get_detection=src, get_scan=lambda: [], publish=pub,
+    loop2 = ControlLoop(get_detection=src, get_scan=_clear_scan, publish=pub,
                         cfg=_cfg(N_MISS_FRAMES=1), now=clock)
     clock.t = 0.0
     loop2.tick()          # tracking
@@ -107,7 +117,7 @@ def _blocked_det():
 
 def test_motion_blocked_publishes_zero():
     pub = _Pub()
-    loop = ControlLoop(lambda: _blocked_det(), lambda: [], pub, _cfg(), now=_Clock())
+    loop = ControlLoop(lambda: _blocked_det(), _clear_scan, pub, _cfg(), now=_Clock())
     loop.tick()
     assert pub.calls[-1] == (0.0, 0.0)
 
@@ -115,7 +125,7 @@ def test_motion_blocked_publishes_zero():
 def test_motion_blocked_stays_tracking():
     pub = _Pub()
     cfg = _cfg(N_MISS_FRAMES=3)
-    loop = ControlLoop(lambda: _blocked_det(), lambda: [], pub, cfg, now=_Clock())
+    loop = ControlLoop(lambda: _blocked_det(), _clear_scan, pub, cfg, now=_Clock())
     for _ in range(cfg.N_MISS_FRAMES + 5):
         loop.tick()
     assert loop.state == 'TRACKING'          # 정지일 뿐 소실이 아니다
@@ -123,7 +133,7 @@ def test_motion_blocked_stays_tracking():
 
 def test_motion_blocked_does_not_count_as_miss():
     pub = _Pub()
-    loop = ControlLoop(lambda: _blocked_det(), lambda: [], pub, _cfg(), now=_Clock())
+    loop = ControlLoop(lambda: _blocked_det(), _clear_scan, pub, _cfg(), now=_Clock())
     for _ in range(10):
         loop.tick()
     assert loop.miss == 0
@@ -133,7 +143,7 @@ def test_motion_allowed_again_resumes_tracking():
     pub = _Pub()
     dets = [_blocked_det(), _blocked_det(), _det()]
     loop = ControlLoop(lambda: dets.pop(0) if dets else _det(),
-                       lambda: [], pub, _cfg(), now=_Clock())
+                       _clear_scan, pub, _cfg(), now=_Clock())
     loop.tick(); loop.tick()
     assert pub.calls[-1] == (0.0, 0.0)
     loop.tick()
@@ -143,7 +153,7 @@ def test_motion_allowed_again_resumes_tracking():
 def test_missing_motion_ok_field_does_not_block():
     """옛 payload(필드 없음)에서 로봇이 영영 안 움직이면 안 된다."""
     pub = _Pub()
-    loop = ControlLoop(lambda: _det(), lambda: [], pub, _cfg(), now=_Clock())
+    loop = ControlLoop(lambda: _det(), _clear_scan, pub, _cfg(), now=_Clock())
     loop.tick()
     assert pub.calls[-1] != (0.0, 0.0)
 
@@ -156,7 +166,7 @@ def test_missing_motion_ok_field_does_not_block():
 def test_never_searches_before_the_first_detection():
     """이 파일의 존재 이유. 사람은 아직 화면에서 자기를 등록하는 중이다."""
     pub = _Pub()
-    loop = ControlLoop(get_detection=lambda: None, get_scan=lambda: [],
+    loop = ControlLoop(get_detection=lambda: None, get_scan=_clear_scan,
                        publish=pub, cfg=_cfg(N_MISS_FRAMES=3), now=_Clock())
     for _ in range(50):               # 문턱을 한참 넘긴다
         loop.tick()
@@ -167,7 +177,7 @@ def test_never_searches_before_the_first_detection():
 def test_holds_still_while_waiting_for_registration():
     """기다리는 동안 바퀴가 돌면 안 된다."""
     pub = _Pub()
-    loop = ControlLoop(get_detection=lambda: None, get_scan=lambda: [],
+    loop = ControlLoop(get_detection=lambda: None, get_scan=_clear_scan,
                        publish=pub, cfg=_cfg(N_MISS_FRAMES=3), now=_Clock())
     for _ in range(20):
         loop.tick()
@@ -179,7 +189,7 @@ def test_searches_once_the_target_has_been_seen():
     """등록 뒤에 놓친 것은 진짜 놓친 것 — 그때는 탐색해야 한다."""
     det_box = {'v': None}
     pub = _Pub()
-    loop = ControlLoop(get_detection=lambda: det_box['v'], get_scan=lambda: [],
+    loop = ControlLoop(get_detection=lambda: det_box['v'], get_scan=_clear_scan,
                        publish=pub, cfg=_cfg(N_MISS_FRAMES=3), now=_Clock())
     for _ in range(10):               # 등록 전 — 탐색 안 함
         loop.tick()
@@ -197,7 +207,7 @@ def test_acquisition_survives_a_recovery_round():
     """회복에 성공해 다시 놓치면, 두 번째도 탐색해야 한다(플래그가 리셋되면 안 된다)."""
     det_box = {'v': _det()}
     pub = _Pub()
-    loop = ControlLoop(get_detection=lambda: det_box['v'], get_scan=lambda: [],
+    loop = ControlLoop(get_detection=lambda: det_box['v'], get_scan=_clear_scan,
                        publish=pub, cfg=_cfg(N_MISS_FRAMES=1), now=_Clock())
     loop.tick()
     det_box['v'] = None
