@@ -222,7 +222,7 @@ fi
 DOCK_CONFIRM="$ROS_WS_DIR/../scripts/dock_confirm.py"
 if [ -f "$DOCK_CONFIRM" ]; then
   tmux new-window -t "$SESSION" -n sim-dock \
-    bash -c "$ROS_SETUP && echo '[sim-dock] 주차장 도착 → /is_docked (domain $SIM_DOMAIN_ID)...' && python3 '$DOCK_CONFIRM' --navgraph '$NAVGRAPH'; exec bash"
+    bash -c "$ROS_SETUP && echo '[sim-dock] 충전소 도착 → /is_docked (domain $SIM_DOMAIN_ID)...' && python3 '$DOCK_CONFIRM' --navgraph '$NAVGRAPH'; exec bash"
 fi
 
 # [sim 전용] 배터리. 실물은 pinky_bringup 의 battery_publisher 가 INA219 를 읽는다.

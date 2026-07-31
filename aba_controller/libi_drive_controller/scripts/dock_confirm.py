@@ -39,7 +39,7 @@
 
 ## 실행
 
-    ROS_DOMAIN_ID=90 python3 dock_confirm.py --dock 주차장
+    ROS_DOMAIN_ID=90 python3 dock_confirm.py --dock 충전소
     ROS_DOMAIN_ID=119 python3 dock_confirm.py --x -0.001 --y -0.033
 """
 
@@ -114,7 +114,11 @@ class SimDockConfirm(Node):
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dock", default="주차장", help="navgraph 정점 이름")
+    # [2026-07-31] 기본값 `주차장` → `충전소`. **navgraph 에 '주차장' 정점이 없다** —
+    # `arte2.navgraph.yaml` 에 있는 것은 충전소통로·충전소입구·충전소 셋이다.
+    # `sim.sh:225` 가 `--dock` 를 안 넘기고 기본값을 쓰므로, 그동안 sim 의
+    # `/is_docked` 는 없는 정점을 찾고 있었다.
+    ap.add_argument("--dock", default="충전소", help="navgraph 정점 이름")
     ap.add_argument("--x", type=float, help="정점 대신 좌표를 직접 줄 때")
     ap.add_argument("--y", type=float)
     ap.add_argument("--radius", type=float, default=DEFAULT_RADIUS_M)

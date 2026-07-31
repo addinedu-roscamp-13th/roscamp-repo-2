@@ -52,12 +52,22 @@ MAP_PATH="$ROS_WS_DIR/src/pinky_pro/pinky_navigation/map/arte3.yaml"
 NAVGRAPH="$ROS_WS_DIR/../../../aba_fms_service/fleet_ws/maps/library/arte2.navgraph.yaml"
 INIT_POSE="$ROS_WS_DIR/../scripts/set_initial_pose.py"
 
-# 로봇 번호별 시작 waypoint — sim(scripts/sim.sh)과 공통 배정. 1=주차장 2=문학서가 3=도서관출입구.
+# 로봇 번호별 시작 waypoint — sim(scripts/sim.sh)과 공통 배정. 1=충전소 2=문학서가 3=도서관출입구.
 # FSM_ROBOT_ID(예: Pinky-3)의 끝자리 숫자로 뽑는다. 실물은 스폰이 없으므로 **운영자가
 # 로봇을 그 waypoint 위치에 실제로 놓아야** AMCL 추정과 실제 위치가 맞는다.
 ROBOT_NUM="$(printf '%s' "$FSM_ROBOT_ID" | grep -oE '[0-9]+' | tail -1)"
 case "$ROBOT_NUM" in
-  1) INIT_DOCK="주차장";       INIT_YAW="0" ;;
+  # [2026-07-31] `주차장` → `충전소`. **navgraph 에 '주차장' 정점이 아예 없다.**
+  #   `arte2.navgraph.yaml` 에 있는 것은 `충전소통로`·`충전소입구`·`충전소` 셋이고
+  #   `주차장` 은 0건이다. 그래서 pinky-1 을 띄우면 init-pose 가
+  #   "navgraph 에 '주차장' 정점이 없습니다" 로 죽고, **AMCL 초기 자세가 안 잡혀**
+  #   관제 좌표가 (0,0) 으로 뜬다(2026-07-31 실측).
+  #
+  # yaw 도 0 → 3.1415 다. navgraph 의 `- {name: '충전소', yaw: 3.1415}` 를 따른다.
+  # ⚠️ 아래 pinky-3 주석과 같은 경고가 여기도 적용된다 — **로봇을 실제로 놓은 방향이
+  #    이 값과 다르면** AMCL 이 처음부터 180° 어긋난 채 시작한다. 충전소에 도킹한
+  #    방향(벽을 등지는 쪽)이 3.1415 다.
+  1) INIT_DOCK="충전소";       INIT_YAW="3.1415" ;;
   2) INIT_DOCK="문학서가";      INIT_YAW="0" ;;
   # [2026-07-28] Pinky-3 은 **도서관출입구**(+0.300,-1.704) 에서 **순회경로-5 를 보게** 놓는다.
   #
