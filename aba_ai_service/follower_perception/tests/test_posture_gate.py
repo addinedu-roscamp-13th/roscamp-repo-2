@@ -1,5 +1,5 @@
 """자세 게이트. 로봇도 카메라도 없이 규칙만 검증한다."""
-from follower_perception.posture_gate import PostureGate
+from follower_perception.posture_gate import PostureGate, STANDING, SIDE
 
 
 def test_standing_allows():
@@ -89,3 +89,22 @@ def test_limit_below_one_is_clamped():
     g = PostureGate(unknown_limit=0)
     g.update("Standing")
     assert g.update("Unknown") is False
+
+
+def test_side_stops_immediately():
+    """측면이면 bbox 폭이 줄어 거리 추정이 '멀다' 로 오판한다 — 즉시 세운다."""
+    g = PostureGate()
+    assert g.update(SIDE) is False
+
+
+def test_side_recovers_on_standing():
+    g = PostureGate()
+    g.update(SIDE)
+    assert g.update(STANDING) is True
+
+
+def test_side_does_not_consume_the_unknown_budget():
+    """즉시 정지 판정은 Unknown 연속 카운터와 무관하다."""
+    g = PostureGate(unknown_limit=3)
+    g.update(SIDE)
+    assert g.unknown_run == 0

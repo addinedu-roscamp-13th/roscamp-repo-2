@@ -1,0 +1,4 @@
+# 벤치마크 crop 캐시 — 수십 MB 이고 영상에서 언제든 다시 만들 수 있다.
+# 리포트(.md/.json)는 결과물이라 커밋한다.
+reports/crops_*.npz
+reports/kp_*.npz

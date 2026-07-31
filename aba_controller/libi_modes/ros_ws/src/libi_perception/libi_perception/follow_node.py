@@ -110,6 +110,34 @@ def snapshot_dict(node):
     }
 
 
+#: 주행은 막지만 "따라오고 있지 않다" 는 뜻은 아닌 자세. 지금은 측면 하나뿐이다.
+_DRIVE_BLOCKED_BUT_PRESENT = ('Side',)
+
+
+def requester_visible(det):
+    """길잡이·감시 역할의 '요청자가 보이나'.
+
+    ⚠️ 주행 가부(`motion_ok`)를 **그대로 쓰면 안 되지만, 버려도 안 된다.**
+
+    측면(`Side`)은 주행을 막지만(들이받으므로) 따라오는 중이 아니라는 뜻은
+    아니다 — 요청자가 서가를 보며 따라오는 것은 정상이고 흔하다. 그래서
+    **`Side` 만 도려낸다.**
+
+    나머지는 게이트 판단을 그대로 따른다. `Unknown` 을 무조건 visible 로 두면
+    안 되는 이유가 있다: 저 conf 로 누움이 `Unknown` 으로 나가는 경우가 실제로
+    있고(뒷캠 torso-4 통과율 54.7%), 지금은 `UNKNOWN_STOP_FRAMES=25` 뒤
+    `motion_ok=False` 가 되어 invisible 이 된다. 그 안전장치를 없애면 쓰러진
+    요청자를 길잡이가 영영 정상으로 읽는다.
+
+    자세 소스가 없는 배포(`posture=None`)에서는 `motion_ok` 가 True 라 예전과 같다.
+    """
+    if det is None or not getattr(det, 'is_owner', False):
+        return False
+    if getattr(det, 'posture', None) in _DRIVE_BLOCKED_BUT_PRESENT:
+        return True
+    return bool(getattr(det, 'motion_ok', True))
+
+
 class RemoteControl:
     """`/fleet_cmd` 왕복으로 세션을 켜고 끈다. 미션 BT(libi_modes)와 패널이 이걸로 부른다.
 
@@ -315,8 +343,7 @@ class RemoteControl:
         if self._get_detection is None:
             return
         det = self._get_detection()
-        visible = bool(det is not None and getattr(det, 'is_owner', False)
-                       and getattr(det, 'motion_ok', True))
+        visible = requester_visible(det)
         self._vis_pub.publish(self._Bool(data=visible))
         if visible:
             self._area_pub.publish(self._Float32(data=float(det.area)))

@@ -68,26 +68,29 @@ def _hud_scale(width):
     return max(HUD_MIN_SCALE, float(width) / HUD_REF_WIDTH)
 
 
-#: COCO-17 골격 연결. yolo11n-pose 가 내는 키포인트 순서 그대로다.
-#  0 코 · 1,2 눈 · 3,4 귀 · 5,6 어깨 · 7,8 팔꿈치 · 9,10 손목
-#  11,12 골반 · 13,14 무릎 · 15,16 발목
-_COCO_EDGES = (
-    (0, 1), (0, 2), (1, 3), (2, 4),                       # 얼굴
-    (5, 7), (7, 9), (6, 8), (8, 10),                      # 팔
-    (5, 6), (5, 11), (6, 12), (11, 12),                   # 몸통
-    (11, 13), (13, 15), (12, 14), (14, 16),               # 다리
-)
+#: 판정에 쓰는 키포인트만 그린다. 예전에는 COCO-17 전부와 간선 16개를 그렸는데,
+#: 판정은 4점만 보므로 화면과 판정이 서로 다른 이야기를 했다.
+#  5,6 어깨 · 11,12 골반 · 13,14 무릎(shoulder_knee 축일 때만)
+L_SH, R_SH, L_HIP, R_HIP, L_KNEE, R_KNEE = 5, 6, 11, 12, 13, 14
+
+_TORSO_POINTS = (L_SH, R_SH, L_HIP, R_HIP)
+_TORSO_EDGES = ((L_SH, R_SH), (L_HIP, R_HIP))          # 어깨선 · 골반선
 
 #: 자세 문자열 → 색 (BGR). 판정 결과를 한눈에 구분하려는 것뿐이다.
 _POSTURE_COLORS = {
     "Standing": (0, 255, 0),        # 초록 — 따라가도 되는 상태
+    "Side": (0, 165, 255),          # 주황 — 옆을 봤다. 주행을 막는다
     "Lying": (0, 0, 255),           # 빨강 — 주행을 막는다
     "Calibrating": (0, 255, 255),   # 노랑 — 기준 비율 측정 중
 }
 _POSTURE_UNKNOWN_COLOR = (170, 170, 170)
 
 
-def _draw_skeleton(vis, keypoints, conf_min, color, k=1.0):
+def _midpoint(a, b):
+    return None if (a is None or b is None) else ((a[0] + b[0]) // 2, (a[1] + b[1]) // 2)
+
+
+def _draw_skeleton(vis, keypoints, conf_min, color, k=1.0, axis="torso"):
     """crop 좌표 키포인트를 원본 프레임 좌표로 옮겨 그린다.
 
     `PoseEstimator` 는 owner bbox **crop** 에만 pose 를 돌리므로 좌표가 crop 기준이다
@@ -95,25 +98,56 @@ def _draw_skeleton(vis, keypoints, conf_min, color, k=1.0):
     상대 기하만 봐서 되돌릴 필요가 없었지만, 화면은 절대 좌표가 필요하다.
 
     신뢰도가 낮은 점은 **안 그린다.** 판정이 안 쓰는 점을 화면에만 그리면, 판정이
-    Unknown 인데 골격은 멀쩡해 보이는 모순이 생긴다.
+    Unknown 인데 골격은 멀쩡해 보이는 모순이 생긴다. 같은 이유로 판정이 아예 안 쓰는
+    점(팔꿈치 등)은 신뢰도와 무관하게 그리지 않는다 — 4점(+축이 `shoulder_knee` 면
+    무릎 2점)과 어깨선·골반선·축선만 그린다.
     """
     xy, conf, (ox, oy) = keypoints
-    pts = []
-    for i in range(len(xy)):
-        c = float(conf[i]) if conf is not None else 0.0
-        pts.append(None if c < conf_min else (int(xy[i][0]) + ox, int(xy[i][1]) + oy))
+
+    def pt(i):
+        c = float(conf[i]) if conf is not None and i < len(conf) else 0.0
+        if i >= len(xy) or c < conf_min:
+            return None
+        return (int(xy[i][0]) + ox, int(xy[i][1]) + oy)
+
+    use_knees = axis == "shoulder_knee"
+    idxs = _TORSO_POINTS + ((L_KNEE, R_KNEE) if use_knees else ())
+    pts = {i: pt(i) for i in idxs}
+
     line_w = max(1, int(round(2 * k)))
     dot_r = max(1, int(round(3 * k)))
-    for a, b in _COCO_EDGES:
-        if a < len(pts) and b < len(pts) and pts[a] and pts[b]:
+    for a, b in _TORSO_EDGES:
+        if pts[a] and pts[b]:
             cv2.line(vis, pts[a], pts[b], color, line_w, cv2.LINE_AA)
-    for p in pts:
+
+    # 축선: 어깨중점 → (골반중점 또는 무릎중점). `shoulder_knee` 가 아니면(모르는
+    # 축 문자열 포함) 골반 축으로 떨어진다 — 축을 몰라서 안 그리는 것보다는 몸통선이
+    # 낫다(요구사항: unknown axis 는 죽지 않고 torso 로 대체).
+    sh_mid = _midpoint(pts[L_SH], pts[R_SH])
+    tgt_mid = _midpoint(pts[L_KNEE], pts[R_KNEE]) if use_knees \
+        else _midpoint(pts[L_HIP], pts[R_HIP])
+    if sh_mid and tgt_mid:
+        cv2.line(vis, sh_mid, tgt_mid, color, line_w, cv2.LINE_AA)
+
+    for p in pts.values():
         if p:
             cv2.circle(vis, p, dot_r, color, -1, cv2.LINE_AA)
 
 
+def _calibration_text(pose, fps):
+    """캘리브 카운트다운 문자열. 측정 중이 아니면 None.
+
+    남은 초는 **실측 fps** 로 환산한다. 공칭 15 로 나누면 프레임이 밀릴 때
+    숫자가 멈춘 것처럼 보여, 보는 사람이 로봇이 고장 났다고 생각한다.
+    """
+    if pose is None or not getattr(pose, "calibrating", False):
+        return None
+    got, need = pose.calibration_progress
+    return f"자세 측정 중… {pose.calibration_remaining_sec(fps):.1f}초  ({got}/{need})"
+
+
 def draw_overlay(frame, det, *, cands=None, pick=None, cmd=None, status_extra="",
-                 pose=None):
+                 pose=None, fps=None):
     vis = frame.copy()
     h, w = vis.shape[:2]
     # 아래 글자 크기·두께·여백은 전부 640 폭 기준 상수였다. 프레임 폭에 맞춰 한 번에
@@ -154,7 +188,11 @@ def draw_overlay(frame, det, *, cands=None, pick=None, cmd=None, status_extra=""
         pcol = _POSTURE_COLORS.get(posture, _POSTURE_UNKNOWN_COLOR)
         kp = getattr(pose, "last_keypoints", None) if pose is not None else None
         if kp is not None:
-            _draw_skeleton(vis, kp, pose.conf_min, pcol, k)
+            # 판정이 실제로 쓴 축을 그대로 그린다 — 안 읽으면 화면은 항상 torso 축인데
+            # 판정은 shoulder_knee 로 나오는 어긋남이 생긴다(이 파일이 고치는 이유).
+            # `pose` 가 구버전(속성 없음)이거나 값이 None 이어도 torso 로 떨어진다.
+            axis = getattr(pose, "last_axis", "torso") or "torso"
+            _draw_skeleton(vis, kp, pose.conf_min, pcol, k, axis=axis)
         if posture:
             # 주행 허용 여부까지 같이 낸다. 자세와 주행은 별개다 — PostureGate 는
             # 한 번 Lying 을 보면 Standing 이 몇 프레임 이어질 때까지 계속 막는다.
@@ -162,6 +200,13 @@ def draw_overlay(frame, det, *, cands=None, pick=None, cmd=None, status_extra=""
             _hud_text(vis, f"POSTURE: {posture}{gate}",
                       (max(0, x1), min(h - pad, y2 + int(24 * k))),
                       pcol, 0.6 * k, thick)
+            # 등록 직후 ~4초 동안 로봇이 멈춰 서서 기준 비율을 재는데, 화면에 "Calibrating"
+            # 만 떠 있으면 고장으로 보인다. 카운트다운을 자세 글자 바로 아래에 덧그린다.
+            cal_text = _calibration_text(pose, fps)
+            if cal_text:
+                _hud_text(vis, cal_text,
+                          (max(0, x1), min(h - pad, y2 + int(48 * k))),
+                          pcol, 0.55 * k, thick)
     if cmd is not None:
         state = cmd.get("state", "")
         scol = {"IDLE": (200, 200, 200), "FOLLOWING": (0, 255, 0),
@@ -228,9 +273,13 @@ def serve_loop(conn, frames, perception, *, poll_cmd=None, jpeg_quality=80,
             if policy is not None else compute_cmd_vel(det, frame.shape[1])
         if cmd_sink is not None:                 # optional drive hook (opt-in)
             cmd_sink(cmd)
+        # 실측 fps 로 캘리브 카운트다운을 환산한다 — 공칭 15 로 나누면 프레임이 밀릴 때
+        # 숫자가 멈춘 것처럼 보인다(`_calibration_text`). dt<=0(첫 tick·시계 튐)은
+        # 1/dt 가 무한대/음수가 되므로 None 으로 막는다.
+        fps = 1.0 / dt if dt > 0 else None
         vis = draw_overlay(frame, det, cands=cands, pick=pick, cmd=cmd,
                            status_extra=_status_line(perception.matcher),
-                           pose=perception.pose)
+                           pose=perception.pose, fps=fps)
         ok, buf = cv2.imencode(".jpg", vis,
                                [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
         if ok:
@@ -458,9 +507,13 @@ def _run_local_show(frames, perception, cmd_sink=None, policy=None, detection_si
             if policy is not None else compute_cmd_vel(det, frame.shape[1])
         if cmd_sink is not None:                 # optional drive hook (opt-in)
             cmd_sink(cmd)
+        # 실측 fps 로 캘리브 카운트다운을 환산한다 — 공칭 15 로 나누면 프레임이 밀릴 때
+        # 숫자가 멈춘 것처럼 보인다(`_calibration_text`). dt<=0(첫 tick·시계 튐)은
+        # 1/dt 가 무한대/음수가 되므로 None 으로 막는다.
+        fps = 1.0 / dt if dt > 0 else None
         vis = draw_overlay(frame, det, cands=cands, pick=pick, cmd=cmd,
                            status_extra=_status_line(perception.matcher),
-                           pose=perception.pose)
+                           pose=perception.pose, fps=fps)
         cv2.imshow(win, vis)
         k = cv2.waitKey(1) & 0xFF
         if k in (ord("q"), 27):
