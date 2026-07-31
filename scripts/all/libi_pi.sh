@@ -444,7 +444,18 @@ CAM_ARGS="--picamera"
 # 뒷캠도 YOLO 를 탄다(follow_node `_peek_people` — 회복 트리가 반대 캠으로 사람을 찾는다).
 # 마커 도킹도 해상도가 인식 거리다. 도킹이나 검출 거리가 나빠지면 **여기부터 되돌려라.**
 #
-# 되돌리기: `--width 480` 을 지우면 640, `FPS='15'` 를 지우면 image-sender.sh:14 기본값 15.
+# 되돌리기: `--width 480` 을 지우면 640, `FPS='17'` 을 지우면 image-sender.sh:14 기본값 15.
+#
+# ## [2026-07-31] 15 → 17
+#
+# 아래 모델로 320px 17fps = 16.45 + 17×2.91 = **65.9%** 다(지금 60.1%, +5.8%p).
+# 스로틀이 걸렸던 지점은 640px 15fps 의 **85.0%**(84.7°C·0xe0008) 라 그것과는 거리가 있다.
+# 노트북 쪽도 여유가 있다 — `POSE_EVERY_N_FRAMES = 1` 이라 pose 가 매 프레임 도는데
+# 13.4ms × 17 = 228ms/s = 코어의 23% 다.
+#
+# ⚠️ **CPU% 가 아니라 온도를 봐라.** 지난번에 실제로 망가진 것은 점유율이 아니라
+#    스로틀이었다. 올린 뒤 **부하 상태에서** 한 번 확인할 것:
+#      vcgencmd measure_temp ; vcgencmd get_throttled     # 0x0 이 아니면 되돌린다
 # [2026-07-30 3차] **두 캠 다 320x240.** 뒷캠이 수용하는 유일한 저해상도 4:3 이다(실측).
 #
 # ## ⚠️ 비용은 픽셀에 단순 비례하지 않는다 — 앞선 두 예측이 다 틀렸다
@@ -472,7 +483,7 @@ CAM_ARGS="--picamera"
 #    그래서 두 캠을 같은 값으로 맞출 수 있는 저해상도는 320x240 뿐이다.
 CAM_ARGS="$CAM_ARGS --width 320 --back-width 320"
 tmux new-window -t "$SESSION" -n cam \
-  bash -c "cd '$REPO_ROOT' && echo '[cam] 앞/뒤 → $AI_IP:$VIDEO_PORT (BT 가 camera_select 로 고름, nice+10, 15fps, 320x240)' && VIDEO_PORT='$VIDEO_PORT' CAM_ARGS='$CAM_ARGS' FPS='15' nice -n 10 ./scripts/drive-pi/image-sender.sh '$AI_IP'; exec bash"
+  bash -c "cd '$REPO_ROOT' && echo '[cam] 앞/뒤 → $AI_IP:$VIDEO_PORT (BT 가 camera_select 로 고름, nice+10, 17fps, 320x240)' && VIDEO_PORT='$VIDEO_PORT' CAM_ARGS='$CAM_ARGS' FPS='17' nice -n 10 ./scripts/drive-pi/image-sender.sh '$AI_IP'; exec bash"
 
 # ── 4) 동적 장애물 (기본 꺼짐) ──────────────────────────────────────────────
 # 켜면 nav2 가 필터 포함 파라미터로 뜨고 마스크 발행 노드가 함께 돈다.
