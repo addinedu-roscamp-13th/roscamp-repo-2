@@ -35,7 +35,11 @@ def apply_avoidance(linear_x, angular_z, scan, cfg):
 
     # front arc: proportional slowdown, then a hard stop
     front, front_n = arc(range(-cfg.FRONT_ARC_DEG, cfg.FRONT_ARC_DEG + 1))
-    if front < cfg.MIN_DIST:
+    # ⚠️ **전진일 때만 줄인다.** 예전에는 부호를 안 봐서 앞에 벽이 있으면 **후진
+    #    속도까지 반감**됐다(front 0.10 / MIN_DIST 0.20 → 계수 0.5). 앞이 막혀서
+    #    빠져나오려는 참에 탈출 속도를 깎는 셈이라 정확히 반대로 걸렸다.
+    #    원본 `lidar_avoid.avoid_cmd` 도 `linear_x > 0.0` 으로 가른다.
+    if linear_x > 0 and front < cfg.MIN_DIST:
         linear_x *= max(0.0, front / cfg.MIN_DIST)
     # 비례 감속만으로는 안 선다 — 계수가 0 이 되는 건 거리 0 에서다.
     # 그 아래에 끊는 선을 둔다. **전진만** 막는다: 후진까지 막으면 너무 붙었을 때
@@ -49,6 +53,22 @@ def apply_avoidance(linear_x, angular_z, scan, cfg):
     min_samples = getattr(cfg, "FRONT_MIN_SAMPLES", 0)
     if min_samples > 0 and front_n < min_samples:
         linear_x = _block_forward(linear_x)
+
+    # back arc: 후진에도 같은 하드 스톱을 건다.
+    #
+    # ⚠️ 예전에는 후방을 **아무도 안 봤다** — 전방 ±15° 와 측면 16~70° 뿐이라
+    #    71~289° 가 통째로 사각이었다. 그래서 "후진은 살려 둔다"가 정책이 아니라
+    #    그냥 막을 근거가 없었던 것이다. 라이다는 처음부터 360° 이고, 서버 쪽
+    #    `lidar_avoid.sectors8` 은 8방향을 이미 다 계산해 패널에 보여주고 있었다.
+    #
+    # ⚠️ 스캔이 아예 없을 때(위 `if not scan`)는 여전히 전진만 막는다. 못 보는
+    #    것과 **보이는데 가까운 것**은 다르다 — 앞에 붙어 있을 때 빠져나올
+    #    수단을 없애면 안 된다.
+    back_deg = getattr(cfg, "BACK_ARC_DEG", 0)
+    if back_deg > 0 and stop_dist > 0 and linear_x < 0:
+        back, _ = arc(range(180 - back_deg, 180 + back_deg + 1))
+        if back < stop_dist:
+            linear_x = 0.0
 
     # side arcs: shy away
     lo, hi = cfg.SIDE_ARC

@@ -128,3 +128,74 @@ def test_outside_stop_dist_only_scales():
     """정지선 밖에서는 끊지 않고 줄이기만 한다."""
     lin, _ = apply_avoidance(0.12, 0.0, _front_at(0.30), _cfg(STOP_DIST=0.25))
     assert lin == 0.12          # MIN_DIST(0.20) 밖이라 감속도 없다
+
+
+# ── 후방 아크 (BACK_ARC_DEG) ────────────────────────────────────────────────
+# 예전에는 전방 ±15° 와 측면 16~70° 만 봐서 **71~289° 가 통째로 사각**이었다.
+# 그래서 후진을 막을 근거 자체가 없었다. 라이다는 처음부터 360° 다.
+
+def _back_cfg(**over):
+    base = dict(BACK_ARC_DEG=15, STOP_DIST=0.25)
+    base.update(over)
+    return _cfg(**base)
+
+
+def test_obstacle_behind_blocks_reverse():
+    scan = _clear_scan()
+    scan[180] = 0.10                      # 바로 뒤 10cm
+    lin, _ = apply_avoidance(-0.05, 0.0, scan, _back_cfg())
+    assert lin == 0.0, "뒤에 벽이 있는데 후진했다"
+
+
+def test_obstacle_behind_does_not_block_forward():
+    """뒤에 있는 것 때문에 앞으로 가는 것까지 막으면 빠져나올 수단이 없어진다."""
+    scan = _clear_scan()
+    scan[180] = 0.10
+    lin, _ = apply_avoidance(0.08, 0.0, scan, _back_cfg())
+    assert lin == 0.08
+
+
+def test_obstacle_in_front_still_allows_reverse():
+    """반대 방향도 마찬가지 — 앞이 막혔으면 후진이 유일한 탈출구다."""
+    scan = _clear_scan()
+    scan[0] = 0.10
+    lin, _ = apply_avoidance(-0.05, 0.0, scan, _back_cfg())
+    assert lin == -0.05
+
+
+def test_back_arc_covers_both_edges_not_just_dead_astern():
+    """정후방 한 점만 보면 비스듬히 뒤에 있는 것을 놓친다."""
+    for deg in (180 - 15, 180 + 15):
+        scan = _clear_scan()
+        scan[deg % 360] = 0.10
+        lin, _ = apply_avoidance(-0.05, 0.0, scan, _back_cfg())
+        assert lin == 0.0, f"{deg}도의 장애물을 놓쳤다"
+
+
+def test_back_arc_ignores_what_is_outside_it():
+    scan = _clear_scan()
+    scan[(180 + 40) % 360] = 0.10         # 아크 밖
+    lin, _ = apply_avoidance(-0.05, 0.0, scan, _back_cfg())
+    assert lin == -0.05
+
+
+def test_back_arc_off_restores_the_old_behaviour():
+    """0 이면 끈다 — 예전(후방 무감시) 동작으로 정확히 돌아가야 한다."""
+    scan = _clear_scan()
+    scan[180] = 0.05
+    lin, _ = apply_avoidance(-0.05, 0.0, scan, _back_cfg(BACK_ARC_DEG=0))
+    assert lin == -0.05
+
+
+def test_missing_scan_still_only_blocks_forward():
+    """스캔이 **없는 것**과 뒤가 **보이는데 가까운 것**은 다르다.
+
+    없을 때까지 후진을 막으면, 앞에 붙어 있는데 빠져나올 방법이 사라진다.
+    """
+    lin, _ = apply_avoidance(-0.05, 0.0, [], _back_cfg())
+    assert lin == -0.05
+
+
+def test_shipped_config_watches_the_rear():
+    from libi_perception import config
+    assert config.BACK_ARC_DEG > 0 and config.STOP_DIST > 0

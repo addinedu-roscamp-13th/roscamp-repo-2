@@ -53,6 +53,29 @@ class FollowPID:
         # distance -> linear_x
         size = math.sqrt(max(0.0, area)) * k
         e = cfg.TARGET_SIZE - size
+        # 목표 근처에서는 아예 멈춘다.
+        #
+        # ⚠️ **구간 밖에서는 0 으로 만드는 게 아니라 빼낸다.** 방위각처럼 그냥 0 으로
+        #    죽이면 경계 바로 밖에서 `KP × DIST_DEADZONE` 이 통째로 튀어나온다 —
+        #    28px 이면 0.084 m/s 로, 최대(0.12)의 70% 다. 서 있던 로봇이 사람이 한
+        #    걸음 물러난 순간 그 속도로 튄다. 빼내면 경계에서 0 부터 이어진다.
+        #    (원본 `cmd_preview.SIZE_DEADBAND` 는 bang-bang 이라 밖이 늘 고정속도였고,
+        #     그래서 이 문제가 없었다. PID 로 옮기면서 생긴 차이다.)
+        #
+        # 구간 안에서는 **적분과 미분 기억을 둘 다 턴다.**
+        #   · 적분: 오차만 0 으로 만들면 `KI × I` 가 남아 정지 구간에서도 명령이
+        #     완전히 0 이 되지 않고, 구간을 넘나들 때 예전에 쌓인 적분이 되살아나
+        #     사람 쪽으로 밀린다.
+        #   · 미분: `_prev_size` 를 안 지우면 구간에 **들어오는 첫 프레임**에
+        #     `d = (0 - 직전오차)/dt` 가 한 번 튄다. 지금은 `KD_DIST = 0` 이라
+        #     출력이 0 이지만, D 를 켜는 순간 "멈춰야 할 때 한 번 튀는" 버그가
+        #     조용히 살아난다. 지금 막아 둔다.
+        if abs(e) <= cfg.DIST_DEADZONE:
+            e = 0.0
+            self._i_size = 0.0
+            self._prev_size = 0.0
+        else:
+            e -= math.copysign(cfg.DIST_DEADZONE, e)
         self._i_size = clamp(self._i_size + e * dt,
                              -cfg.INTEGRAL_DIST_CLAMP, cfg.INTEGRAL_DIST_CLAMP)
         d = (e - self._prev_size) / dt

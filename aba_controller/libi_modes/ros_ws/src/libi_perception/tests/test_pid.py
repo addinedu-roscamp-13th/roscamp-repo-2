@@ -4,7 +4,8 @@ from libi_perception.pid import FollowPID, clamp
 
 def _cfg(**over):
     base = dict(TARGET_SIZE=360.0, KP_DIST=0.0030, KI_DIST=0.0, KD_DIST=0.0,
-                INTEGRAL_DIST_CLAMP=50.0, LINEAR_X_MAX=0.12, LINEAR_X_REVERSE_MAX=0.06,
+                INTEGRAL_DIST_CLAMP=50.0, DIST_DEADZONE=0.0,
+                LINEAR_X_MAX=0.12, LINEAR_X_REVERSE_MAX=0.06,
                 IMAGE_WIDTH=640, KP_ANGLE=0.0010, KI_ANGLE=0.0, KD_ANGLE=0.0,
                 INTEGRAL_ANGLE_CLAMP=200.0, ANGLE_DEADZONE=45.0, ANGULAR_Z_MAX=0.60,
                 ANGULAR_SMOOTHING=1.0)   # smoothing=1 -> deterministic single-step
@@ -115,3 +116,106 @@ def test_missing_image_width_falls_back_to_cfg():
     pid_b = FollowPID(_cfg())
     assert pid_a.compute(cx=200.0, area=10_000.0, dt=0.05) == \
            pid_b.compute(cx=200.0, area=10_000.0, dt=0.05, image_width=640)
+
+
+# ── 거리 정지 구간 (DIST_DEADZONE) ──────────────────────────────────────────
+# 목표 크기 근처에서 바퀴가 계속 깨작이던 문제. 방위각의 ANGLE_DEADZONE 과 같은 규칙.
+
+def test_distance_deadzone_stops_near_target():
+    pid = FollowPID(_cfg(DIST_DEADZONE=20.0))
+    # sqrt(area)=350, 목표 360 -> 오차 10 < 20 -> 전진 명령이 없어야 한다.
+    lin, _ = pid.compute(cx=320.0, area=350.0 ** 2, dt=0.05)
+    assert lin == 0.0
+
+
+def test_distance_deadzone_does_not_swallow_real_error():
+    pid = FollowPID(_cfg(DIST_DEADZONE=20.0))
+    # 오차 30 > 20 -> 구간 밖이므로 예전과 똑같이 움직인다.
+    lin, _ = pid.compute(cx=320.0, area=330.0 ** 2, dt=0.05)
+    assert lin > 0
+
+
+def test_distance_deadzone_clears_the_integral():
+    """정지 구간에 들어가면 적분항도 턴다.
+
+    오차만 0 으로 만들면 `KI × I` 가 남아 명령이 완전히 0 이 되지 않는다. 게다가
+    구간을 드나들 때 예전에 쌓인 적분이 되살아나 사람 쪽으로 튄다.
+    """
+    pid = FollowPID(_cfg(DIST_DEADZONE=20.0, KI_DIST=0.01))
+    for _ in range(20):                      # 멀리서 적분을 쌓는다
+        pid.compute(cx=320.0, area=100.0, dt=0.05)
+    assert pid._i_size > 0
+    lin, _ = pid.compute(cx=320.0, area=350.0 ** 2, dt=0.05)   # 구간 안으로
+    assert pid._i_size == 0.0
+    assert lin == 0.0
+
+
+def test_shipped_config_enables_the_deadzone():
+    """기본값이 0 이면 기능 전체가 조용히 꺼진다 — 그러라고 만든 게 아니다."""
+    from libi_perception import config
+    assert config.DIST_DEADZONE > 0
+
+
+def test_distance_deadzone_is_continuous_at_the_edge():
+    """구간 경계에서 명령이 튀면 안 된다.
+
+    0 으로 죽이는 방식이면 경계 바로 밖에서 `KP × DEADZONE` 이 통째로 나온다 —
+    서 있던 로봇이 사람이 한 걸음 물러난 순간 그 속도로 튄다. 빼내는 방식이라
+    0 부터 이어져야 한다.
+    """
+    dz = 28.0
+    pid = FollowPID(_cfg(DIST_DEADZONE=dz))
+    # 목표 360, 구간 밖으로 1px 만 나간 지점.
+    lin, _ = pid.compute(cx=320.0, area=(360.0 - dz - 1.0) ** 2, dt=0.05)
+    assert 0.0 < lin < 0.0030 * 2, f"경계에서 튀었다: {lin}"
+
+
+def test_distance_deadzone_matches_the_original_ten_percent_band():
+    """원본 `cmd_preview.SIZE_DEADBAND` 는 30/300 = 목표의 10% 였다.
+
+    제어가 bang-bang 에서 PID 로 옮겨가며 사라졌던 값이다. 비율이 어긋나면
+    "예전 거리감"이 재현되지 않는다.
+    """
+    from libi_perception import config
+    assert abs(config.DIST_DEADZONE / config.TARGET_SIZE - 0.10) < 0.005
+
+
+def test_deadzone_does_not_suppress_reverse_when_too_close():
+    """⚠️ 안전 방향. 사람에게 너무 가까우면 **후진**이 나와야 한다.
+
+    구간 검사를 부호 없이 짜면(예: `e < DEADZONE`) 오차가 음수인 쪽 — 즉
+    "너무 가깝다" — 이 전부 구간 안으로 삼켜져 후진이 영영 안 나온다.
+    앞쪽만 검사하는 테스트로는 그 회귀가 안 잡힌다.
+    """
+    dz = 20.0
+    pid = FollowPID(_cfg(DIST_DEADZONE=dz))
+    # sqrt(area)=420, 목표 360 -> e = -60, 구간(20) 밖 -> 후진.
+    lin, _ = pid.compute(cx=320.0, area=420.0 ** 2, dt=0.05)
+    assert lin < 0, f"너무 가까운데 후진이 안 나온다: {lin}"
+
+
+def test_deadzone_is_symmetric_at_both_edges():
+    """가까운 쪽 경계도 먼 쪽과 똑같이 이어져야 한다 — 크기만 같고 부호만 반대."""
+    dz = 20.0
+    far = FollowPID(_cfg(DIST_DEADZONE=dz)).compute(
+        cx=320.0, area=(360.0 - dz - 5.0) ** 2, dt=0.05)[0]
+    near = FollowPID(_cfg(DIST_DEADZONE=dz)).compute(
+        cx=320.0, area=(360.0 + dz + 5.0) ** 2, dt=0.05)[0]
+    assert far > 0 > near
+    assert abs(far + near) < 1e-9, f"양쪽이 비대칭이다: {far} vs {near}"
+
+
+def test_entering_the_band_does_not_kick_the_derivative():
+    """구간에 **들어오는 첫 프레임**에 D 항이 튀면 안 된다.
+
+    `_prev_size` 를 안 지우면 `d = (0 - 직전오차)/dt` 가 한 번 나온다. 지금은
+    출하 `KD_DIST = 0` 이라 안 보이지만, D 를 켜는 순간 "멈춰야 할 때 한 번
+    튀는" 버그가 조용히 살아난다. D 를 켜고 재서 못 박는다.
+    """
+    dz = 20.0
+    for approach_area in ((360.0 - dz - 30.0) ** 2,      # 멀리서 다가오며 진입
+                          (360.0 + dz + 30.0) ** 2):     # 가까이서 물러나며 진입
+        pid = FollowPID(_cfg(DIST_DEADZONE=dz, KD_DIST=0.01))
+        pid.compute(cx=320.0, area=approach_area, dt=0.05)   # 구간 밖 한 프레임
+        lin, _ = pid.compute(cx=320.0, area=360.0 ** 2, dt=0.05)  # 구간 안으로
+        assert lin == 0.0, f"구간 진입에서 D 가 튀었다: {lin}"
