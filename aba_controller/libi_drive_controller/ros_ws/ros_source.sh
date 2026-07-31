@@ -12,6 +12,6 @@ fi
 source /opt/ros/jazzy/setup.bash
 source /home/pinky/pinky_pro/install/setup.bash
 
-# [2026-07-07] 공유기 멀티캐스트 차단으로 서버(192.168.0.19)와 DDS 디스커버리 불가 → 유니캐스트 정적 피어로 해결
+# [2026-07-07] 공유기 멀티캐스트 차단으로 서버(192.168.1.4)와 DDS 디스커버리 불가 → 유니캐스트 정적 피어로 해결
 export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
-export ROS_STATIC_PEERS=192.168.0.19
+export ROS_STATIC_PEERS=192.168.1.4

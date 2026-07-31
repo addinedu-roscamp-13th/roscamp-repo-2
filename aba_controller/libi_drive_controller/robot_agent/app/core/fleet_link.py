@@ -35,9 +35,11 @@ from __future__ import annotations
 import json
 import os
 import queue
+import subprocess
 import threading
 import time
 from collections import deque
+from pathlib import Path
 from typing import Any
 
 CMD_STALE_SEC = 10.0    # ts 가 이보다 오래된 명령은 거부 (재전달 방어)
@@ -63,8 +65,83 @@ def _save_locations(locs: dict | None) -> None:
             print(f"[fleet_link] location '{nm}' 저장 실패: {e}", flush=True)
 
 
+def _run_hw(cmd: str, timeout: float = 10.0) -> tuple[bool, str]:
+    try:
+        res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        return res.returncode == 0, res.stdout.strip() or res.stderr.strip()
+    except Exception as e:
+        return False, str(e)
+
+
+def _dispatch_hardware(action: str, args: dict) -> tuple[bool, int, Any, str] | None:
+    """하드웨어 드라이버 액션 디스패치 (LCD, LED, 부저, 모터, 센서). 지원하지 않는 액션이면 None 반환."""
+    hw_dir = Path(__file__).resolve().parent.parent / "hardware"
+    lcd_script = hw_dir / "lcd_ctrl.py"
+    led_script = hw_dir / "led_ctrl.py"
+    buzzer_script = hw_dir / "buzzer_ctrl.py"
+    motor_script = hw_dir / "motor_ctrl.py"
+    sensor_script = hw_dir / "sensor_ctrl.py"
+
+    if action == "lcd_emotion":
+        emotion = str(args.get("emotion", "smile"))
+        ok, out = _run_hw(f"sudo -n python3 {lcd_script} emotion {emotion}")
+        return ok, (200 if ok else 500), {"success": ok, "output": out}, out if not ok else ""
+
+    if action == "lcd_clear":
+        ok, out = _run_hw(f"sudo -n python3 {lcd_script} stop")
+        return ok, (200 if ok else 500), {"success": ok, "output": out}, out if not ok else ""
+
+    if action == "led_fill":
+        r, g, b = int(args.get("r", 0)), int(args.get("g", 0)), int(args.get("b", 0))
+        ok, out = _run_hw(f"sudo -n python3 {led_script} fill {r} {g} {b}")
+        return ok, (200 if ok else 500), {"success": ok, "output": out}, out if not ok else ""
+
+    if action in ("led_off", "led_clear"):
+        ok, out = _run_hw(f"sudo -n python3 {led_script} clear")
+        return ok, (200 if ok else 500), {"success": ok, "output": out}, out if not ok else ""
+
+    if action == "buzzer":
+        freq = int(args.get("frequency") or 1000)
+        dur = float(args.get("duration") or 0.2)
+        cnt = int(args.get("count") or 1)
+        ok, out = _run_hw(f"sudo -n python3 {buzzer_script} beep {cnt} {freq} {dur}")
+        return ok, (200 if ok else 500), {"success": ok, "output": out}, out if not ok else ""
+
+    if action == "buzzer_melody":
+        song = str(args.get("song") or args.get("melody") or "mario")
+        ok, out = _run_hw(f"sudo -n python3 {buzzer_script} melody {song}")
+        return ok, (200 if ok else 500), {"success": ok, "output": out}, out if not ok else ""
+
+    if action in ("motor_stop", "stop"):
+        ok, out = _run_hw(f"sudo -n python3 {motor_script} stop")
+        return ok, (200 if ok else 500), {"success": ok, "output": out}, out if not ok else ""
+
+    if action == "motor_move":
+        left = int(args.get("left") or 0)
+        right = int(args.get("right") or 0)
+        dur = float(args.get("duration") or 0.5)
+        ok, out = _run_hw(f"sudo -n python3 {motor_script} move {left} {right} {dur}")
+        return ok, (200 if ok else 500), {"success": ok, "output": out}, out if not ok else ""
+
+    if action == "get_ultrasonic":
+        ok, out = _run_hw(f"sudo -n python3 {sensor_script} ultrasonic")
+        return ok, (200 if ok else 500), {"output": out}, out if not ok else ""
+
+    if action == "get_ir":
+        ok, out = _run_hw(f"sudo -n python3 {sensor_script} ir")
+        return ok, (200 if ok else 500), {"output": out}, out if not ok else ""
+
+    return None
+
+
 def _dispatch(action: str, args: dict) -> tuple[bool, int, Any, str]:
     """(ok, status, data, msg) — ok=False 는 HTTP 라면 에러 응답이었을 상황."""
+    # 1) 하드웨어 액션 디스패치
+    hw_res = _dispatch_hardware(action, args)
+    if hw_res is not None:
+        return hw_res
+
+    # 2) 내비게이션 및 미션 액션 디스패치
     from app.core import locations, mission, ros_bridge
 
     needs_ros = action in (
@@ -171,23 +248,27 @@ def _link_thread() -> None:
         qos_big = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE)
 
         result_pub = node.create_publisher(String, "fleet_cmd_result", 10)
+        robot_result_pub = node.create_publisher(String, "robot_cmd_result", 10)
         status_pub = node.create_publisher(String, "fleet_status", qos_latched)
         costmap_pub = node.create_publisher(String, "fleet_costmaps", qos_big)
 
-        def publish_result(cmd_id: str, ok: bool, status: int, data: Any, msg: str) -> None:
+        def publish_result(cmd_id: str, ok: bool, status: int, data: Any, msg: str, is_robot_cmd: bool = False) -> None:
             payload = json.dumps(
                 {"id": cmd_id, "ok": ok, "status": status, "data": data, "msg": msg})
             with _result_pub_lock:
-                result_pub.publish(String(data=payload))
+                if is_robot_cmd:
+                    robot_result_pub.publish(String(data=payload))
+                else:
+                    result_pub.publish(String(data=payload))
 
-        def run_and_reply(cmd: dict) -> None:
+        def run_and_reply(cmd: dict, is_robot_cmd: bool = False) -> None:
             try:
                 ok, status, data, msg = _dispatch(cmd["action"], cmd.get("args") or {})
             except Exception as e:
                 ok, status, data, msg = False, 500, None, f"{type(e).__name__}: {e}"
-            publish_result(cmd["id"], ok, status, data, msg)
+            publish_result(cmd["id"], ok, status, data, msg, is_robot_cmd=is_robot_cmd)
 
-        def on_cmd(msg: "String") -> None:
+        def on_cmd_generic(msg: "String", is_robot_cmd: bool = False) -> None:
             try:
                 cmd = json.loads(msg.data)
                 cmd_id, action = str(cmd["id"]), str(cmd["action"])
@@ -198,22 +279,24 @@ def _link_thread() -> None:
             _recent_ids.append(cmd_id)
             ts = float(cmd.get("ts") or 0)
             if ts and (time.time() - ts) > CMD_STALE_SEC:
-                publish_result(cmd_id, False, 408, None, "stale command (재전달 거부)")
+                publish_result(cmd_id, False, 408, None, "stale command (재전달 거부)", is_robot_cmd=is_robot_cmd)
                 return
             # 정지 계열은 인라인 즉시 실행 — 워커가 블로킹돼 있어도 정지 보장
-            if action in ("mission_stop", "schedule_stop"):
-                run_and_reply(cmd)
+            if action in ("mission_stop", "schedule_stop", "motor_stop", "stop"):
+                run_and_reply(cmd, is_robot_cmd=is_robot_cmd)
                 return
             try:
-                _cmd_queue.put_nowait(cmd)
+                _cmd_queue.put_nowait((cmd, is_robot_cmd))
             except queue.Full:
-                publish_result(cmd_id, False, 503, None, "명령 큐 포화")
+                publish_result(cmd_id, False, 503, None, "명령 큐 포화", is_robot_cmd=is_robot_cmd)
 
-        node.create_subscription(String, "fleet_cmd", on_cmd, 10)
+        node.create_subscription(String, "fleet_cmd", lambda m: on_cmd_generic(m, is_robot_cmd=False), 10)
+        node.create_subscription(String, "robot_cmd", lambda m: on_cmd_generic(m, is_robot_cmd=True), 10)
 
         def worker() -> None:
             while True:
-                run_and_reply(_cmd_queue.get())
+                cmd_item, is_robot_cmd = _cmd_queue.get()
+                run_and_reply(cmd_item, is_robot_cmd=is_robot_cmd)
 
         def status_loop() -> None:
             from app.core import mission

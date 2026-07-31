@@ -396,19 +396,36 @@ def rotate(req: RotateRequest):
 async def drive_ws(websocket: WebSocket):
     """실시간 조이스틱 제어 (WS)"""
     await websocket.accept()
+    from app.core import ros_bridge
+
+    # [2026-07-16] 예전엔 is_active() 만 보고 /cmd_vel 로 publish 했다. 그런데 이 로봇의
+    # nav2 구성에서 /cmd_vel 은 velocity_smoother 가 **발행하는** 토픽이고 구독자는 0이다
+    # (ros2 topic info /cmd_vel -v → Subscription count: 0, 모터 드라이버 노드 자체가
+    #  ROS 그래프에 없다). 그래서 조이스틱 입력이 허공으로 사라져 로봇이 안 움직였다.
+    # 라인 주행이 멀쩡했던 건 그쪽은 _motor_send 로 하드웨어를 직접 때리기 때문.
+    # 구독자가 실제로 있을 때만 ROS 로 보내고, 없으면 모터를 직접 구동한다.
+    # (토픽 그래프 조회는 비싸서 2초마다만 갱신한다.)
+    use_ros = False
+    checked_at = 0.0
     try:
         while True:
             data = await websocket.receive_json()
             linear = float(data.get("linear", 0.0))
             angular = float(data.get("angular", 0.0))
-            
-            from app.core import ros_bridge
-            if ros_bridge.is_active():
+
+            now = time.time()
+            if now - checked_at > 2.0:
+                checked_at = now
+                use_ros = ros_bridge.is_active() and int(
+                    ros_bridge.get_cmd_vel_info().get("subscriber_count", 0)
+                ) > 0
+
+            if use_ros:
                 ros_bridge.publish_cmd_vel(linear, angular)
             else:
                 left, right = _vel_to_speeds(linear, angular)
                 await _motor_send(left, right)
-                
+
             await websocket.send_json({
                 "type": "status",
                 "ok": True,
@@ -416,11 +433,12 @@ async def drive_ws(websocket: WebSocket):
                 "right": angular,
             })
     except (WebSocketDisconnect, Exception):
-        from app.core import ros_bridge
-        if ros_bridge.is_active():
+        # 연결이 끊기면 무조건 선다. ROS 로 0 을 쏘는 것만으로는 부족하다 —
+        # /cmd_vel 구독자가 없으면 그 0 도 허공으로 가고 모터는 마지막 속도로 계속 달린다.
+        # 탭을 닫거나 WiFi 가 끊긴 상황이라 사람이 못 세운다. 모터 정지는 항상 직접 건다.
+        if use_ros:
             ros_bridge.publish_cmd_vel(0.0, 0.0)
-        else:
-            await _motor_close()
+        await _motor_close()
 
 
 

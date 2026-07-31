@@ -226,6 +226,17 @@ def _detect(dict_name: str, marker_len_m: float | None) -> dict[str, Any]:
             m: dict[str, Any] = {"id": int(i), **_measure(c, w, h)}
             if m["side_px"] < 8.0:
                 continue  # 서브픽셀급 유령 검출(업스케일 재검출 부산물) 제거
+            # [2026-07-16] 카메라가 180° 뒤집혀 장착돼 있다. 이 파일의 제어 계산(_measure 의 ex,
+            # _pose 의 y 뒤집기, _STEER_SIGN=+1)은 전부 **raw 프레임 기준**으로 현장 튜닝돼
+            # 있으므로 그대로 둔다 — 건드리면 도킹이 깨진다.
+            # 대신 화면에 그릴 좌표만 정방향(180° 회전)으로 따로 실어 보낸다. 프론트가
+            # <img> 를 rotate(180deg) 로 세우므로 오버레이도 같은 좌표계여야 겹친다.
+            # (예전엔 프론트가 scaleY(-1) + y 만 뒤집어 좌우가 거울로 남아 있었다.)
+            pts = c.reshape(4, 2)
+            m["corners_view"] = [[round(float(w - 1 - px), 1), round(float(h - 1 - py), 1)]
+                                 for px, py in pts]
+            m["cx_view"] = round(float(w - 1 - pts[:, 0].mean()), 1)
+            m["cy_view"] = round(float(h - 1 - pts[:, 1].mean()), 1)
             if calib is not None and marker_len_m:
                 p = _pose(c, calib, marker_len_m, h)
                 if p:
@@ -264,14 +275,14 @@ class DockConfig(BaseModel):
     target_wall_cm: float = Field(10.0, ge=2.0, le=80.0)   # 벽/도킹면 앞 목표 정지 거리
     slow_wall_cm: float = Field(35.0, ge=5.0, le=150.0)    # 이 거리 안쪽부터 감속
     min_drive: int = Field(22, ge=0, le=70)         # 정지마찰 극복용 최소 모터%
-    lost_grace: int = Field(8, ge=1, le=60)
-    search: bool = False  # 마커 상실 시 회전 재탐색 금지: 가이드 PID만 사용, 놓치면 정지
-    # 이전 기본값은 True였고 마지막 마커 방향으로 화면을 돌려 찾았다. 현재는 가이드선 PID만 쓴다.
-    search_turn_speed: float = Field(0.10, ge=0.03, le=0.4)  # 재탐색 제자리 회전 각속도(느리게)
-    search_sweep_s: float = Field(2.5, ge=0.0, le=15.0)      # 이 시간만 회전 재탐색, 이후엔 정지 대기(무한 제자리 회전 금지)
+    lost_grace: int = Field(2, ge=0, le=60)
+    search: bool = False # 마커 상실 시 임의 회전 탐색 금지: 계산된 segment만 수행
+    search_turn_speed: float = Field(0.18, ge=0.03, le=0.4)  # 재탐색 제자리 회전 각속도(느리게)
+    search_sweep_s: float = Field(8.0, ge=0.0, le=15.0)      # 이 시간만 회전 재탐색, 이후엔 정지 대기(무한 제자리 회전 금지)
     search_ang: float = Field(0.0, ge=0.0, le=0.3)        # (구) 미사용
-    search_pulse_s: float = Field(0.0, ge=0.0, le=1.0)     # (구) 미사용
-    search_pause_s: float = Field(1.0, ge=0.05, le=3.0)    # (구) 미사용
+    search_pulse_s: float = Field(0.26, ge=0.0, le=1.0)    # 재탐색 회전 펄스 시간
+    search_pause_s: float = Field(0.35, ge=0.05, le=3.0)    # 재탐색 프레임 확인 정지 시간
+    lost_reacquire_turn_speed: float = Field(0.024, ge=0.0, le=0.2) # 선택 target id 분실 후 마지막 관측 bearing 방향 재획득 회전
     drive_ex_tol: float = Field(0.30, ge=0.02, le=0.5)     # 이 범위 안에서는 직진
     steer_ex_tol: float = Field(0.50, ge=0.05, le=0.9)     # 이보다 벗어나면 감속+강조향
     # ex 조향 PID: angular = -( kp·ex + ki·∫ex + kd·dex/dt ), 상한 steer_ang_max.
@@ -290,8 +301,8 @@ class DockConfig(BaseModel):
     # (연속 회전은 마커를 시야에서 날림 → 널리 쓰이는 '조금 돌고 멈춰 재검출' 방식 채택)
     align_ex_tol: float = Field(0.85, ge=0.3, le=0.98)      # 이보다 더 벗어나면(거의 측/후면) 정지 대기
     align_turn_speed: float = Field(0.14, ge=0.05, le=0.4)  # 측면 정렬용 제자리 회전 각속도
-    align_turn_min_drive: int = Field(28, ge=0, le=60)      # 제자리 회전 정지마찰 극복 최소 모터%
-    ang_slew: float = Field(0.015, ge=0.005, le=0.3)         # 루프당 각속도 변화 상한(슬루 제한, 급회전 방지)
+    align_turn_min_drive: int = Field(12, ge=0, le=60)      # 제자리 회전 정지마찰 극복 최소 모터%
+    ang_slew: float = Field(0.012, ge=0.005, le=0.3)         # 루프당 각속도 변화 상한(슬루 제한, 급회전 방지)
     turn_pulse_s: float = Field(0.22, ge=0.05, le=1.0)      # 회전 펄스 길이(조금 돈다)
     turn_pause_s: float = Field(0.40, ge=0.1, le=2.0)       # 회전 후 정지·재검출 시간(모션블러 회피)
     # 무보정 수직 접근: 마커 원근왜곡(skew)을 각도 대용으로 써서 정면축으로 곡선 접근.
@@ -307,6 +318,16 @@ class DockConfig(BaseModel):
     pose_axis_tol_m: float = Field(0.08, ge=0.01, le=0.4)    # 이 이상 축에서 벗어나면 축 합류 우선
     pose_axis_standoff_m: float = Field(0.35, ge=0.12, le=1.2) # 마커 정면축 위 가상 경유점 거리
     pose_axis_bearing_limit_deg: float = Field(22.0, ge=5.0, le=60.0) # 경유점 방위각 제한(FOV 이탈 방지)
+    pose_center_enable: bool = True                          # pose x/z로 마커 중심과 카메라 중심선을 일치시키는 주 제어
+    pose_center_kp_bearing: float = Field(0.0, ge=0.0, le=3.0) # atan2(x,z) → angular
+    pose_center_kp_yaw: float = Field(0.0, ge=0.0, le=1.0)     # yaw 보조 보정(마커 면 정렬용, 작게)
+    pose_center_ang_max: float = Field(0.0, ge=0.0, le=0.3)    # pose 중심선 조향 상한
+    pose_center_sign: float = Field(-1.0, ge=-1.0, le=1.0)      # raw pose x 부호 보정: 현장 기준 마커 쪽으로 회전
+    pose_segment_s: float = Field(0.45, ge=0.1, le=2.0)         # pose 스냅샷으로 계산한 짧은 주행 segment 시간
+    lpark_bearing_tol_deg: float = Field(2.0, ge=1.0, le=20.0) # ㄱ자 주차: 이 각도 밖이면 전진 금지, 먼저 회전
+    lpark_turn_speed: float = Field(0.024, ge=0.005, le=0.12)  # ㄱ자 주차 회전 속도
+    lpark_forward_scale: float = Field(0.28, ge=0.05, le=0.8)  # 정렬 후 짧은 직선 접근 속도 비율
+    lpark_x_tol_m: float = Field(0.015, ge=0.002, le=0.08)      # 카메라 중심선-마커 중심 좌우 허용 오차
     # 벽 도달 후 최종 정지 전에 마커 정면으로 헤딩을 맞춘다(초음파 거리만으로 멈추면 옆을 볼 수 있음).
     final_center_tol: float = Field(0.10, ge=0.02, le=0.3)  # 최종 헤딩 정렬 목표(|ex|)
     final_align_s: float = Field(6.0, ge=0.0, le=20.0)      # 최종 정렬 최대 시간(초과 시 그대로 정지)
@@ -314,7 +335,8 @@ class DockConfig(BaseModel):
     move_pause_s: float = Field(0.90, ge=0.1, le=3.0)      # 이동 후 정지 확인
     lost_done_wall_cm: float = Field(10.5, ge=2.0, le=80.0) # 마커를 놓쳐도 이 거리 안이면 주차 완료
     lost_crawl_wall_cm: float = Field(20.0, ge=5.0, le=80.0) # 마커 상실 후 초음파만 보고 조금 더 접근
-    max_lost_s: float = Field(15.0, ge=1.0, le=60.0)        # 이 시간 넘게 못 찾으면 안전 정지
+    lost_hold_s: float = Field(0.65, ge=0.0, le=5.0)          # 분실 직후 직전 계산 모터값 유지 시간
+    max_lost_s: float = Field(30.0, ge=1.0, le=60.0)        # 이 시간 넘게 못 찾으면 안전 정지
     loop_hz: float = Field(12.0, ge=2.0, le=30.0)
     timeout_s: float = Field(180.0, ge=2.0, le=600.0)
     manage_nav2: bool = True
@@ -393,6 +415,15 @@ async def _dock_loop(cfg: DockConfig) -> None:
     reached = False        # 목표 거리 도달 여부 (도달 후 놓치면 완료로 간주)
     last_l = last_r = 0     # 마지막 명령 표시용
     last_move_l = last_move_r = 0  # 순간 마커 끊김 시 마지막 실제 이동값 유지용
+    last_calc_l = last_calc_r = 0  # 마커가 보일 때 마지막으로 계산된 모터값
+    last_calc_linear = 0.0
+    last_calc_angular = 0.0
+    last_calc_t = 0.0
+    segment_until = 0.0
+    segment_l = segment_r = 0
+    segment_linear = 0.0
+    segment_angular = 0.0
+    segment_pose: dict[str, float] = {}
     prev_ang = 0.0          # 각속도 슬루 제한용 이전 명령(급회전 방지)
     turn_sign = _STEER_SIGN # 회전 극성(카메라 장착 좌우 방향) 자동 학습값 ±1
     last_pulse_abs_ex: float | None = None  # 직전 회전 펄스 시작 시 |ex| (정렬이 나아지는지 판정)
@@ -407,6 +438,12 @@ async def _dock_loop(cfg: DockConfig) -> None:
     yaw_hist: list[float] = []  # 최근 yaw 이력 — 축 접근은 yaw 가 안정적일 때만 발동
     lost_since: float | None = None
     seen_once = False
+    last_seen_id: int | None = None
+    last_seen_ex = 0.0
+    last_seen_turn_dir = 1.0
+    last_seen_bearing = 0.0
+    last_seen_wall_cm: float | None = None
+    last_seen_t = 0.0
     near_count = 0          # 초음파 근접 연속 횟수(스파이크 오탐 방지 디바운스)
     lost_near_count = 0     # 마커 상실 중 근접 연속 횟수(완료 오판 방지 디바운스)
     push_s = 0.0            # 진전 없는 전진 명령 누적 시간(벽 박치기 감시)
@@ -469,39 +506,77 @@ async def _dock_loop(cfg: DockConfig) -> None:
                 skew_ref = None
                 lost_since = lost_since or time.time()
                 wall_cm = await _wall_filtered() if cfg.use_wall_sensor and seen_once else None
-                # 마커 상실 — PID 누적 상태 초기화(재검출 시 과거 오차가 끌려오지 않게)
                 ex_i = 0.0
                 ex_prev_f = None
                 ex_f = None
-                
-                # 1단계: 마커 상실 후 짧은 시간 동안 직진 관성 유지 (Grace Period)
-                if lost <= cfg.lost_grace and (last_move_l != 0 or last_move_r != 0):
-                    await _motor_send(last_move_l, last_move_r)
-                
-                # 2단계: 관성 주행 후 마커 탐색 회전 (Sweep - 펄스 적용하여 확 돌지 않게 차분히 조작)
-                elif False and cfg.search and (time.time() - lost_since <= (cfg.lost_grace * dt) + cfg.search_sweep_s):
-                    if is_turning_pulse:
-                        l, r = _vel_to_speeds(0.0, search_dir * cfg.search_turn_speed)
-                        l, r = _scale_min_drive(l, r, cfg.align_turn_min_drive)
+
+                if wall_cm is not None and wall_cm <= cfg.target_wall_cm:
+                    await _motor_send(0, 0)
+                    await _complete_parking(
+                        cfg,
+                        f"벽 도달 마커 유실 — 벽 {round(wall_cm, 1)}cm, 주차 완료",
+                        {"wall_cm": wall_cm, "lost": lost},
+                    )
+                    break
+
+                # 마커가 사라져도 새로 돌지 않는다. 마지막 pose 스냅샷으로 만든 segment만 끝까지 수행한다.
+                if False and seen_once and time.time() <= segment_until and (segment_l != 0 or segment_r != 0):
+                    await _motor_send(segment_l, segment_r)
+                    prev_ang = segment_angular
+                    last_move_l, last_move_r = segment_l, segment_r
+                    _state.update(
+                        phase="segment_blind",
+                        message="마커 순간 상실 — 저장 pose segment 수행 중",
+                        telemetry={
+                            "wall_cm": wall_cm,
+                            "lost": lost,
+                            "left": segment_l,
+                            "right": segment_r,
+                            "linear": round(segment_linear, 3),
+                            "angular": round(segment_angular, 3),
+                            "segment_left_s": round(segment_until - time.time(), 2),
+                            "last_seen_id": last_seen_id,
+                            "last_seen_age_s": round(time.time() - last_seen_t, 2) if last_seen_t > 0 else None,
+                            **segment_pose,
+                        },
+                    )
+                elif seen_once and last_seen_t > 0 and (wall_cm is None or wall_cm > cfg.target_wall_cm):
+                    lost_elapsed = time.time() - lost_since
+                    cycle_s = max(0.05, cfg.search_pulse_s + cfg.search_pause_s)
+                    in_pulse = (lost_elapsed % cycle_s) <= cfg.search_pulse_s
+                    if in_pulse:
+                        turn_hint = last_seen_bearing if abs(last_seen_bearing) >= 0.01 else last_seen_ex or 1.0
+                        remembered_ang = math.copysign(cfg.lost_reacquire_turn_speed, turn_hint)
+                        reacquire_linear = 0.0
+                        l, r = _vel_to_speeds(reacquire_linear, remembered_ang)
+                        l, r = _scale_min_drive(l, r, 10)
                     else:
+                        remembered_ang = 0.0
                         l, r = 0, 0
                     await _motor_send(l, r)
-                    prev_ang = 0.0
+                    prev_ang = remembered_ang
                     last_move_l = last_move_r = 0
                     _state.update(
-                        phase="search",
-                        message=f"마커 상실 — 재탐색 회전 중 ({round(time.time() - lost_since - cfg.lost_grace * dt, 1)}s)",
-                        telemetry={"wall_cm": wall_cm, "lost": lost, "left": l, "right": r},
+                        phase="lost_reacquire",
+                        message="선택 마커 분실 — 마지막 관측 bearing 방향으로 재획득 회전",
+                        telemetry={
+                            "wall_cm": wall_cm, "lost": lost, "left": l, "right": r,
+                            "angular": round(remembered_ang, 3),
+                            "last_calc_angular": round(last_calc_angular, 3),
+                            "turn_source": "last_seen_bearing",
+                            "last_seen_id": last_seen_id,
+                            "last_seen_bearing_deg": round(math.degrees(last_seen_bearing), 1),
+                            "last_seen_age_s": round(time.time() - last_seen_t, 2),
+                            "marker_seen": False,
+                        },
                     )
-                
-                # 3단계: 탐색 실패 시 완전 정지 대기
                 else:
                     await _motor_send(0, 0)
                     prev_ang = 0.0
                     last_move_l = last_move_r = 0
                     _state.update(
                         phase="no_marker",
-                        message="마커 없음 — 가이드선이 보이면 다시 진행",
+                        message="마커 없음 — 마지막 위치 정보 없음, 정지 대기",
                         telemetry={"wall_cm": wall_cm, "lost": lost, "left": 0, "right": 0, "marker_seen": False},
                     )
 
@@ -510,7 +585,7 @@ async def _dock_loop(cfg: DockConfig) -> None:
 
                 # 마커가 없으면 절대 이동하지 않는다.
                 # 단, 초음파 센서 기준으로 이미 벽에 도달한 상태라면 (카메라 근접 사각지대 유실) 주차 완료로 판정
-                if wall_cm is not None and wall_cm <= max(cfg.lost_done_wall_cm, cfg.target_wall_cm + 5.0):
+                if wall_cm is not None and wall_cm <= cfg.target_wall_cm:
                     await _complete_parking(
                         cfg,
                         f"벽 도달 마커 유실 — 벽 {round(wall_cm, 1)}cm, 주차 완료",
@@ -557,6 +632,12 @@ async def _dock_loop(cfg: DockConfig) -> None:
             search_dir = 1.0 if ex >= 0 else -1.0
 
             p = _pose(target[0], calib, cfg.marker_len_m, h) if pose_ok else None
+            last_seen_id = int(target[1])
+            last_seen_ex = ex
+            last_seen_turn_dir = 1.0 if ex >= 0 else -1.0
+            last_seen_bearing = math.atan2(p["x_m"], p["z_m"]) if p is not None else ex
+            last_seen_wall_cm = wall_f
+            last_seen_t = time.time()
             if p is not None:
                 yaw_hist.append(p["yaw_deg"])
                 if len(yaw_hist) > 5:
@@ -700,8 +781,8 @@ async def _dock_loop(cfg: DockConfig) -> None:
                 )
                 if abs(axis_bearing) > math.radians(12):
                     linear = cfg.lin_max * 0.35
-                angular = max(prev_ang - cfg.ang_slew, min(prev_ang + cfg.ang_slew, angular))
-                prev_ang = angular
+                angular = 0.0
+                prev_ang = 0.0
 
                 if cfg.use_wall_sensor:
                     if wall_cm is None:
@@ -711,6 +792,10 @@ async def _dock_loop(cfg: DockConfig) -> None:
                         break
                     if wall_cm is not None and wall_cm <= cfg.slow_wall_cm:
                         linear = min(linear, cfg.lin_max * 0.45)
+
+                # 곡선 주행만 허용한다. angular가 linear보다 크면 한쪽 바퀴가 역회전해 제자리 회전이 된다.
+                max_curve_ang = max(0.0, linear * 0.20)
+                angular = max(-max_curve_ang, min(max_curve_ang, angular))
 
                 l, r = _vel_to_speeds(linear, angular)
                 l, r = _scale_min_drive(l, r, cfg.min_drive)
@@ -731,6 +816,91 @@ async def _dock_loop(cfg: DockConfig) -> None:
                     "axis_bearing_deg": round(math.degrees(axis_bearing), 1),
                     "axis_target": axis_target,
                     "center_ok": center_ok, "dist_ok": dist_ok, "pose": True,
+                }
+                await asyncio.sleep(dt)
+                continue
+
+            # ── ㄱ자 주차 상태머신: 회전 → 직선 접근 → 재검출 ──
+            if cfg.pose_center_enable and p is not None:
+                bearing = math.atan2(p["x_m"], p["z_m"])
+                yaw_rad = math.radians(p["yaw_deg"])
+                bearing_abs = abs(bearing)
+                bearing_tol = math.radians(cfg.lpark_bearing_tol_deg)
+                wall_cm = wall_cm if wall_cm is not None else (await _wall_filtered() if cfg.use_wall_sensor else None)
+
+                if cfg.use_wall_sensor and wall_cm is not None and wall_cm <= cfg.target_wall_cm:
+                    await _complete_parking(
+                        cfg,
+                        f"벽 앞 주차 완료 — {round(wall_cm, 1)}cm",
+                        {"wall_cm": wall_cm, "x_m": round(p["x_m"], 3), "z_m": round(p["z_m"], 3)},
+                    )
+                    break
+
+                # ㄱ자 주차 원칙:
+                # 1) 마커 중심 방향(bearing)이 틀어져 있으면 전진하지 않고 먼저 몸통만 튼다.
+                # 2) bearing이 정렬된 짧은 순간에만 직선 접근한다.
+                # 3) 전진하다 마커가 시야에서 빠지면 target is None 분기에서 마지막 bearing 방향으로 재획득 회전한다.
+                x_abs = abs(p["x_m"])
+                center_ready = bearing_abs <= bearing_tol and x_abs <= cfg.lpark_x_tol_m
+                if not center_ready:
+                    linear = 0.0
+                    turn_hint = bearing if abs(bearing) >= math.radians(0.5) else p["x_m"]
+                    angular = math.copysign(cfg.lpark_turn_speed, turn_hint)
+                    turning = (time.time() - started) % (cfg.turn_pulse_s + cfg.turn_pause_s) <= cfg.turn_pulse_s
+                    if turning:
+                        l, r = _vel_to_speeds(0.0, angular)
+                        l, r = _scale_min_drive(l, r, cfg.align_turn_min_drive)
+                    else:
+                        angular = 0.0
+                        l, r = 0, 0
+                    phase = "lpark_turn"
+                    message = "ㄱ자 주차 — 마커 중심 방향으로 회전 정렬 중"
+                else:
+                    angular = 0.0
+                    prev_ang = 0.0
+                    linear = cfg.lin_max * cfg.lpark_forward_scale
+                    if guide_count < 2:
+                        linear = min(linear, cfg.lin_max * 0.30)
+                    if wall_cm is not None and wall_cm <= cfg.slow_wall_cm:
+                        linear = min(linear, cfg.lin_max * 0.24)
+                    if dist_err <= (cfg.dist_tol_m * 3 if use_pose else cfg.size_tol * 3):
+                        linear = min(linear, cfg.lin_max * 0.20)
+                    l, r = _vel_to_speeds(linear, 0.0)
+                    l, r = _scale_min_drive(l, r, cfg.min_drive)
+                    phase = "lpark_forward"
+                    message = "ㄱ자 주차 — bearing 정렬, 짧은 직선 접근 중"
+
+                last_l, last_r = l, r
+                last_calc_l, last_calc_r = l, r
+                last_calc_linear, last_calc_angular = linear, angular
+                last_calc_t = time.time()
+                # 분실 시 앞으로 계속 밀지 않는다. 마지막 pose는 재획득 회전 방향 판단에만 쓴다.
+                segment_l = segment_r = 0
+                segment_linear = 0.0
+                segment_angular = 0.0
+                segment_until = 0.0
+                segment_pose = {
+                    "x_m": round(p["x_m"], 3),
+                    "z_m": round(p["z_m"], 3),
+                    "bearing_deg": round(math.degrees(bearing), 1),
+                    "yaw_deg": round(p["yaw_deg"], 1),
+                }
+                if l or r:
+                    last_move_l, last_move_r = l, r
+                await _motor_send(l, r)
+
+                _state["phase"] = phase
+                _state["message"] = message
+                _state["telemetry"] = {
+                    "id": int(target[1]), "ex": round(ex, 3), "marker_ex": round(marker_ex, 3),
+                    "x_m": round(p["x_m"], 3), "z_m": round(p["z_m"], 3),
+                    "yaw_deg": round(p["yaw_deg"], 1), "bearing_deg": round(math.degrees(bearing), 1),
+                    "bearing_tol_deg": cfg.lpark_bearing_tol_deg,
+                    "x_tol_m": cfg.lpark_x_tol_m,
+                    "linear": round(linear, 3), "angular": round(angular, 3),
+                    "left": l, "right": r, "wall_cm": wall_cm,
+                    "center_ok": center_ready, "dist_ok": dist_ok, "pose": True,
+                    "mode": "l_parking",
                 }
                 await asyncio.sleep(dt)
                 continue
@@ -797,6 +967,9 @@ async def _dock_loop(cfg: DockConfig) -> None:
                 l, r = int(round(l * s)), int(round(r * s))
 
             last_l, last_r = l, r
+            last_calc_l, last_calc_r = l, r
+            last_calc_linear, last_calc_angular = linear, angular
+            last_calc_t = time.time()
             if l or r:
                 last_move_l, last_move_r = l, r
             await _motor_send(l, r)

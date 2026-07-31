@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# 터미널 3 — robot_agent (온보드 FastAPI :9001, rclpy 노드 포함)
 set -e
-source /home/robotPrj/controller/drive/ros_ws/ros_source.sh
-cd /home/robotPrj/controller/drive/robot_agent
-export PYTHONUNBUFFERED=1
+BASE=/home/roscamp-repo-2/aba_controller/libi_drive_controller
+AGENT="$BASE/robot_agent"
+source "$BASE/ros_ws/ros_source.sh"
+cd "$AGENT"
 exec .venv/bin/python main.py

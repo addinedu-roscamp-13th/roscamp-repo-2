@@ -107,7 +107,7 @@ graph TD
    * FastAPI 요청 수신 시, `ArmDriver`가 파이썬 라이브러리(`pymycobot`)를 사용하여 USB-시리얼 케이블을 통해 물리 모터 보드에 직접 명령을 전송합니다 (ROS2 미경유).
 4. **주행 로봇 제어 (Pinky-1, Pinky-2, Pinky-3)**:
    * FastAPI 요청 수신 시, 백그라운드에서 동작 중인 ROS2 노드(`rclpy`)에 명령을 내려 속도 토픽(`cmd_vel`)을 발생시키고 바퀴를 제어합니다.
-    * 만약 ROS2가 구동 중이 아닌 경우, 에이전트가 직접 모터 스크립트([motor_ctrl.py](file:///home/robotPrj_Boilerplate/controller/drive/robot_agent/app/hardware/motor_ctrl.py))를 실행해 시리얼 통신으로 제어하는 폴백(Fallback) 방식을 내장하고 있습니다.
+    * 만약 ROS2가 구동 중이 아닌 경우, 에이전트가 직접 모터 스크립트([motor_ctrl.py](file:///home/roscamp-repo-2/aba_controller/libi_drive_controller/robot_agent/app/hardware/motor_ctrl.py))를 실행해 시리얼 통신으로 제어하는 폴백(Fallback) 방식을 내장하고 있습니다.
 
 ### 🔄 데이터 흐름 및 메시지 규칙 (Data Flow & Message Rules)
 
@@ -372,7 +372,7 @@ sudo journalctl -u robot_agent.service -f   # 실시간 로그
 ---
 
 ## 5. 분석 보고서
-* [핑키프로 YOLOv8 인식 신뢰도 임계값 분석 보고서](file:///home/robotPrj_Boilerplate/controller/drive/robot_agent/pinky_detect_threshold_report.md)
+* [핑키프로 YOLOv8 인식 신뢰도 임계값 분석 보고서](file:///home/roscamp-repo-2/aba_controller/libi_drive_controller/robot_agent/pinky_detect_threshold_report.md)
 
 ### 핑키프로(Pinky Pro) YOLOv8 임계값 별 인식률 성능 표
 

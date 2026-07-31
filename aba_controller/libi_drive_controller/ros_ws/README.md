@@ -1,11 +1,11 @@
-# controller/drive/ros_ws build record
+# controller/ros_ws build record
 
 ## 2026-06-30
 
-Executed from `/home/robotPrj_Boilerplate/controller/drive/ros_ws`.
+Executed from `/home/roscamp-repo-2/controller/ros_ws`.
 
 ```bash
-cd /home/robotPrj_Boilerplate/controller/drive/ros_ws
+cd /home/roscamp-repo-2/controller/ros_ws
 source /opt/ros/jazzy/setup.bash
 colcon build
 ```
@@ -39,6 +39,6 @@ source install/setup.bash
 Environment check:
 
 ```text
-AMENT_PREFIX_PATH includes /home/robotPrj_Boilerplate/controller/drive/ros_ws/install packages and /opt/ros/jazzy.
+AMENT_PREFIX_PATH includes /home/roscamp-repo-2/controller/ros_ws/install packages and /opt/ros/jazzy.
 ROS_PACKAGE_PATH is empty.
 ```
