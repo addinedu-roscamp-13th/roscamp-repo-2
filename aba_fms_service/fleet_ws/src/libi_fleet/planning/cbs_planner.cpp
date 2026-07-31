@@ -362,9 +362,75 @@ std::vector<Route> cbs_plan_timed(
   std::priority_queue<CbsNode, std::vector<CbsNode>, Cmp> tree;
   tree.push(root);
 
+  // ── 폴백: 우선순위 계획 ──────────────────────────────────────────────────
+  //
+  // [2026-08-01] **CBS 가 상한에 걸리는 것은 해가 없어서가 아니다.** 실측으로 확인했다.
+  //
+  // 복도에서 두 로봇이 정면으로 만나면 **아무리 미뤄도 안 풀린다** — 한쪽이 대피선으로
+  // 빠져야만 풀린다. 그런데 CBS 가 만드는 제약은 "그 몇 틱만 피해라" 뿐이라
+  // "1틱 더 미룬 안"이 사실상 무한히 생기고, 그 전부가 우회안보다 싸다:
+  //
+  //     미룬 안   cost 212 → 234 → 238 → 242 → …   (수십만 개)
+  //     우회안    cost ~400                        (그 뒤에 줄 서 있음)
+  //
+  // 최선우선은 400 에 닿기 전에 상한을 소진한다. 정답이 트리 안에 있는데 도달을 못 한다.
+  // CBS 의 알려진 약점(corridor symmetry)이고, 정공법은 corridor reasoning(CBSH2-RTC)
+  // 이지만 훨씬 크다. 실측(2900+ 케이스)에서 이 폴백으로 충분했다.
+  //
+  // ⚠️ **제약집합 중복검출은 이 문제의 답이 아니다.** 표준 CBS 위생으로 넣어 봤더니
+  //    차단 건수가 **0** 이었다 — 같은 충돌이라도 누적 제약 이력이 달라 서로 다른 노드다.
+  //
+  // 우선순위 계획은 최적이 아니지만 **항상 끝나고**, 앞 로봇을 움직이는 장애물로 두므로
+  // "남이 점유한 곳을 우회" 가 자연히 나온다 — 응대(INTERACTING)로 멈춘 로봇을 피해
+  // 가야 한다는 요구와 같은 성질이다.
+  //
+  // 순서를 여러 개 시도한다. 고정 순서 하나는 해가 있는데도 실패할 수 있다(불완전성).
+  auto plan_with_order = [&](const std::vector<int> & order) -> std::vector<Route> {
+    std::vector<Route> out(N);
+    TimedConstraints acc;                 // 앞 로봇들이 만든 누적 장애물
+    for (int idx : order) {
+      out[idx] = timed_astar(g, starts[idx], goals[idx], acc, horizon, opt.max_expansions);
+      if (out[idx].empty()) { return {}; }
+      for (size_t k = 0; k < out[idx].size(); ++k) {
+        const Step & st = out[idx][k];
+        // ⚠️ 목표 체류는 depart == kNeverEnds 다. 여유를 더할 때 포화시킨다 —
+        //    무한을 평범한 정수처럼 더하면 넘칠 수 있다.
+        const int dep = st.depart >= kNeverEnds ? kNeverEnds : st.depart + opt.clearance;
+        acc.vertex.push_back({st.v, st.arrive - opt.clearance, dep});
+        if (k + 1 < out[idx].size()) {
+          // 역방향 통과 금지 — 자리 맞바꿈(swap)을 막는다.
+          acc.edge.push_back({out[idx][k + 1].v, st.v,
+                              st.depart - opt.clearance,
+                              out[idx][k + 1].arrive + opt.clearance});
+        }
+      }
+    }
+    return out;
+  };
+
+  auto prioritized = [&]() -> std::vector<Route> {
+    std::vector<int> order(N);
+    for (int i = 0; i < N; ++i) { order[i] = i; }
+    if (auto r = plan_with_order(order); !r.empty()) { return r; }
+
+    std::vector<int> rev(order.rbegin(), order.rend());
+    if (auto r = plan_with_order(rev); !r.empty()) { return r; }
+
+    // 제약 많은 순 — 자유도가 적은 로봇에게 먼저 자리를 준다.
+    std::vector<int> hard = order;
+    std::vector<int> len(N, 0);
+    for (int i = 0; i < N; ++i) {
+      const std::vector<int> h = reverse_dijkstra(g, goals[i]);
+      len[i] = (starts[i] >= 0 && starts[i] < static_cast<int>(h.size())) ? h[starts[i]] : 0;
+    }
+    std::sort(hard.begin(), hard.end(), [&](int a, int b) { return len[a] > len[b]; });
+    return plan_with_order(hard);
+  };
+
   int expanded = 0;
   while (!tree.empty()) {
-    if (++expanded > opt.max_nodes) { return {}; }   // 상한 초과 — 실패로 본다
+    // 상한 초과 → **폴백으로 간다.** 예전엔 곧장 return 이라 폴백을 건너뛰었다.
+    if (++expanded > opt.max_nodes) { return prioritized(); }
     CbsNode cur = tree.top();
     tree.pop();
 
@@ -394,7 +460,7 @@ std::vector<Route> cbs_plan_timed(
       tree.push(child);
     }
   }
-  return {};   // 제약트리 소진 — 해 없음
+  return prioritized();   // 제약트리 소진 → 폴백(위 주석 참고)
 }
 
 std::vector<Path> cbs_plan(

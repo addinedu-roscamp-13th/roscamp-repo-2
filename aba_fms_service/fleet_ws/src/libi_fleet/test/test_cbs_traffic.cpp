@@ -288,15 +288,25 @@ TEST(CbsTraffic, DeadEndCostsUTurn)
   const auto g = load_graph();
   const auto tg = tr.graph_for(g, {});
 
-  // arte2 의 v0(주차장)은 v1 하고만 이어져 있다 — 나가려면 반드시 U턴.
-  ASSERT_EQ(g.neighbors(0).size(), 1u) << "테스트 전제: v0 은 막다른 정점";
-  const int w = g.neighbors(0)[0];
+  // [2026-08-01] **정점 번호를 박지 않는다.** 예전엔 "arte2 의 v0(주차장)" 을 전제했는데
+  //   두 겹으로 낡아 있었다: 이 타깃이 로드하는 것은 arte2 가 아니라 new_map 이고,
+  //   arte2 에도 `주차장` 정점은 없다(있는 것은 충전소통로·충전소입구·충전소).
+  //   그래서 `neighbors(0).size()==1` 이 깨져 테스트가 전제에서 죽었다.
+  //   이제 그래프에서 **차수 1인 정점을 찾아** 쓴다. 없으면 이 그래프로는 잴 수 없다.
+  int dead = -1;
+  for (int i = 0; i < g.size(); ++i) {
+    if (g.neighbors(i).size() == 1u) { dead = i; break; }
+  }
+  if (dead < 0) {
+    GTEST_SKIP() << "이 navgraph 에는 막다른 정점이 없다 — U턴 몫을 잴 대상이 없다";
+  }
+  const int w = g.neighbors(dead)[0];
 
   int cost = -1;
-  for (const auto & [n, c] : tg[0]) { if (n == w) { cost = c; } }
+  for (const auto & [n, c] : tg[dead]) { if (n == w) { cost = c; } }
   ASSERT_GT(cost, 0);
 
-  const auto & a = g.vertex(0);
+  const auto & a = g.vertex(dead);
   const auto & b = g.vertex(w);
   const double travel = std::hypot(b.x - a.x, b.y - a.y) / tr.speed_mps();
   const int travel_only = libi_fleet::ticks_for(1.0, 1.0 / travel, tr.tick_seconds());
