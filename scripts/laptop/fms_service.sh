@@ -98,7 +98,13 @@ PY
 
 PATROL_ROUTE="$(resolve_route "$NAVGRAPH" "$PATROL_NAMES")" || die "patrol_route 해석 실패 — 위 stderr 참고 (navgraph 재생성 필요할 수 있음)"
 SECURITY_ROUTE="$(resolve_route "$NAVGRAPH" "$SECURITY_NAMES")" || die "security_patrol_route 해석 실패"
+# [2026-08-01] 동시 1대만 허용할 구역. 충전소는 대피선 없는 막다른 사슬이라
+# 두 대가 들어가면 서로 못 지나간다(정면교차 전수검사 462쌍 중 실패 6건이 전부 여기였다).
+# ⚠️ 없는 이름이면 그냥 비워 둔다 — 규칙이 안 걸릴 뿐 기동을 막지는 않는다.
+EXCLUSIVE_REGION="$(resolve_route "$NAVGRAPH" "충전소 충전소통로 충전소입구" 2>/dev/null || true)"
+
 echo "[fms] patrol_route         = $PATROL_ROUTE"
+echo "[fms] exclusive_region     = ${EXCLUSIVE_REGION:-(없음)}"
 echo "[fms] security_patrol_route = $SECURITY_ROUTE"
 
 need_cmd tmux "sudo apt install -y tmux"
@@ -146,7 +152,7 @@ tmux new-session -d -s "$SESSION" -n bridge \
 # fleet_ws 안 빌드면 colcon build. RMW/CycloneDDS 는 ~/.bashrc 설정을 따른다(bridge 와 동일).
 if [ -f "$FLEET_WS/install/setup.bash" ] || ensure_built "$FLEET_WS"; then
   tmux new-window -t "$SESSION" -n fleet-node \
-    bash -c "source /opt/ros/jazzy/setup.bash && source '$FLEET_WS/install/setup.bash' && export ROS_DOMAIN_ID=$SERVER_DOMAIN && echo '[fleet-node] 배차·교통 (domain $SERVER_DOMAIN)...' && ros2 run libi_fleet fleet_node --ros-args -p navgraph_file:='$NAVGRAPH' -p arrive_radius:=$ARRIVE_RADIUS -p prefetch_radius:=$PREFETCH_RADIUS -p patrol_route:='$PATROL_ROUTE' -p security_patrol_route:='$SECURITY_ROUTE'; exec bash"
+    bash -c "source /opt/ros/jazzy/setup.bash && source '$FLEET_WS/install/setup.bash' && export ROS_DOMAIN_ID=$SERVER_DOMAIN && echo '[fleet-node] 배차·교통 (domain $SERVER_DOMAIN)...' && ros2 run libi_fleet fleet_node --ros-args -p navgraph_file:='$NAVGRAPH' -p arrive_radius:=$ARRIVE_RADIUS -p prefetch_radius:=$PREFETCH_RADIUS -p patrol_route:='$PATROL_ROUTE' -p security_patrol_route:='$SECURITY_ROUTE' -p exclusive_region:='$EXCLUSIVE_REGION'; exec bash"
 fi
 
 # 로봇 상태 어댑터 — 도메인 86 에서 돈다(fleet_node·브릿지와 같은 자리라 여기 둔다).

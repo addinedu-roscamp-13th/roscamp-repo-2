@@ -152,10 +152,31 @@ public:
     // 야간 보안순회 루프. "auto" → security_patrol_boundary_cycle(현재 주간과 동일 위임).
     // 그 외는 수동 정점 목록(런치 스크립트가 이름→인덱스 해석해 넣는다).
     const std::string sec_route_s = declare_parameter<std::string>("security_patrol_route", "auto");
+    // [2026-08-01] 한 번에 한 대만 들어갈 수 있는 구역(정점 인덱스, 공백 구분).
+    //
+    // arte2 의 충전소가 **대피선 없는 막다른 사슬**이다:
+    //     (본관) ── 충전소입구(차수3) ── 충전소통로(차수2) ── 충전소(차수1)
+    // 두 대가 들어가면 서로 못 지나간다 — 정면교차 전수검사 462쌍 중 실패 6건이
+    // 전부 이 셋 사이였고 그 실패는 정답이다(계획으로 풀 수 없다).
+    //
+    // ⚠️ 여기 **번호를 박지 않는다.** 이름→인덱스 해석은 런처가 한다(patrol_route 와
+    //    같은 관례). 오늘 `주차장` 정점이 사라졌는데 코드가 번호를 들고 있어 init-pose 가
+    //    죽은 전례가 있다. 비워 두면 규칙이 안 걸릴 뿐 오작동은 없다.
+    const std::string excl_s = declare_parameter<std::string>("exclusive_region", "");
 
     if (!graph_.load(navgraph_file_)) {
       RCLCPP_FATAL(get_logger(), "navgraph 로드 실패: %s", navgraph_file_.c_str());
       throw std::runtime_error("navgraph load failed");
+    }
+    {   // "7 19 20 21" 같은 공백 구분 인덱스열 → 집합
+      std::istringstream is(excl_s);
+      int v;
+      while (is >> v) { if (v >= 0) { exclusive_region_.insert(v); } }
+      if (!exclusive_region_.empty()) {
+        std::string js;
+        for (int i : exclusive_region_) { js += " v" + std::to_string(i); }
+        RCLCPP_INFO(get_logger(), "[dispatch] 배타 구역(동시 1대):%s", js.c_str());
+      }
     }
     active_disp_ = disp_name;
     active_traf_ = traf_name;
@@ -334,6 +355,35 @@ private:
       res->accepted = false; res->reason = "bad_goal_vertex"; return;
     }
     const int arm_actions = req->arm_actions > 0 ? req->arm_actions : 0;   // 팔 동작 횟수
+
+    // ── [2026-08-01] 목표 중복을 **여기서 막는다** ──────────────────────────
+    //
+    // 계획(cbs_planner)은 목표 도착 후 그 정점에 계속 앉아 있다고 본다(kNeverEnds).
+    // 그래서 두 로봇의 목표가 같으면 **해가 아예 없다** — 계획이 통째로 실패하고
+    // 시스템은 조용히 반응형으로 내려간다.
+    //
+    // 예전에는 그 사실을 계획이 실패한 **뒤에야** 로그로 알렸다(아래 replan 경고).
+    // 알리는 것과 막는 것은 다르다. 배차가 안 겹치게 보장한다는 전제 위에 계획이
+    // 서 있으므로, 그 보장을 실제로 여기서 세운다.
+    //
+    // ⚠️ 자동배차와 **강제배정 둘 다** 지나는 자리다. 강제배정만 열어 두면
+    //    관제 화면에서 같은 정점을 두 번 지정하는 것으로 그대로 재현된다.
+    //
+    // 순회 목표는 세지 않는다 — 순회는 중단 가능해서 경매 후보로 들어가고(아래
+    // is_on_patrol 참고), 배달이 잡으면 그 순회는 취소된다.
+    for (const auto & t : tasks_) {
+      if (t.patrol || t.path.empty()) { continue; }
+      if (t.path.back() != goal) { continue; }
+      if (!req->robot.empty() && t.robot == req->robot) { continue; }   // 같은 로봇 재지정은 허용
+      res->accepted = false;
+      res->reason = "goal_taken";
+      RCLCPP_WARN(get_logger(),
+                  "[dispatch] v%d 는 이미 %s 의 목표입니다 — 거절(goal_taken). "
+                  "같은 정점을 두 로봇의 목표로 두면 시간표가 아예 안 선다.",
+                  goal, t.robot.c_str());
+      return;
+    }
+
     std::string robot;
     if (!req->robot.empty()) {              // 특정 로봇 강제 배정
       auto it = robots_.find(req->robot);
@@ -369,6 +419,40 @@ private:
     if (r.battery < need) {
       res->accepted = false; res->reason = "insufficient_battery"; return;
     }
+    // ── [2026-08-01] 충전소 통로는 한 번에 한 대만 ────────────────────────
+    //
+    // arte2 의 충전소는 **대피선 없는 막다른 사슬**이다:
+    //     (본관) ── 충전소입구(차수3) ── 충전소통로(차수2) ── 충전소(차수1)
+    // 두 로봇이 이 안에서 서로 지나갈 방법이 없다. 실측으로 확인했다 — 정면교차
+    // 전수검사 462쌍 중 실패 6건이 **전부 이 셋 사이**였고, 그 실패는 정답이다.
+    //
+    // 그러니 계획에 맡기지 말고 **배차에서 직렬화**한다. 안전한 쪽(뒤따라 들어가기)까지
+    // 막지만, 한 대 폭 통로에서는 보수적인 편이 맞다.
+    //
+    // ⚠️ 정점 **번호가 아니라 이름**으로 잡는다. 오늘 `주차장` 정점이 사라졌는데
+    //    코드가 번호를 들고 있어 init-pose 가 죽은 전례가 있다(pi.sh 의 충전소 수정).
+    //    이름은 지도가 바뀌어도 따라온다. 못 찾으면 규칙이 그냥 안 걸릴 뿐 오작동은 없다.
+    {
+      const std::set<int> & spur = exclusive_region_;
+      auto touches = [&](const std::vector<int> & p, size_t from) {
+        for (size_t k = from; k < p.size(); ++k) { if (spur.count(p[k])) { return true; } }
+        return false;
+      };
+      if (!spur.empty() && touches(path, 0)) {
+        for (const auto & t : tasks_) {
+          if (t.robot == robot || t.path.empty()) { continue; }   // 자기 것은 곧 대체된다
+          const size_t from = t.idx > 0 ? t.idx - 1 : 0;          // 남은 경로만 본다
+          if (!touches(t.path, from)) { continue; }
+          res->accepted = false;
+          res->reason = "exclusive_region_busy";
+          RCLCPP_WARN(get_logger(),
+                      "[dispatch] 충전소 통로에 %s 가 이미 들어가 있습니다 — 거절. "
+                      "대피선이 없어 두 대가 서로 못 지나간다.", t.robot.c_str());
+          return;
+        }
+      }
+    }
+
     if (r.busy) { cancel_task(robot); }   // 순회/기존 task 취소하고 이 배차로 대체 (특정 배차·경매 낙찰 공통)
     r.busy = true;
     // 콘솔이 지정한 커스텀 작업 이름(requester 필드에 실려옴). 비우면 자동 T-N.
@@ -1191,6 +1275,7 @@ private:
   pluginlib::ClassLoader<TrafficBase> traf_loader_;
   std::shared_ptr<DispatcherBase> dispatcher_;
   std::shared_ptr<TrafficBase> traffic_;
+  std::set<int> exclusive_region_;   // 동시 1대만 허용(충전소 사슬 등). 런처가 인덱스로 준다.
   std::string active_disp_;
   std::string active_traf_;
 
