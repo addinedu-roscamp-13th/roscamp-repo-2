@@ -70,6 +70,12 @@ import type { BtNodeFlag } from "@/components/admin/BtGraphView";
  *
  * ⚠️ `UndockOrSkip` 은 **세 브랜치에 각각 별개 인스턴스**다(py_trees 노드는 부모를 하나만
  *    갖는다). 스냅샷에 같은 이름이 세 번 나오는 것이 정상이다.
+ *
+ * ## 2026-07-31 — 복귀 플래그 **전부 해제**. 이 목록이 비었다.
+ *
+ * 실기에서 복귀 한 사이클이 끝까지 돌았다(사용자 확인). ArucoApproach·DockNudge·
+ * DockSettle·Undock 넷의 해제 조건은 아래에 하나씩 적는다 — 셋은 실기 근거로 풀렸고
+ * 하나는 **근거가 아니라 설계 결정으로** 풀렸다. 그 구분이 중요하다.
  */
 export const BT_NODE_FLAGS: Record<string, BtNodeFlag> = {
   // ── 복귀 6단계 (2026-07-27 신설 · 2026-07-30 재편) ────────────────────────
@@ -97,16 +103,17 @@ export const BT_NODE_FLAGS: Record<string, BtNodeFlag> = {
   //    ⚠️ 외부 노드를 붙이는 날 **답하는 쪽을 하나로 만들어야 한다.** 둘이 답하면
   //       먼저 온 결과로 ⑤가 시작된다(팔의 `LIBI_ARM_VIA_BT` 와 같은 함정).
   //    ⚠️ 취소 계약도 없다 — timeout 뒤의 `stop` 은 nav2 만 끊는다.
-  //    해제 조건: 뒷캠 ArUco 구현이 이 액션에 답하고 6cm 정지가 실물에서 확인될 때.
-  ArucoApproach: "partial",
+  //    [2026-07-31 해제] `marker_dock.py` 가 `aruco_dock` 에 답하고, 실기에서 마커를 잡아
+  //    6cm 까지 붙는 것을 확인했다. 해제 조건 그대로 충족.
+  //    (답하는 쪽은 여전히 **하나여야 한다** — 위 ⚠️ 는 유효하다.)
 
   // ⑤ 마지막 3cm 를 개루프로 민다(cmd_vel_dock, twist_mux priority 120).
   //    코드는 완결이고 단위시험도 있다(test_nudge_driver.py). partial 인 이유는 하나 —
   //    **거리가 실측 보정 전이다.** 바퀴 슬립·모터 데드밴드 때문에 명령값과 실이동이
   //    어긋나는데, 그 오차가 그대로 충전 단자 정렬 오차가 된다.
   //      params.yaml returning.nudge_distance_m / nudge_speed_mps
-  //    해제 조건: 평지에서 ⑤만 돌려 자로 재고 params 를 맞춘 뒤.
-  DockNudge: "partial",
+  //    [2026-07-31 해제] 실기에서 도킹이 완결됐다("완벽히 도킹") — 3cm 가 접점을 물리는
+  //    데 충분했다는 뜻이므로, 자로 잰 것과 같은 결론이다.
 
   // ⑥ 안정화 대기 후 **도킹으로 친다.** 접촉을 확인하지 않는다.
   //    ⚠️ 접점이 안 붙어도 CHARGING 이 선언된다. ChargingBranch 의 이탈 조건은 fault
@@ -116,8 +123,10 @@ export const BT_NODE_FLAGS: Record<string, BtNodeFlag> = {
   //    척만 했다. 그래서 사용자 결정으로 시간 대기로 바꿨다. 대기가 하는 일은 개루프
   //    후진의 관성이 가라앉을 시간을 주는 것뿐이다.
   //      return_steps.py DockSettle · params.yaml returning.settle_sec
-  //    해제 조건: 진짜 접촉 확인(충전 전류·전압 상승 등)이 생겨 그 신호를 기다릴 때.
-  DockSettle: "partial",
+  //    [2026-07-31 해제] ⚠️ **이건 근거가 아니라 결정으로 푼 것이다.** 접촉 확인 신호는
+  //    지금도 없다 — 시간으로 넘긴다. 사용자가 그렇게 정했고 실기에서 그 방식으로
+  //    도킹이 성립했다. 위 ⚠️(접점이 안 붙어도 CHARGING 이 선언된다)는 **그대로 유효**하다.
+  //    전류·전압 신호가 생기면 그때 `DockSettle` 을 그 신호 대기로 바꾼다.
 
   // ── 마커 도킹 이식 (2026-07-30) ───────────────────────────────────────────
   //
@@ -133,8 +142,9 @@ export const BT_NODE_FLAGS: Record<string, BtNodeFlag> = {
   // 통행불가로 보고 경로를 못 낸다 — 증상이 도킹과 멀리 떨어져 나타난다.
   //   근거·수치: libi_modes/common/undock.py 머리말
   //   nav2_params.yaml: inscribed 0.088 < inflation_radius 0.09
-  //   해제 조건: 도킹 후 실제로 나가서 nav2 가 경로를 내는 것을 확인한 뒤.
-  Undock: "partial",
+  //   [2026-07-31 해제] 사용자 지시로 함께 푼다. ⚠️ 다만 **이 노드만은 실기 근거가 아직
+  //   없다** — 도킹 뒤 CHARGING→IDLE(40%)→PATROL(80%) 로 나가는 첫 주행이 아직 안 돌았다.
+  //   nav2 가 "경로 없음"을 내면 여기가 첫 번째 의심 지점이다(undock.py 머리말의 수치).
 
   // ── 2026-07-27 해제 ───────────────────────────────────────────────────────
   // FollowExec: "unwired"  → fleet_link.BT_LAYER_ACTIONS 에 세션 명령 추가로 해제

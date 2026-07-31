@@ -106,6 +106,28 @@ DYN_OBSTACLE_NEAR_AREA="${DYN_OBSTACLE_NEAR_AREA:-0}"   # 0 = 정책 자체가 �
 # 배터리 자동 전이. "" = 미지정 → 아래에서 물어본다. true/false = 플래그로 명시됨.
 BATTERY_AUTO=""
 DOMAIN_ID=""
+# ── 패널 화면 ───────────────────────────────────────────────────────────────
+#
+# 로봇 화면에 **정지 이미지 한 장**을 전체화면으로 띄운다. **기본 켜짐**이다.
+#   --panel <경로>  다른 이미지를 쓴다
+#   --no-panel      안 띄운다
+#
+# ⚠️ 왜 libi_gui 가 아니라 PNG 인가 — **실측이다(2026-07-31).**
+#   같은 Pi 에서 libi_gui 를 VNC 모드로 띄우니 **코어 하나의 30%**(4코어 중 7.5%)를
+#   상시 먹었다. 뷰어를 안 붙였는데도 그랬다. 원인은 두 가지가 겹친 것이다:
+#     · VNC QPA 는 GL 컨텍스트가 없어 `QT_QUICK_BACKEND=software` 가 강제 — 래스터가 전부 CPU
+#     · `qml/components/RobotFace.qml` 의 idleBob 이 `loops: Animation.Infinite` — 화면이
+#       멈추질 않으니 1280x800 프레임버퍼를 계속 다시 칠한다
+#   같은 화면을 캡처한 PNG 를 eog 로 띄우면 **0.0%** 다(RES 58MB, 로딩에 1.45초 쓰고 끝).
+#   주행·BT·추종이 이미 3코어를 쓰는 Pi 라 그 7.5% 를 그림 한 장에 쓸 이유가 없다.
+#
+#   움직이는 패널이 정말 필요해지면 되돌리는 게 아니라 **idleBob 부터 끄고 다시 잰다.**
+#
+#: 빈 값 = 안 띄움(--no-panel). 아래 인자 처리에서 기본 경로가 채워진다.
+PANEL_IMAGE="__default__"
+#: 로봇의 X 디스플레이. 실물은 물리 모니터가 없고 DUMMY0 + VNC(:5900) 구성이라,
+#: 여기 띄운 화면은 뷰어로 붙어서 본다.
+PANEL_DISPLAY="${PANEL_DISPLAY:-:0}"
 
 # 값을 받는 플래그가 **다음 플래그를 값으로 먹지 않게** 막는다.
 #   `--ai --no-back`  →  AI_IP="--no-back" 이 비어 있지 않아 검증을 통과하고,
@@ -128,6 +150,12 @@ while [ $# -gt 0 ]; do
     --dyn-obstacle) WITH_DYN_OBSTACLE=true; shift ;;
     --no-battery)   BATTERY_AUTO=false; shift ;;
     --battery)      BATTERY_AUTO=true;  shift ;;
+    # 값 없이 쓰면 기본 이미지(config/panel/libi_panel.png) — 기본 동작과 같다.
+    --panel)    case "${2:-}" in
+                  ''|--*) PANEL_IMAGE="__default__"; shift ;;
+                  *)      PANEL_IMAGE="$(need_arg "$1" "${2:-}")"; shift 2 ;;
+                esac ;;
+    --no-panel) PANEL_IMAGE=""; shift ;;
     *)          ARGS+=("$1"); shift ;;     # --no-fsm 등은 pi.sh 로 그대로
   esac
 done
@@ -445,6 +473,24 @@ tmux new-window -t "$SESSION" -n cam \
 if [ "$WITH_DYN_OBSTACLE" = true ]; then
   tmux new-window -t "$SESSION" -n keepout \
     bash -c "cd '$REPO_ROOT' && echo '[keepout] 통행 금지 마스크 발행 (부채꼴 ${DYN_OBSTACLE_FAN_DEG}° / TTL ${DYN_OBSTACLE_TTL}s)' && source /opt/ros/jazzy/setup.bash && source '$REPO_ROOT/aba_controller/libi_modes/ros_ws/install/setup.bash' && ros2 run libi_perception keepout_node --ros-args -p fan_deg:=$DYN_OBSTACLE_FAN_DEG -p ttl_sec:=$DYN_OBSTACLE_TTL -p near_area_max:=$DYN_OBSTACLE_NEAR_AREA; exec bash"
+fi
+
+# ── 5) 패널 화면 (기본 켜짐 · --no-panel 로 끈다) ───────────────────────────
+# 정지 이미지 한 장을 전체화면으로. CPU 근거는 PANEL_IMAGE 선언부 주석 참고 — 0.0% 다.
+[ "$PANEL_IMAGE" = "__default__" ] && PANEL_IMAGE="$REPO_ROOT/config/panel/libi_panel.png"
+if [ -n "$PANEL_IMAGE" ]; then
+  if [ ! -f "$PANEL_IMAGE" ]; then
+    # 죽이지 않는다. 그림 한 장 때문에 주행 스택 전체를 못 띄우면 손해가 더 크다.
+    echo "[libi_pi] ⚠ 패널 이미지가 없습니다 — 건너뜁니다: $PANEL_IMAGE" >&2
+  elif ! command -v eog >/dev/null 2>&1; then
+    echo "[libi_pi] ⚠ eog 가 없습니다 — 패널을 건너뜁니다 (sudo apt install eog)" >&2
+  else
+    echo "[libi_pi] ── 패널 (정지 이미지, DISPLAY=$PANEL_DISPLAY)"
+    # ⚠️ `-f`(전체화면)만 준다. eog 는 창 관리자가 없어도 뜬다.
+    #    실물은 물리 모니터가 없으므로 **VNC(:5900)로 붙어야 보인다.**
+    tmux new-window -t "$SESSION" -n panel \
+      bash -c "echo '[panel] $PANEL_IMAGE → DISPLAY=$PANEL_DISPLAY (정지 이미지, CPU 0%)' && DISPLAY='$PANEL_DISPLAY' eog -f '$PANEL_IMAGE'; exec bash"
+  fi
 fi
 
 echo "[libi_pi] 정리: $HERE/kill-libi_pi.sh"

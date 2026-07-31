@@ -60,7 +60,8 @@ PARAMS = {
                 "arrive_resend_sec": 10, "arrive_timeout_sec": 60,
                 "guide_lost_grace_sec": 3, "guide_lost_timeout_sec": 45},
     # 접근 자세 0.0 rad(화장실 쪽), 안정화 1초 — config/params.yaml 과 같은 값이다.
-    "returning": {"dock_retry_max": 3, "approach_yaw_rad": 0.0, "settle_sec": 1.0,
+    # approach_yaw_rad 를 **안 준다** — 정점 yaw + 180° 유도 경로를 시험한다.
+    "returning": {"dock_retry_max": 3, "settle_sec": 1.0,
                   "undock_distance_m": 0.06, "undock_timeout_sec": 8.0},
 }
 
@@ -85,6 +86,8 @@ def all_drivers():
         "undock": FakeDriver(),
         "return_nudge": FakeDoneDriver(),
         "return_entrance_xy": (0.6, 0.0),
+        "return_entrance_yaw": 3.1415,
+        "return_parking_xy": (0.0, 0.0),   # 충전소 — ②가 여기 등을 진다     # 정점이 충전소를 바라본다 → ②는 +180°
         "guide_watch": FakeDriver(),
         "junctions": None,
     }

@@ -69,6 +69,16 @@ _TAP_DEFAULT_DIR = "/dev/shm"
 #    여기서 실패한다. 조용히 느려지는 것보다 낫다.
 FRAME_STALE_SEC = 0.4
 
+#: 새 프레임이 없는 tick 에 **직전 명령을 다시 낼** 최대 시간(초).
+#
+#  카메라 15fps / 이 루프 12Hz 라 주기가 안 맞는다 — 매 tick 중 20% 가량이 직전과 같은
+#  프레임을 본다. 예전에는 그때마다 0 을 냈고, 그게 "조금 조금 움직인다"의 절반이었다.
+#  67ms 전 기하는 여전히 유효하므로 유지하는 편이 맞다.
+#
+#  ⚠️ 이 값은 `FRAME_STALE_SEC` 보다 **작아야 한다.** 같거나 크면 카메라가 죽은 구간에서도
+#     비영 명령이 stale 판정 시각까지 유지된다. 지금 값이면 최악이 0.05m/s × 0.2s = 1cm 다.
+HOLD_LAST_CMD_SEC = 0.2
+
 #: 진입 전 정지 게이트. nav2 취소는 요청일 뿐이고 감속은 컨트롤러 몫이라 잔여 속도가 남는다.
 #: 그 상태로 SEARCH 스윕이 시작되면 둘이 싸운다.
 SETTLE_DELTA_M = 0.005      # 이만큼도 안 움직이면 멈춘 것으로 본다
@@ -113,15 +123,61 @@ FIELD_DEFAULTS = dict(
     lin_pulse=0.05,          # 실측 모터 데드밴드. 그 아래로는 안 돈다
     lin_homing=0.10,
     steer_ang_max=0.08,
-    ang_search=0.16,
+    # ── [2026-07-31] AXIS_ALIGN 을 **연속 주행**으로 바꿨다 (사용자: "smooth 하게") ──
+    #
+    # 원본 기본값은 `move_pulse_s=0.10 / move_pause_s=0.90` — **듀티 10%** 다.
+    # 0.1초 가고 0.9초 서기를 반복하니 "조금 조금 움직인다"로 보였다. 여기서 0.4 로
+    # 늘려 놨어도 듀티는 31% 라 여전히 끊긴다.
+    #
+    # 멈춤을 없애도 되는 이유: 조향(`ang`)은 원래부터 쉬는 구간에도 매 tick 나갔다.
+    # 즉 펄스는 "돌면서 가끔 전진"이었고, 멈춤을 빼면 **돌면서 계속 전진**이 된다 —
+    # 시각 서보의 보통 모습이다. 속도는 데드밴드값 0.05 m/s 그대로라 여전히 느리다
+    # (평균 15mm/s → 50mm/s).
+    #
+    # ⚠️ 되돌리려면 `move_pause_s` 만 0.9 로 올리면 된다. 정렬이 근거리에서 흔들리면
+    #    그게 첫 번째 의심 지점이다 — 멈춰 보는 리듬이 자세 추정을 안정시켰을 수 있다.
     move_pulse_s=0.4,
+    move_pause_s=0.0,
     timeout_s=157.0,
+    # ── 마커 탐색(SEARCH) — "좌우로 천천히 도리도리" ─────────────────────────
+    #
+    # ②가 뒷캠을 충전소 쪽으로 돌려 놓지만, 정점 오차·AMCL 오차로 마커가 화각을
+    # 벗어날 수 있다. 그때 이 스윕이 찾는다: **좌 45° → 중앙 → 우 45°** 를
+    # 15° 씩 끊어 가며, 매 걸음 멈춰서 본다.
+    #
+    # ⚠️ **회전 속도는 못 낮춘다.** 0.16 rad/s 가 실측 데드밴드다(현장 튜닝의
+    #    `ANG_SEARCH` — "이 아래로는 안 돈다"). 더 느리게 적으면 명령은 나가는데
+    #    바퀴가 안 돈다. 그래서 "천천히"를 **속도가 아니라 걸음으로** 만든다:
+    #      · 걸음을 20° → 15° 로 잘게 (한 걸음 2.6초 → 1.6초)
+    #      · 걸음마다 멈춰 보는 시간을 0.4 → 0.7초로
+    #    회전 중에는 모션블러로 자세가 안 풀리므로, 실제 검출은 **멈춘 프레임**에서
+    #    일어난다. 멈추는 횟수를 늘리는 게 곧 "천천히 훑는" 것이다.
+    ang_search=0.16,
+    search_span_deg=45.0,       # 중앙 기준 좌우 각각 (좌 45 · 중앙 · 우 45 = 7걸음)
+    search_step_deg=15.0,
+    turn_pause_s=0.7,
 )
 
 #: 취소 신호. **구독 콜백이 세우고 루프가 읽는다** (머리말 참고).
-_cancel = threading.Event()
+#
+# ## ⚠️ Event 가 아니라 세대 번호다 (codex 리뷰 2026-07-30)
+#
+# 처음엔 `threading.Event` 였고, `request_cancel()` 이 락 안에서 `_running` 만 보고
+# 락 **밖에서** `set()` 했다. 그 사이가 벌어지면 취소가 **다음 도킹**을 죽인다:
+#
+#     이전 도킹의 취소 콜백이 `_running=True` 를 확인
+#       → 콜백 스레드가 밀린다
+#       → 이전 도킹이 끝난다
+#       → 새 도킹이 시작한다 (Event 를 clear 하고)
+#       → 밀렸던 콜백이 이제서야 set() → **새 도킹이 첫 tick 에 499 로 죽는다**
+#
+# `set()` 을 락 안으로 옮겨도 안 된다. 락을 늦게 잡으면 그때 `_running` 은 이미
+# **새 도킹**의 True 라서, 여전히 엉뚱한 것을 죽인다. 무엇을 취소하려던 것인지를
+# 기억해야 한다 — 그래서 세대 번호다.
 _lock = threading.Lock()
 _running = False
+_gen = 0                #: 도킹을 시작할 때마다 오른다
+_cancel_gen = -1        #: 취소를 요청받은 세대
 
 
 def request_cancel() -> bool:
@@ -130,11 +186,17 @@ def request_cancel() -> bool:
     `fleet_link` 의 **구독 콜백**에서 부른다 — 워커에서 부르면 이미 늦다(그 워커가
     바로 이 루프를 돌고 있다).
     """
+    global _cancel_gen
     with _lock:
         if not _running:
             return False
-    _cancel.set()
-    return True
+        _cancel_gen = _gen          # **지금 도는 그 세대**를 지목한다
+        return True
+
+
+def _cancelled(my_gen: int) -> bool:
+    with _lock:
+        return _cancel_gen == my_gen
 
 
 def is_running() -> bool:
@@ -186,17 +248,15 @@ def run_dock(**overrides) -> tuple[bool, int, dict, str]:
     """도킹을 끝까지 돌린다. `(ok, http_status, data, msg)` — fleet_link `_dispatch` 계약."""
     global _running
 
+    global _gen
     with _lock:
         if _running:
             return False, 409, {"docked": False}, "도킹이 이미 진행 중이다"
-        # ⚠️ **락 안에서 지운다.** 밖에서 지우면 `_running=True` 와 `clear()` 사이에
-        #    들어온 취소가 통째로 사라진다 — BT 가 포기했는데 여기는 계속 미는 창이다.
-        #    `request_cancel()` 도 같은 락으로 `_running` 을 보므로, 그 뒤에 온 취소는
-        #    반드시 이 clear 뒤에 세워진다.
-        _cancel.clear()
+        _gen += 1
+        my_gen = _gen               # 이 판을 가리키는 번호. 남의 취소에 안 죽는다
         _running = True
     try:
-        return _run(overrides)
+        return _run(overrides, my_gen)
     except Exception as exc:                                   # noqa: BLE001
         # ⚠️ `_run` 이 예외로 빠지면 `finish()` 를 못 거친다 — 마지막 비영 명령이 남고
         #    노드가 샌다. 여기서 갚는다. 0.08m/s 면 twist_mux timeout(0.5s)까지
@@ -208,7 +268,7 @@ def run_dock(**overrides) -> tuple[bool, int, dict, str]:
             _running = False
 
 
-#: `_run` 이 만든 (node, publisher). 예외로 빠졌을 때 정리하려고 들고 있는다.
+#: `_run` 이 만든 (node, publisher, executor). 예외로 빠졌을 때 정리하려고 들고 있는다.
 _live = None
 
 
@@ -218,7 +278,7 @@ def _emergency_stop() -> None:
     pair, _live = _live, None
     if pair is None:
         return
-    node, pub = pair
+    node, pub, executor = pair
     try:
         from geometry_msgs.msg import Twist
         for _ in range(5):
@@ -226,15 +286,17 @@ def _emergency_stop() -> None:
             time.sleep(0.02)
     except Exception:                                          # noqa: BLE001
         pass
-    try:
-        node.destroy_node()
-    except Exception:                                          # noqa: BLE001
-        pass
+    for step in (lambda: executor.remove_node(node), node.destroy_node):
+        try:
+            step()
+        except Exception:                                      # noqa: BLE001
+            pass
 
 
-def _run(overrides: dict) -> tuple[bool, int, dict, str]:
+def _run(overrides: dict, my_gen: int) -> tuple[bool, int, dict, str]:
     import rclpy
     from geometry_msgs.msg import Twist
+    from rclpy.executors import SingleThreadedExecutor
 
     from app.core import fleet_link
     from app.marker.approach import MarkerApproach
@@ -265,9 +327,19 @@ def _run(overrides: dict) -> tuple[bool, int, dict, str]:
     if ctx is None:
         return False, 503, {"docked": False}, "fleet_link ROS context 가 아직 없다"
     node = rclpy.create_node("marker_dock", context=ctx)
+    # ⚠️ **전용 executor 를 만든다.** `rclpy.spin_once(node)` 를 쓰면 안 된다 —
+    #    그건 인자가 없을 때 **전역 executor**(`get_global_executor()`)를 집는데,
+    #    fleet_link 가 같은 context 에서 이미 그걸 돌리고 있다. 그러면 첫 tick 에
+    #    `RuntimeError: Executor is already spinning` 으로 도킹이 통째로 죽는다.
+    #    실측(2026-07-30 실기): `aruco_dock 실패: 도킹 예외: Executor is already spinning`
+    #    이 세 번 반복되고 RETURNING → ERROR 로 갔다.
+    #
+    #    노드 하나를 두 executor 가 돌리는 게 아니라(이 노드는 우리만) 안전하다.
+    executor = SingleThreadedExecutor(context=ctx)
+    executor.add_node(node)
     pub = node.create_publisher(Twist, "cmd_vel_dock", 10)
     global _live
-    _live = (node, pub)          # 예외로 빠져도 정리되게 (위 `_emergency_stop`)
+    _live = (node, pub, executor)   # 예외로 빠져도 정리되게 (위 `_emergency_stop`)
 
     def publish(lin: float, ang: float) -> None:
         t = Twist()
@@ -279,7 +351,7 @@ def _run(overrides: dict) -> tuple[bool, int, dict, str]:
         # 원본 drive.py:190-192 그대로: 콜백을 한 번만 돌리면 20Hz 센서가 12Hz 루프보다
         # 빨라 큐가 밀린다. 밀리면 age() 판정까지 왜곡된다.
         for _ in range(4):
-            rclpy.spin_once(node, timeout_sec=0.0)
+            executor.spin_once(timeout_sec=0.0)
 
     odom = OdomTracker(node)
     watch = ScanWatch(node, forward_deg=SCAN_FORWARD_DEG_BACKWARD)
@@ -293,11 +365,15 @@ def _run(overrides: dict) -> tuple[bool, int, dict, str]:
     def finish(ok: bool, status: int, phase: str, reason: str, msg: str):
         # 끝나는 모든 길에서 0 을 여러 번 낸다. 마지막 명령이 남으면 twist_mux
         # timeout(0.5s)·모터 워치독(0.5s)까지 계속 밀린다.
+        # ⚠️ `_live` 를 **0 을 다 낸 뒤에** 비운다. 먼저 비우면 첫 publish 가 예외를
+        #    낼 때(context/DDS 이상) `_emergency_stop` 이 다시 시도할 대상이 없어져,
+        #    마지막 비영 명령이 mux timeout 까지 남는다 — 0.08m/s 면 4cm 다.
         global _live
-        _live = None             # 정상 종료 — `_emergency_stop` 이 두 번 하지 않게
         for _ in range(5):
             publish(0.0, 0.0)
             time.sleep(0.02)
+        _live = None
+        executor.remove_node(node)
         node.destroy_node()
         return ok, status, {"docked": ok, "phase": phase, "reason": reason}, msg
 
@@ -343,10 +419,12 @@ def _run(overrides: dict) -> tuple[bool, int, dict, str]:
     # ── 제어 루프 ────────────────────────────────────────────────────────────
     last_seq = None
     last_new_seq_at = time.monotonic()
+    #: 중복 프레임 tick 에 다시 낼 직전 명령 (아래 `seq == last_seq` 분기 참고).
+    last_cmd = (0.0, 0.0)
     phase, reason = "SEARCH", ""
     while True:
         spin()
-        if _cancel.is_set():
+        if _cancelled(my_gen):
             return finish(False, 499, phase, "cancelled", "취소됨")
 
         stale = [n for n, age in (("/odom", odom.age()), ("/scan", watch.age()))
@@ -369,32 +447,58 @@ def _run(overrides: dict) -> tuple[bool, int, dict, str]:
             time.sleep(period)
             continue
         frame, seq, stamp = got
-        if seq == last_seq:
+        # ⚠️ **`seq` 만 보면 안 된다.** stamp 는 camera_sender 가 찍은 캡처 시각이다
+        #    (`time.monotonic` — 리눅스에서 CLOCK_MONOTONIC 은 시스템 전역이라 프로세스가
+        #    달라도 비교된다). seq 만 보면 다음이 통과한다:
+        #      · `/dev/shm` 에 남은 **이전 실행**의 프레임을 첫 tick 에 그대로 쓴다
+        #      · 파이프라인이 밀려 과거 프레임을 순서대로 쓰는 동안 seq 만 올라간다
+        #    둘 다 **과거의 마커 기하를 보고 조향·후진**한다 — 조용히 틀어지는 종류다.
+        if now - stamp > FRAME_STALE_SEC:
+            return finish(False, 503, phase, "frame_stale",
+                          f"뒷캠 프레임이 {now - stamp:.2f}초 전 것이다 "
+                          f"(camera_select 가 back 인지 확인 — 대기 캠은 1.9Hz 다)")
+        fresh = seq != last_seq
+        if not fresh:
             # **같은 프레임이다.** 다시 검출하면 `aligned_frames_needed=3`(연속 정렬 3프레임)이
-            # 같은 한 장을 세 번 세서 무시각 전진에 들어간다. 그렇다고 obs=None 으로
-            # 부르면 정지 화상을 '마커 상실'로 세어 lost_grace 를 태운다.
-            # → step 을 아예 건너뛰되, **0 은 계속 낸다**(직전 비영 명령이 twist_mux
-            #   timeout 까지 유지되면 안 된다).
+            # 같은 한 장을 세 번 세서 무시각 전진에 들어간다. 그렇다고 시각 국면에서
+            # obs=None 으로 부르면 정지 화상을 '마커 상실'로 세어 lost_grace 를 태운다.
             if now - last_new_seq_at > FRAME_STALE_SEC:
                 return finish(False, 503, phase, "frame_stale",
                               f"뒷캠 프레임이 {now - last_new_seq_at:.2f}초째 안 바뀐다 "
                               f"(camera_select 가 back 인지 확인 — 대기 캠은 1.9Hz 다)")
-            publish(0.0, 0.0)
-            time.sleep(period)
-            continue
-        last_seq, last_new_seq_at = seq, now
+            # ⚠️ [2026-07-31] **BLIND_PUSH 는 예외다 — 여기서 건너뛰면 안 된다.**
+            #    그 국면은 애초에 시각을 안 쓴다. 마커는 이미 화각을 벗어났고 거리 판정은
+            #    odom(`_do_blind_push`)이 한다. 그런데 프레임이 같다는 이유로 step 을
+            #    건너뛰면 **목표 도달·scan_guard·timeout 을 그동안 아무도 안 본다** —
+            #    직전 명령을 최대 0.2초 유지하면 0.05m/s × 0.2s = **1cm** 를 눈감고 더 간다.
+            #    6cm 목표의 16.7% 다(codex 지적, 2026-07-31). 그래서 obs=None 으로 그대로
+            #    태운다: approach.py 는 그 국면의 None 을 상실로 세지 않고 곧장 odom
+            #    판정으로 보낸다(`approach.py` step() 의 `if self.phase == "BLIND_PUSH"`).
+            if machine.phase != "BLIND_PUSH":
+                # 시각 국면 — 새 프레임이 없다고 직전 판단이 무효가 된 것은 아니다.
+                # 카메라 15fps / 루프 12Hz 라 주기가 어긋나 같은 프레임을 보는 tick 이
+                # 생기는데, 예전에는 그때마다 0 을 쏘아 주행이 톱니처럼 끊겼다.
+                if now - last_new_seq_at <= HOLD_LAST_CMD_SEC:
+                    publish(*last_cmd)
+                else:
+                    publish(0.0, 0.0)
+                time.sleep(period)
+                continue
 
-        bad = _check_resolution(frame, wh)
-        if bad:
-            return finish(False, 500, phase, "resolution", bad)
-
-        obs = detect_marker(frame, K, dist, marker_len_m=cfg.marker_len_m,
-                            target_id=cfg.marker_id, dict_name=cfg.dict_name)
+        obs = None
+        if fresh:
+            last_seq, last_new_seq_at = seq, now
+            bad = _check_resolution(frame, wh)
+            if bad:
+                return finish(False, 500, phase, "resolution", bad)
+            obs = detect_marker(frame, K, dist, marker_len_m=cfg.marker_len_m,
+                                target_id=cfg.marker_id, dict_name=cfg.dict_name)
         cmd = machine.step(obs, yaw_deg=odom.yaw_deg,
                            forward_m=odom.forward_m * DRIVE_SIGN,
                            front_m=watch.front_m, now_s=now)
         phase, reason = cmd.phase, cmd.reason
-        publish(cmd.linear * DRIVE_SIGN, cmd.angular)
+        last_cmd = (cmd.linear * DRIVE_SIGN, cmd.angular)
+        publish(*last_cmd)
         if cmd.done:
             ok = cmd.phase == "DONE"
             return finish(ok, 200 if ok else 502, cmd.phase, cmd.reason,

@@ -12,7 +12,17 @@ from libi_modes.blackboard import Keys
 #  사람이 정한 상태가 오래 남도록 늘리면(params.yaml manual_hold_sec) **저전압 복귀도
 #  그만큼 미뤄진다.** 배터리는 기다려 주지 않는다 — 관제가 IDLE 로 세워 둔 로봇이라도
 #  15% 아래로 떨어지면 충전소로 보내야 한다.
-_ALWAYS_ALLOWED = ("ERROR", "RETURNING")
+#
+#  [2026-07-31] CHARGING 추가 — **실측 버그.** 패널로 RETURNING 을 강제하면
+#  `state_io.apply_pending` 이 `hold_until = now + manual_hold_sec`(300초)를 찍는다.
+#  도킹은 그 안에 끝나므로 `SetNextMode("CHARGING")` 뒤의 이 leaf 가 FAILURE 를 내고,
+#  루트 `Sequence(memory=False)` 가 실패한다. 다음 tick 에 `IsMode("RETURNING")` 이 여전히
+#  참이라 `ReturnAndWatch` 가 통째로 다시 초기화되고 — **완벽히 도킹된 로봇이 ①단계
+#  주행부터 다시 시작한다.** 충전소에서 빠져나와 입구로 되돌아간다.
+#
+#  도킹은 물리적으로 일어난 사실이다. 유지 시간은 "로봇이 사람의 결정을 스스로 되돌리는
+#  것"을 막으려고 있는 것이지, 이미 일어난 일을 못 본 척하라는 뜻이 아니다.
+_ALWAYS_ALLOWED = ("ERROR", "RETURNING", "CHARGING")
 
 
 class RequestTransition(py_trees.behaviour.Behaviour):

@@ -6,6 +6,7 @@ the rest of the WORKING branch.
 import logging
 
 import py_trees
+import pytest
 from py_trees.common import Status
 
 from libi_modes import registry, tree
@@ -149,23 +150,45 @@ def test_unwired_follow_does_not_kill_the_tick(seed, tick):
     tick(root)      # must not raise
 
 
-def test_unwired_follow_is_logged(seed, tick, caplog):
+@pytest.fixture
+def unwired_logs(caplog):
+    """`UnwiredDriver` 가 남기는 로그를 잡는다. **`caplog` 만으로는 못 잡는다.**
+
+    ROS 워크스페이스를 source 하면 `launch.logging` 이 `logging.setLoggerClass()` 로
+    전역 로거 클래스를 `LaunchLogger` 로 바꾼다. 그 클래스는 **기본 `propagate=False`**
+    라, 이후 만들어지는 모든 로거가 root 로 레코드를 올리지 않는다. `caplog` 의 핸들러는
+    root 에 붙으므로 영영 빈 채로 남는다(레코드는 핸들러를 못 찾아 `logging.lastResort`
+    로 stderr 에만 찍힌다 — 시험 출력의 "Captured stderr call" 이 그것이다).
+
+    실측(2026-07-31): `logging.getLoggerClass()` → `launch.logging.LaunchLogger`,
+    아무 이름의 새 로거나 `propagate=False`. 워크스페이스를 안 source 하면 True 라
+    이 시험이 환경에 따라 붙었다 떨어졌다 했다.
+
+    여기서 보려는 것은 "드라이버가 로그를 남기는가"지 ROS 의 로깅 배선이 아니다.
+    그래서 root 를 거치지 않고 **그 로거에 직접** 붙는다.
+    """
+    lg = logging.getLogger("libi_modes.common.working_actions")
+    lg.addHandler(caplog.handler)
+    lg.setLevel(logging.ERROR)
+    yield caplog
+    lg.removeHandler(caplog.handler)
+
+
+def test_unwired_follow_is_logged(seed, tick, unwired_logs):
     seed(**{Keys.CURRENT_MODE: "WORKING", Keys.ACTIVE_COMMAND: "follow_admin"})
     root = working.create(PARAMS, FakeDriver(), FakeDriver(), None, undock_gate=_gate(), clock=lambda: 1.0)
-    with caplog.at_level(logging.ERROR):
-        tick(root)
-    assert "follow_admin" in caplog.text
+    tick(root)
+    assert "follow_admin" in unwired_logs.text
 
 
-def test_unwired_follow_logs_once_not_every_tick(seed, tick, caplog):
+def test_unwired_follow_logs_once_not_every_tick(seed, tick, unwired_logs):
     """The tree ticks at 20 Hz — repeating this would bury the log."""
     seed(**{Keys.CURRENT_MODE: "WORKING", Keys.ACTIVE_COMMAND: "follow_admin"})
     driver = UnwiredDriver("follow_admin")
-    with caplog.at_level(logging.ERROR):
-        for _ in range(10):
-            driver.start()
-            driver.poll()
-    assert caplog.text.count("follow_admin") == 1
+    for _ in range(10):
+        driver.start()
+        driver.poll()
+    assert unwired_logs.text.count("follow_admin") == 1
 
 
 def test_unwired_follow_releases_the_command_slot(seed, read, tick):

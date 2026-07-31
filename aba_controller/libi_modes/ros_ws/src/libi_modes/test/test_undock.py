@@ -108,6 +108,8 @@ def test_succeeds_on_real_movement(seed, read):
     node.tick_once()
     assert node.status == Status.SUCCESS
     assert read(Keys.UNDOCK_DONE) is True, "래치를 세워야 두 번 안 민다"
+    assert read(Keys.DOCK_DECLARED) is False, \
+        "선언을 안 내리면 다음 복귀에서 AlreadyDocked 가 낡은 True 를 보고 주행을 건너뛴다"
 
 
 def test_partial_movement_is_not_enough(seed):
@@ -185,14 +187,91 @@ def test_success_does_not_stop(seed):
 
 # ── 실패 흡수 ────────────────────────────────────────────────────────────────
 
-def test_failure_never_escapes_the_gate(seed, tick):
+def test_failure_never_escapes_the_gate(seed):
     """이 게이트는 브랜치 루트 Sequence 안에 있다. FAILURE 가 새어 나가면 브랜치가
-    통째로 죽어 그 상태에서 아무것도 못 한다 — `AbsorbFailure` 가 RUNNING 으로 바꾼다."""
+    통째로 죽어 그 상태에서 아무것도 못 한다."""
     seed(**{Keys.IS_DOCKED: True, Keys.ROBOT_POSE: _at(0.0)})
-    gate = create(FakeDriver(["failure"]), distance_m=0.06, timeout_sec=8.0,
+    gate = create(FakeDriver(["failure"] * 9), distance_m=0.06, timeout_sec=8.0,
                   retry_max=3, now_fn=_Clock())
     gate.setup_with_descendants()
     gate.initialise()
-    for _ in range(3):
+    for _ in range(6):
         gate.tick_once()
         assert gate.status != Status.FAILURE
+
+
+def test_exhausted_retries_pass_through_so_the_watchdog_can_see_the_fault(seed, read):
+    """**소진되면 SUCCESS 다.** RUNNING 이 아니다 (codex 리뷰 2026-07-30).
+
+    `AbsorbFailure` 는 소진 시 RUNNING 을 유지한다 — 그쪽은 `Parallel` **안**이라
+    형제 `FaultDetected` 가 같은 tick 에 fault 를 보기 때문이다. 이 게이트는 주행
+    Parallel **앞**이라, RUNNING 을 유지하면 시퀀스가 여기서 막혀 그 Parallel 이
+    영영 tick 되지 않는다 — fault 를 세워 놓고도 **ERROR 로 못 간다.**
+
+        바퀴 헛돎 → 재시도 소진 → fault=True → 게이트 RUNNING
+          → FaultDetected 가 한 번도 안 돌아 → PATROL 에 멈춘 채 영원히 재시도
+    """
+    seed(**{Keys.IS_DOCKED: True, Keys.ROBOT_POSE: _at(0.0)})
+    gate = create(FakeDriver(["failure"] * 9), distance_m=0.06, timeout_sec=8.0,
+                  retry_max=3, now_fn=_Clock())
+    gate.setup_with_descendants()
+    gate.initialise()
+    seen = []
+    for _ in range(6):
+        gate.tick_once()
+        seen.append(gate.status)
+    assert Status.SUCCESS in seen, "소진 뒤 통과시켜야 watchdog 이 fault 를 본다"
+    assert read(Keys.FAULT) is True
+
+
+def test_sideways_drift_is_not_forward_progress(seed):
+    """시작점 대비 **직선거리**를 쓰면 옆으로 밀린 거리와 AMCL 재국소화 점프까지
+    전진으로 센다 — 벽에서 안 나왔는데 성공으로 판정하고, 그러면 nav2 가 "경로 없음"
+    으로 실패한다. 진행 방향 성분만 세야 맞다(codex 리뷰 2026-07-30)."""
+    seed(**{Keys.IS_DOCKED: True, Keys.ROBOT_POSE: _at(0.0)})
+    node = Undock(FakeDriver(), 0.06, 8.0, _Clock())
+    node.setup()
+    node.initialise()
+    node.tick_once()                                        # 기준: x=0, yaw=0
+    # 옆(y)으로 10cm — 직선거리는 0.10 이라 옛 계산이면 성공했다
+    py_trees.blackboard.Blackboard.set(Keys.ROBOT_POSE, {"x": 0.0, "y": 0.10, "yaw": 0.0})
+    node.tick_once()
+    assert node.status == Status.RUNNING, "옆으로 민 것을 전진으로 세면 안 된다"
+
+
+# ── 블랙보드 등록 누락 (2026-07-30 실기 사고) ────────────────────────────────
+
+def test_unregistered_key_does_not_kill_the_node(capsys):
+    """py_trees 는 등록 안 된 키에 **KeyError 가 아니라 AttributeError** 를 낸다.
+
+    실측(2026-07-30): 복귀 ②단계가 처음 실제로 도는 순간
+    `client 'fsm_node' does not have read/write access to '/robot_pose'` 로
+    **FSM 노드가 통째로 죽었다.** 그 순간 로봇은 판단 주체를 잃는다.
+
+    죽이지 않되 조용히 넘어가지도 않는다 — 등록 누락은 "아직 값이 없음"이 아니라
+    프로그래밍 실수이므로, 키마다 한 번 크게 남긴다.
+    """
+    import py_trees
+    from libi_modes import blackboard as bb
+
+    bb._WARNED.clear()
+    client = py_trees.blackboard.Client(name="no_keys_registered")
+    assert bb.get(client, Keys.ROBOT_POSE) is None, "노드를 죽이면 안 된다"
+    assert "등록 안 된 키" in capsys.readouterr().out
+
+
+def test_pose_without_yaw_never_claims_forward_progress(seed):
+    """`robot_pose` 에 yaw 가 없으면 **전진량을 셀 수 없다** — 갔다고 치면 안 된다.
+
+    실측(2026-07-30): `providers._on_pose` 가 `{x, y}` 만 실어서 복귀 ②(`_YawStep`)가
+    "로봇은 다 돌았는데 BT 는 모른 채" 60초 timeout → 재시도 → ERROR 로 갔다.
+    `Undock` 의 헤딩 투영도 같은 값을 쓰므로 같은 함정에 빠진다.
+    yaw 가 없을 때 **0 을 반환하면 안 되고**(진전 없음으로 오해), RUNNING 이어야 한다.
+    """
+    driver = FakeDriver()
+    seed(**{Keys.IS_DOCKED: True, Keys.ROBOT_POSE: {"x": 0.0, "y": 0.0}})   # yaw 없음
+    node = Undock(driver, 0.06, 8.0, _Clock())
+    node.setup()
+    node.initialise()
+    node.tick_once()
+    assert node.status == Status.RUNNING

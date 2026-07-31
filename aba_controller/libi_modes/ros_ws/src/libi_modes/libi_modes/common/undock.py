@@ -104,6 +104,7 @@ class Undock(py_trees.behaviour.Behaviour):
         self.blackboard = self.attach_blackboard_client(name=self.name)
         self.blackboard.register_key(key=Keys.ROBOT_POSE, access=Access.READ)
         self.blackboard.register_key(key=Keys.UNDOCK_DONE, access=Access.WRITE)
+        self.blackboard.register_key(key=Keys.DOCK_DECLARED, access=Access.WRITE)
 
     def initialise(self):
         self._started_at = None
@@ -111,13 +112,22 @@ class Undock(py_trees.behaviour.Behaviour):
         self._sent = False
 
     def _moved(self) -> float | None:
+        """시작 헤딩에 **투영한** 전진량(m).
+
+        ⚠️ 시작점 대비 **직선거리**를 쓰면 안 된다(codex 리뷰). 그 값은 옆으로 밀린
+           거리와 AMCL 재국소화 점프까지 전진으로 센다 — 벽에서 안 나왔는데 6cm 를
+           갔다고 판정하고, 그러면 nav2 가 "경로 없음"으로 실패한다. 목적이 "앞으로
+           나가 costmap 밖으로 벗어나기"이므로 진행 방향 성분만 세는 게 맞다.
+           (원본 마커 도킹의 `OdomTracker.forward_m` 이 같은 이유로 같은 계산을 한다)
+        """
         pose = bb.get(self.blackboard, Keys.ROBOT_POSE)
-        if pose is None:
+        if pose is None or pose.get("yaw") is None:
             return None
         if self._origin is None:
-            self._origin = (pose["x"], pose["y"])
+            self._origin = (pose["x"], pose["y"], pose["yaw"])
             return 0.0
-        return math.hypot(pose["x"] - self._origin[0], pose["y"] - self._origin[1])
+        x0, y0, yaw0 = self._origin
+        return (pose["x"] - x0) * math.cos(yaw0) + (pose["y"] - y0) * math.sin(yaw0)
 
     def update(self):
         now = self._now()
@@ -126,6 +136,10 @@ class Undock(py_trees.behaviour.Behaviour):
         moved = self._moved()
         if moved is not None and moved >= self.distance_m:
             self.blackboard.set(Keys.UNDOCK_DONE, True)
+            # 실제로 빠져나왔다 — 도킹 선언을 내린다(`Keys.DOCK_DECLARED` 주석).
+            # ⚠️ 안 내리면 다음 복귀에서 `AlreadyDocked` 가 낡은 True 를 보고 ①~⑥을
+            #    통째로 건너뛴다. 로봇은 도서관 한복판에 선 채 CHARGING 을 선언한다.
+            self.blackboard.set(Keys.DOCK_DECLARED, False)
             return Status.SUCCESS
         if not self._sent:
             self.driver.start()
@@ -145,16 +159,63 @@ class Undock(py_trees.behaviour.Behaviour):
         self._sent = False
 
 
+class GiveUpAfter(py_trees.decorators.Decorator):
+    """자식의 FAILURE 를 재시도하고, 다 쓰면 **fault 를 세우고 통과시킨다.**
+
+    ## ⚠️ `AbsorbFailure` 를 쓰면 안 되는 자리다 (codex 리뷰 2026-07-30)
+
+    `AbsorbFailure` 는 재시도를 소진하면 fault 를 세우고 **RUNNING 을 유지**한다.
+    그게 옳은 이유는 그쪽이 `Parallel(SuccessOnOne)` **안**에 있고, 형제
+    `FaultDetected` 가 같은 tick 에 그 fault 를 보고 ERROR 전이를 내주기 때문이다.
+
+    여기는 다르다. 이 게이트는 브랜치 루트 `Sequence` 의 **주행 Parallel 앞**에 있다.
+    RUNNING 을 유지하면 시퀀스가 여기서 막혀 **뒤 Parallel 이 영영 tick 되지 않고**,
+    그러면 그 안의 `FaultDetected` 도 안 돈다:
+
+        바퀴 헛돎 → Undock timeout 3회 → fault=True → 게이트가 계속 RUNNING
+          → FaultDetected 가 한 번도 안 돌아 → PATROL 에 멈춘 채 영원히 재시도
+
+    그래서 여기서는 소진 시 **SUCCESS** 를 낸다. 시퀀스가 진행돼 Parallel 이 돌고,
+    거기 있는 `FaultDetected` 가 fault 를 보고 ERROR 로 보낸다.
+
+    ⚠️ SUCCESS 지만 **성공이 아니다.** 통과시키는 이유는 오직 "fault 를 볼 수 있는
+       노드까지 흐름을 보내기 위해"다. 이 tick 에 nav2 goal 이 한 번 나갈 수는 있으나,
+       같은 tick 의 watchdog 이 ERROR 전이를 내므로 다음 tick 에 브랜치가 바뀐다.
+    """
+
+    def __init__(self, child, retry_max: int, name: str | None = None):
+        super().__init__(name=name or f"GiveUp[{child.name}]", child=child)
+        self.retry_max = int(retry_max)
+        self._tries = 0
+
+    def setup(self, **kwargs):
+        self.blackboard = self.attach_blackboard_client(name=self.name)
+        self.blackboard.register_key(key=Keys.FAULT, access=Access.WRITE)
+        self.blackboard.register_key(key=Keys.DOCK_RETRY_COUNT, access=Access.WRITE)
+
+    def initialise(self):
+        self._tries = 0
+
+    def update(self):
+        status = self.decorated.status
+        if status != Status.FAILURE:
+            return status
+        self._tries += 1
+        self.blackboard.set(Keys.DOCK_RETRY_COUNT, self._tries)
+        if self._tries >= self.retry_max:
+            self.blackboard.set(Keys.FAULT, True)
+            return Status.SUCCESS       # fault 를 볼 수 있는 곳까지 흐름을 보낸다
+        return Status.RUNNING
+
+
 def create(driver, *, distance_m, timeout_sec, retry_max, now_fn,
            name: str = "UndockOrSkip") -> py_trees.behaviour.Behaviour:
-    """`NotDocked` 로 감싼 undock 게이트. 주행 브랜치의 **주행 앞**에 둔다."""
-    from libi_modes.common.return_steps import AbsorbFailure
-
+    """`UndockNotNeeded` 로 감싼 undock 게이트. 주행 브랜치의 **주행 앞**에 둔다."""
     return py_trees.composites.Selector(
         name=name,
         memory=False,
         children=[
             UndockNotNeeded(),
-            AbsorbFailure(Undock(driver, distance_m, timeout_sec, now_fn), retry_max),
+            GiveUpAfter(Undock(driver, distance_m, timeout_sec, now_fn), retry_max),
         ],
     )

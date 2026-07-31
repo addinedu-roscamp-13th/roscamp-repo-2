@@ -1,3 +1,4 @@
+import math
 import time
 
 import py_trees
@@ -6,14 +7,16 @@ from py_trees.common import ParallelPolicy
 from libi_modes.common.fault_detected import FaultDetected
 from libi_modes.common.is_mode import IsMode
 from libi_modes.common.request_transition import RequestTransition
-from libi_modes.common.return_steps import AlreadyDocked, BackCamOn, create_return_steps
+from libi_modes.common.return_steps import (
+    AlreadyDocked, BackCamOn, create_return_steps, wrap_angle,
+)
 from libi_modes.common.set_next_mode import SetNextMode
 from libi_modes.common.watchdog import exit_watchdog
 
 
 def create(params: dict, *, entrance_driver, rotate_driver, nav_release_driver,
            aruco_driver, nudge_driver, back_cam_driver,
-           entrance_xy, clock=time.monotonic) -> py_trees.behaviour.Behaviour:
+           entrance_xy, entrance_yaw, dock_xy=None, clock=time.monotonic) -> py_trees.behaviour.Behaviour:
     """ReturningBranch — 충전소로 돌아간다. 부팅 직후 가장 먼저 도는 브랜치이기도 하다.
 
     ## 단계로 쪼갠 이유
@@ -58,7 +61,12 @@ def create(params: dict, *, entrance_driver, rotate_driver, nav_release_driver,
         aruco_driver=aruco_driver,
         nudge_driver=nudge_driver,
         entrance_xy=entrance_xy,
-        approach_yaw=r.get("approach_yaw_rad", 0.0),
+        dock_xy=dock_xy,
+        # ②의 목표각은 **접근 정점 yaw + 180°** 다. 정점 yaw 가 충전소를 바라보므로
+        # 반 바퀴 돌면 **뒷캠이 충전소를 본다** — 그래야 ④가 마커를 잡는다.
+        # params 에 `approach_yaw_rad` 를 명시하면 그 값이 이긴다(현장 보정용).
+        approach_yaw=(r["approach_yaw_rad"] if r.get("approach_yaw_rad") is not None
+                      else wrap_angle(entrance_yaw + math.pi)),
         tolerance=w["arrive_tolerance_m"],
         resend_sec=w["arrive_resend_sec"],
         timeout_sec=w["arrive_timeout_sec"],

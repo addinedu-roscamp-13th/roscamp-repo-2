@@ -216,8 +216,19 @@ def test_interacting_holds_session(seed, read, tick):
 
 
 def test_interacting_timeout_to_patrol(seed, read, tick):
+    """20초 동안 아무도 안 만지면 PATROL 로 돌아간다.
+
+    ⚠️ 시계를 **흐르게** 해야 한다. 예전에는 `clock=lambda: 25.0` 한 방으로 성공을
+    기대했는데, `UiSessionTimer.initialise` 가 **진입 시각을 latch** 하도록 바뀌면서
+    (진입하자마자 튕기던 버그의 수정) 그 방식은 elapsed 가 항상 0 이다. 고정 시계로
+    타임아웃을 시험하는 것은 그 수정 자체를 되돌리라는 요구가 된다.
+    """
+    now = [100.0]
     seed(**{Keys.CURRENT_MODE: "INTERACTING", Keys.UI_LAST_TOUCH_AT: 0.0})
-    assert tick(interacting.create(PARAMS, clock=lambda: 25.0)) == Status.SUCCESS
+    root = interacting.create(PARAMS, clock=lambda: now[0])
+    assert tick(root) == Status.RUNNING          # 진입 tick — 여기서 진입 시각이 latch 된다
+    now[0] += 25.0
+    assert tick(root) == Status.SUCCESS
     assert read(Keys.CURRENT_MODE) == "PATROL"
 
 
@@ -368,6 +379,7 @@ def _returning(clock=None, **over):
         back_cam_driver=d["return_back_cam"],
         nudge_driver=d["return_nudge"],
         entrance_xy=d["return_entrance_xy"],
+        entrance_yaw=d["return_entrance_yaw"],
         clock=clock or _Clock())
 
 

@@ -41,7 +41,15 @@ target_link_libraries(libi_gui PRIVATE
 )
 
 # 우선: rclcpp/std_msgs 가 제공하는 CMake 타깃 링크
-target_link_libraries(libi_gui PRIVATE rclcpp::rclcpp std_msgs::std_msgs geometry_msgs::geometry_msgs)
+#
+# ⚠️ `std_msgs::std_msgs` 별칭은 **패키지 버전을 탄다.** 노트북(5.3.8)엔 있고 로봇 Pi
+#    (5.3.6)엔 없어서 로봇에서만 "target was not found" 로 죽었다. `${<pkg>_TARGETS}` 는
+#    두 버전 모두에 있는 ament 표준 변수라 어디서든 링크된다.
+target_link_libraries(libi_gui PRIVATE
+    rclcpp::rclcpp
+    ${std_msgs_TARGETS}
+    ${geometry_msgs_TARGETS}
+)
 
 # 기본 OFF — 로봇에 올리는 빌드는 이 옵션 없이 돌리므로 산출물이 달라지지 않는다.
 # 켜면 FMS 추종 승인 클라이언트 테스트가 같이 빌드된다 (tests/ 주석의 실행법 참조).

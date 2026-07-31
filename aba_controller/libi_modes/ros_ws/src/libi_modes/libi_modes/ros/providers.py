@@ -32,6 +32,7 @@ provider 값을 다시 써넣으므로, provider 가 계속 같은 값을 돌려
 현재 상태에서 조용히 사라진다.
 """
 import json
+import math
 import time
 
 from geometry_msgs.msg import PoseWithCovarianceStamped
@@ -255,8 +256,31 @@ class RosProviders:
             self._log.debug(f"FSM 트리거가 아닌 액션은 무시한다(실행층 몫): {action}")
 
     def _on_pose(self, msg):
+        """`/amcl_pose` → `{x, y, yaw}`.
+
+        ## ⚠️ [2026-07-30] `yaw` 가 빠져 있었다 — 회전 단계가 영영 안 끝났다
+
+        예전엔 `{x, y}` 뿐이었다. 그런데 `_YawStep`(복귀 ②)은 **`pose["yaw"]` 로
+        도착을 판정한다**(`common/return_steps.py`):
+
+            if pose is not None and pose.get("yaw") is not None:
+                if abs(wrap_angle(target - pose["yaw"])) <= tol:
+                    return SUCCESS
+
+        `yaw` 가 없으니 그 검사가 한 번도 성립하지 않는다. **로봇은 실제로 다 돌았는데
+        BT 는 모른 채** 60초 timeout → 재시도 3회 → fault → ERROR 로 갔다.
+        실측(2026-07-30): "한 바퀴 잘 돌았는데 다음 단계로 안 간다".
+
+        왜 여태 안 드러났나: 그 leaf 는 RETURNING 이 ②까지 실제로 갈 때만 돈다.
+        오늘이 처음이었다. `Undock` 의 전진량 판정(헤딩 투영)도 같은 값을 쓴다.
+
+        쿼터니언 → yaw 는 z 회전만 뽑는다(지상 주행이라 roll·pitch 는 안 쓴다).
+        """
         p = msg.pose.pose.position
-        self._robot_pose = {"x": float(p.x), "y": float(p.y)}
+        q = msg.pose.pose.orientation
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        self._robot_pose = {"x": float(p.x), "y": float(p.y), "yaw": float(yaw)}
 
     # ⚠️ ROS 시계로 시각을 찍는 헬퍼(`_now`)는 삭제했다. 이 클래스가 내보내는 시각 값
     #    (ui_last_touch_at, command_received_at)은 **전부 time.monotonic 기준**이어야 한다 —

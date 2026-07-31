@@ -136,12 +136,25 @@ class FsmNode(Node):
         # ⚠️ `return_x/y/yaw` 는 이제 **트리가 안 쓴다**(`GoToParking` 이 없어졌다).
         #    선언만 남겨 둔다 — 이 값을 넘기는 런치 파일이 있고, 선언을 지우면 그쪽이
         #    "undeclared parameter" 로 죽는다. 주차장 좌표 판정은 `dock_confirm.py` 몫이다.
-        self.declare_parameter("return_x", -0.001)
-        self.declare_parameter("return_y", -0.033)
-        self.declare_parameter("return_yaw", 0.0)
-        # 주차장 **입구** 정점. arte2 navgraph 의 `주차장입구`.
-        entrance_x = float(self.declare_parameter("entrance_x", 0.6005).value)
-        entrance_y = float(self.declare_parameter("entrance_y", -0.0333).value)
+        # ⚠️ 이 좌표는 다시 **쓰인다.** ②가 "등을 충전소로 향한다"를
+        #    `atan2(충전소 − 현재) + 180°` 로 내기 때문이다(return_steps `_approach_yaw`).
+        #    arte2 navgraph 의 `충전소` 정점.
+        return_x = float(self.declare_parameter("return_x", -0.0007).value)
+        return_y = float(self.declare_parameter("return_y", -0.0333).value)
+        self.declare_parameter("return_yaw", 3.1415)
+        # 도킹 접근 정점 — arte2 navgraph 의 **`충전소통로`**.
+        #
+        # [2026-07-30] `충전소입구`(0.6005, 옛 `주차장입구`) → `충전소통로`(0.384) 로 옮겼다.
+        #   충전소통로 → 충전소 = **0.385m**. `axis_gate_m`(0.6) **안**이라 도착하자마자
+        #   자세를 신뢰하는 AXIS_ALIGN 구간으로 들어간다. 충전소입구(0.60m)는 딱 그 경계라
+        #   HOMING/AXIS_ALIGN 을 오갈 여지가 있었다.
+        #   좌표 출처: aba_fms_service/fleet_ws/maps/library/arte2.navgraph.yaml (19번 정점)
+        #
+        # ⚠️ 노드 이름은 `GoToParkingEntrance` 그대로다 — 관제 화면 라벨이라 개명하면
+        #    `btNodeFlags.ts`·README 를 같이 고쳐야 한다(CLAUDE.md). 목적지가 바뀐 것은
+        #    이 주석과 params 로 남긴다.
+        entrance_x = float(self.declare_parameter("entrance_x", 0.384).value)
+        entrance_y = float(self.declare_parameter("entrance_y", -0.03).value)
         entrance_yaw = float(self.declare_parameter("entrance_yaw", 3.1415).value)
 
         # [디버그] 잠글 상태 브랜치 — 콤마구분. ROS param `disabled_branches` 또는
@@ -240,6 +253,8 @@ class FsmNode(Node):
             FleetCmdDriver(self, "goal").bind(cmd_pub),
             pose_fn=lambda: bb.get(self._bb, Keys.ROBOT_POSE))
         self._drivers["return_entrance_xy"] = (entrance_x, entrance_y)
+        self._drivers["return_entrance_yaw"] = entrance_yaw
+        self._drivers["return_parking_xy"] = (return_x, return_y)
         # ③ 바퀴를 외부에 넘기기 전에 nav2 목표를 끊는다.
         #
         # ①은 x·y 만 보고 성공하고, 성공한 단계는 stop 을 안 보낸다 — 그래서 입구 goal 이
@@ -285,9 +300,15 @@ class FsmNode(Node):
         # 도킹 탈출 — 나갈 때 **앞으로** 민다(부호가 양수인 것 말고는 ⑤와 같은 드라이버).
         # 벽에서 9cm 안쪽은 costmap 통행불가라 nav2 가 시작 격자에서 경로를 못 낸다.
         #   근거·수치: common/undock.py 머리말
+        # ⚠️ 드라이버가 **미는 거리**와 `Undock` 이 **요구하는 거리**는 다르다.
+        #    개루프 실이동은 명령값보다 항상 조금 적다(가속 램프·슬립·데드밴드). 같은 값을
+        #    쓰면 여유가 0 이라 한 번에 성공하지 못하고 재시도가 붙는다 — 재시도는
+        #    기준점을 새로 잡으므로 로봇이 앞으로 세 번 나간다(실측 2026-07-31).
+        #    여기서 여유만큼 더 밀고, 판정은 `registry._undock` 이 원래 값으로 한다.
         self._drivers["undock"] = NudgeDriver(
             self, dock_nudge_topic,
-            distance_m=float(ret.get("undock_distance_m", 0.06)),
+            distance_m=(float(ret.get("undock_distance_m", 0.06))
+                        + float(ret.get("undock_slip_margin_m", 0.05))),
             speed_mps=abs(float(ret.get("nudge_speed_mps", -0.08))))
 
         # 갈림길 정점 — 길잡이가 여기서만 잠깐 서서 사람을 확인한다. 모든 노드에서 서면
@@ -319,6 +340,13 @@ class FsmNode(Node):
         # 삼켜 조용히 None 이 되고**, 드라이버는 "goal 로 옮길 수 없다"로 매번 실패한다.
         self._bb.register_key(key=Keys.ARM_ARGS, access=Access.READ)
         self._bb.register_key(key=Keys.ARM_CMD_ID, access=Access.READ)
+        # [2026-07-30] `return_rotate`(YawGoalDriver)가 **이 클라이언트로** pose 를 읽는다
+        # (아래 `pose_fn`). 등록이 빠져 있어서 복귀 ②단계가 처음 실제로 도는 순간
+        # `AttributeError: client 'fsm_node' does not have read/write access to
+        # '/robot_pose'` 로 **FSM 노드가 통째로 죽었다.** 실측 로그로 잡았다.
+        #   왜 여태 안 드러났나: 그 경로는 `_YawStep` 이 goal 을 실제로 낼 때만 지난다.
+        #   RETURNING 이 ②까지 간 적이 오늘이 처음이다.
+        self._bb.register_key(key=Keys.ROBOT_POSE, access=Access.READ)
         self._bb.set(Keys.CURRENT_MODE, BOOT_STATE)
         self._bb.set(Keys.DISABLED_BRANCHES, disabled_branches)
         #: 마지막으로 경고한 "적용 안 된 전이 목표". 같은 요청으로 로그를 도배하지 않는다.

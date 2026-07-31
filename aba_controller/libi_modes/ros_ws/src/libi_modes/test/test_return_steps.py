@@ -154,6 +154,26 @@ def test_dock_settle_succeeds_after_the_wait(seed):
     assert node.status == Status.SUCCESS
 
 
+def test_dock_settle_declares_the_dock(seed, read):
+    """대기가 끝나면 **도킹을 선언한다** — `state_io` 가 이 값을 `/is_docked` 로 낸다.
+
+    위치로 판정하던 `dock_confirm.py` 가 `pi.sh` 에서 빠져 아무도 그 토픽을 안 낸다.
+    선언이 없으면 `UndockNotNeeded` 가 None 을 "도킹 아님"으로 읽어 탈출을 건너뛰고,
+    벽에서 7cm 지점에서 nav2 가 경로를 못 낸다.
+    """
+    seed()
+    clock = _Clock()
+    node = DockSettle(1.0, clock)
+    node.setup()
+    node.initialise()
+    node.tick_once()
+    assert read(Keys.DOCK_DECLARED) in (None, False)   # 대기 중에는 아직 아니다
+    clock.t = 1.5
+    node.tick_once()
+    assert node.status == Status.SUCCESS
+    assert read(Keys.DOCK_DECLARED) is True
+
+
 def test_dock_settle_ignores_is_docked(seed, tick):
     """도킹 신호가 이미 참이어도 대기를 건너뛰지 않는다 — 그 신호는 위치 판정이다."""
     seed(**{Keys.IS_DOCKED: True})
@@ -195,19 +215,33 @@ def test_goal_step_without_pose_never_claims_arrival(seed, tick):
 
 # ── 회전 단계 ───────────────────────────────────────────────────────────────
 
-def test_face_approach_yaw_uses_the_absolute_angle(seed):
-    """[2026-07-30] 좌표 계산(atan2)이 아니라 **고정 절대각**이다.
+def test_face_approach_yaw_turns_180_from_the_current_heading(seed):
+    """[2026-07-30 사용자 지정] **지금 보고 있는 방향에서 반 바퀴**다.
 
-    예전 `FaceParking` 은 "주차장을 바라본다"라서 뒤이어 180° 를 더 돌아야 했다
-    (`TurnAround`). 지금은 한 번에 접근 자세로 간다 — 충전 단자가 뒤로 오고
-    뒷캠이 마커를 본다. 현재 위치가 어디든 목표 각도는 같아야 한다."""
-    seed(**{Keys.ROBOT_POSE: {"x": 9.9, "y": -3.3, "yaw": math.pi}})
+    ①이 끝나면 로봇은 충전소를 바라보고 서 있다. 거기서 180° 돌면 등이 충전소를
+    향하고, 그래야 뒷캠이 마커를 본다.
+
+    고정 절대각도, 충전소 좌표 atan2 도 아니다 — 둘 다 실기에서 틀렸다
+    (`_approach_yaw` 주석 참고). 위치와 무관하게 **입력 헤딩에만** 달려 있어야 한다."""
+    for start, expect in ((math.pi, 0.0), (0.0, math.pi), (1.0, 1.0 - math.pi)):
+        seed(**{Keys.ROBOT_POSE: {"x": 9.9, "y": -3.3, "yaw": start}})
+        rot = FakeYawDriver()
+        step = _steps(rotate_driver=rot)[1]
+        step.setup_with_descendants()
+        step.initialise()
+        step.tick_once()
+        assert abs(wrap_angle(rot.last_yaw - expect)) < 1e-6, f"{start} → {rot.last_yaw}"
+
+
+def test_face_approach_yaw_needs_a_heading(seed):
+    """yaw 를 모르면 반 바퀴가 어디인지 알 수 없다 — 회전 명령을 내면 안 된다."""
+    seed(**{Keys.ROBOT_POSE: {"x": 0.0, "y": 0.0}})          # yaw 없음
     rot = FakeYawDriver()
     step = _steps(rotate_driver=rot)[1]
     step.setup_with_descendants()
     step.initialise()
     step.tick_once()
-    assert abs(rot.last_yaw - APPROACH_YAW) < 1e-6
+    assert rot.started is False
 
 
 def test_yaw_target_is_fixed_once(seed):

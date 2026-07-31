@@ -18,6 +18,17 @@ from test.fakes import FakeDriver
 PARAMS = {"battery": {"ready": 40, "charged": 80, "low": 15}}
 
 
+def _undock_gate():
+    """`patrol.create` 가 필수로 받는 도킹 탈출 게이트 대역 (test_follow_exec `_gate` 와 같다).
+
+    노드는 부모를 하나만 가지므로 **호출할 때마다 새로 만든다** — 하나를 돌려 쓰면
+    두 번째 트리에 붙일 때 첫 트리에서 떨어져 나간다.
+    """
+    from libi_modes.common import undock
+    return undock.create(FakeDriver(), distance_m=0.06, timeout_sec=8.0,
+                         retry_max=3, now_fn=lambda: 0.0)
+
+
 class FakeClock:
     def __init__(self):
         self.now = 100.0        # 0 이 아닌 값 — 0 을 falsy 로 잘못 다루면 여기서 걸린다
@@ -126,7 +137,8 @@ def test_panel_touch_breaks_through_the_hold(seed, tick, read, monkeypatch):
     seed(**{Keys.CURRENT_MODE: "PATROL", Keys.BATTERY_PERCENT: 60.0,
             Keys.ROBOT_POSE: None, Keys.LAST_COMMAND: "ui_touch",
             Keys.HOLD_UNTIL: clock() + 999.0})
-    assert tick(patrol.create(FAKE_PARAMS, FakeDriver())) == Status.SUCCESS
+    assert tick(patrol.create(FAKE_PARAMS, FakeDriver(),
+                              undock_gate=_undock_gate())) == Status.SUCCESS
     assert read(Keys.CURRENT_MODE) == "INTERACTING"
 
 

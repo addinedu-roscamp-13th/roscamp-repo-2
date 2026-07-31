@@ -36,7 +36,15 @@ from py_trees.common import Access, Status
 from libi_interfaces.msg import FsmState
 from libi_interfaces.srv import RequestTransition
 from geometry_msgs.msg import Twist
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool, String
+
+#: `/is_docked` 발행용. 도킹은 **상태**라 늦게 뜬 구독자도 마지막 값을 받아야 한다
+#: (`dock_confirm.py` 도 TRANSIENT_LOCAL 이었다 — sim_battery.py 주석 참고).
+#: VOLATILE 구독자와도 호환된다(발행자 durability 가 더 강한 쪽은 통과).
+_LATCHED_PUB = QoSProfile(depth=1)
+_LATCHED_PUB.durability = DurabilityPolicy.TRANSIENT_LOCAL
+_LATCHED_PUB.reliability = ReliabilityPolicy.RELIABLE
 
 from libi_modes.blackboard import Keys
 from libi_modes.registry import ANY, BRANCH_ORDER, START, TRANSITIONS
@@ -121,6 +129,10 @@ class StateIO:
                  typed_state_topic="fsm_state_typed",
                  motion_lock_topic="/libi/motion_lock",
                  hold_topic="/cmd_vel_hold",
+                 # ⚠️ `providers` 의 `docked_topic` 기본값과 **같아야 한다**(둘 다 상대
+                 #    이름 `is_docked` — 같은 노드 네임스페이스라 같은 토픽이 된다).
+                 #    다르면 우리가 낸 값을 우리가 못 받아 IS_DOCKED 가 계속 None 이다.
+                 docked_topic="is_docked",
                  follow_snapshot_topic="/libi/follow_bt_snapshot",
                  follow_stale_sec=3.0,
                  snapshot_period_sec=0.5,
@@ -194,8 +206,15 @@ class StateIO:
         self._bb = py_trees.blackboard.Client(name="state_io")
         for key in (Keys.CURRENT_MODE, Keys.ERROR_CODE, Keys.HOLD_UNTIL, Keys.NEXT_MODE):
             self._bb.register_key(key=key, access=Access.WRITE)
-        for key in (Keys.BATTERY_PERCENT, Keys.IS_DOCKED, Keys.INTERACTING_REMAINING):
+        for key in (Keys.BATTERY_PERCENT, Keys.IS_DOCKED, Keys.INTERACTING_REMAINING,
+                    Keys.DOCK_DECLARED):
             self._bb.register_key(key=key, access=Access.READ)
+        #: BT 가 선언한 도킹 여부를 밖으로 낸다 (`Keys.DOCK_DECLARED` 주석 참고).
+        #  latched 다 — 늦게 뜬 구독자(providers·sim_battery·FMS)도 마지막 값을 받는다.
+        self._docked_pub = node.create_publisher(Bool, docked_topic, _LATCHED_PUB)
+        #: 마지막으로 낸 값. **바뀔 때만** 낸다 — latched 라 재발행이 필요 없고,
+        #  20Hz 로 계속 내면 로그·대역만 먹는다. None = 아직 한 번도 선언 안 됨.
+        self._docked_sent = None
 
     def _publish_hold(self):
         """잠긴 동안 0 을 20Hz 로 낸다. 안 잠겼으면 **아무것도 안 낸다** —
@@ -311,6 +330,15 @@ class StateIO:
         # 자율주행 잠금 — MOTION_LOCKED_STATES 주석 참고.
         self._locked = current in MOTION_LOCKED_STATES
         self._lock_pub.publish(Bool(data=self._locked))
+
+        # BT 가 선언한 도킹을 밖으로 낸다. 아무도 `/is_docked` 를 안 내던 자리를 메운다
+        # (`Keys.DOCK_DECLARED` 주석에 왜 위치 판정을 안 쓰는지 적어 뒀다).
+        # None(아직 선언 없음)이면 **아무것도 안 낸다** — 모르는 것을 False 로 단정하면
+        # 그것도 판정이 된다. 지금까지와 똑같이 구독자 쪽 값이 None 으로 남는다.
+        declared = self._read(Keys.DOCK_DECLARED)
+        if declared is not None and declared != self._docked_sent:
+            self._docked_sent = bool(declared)
+            self._docked_pub.publish(Bool(data=self._docked_sent))
 
         # remaining_sec 은 INTERACTING 일 때만 의미가 있다(UiSessionTimer 가 그 브랜치에서만
         # 쓴다). 다른 상태에선 0.0 으로 내보내 패널이 남은 카운트다운을 오인하지 않게 한다.

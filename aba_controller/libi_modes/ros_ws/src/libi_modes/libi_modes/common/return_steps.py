@@ -324,6 +324,7 @@ class DockSettle(py_trees.behaviour.Behaviour):
     def setup(self, **kwargs):
         self.blackboard = self.attach_blackboard_client(name=self.name)
         self.blackboard.register_key(key=Keys.UNDOCK_DONE, access=Access.WRITE)
+        self.blackboard.register_key(key=Keys.DOCK_DECLARED, access=Access.WRITE)
 
     def initialise(self):
         self._started_at = None
@@ -337,23 +338,47 @@ class DockSettle(py_trees.behaviour.Behaviour):
             # 밀어야 한다(`common/undock.py`). 주행 브랜치의 게이트는 인스턴스가 셋이라
             # 그쪽에서 전이를 보고 풀면 서로 다른 인스턴스가 남의 래치를 지운다.
             self.blackboard.set(Keys.UNDOCK_DONE, False)
+            # [2026-07-31] **도킹을 여기서 선언한다**(사용자 결정). 개루프 후진이 끝난
+            # 이 자리가 "붙었다"를 아는 유일한 지점이다 — 위치로 추정하던
+            # `dock_confirm.py` 는 `pi.sh` 에서 빠져 아무도 안 돌고 있다.
+            # `state_io` 가 이 값을 `/is_docked` 로 내보낸다(`Keys.DOCK_DECLARED` 주석).
+            self.blackboard.set(Keys.DOCK_DECLARED, True)
             return Status.SUCCESS
         return Status.RUNNING
 
 
 def create_return_steps(*, entrance_driver, rotate_driver, nav_release_driver,
                         aruco_driver, nudge_driver,
-                        entrance_xy, approach_yaw, tolerance, resend_sec, timeout_sec,
+                        entrance_xy, approach_yaw=None, dock_xy=None, tolerance, resend_sec, timeout_sec,
                         yaw_tolerance_rad, retry_max, settle_sec=1.0,
                         now_fn=time.monotonic):
     """6단계 시퀀스를 만든다. 각 단계는 실패 흡수 데코레이터로 감싼다."""
-    # 목표 각도는 **절대각**이다. 예전엔 현재 pose 와 주차장 좌표로 atan2 를 냈는데,
-    # 그건 "주차장을 바라본다"라서 뒤이어 180° 를 더 돌아야 했다(TurnAround). 지금은
-    # 한 번에 접근 자세로 간다 — 충전 단자가 뒤에 있으므로 뒷캠이 마커를 본다.
     def _approach_yaw(pose):
-        # 위치를 모르면 회전을 시작하지 않는다 — 실행 층이 좌표 없이 goal 을 못 만든다
-        # (`YawGoalDriver` 는 현재 x·y 에 목표 yaw 만 붙여 보낸다).
-        return None if pose is None else approach_yaw
+        """**지금 보고 있는 방향에서 180° 돌린 각도.** 사용자 지정(2026-07-30).
+
+        ①이 끝나면 로봇은 충전소를 바라보고 서 있다(정점 goal yaw 가 그쪽이다).
+        거기서 반 바퀴 돌면 **등이 충전소를 향하고**, 그래야 뒷캠이 마커를 본다.
+
+        ## 왜 절대각도, 충전소 좌표도 아닌 상대 180° 인가
+
+        둘 다 시도했고 둘 다 틀렸다:
+
+          · **고정 절대각**(정점 yaw + 180°) — ①이 x·y 만 보고 성공하므로 실제 헤딩이
+            그 정점 yaw 라는 보장이 없다. 상황마다 다른 곳을 봤다.
+          · **충전소 좌표에서 atan2** — 로봇이 충전소와 거의 일직선상에 서면 방위각이
+            작은 위치 오차에도 크게 튄다(38cm 앞에서 y 가 2cm 어긋나면 3° 다. 더 가까워지면
+            더 심하다). 그리고 사용자가 원한 동작이 아니다.
+
+        상대 180° 는 ①이 만들어 준 자세를 그대로 이어받는다 — 그 자세가 곧 충전소를
+        바라보는 자세이므로, 반대편이 정확히 등을 지는 자세다.
+
+        ⚠️ 목표는 `_YawStep` 이 **한 번만** 정한다(그 leaf 주석). 매 tick 다시 계산하면
+           돌면서 목표도 따라 움직여 영원히 안 닿는다.
+        """
+        # 위치·자세를 모르면 회전을 시작하지 않는다 — 실행 층이 좌표 없이 goal 을 못 만든다.
+        if pose is None or pose.get("yaw") is None:
+            return None
+        return wrap_angle(pose["yaw"] + math.pi)
 
     steps = [
         _GoalStep("GoToParkingEntrance", entrance_driver, entrance_xy,
