@@ -21,6 +21,7 @@ pose 모델로 갈아치우면 도서관 환경에 맞춰 학습된 그 가중�
 판정 로직은 `~/personal_repo/yolo_pose/posture.py` 를 **import 해서** 쓴다. 복제하면
 임계값(CONF_MIN, BAND_DEG, 기준비율)이 두 곳으로 갈라져 한쪽만 고쳐진다.
 """
+import math
 import os
 import sys
 import time
@@ -96,6 +97,10 @@ class PoseEstimator:
         #  판정에는 안 쓴다 — 순전히 화면에 스켈레톤을 그리기 위한 것이다. 추론을 건너뛴
         #  프레임에서는 갱신하지 않아, 그림이 `every_n` 주기로 깜빡이지 않고 유지된다.
         self.last_keypoints = None
+        #: 마지막으로 잰 **몸통 비율**(선택된 축 기준). 판정에 쓰는 그 값이다 —
+        #  화면에 숫자로 띄우려고 따로 계산하면 화면과 판정이 어긋난다.
+        #  키포인트가 없거나 폭이 0 이면 None.
+        self.last_ratio = None
 
     @property
     def conf_min(self) -> float:
@@ -152,6 +157,7 @@ class PoseEstimator:
         self._frame = 0
         self._last = CALIBRATING
         self.last_axis = self._posture.AXIS_TORSO
+        self.last_ratio = None
         if self._filter is not None:
             self._filter.reset()
         self._filter_ts = None
@@ -159,6 +165,24 @@ class PoseEstimator:
     @property
     def calibrating(self) -> bool:
         return not self._calibrator.done
+
+    @property
+    def ref_ratio(self):
+        """등록할 때 잰 **기준 비율**. 측정이 안 끝났으면 None."""
+        return self._calibrator.reference if self._calibrator.done else None
+
+    @property
+    def side_trip(self):
+        """이 값을 넘으면 측면으로 본다 = 기준 × side_factor. 기준이 없으면 None.
+
+        화면에 기준만 띄우면 "지금 값이 얼마나 모자란지"를 사람이 암산해야 한다.
+        판정선을 같이 내보내면 숫자 셋만 보고 바로 읽힌다.
+        """
+        ref = self.ref_ratio
+        f = self._calib.side_factor
+        if ref is None or not f or f < 1:
+            return None
+        return ref * f
 
     @property
     def calibration_progress(self):
@@ -232,6 +256,10 @@ class PoseEstimator:
         axis = self._posture.select_axis(xy, conf, axis_priority)
         if axis is not None:
             self.last_axis = axis
+        # 판정이 실제로 쓰는 그 비율을 그대로 들고 있는다(화면에 숫자로 띄운다).
+        # 폭이 0 이면 posture 쪽이 inf 를 낸다 — 화면에는 숫자가 아니라 없음으로 낸다.
+        r = self._posture.torso_ratio(xy, conf, self.last_axis)
+        self.last_ratio = r if isinstance(r, float) and math.isfinite(r) else None
 
         kwargs = {
             "ref_ratio": self._calibrator.reference,

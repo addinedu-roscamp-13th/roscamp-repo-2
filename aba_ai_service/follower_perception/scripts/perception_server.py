@@ -8,6 +8,7 @@ Run from the follower_perception/ package root:
     python scripts/perception_server.py --test-pattern           # no webcam/torch
 """
 import argparse
+import json
 import os
 import select
 import socket
@@ -147,7 +148,15 @@ def _calibration_text(pose, fps):
 
 
 def draw_overlay(frame, det, *, cands=None, pick=None, cmd=None, status_extra="",
-                 pose=None, fps=None):
+                 pose=None, fps=None, hud_text=True):
+    """`hud_text=False` 면 **구석 글자만** 빼고 그린다.
+
+    bbox·스켈레톤·가이드선은 화면 위 좌표에 붙는 그림이라 프레임에 구워야 하지만,
+    STATE·POSTURE·cmd_vel 같은 글자는 좌표와 무관하다. 그걸 JPEG 에 구워 보내면
+    패널에서 크기·글꼴·색을 못 고치고, 영상이 축소되면 같이 뭉개져 안 읽힌다.
+    패널로 가는 스트림은 글자를 빼고 `POSE` 사이드밴드로 **값을 보낸다**
+    (`serve_loop`). 로컬 디버그 창은 기본값 그대로라 예전과 똑같이 보인다.
+    """
     vis = frame.copy()
     h, w = vis.shape[:2]
     # 아래 글자 크기·두께·여백은 전부 640 폭 기준 상수였다. 프레임 폭에 맞춰 한 번에
@@ -193,7 +202,7 @@ def draw_overlay(frame, det, *, cands=None, pick=None, cmd=None, status_extra=""
             # `pose` 가 구버전(속성 없음)이거나 값이 None 이어도 torso 로 떨어진다.
             axis = getattr(pose, "last_axis", "torso") or "torso"
             _draw_skeleton(vis, kp, pose.conf_min, pcol, k, axis=axis)
-        if posture:
+        if posture and hud_text:
             # 주행 허용 여부까지 같이 낸다. 자세와 주행은 별개다 — PostureGate 는
             # 한 번 Lying 을 보면 Standing 이 몇 프레임 이어질 때까지 계속 막는다.
             gate = "" if getattr(det, "motion_ok", True) else "  [motion blocked]"
@@ -207,7 +216,7 @@ def draw_overlay(frame, det, *, cands=None, pick=None, cmd=None, status_extra=""
                 _hud_text(vis, cal_text,
                           (max(0, x1), min(h - pad, y2 + int(48 * k))),
                           pcol, 0.55 * k, thick)
-    if cmd is not None:
+    if cmd is not None and hud_text:
         state = cmd.get("state", "")
         scol = {"IDLE": (200, 200, 200), "FOLLOWING": (0, 255, 0),
                 "PEEK": (0, 255, 255), "SEARCHING": (0, 165, 255)}.get(state, (0, 0, 255))
@@ -217,7 +226,7 @@ def draw_overlay(frame, det, *, cands=None, pick=None, cmd=None, status_extra=""
                f"   [{cmd['drive']} | {cmd['turn']}]")
         _hud_text(vis, txt, (int(12 * k), int(72 * k)),
                   (255, 0, 0), 0.62 * k, thick)                        # blue (BGR)
-    if status_extra:
+    if status_extra and hud_text:
         _hud_text(vis, status_extra, (int(12 * k), h - int(12 * k)),
                   (0, 0, 255), 0.62 * k, thick)                        # red (BGR)
     return vis
@@ -226,6 +235,43 @@ def draw_overlay(frame, det, *, cands=None, pick=None, cmd=None, status_extra=""
 def _cm(m):
     """metres -> integer centimetres for the viewer; -1 means no reading."""
     return -1 if (m is None or not np.isfinite(m)) else int(round(m * 100.0))
+
+
+def _num(v):
+    """화면에 띄울 수 있는 실수만 통과시킨다. None·inf·NaN 은 전부 None."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if np.isfinite(f) else None
+
+
+def _pose_payload(det, cmd, pose, fps):
+    """패널이 글자로 그릴 값들. `POSE ` + JSON 한 줄.
+
+    LIDR 은 정수 8개라 공백으로 갈라도 되지만 여기는 문자열·실수·없음이 섞인다.
+    자리수로 맞추면 필드를 하나 더할 때마다 양쪽을 같이 고쳐야 하고, 한쪽만
+    고치면 조용히 어긋난다. JSON 은 Qt(QJsonDocument)에 이미 있다.
+    """
+    body = {
+        "posture": getattr(det, "posture", None) or None,
+        # 자세와 주행은 별개다 — Standing 이어도 LiDAR 나 게이트가 막을 수 있다.
+        "motionOk": bool(getattr(det, "motion_ok", True)) if det is not None else None,
+        # 판정이 실제로 쓴 값 셋. ratio 가 trip 을 넘으면 측면이다.
+        "ratio": _num(getattr(pose, "last_ratio", None)),
+        "refRatio": _num(getattr(pose, "ref_ratio", None)),
+        "sideTrip": _num(getattr(pose, "side_trip", None)),
+        "axis": getattr(pose, "last_axis", None),
+    }
+    if pose is not None and getattr(pose, "calibrating", False):
+        got, need = pose.calibration_progress
+        body["calibrating"] = {"remainingSec": pose.calibration_remaining_sec(fps),
+                               "got": got, "need": need}
+    if cmd is not None:
+        body["state"] = cmd.get("state") or None
+        body["linearX"] = _num(cmd.get("linear_x"))
+        body["angularZ"] = _num(cmd.get("angular_z"))
+    return b"POSE " + json.dumps(body).encode("utf-8")
 
 
 #: `poll_cmd` 이 "상대가 연결을 닫았다"를 알리는 표식. `None`(명령 없음)과 **반드시**
@@ -277,14 +323,17 @@ def serve_loop(conn, frames, perception, *, poll_cmd=None, jpeg_quality=80,
         # 숫자가 멈춘 것처럼 보인다(`_calibration_text`). dt<=0(첫 tick·시계 튐)은
         # 1/dt 가 무한대/음수가 되므로 None 으로 막는다.
         fps = 1.0 / dt if dt > 0 else None
+        # 패널로 가는 스트림은 **글자를 굽지 않는다** — 아래 POSE 로 값을 보내고
+        # 패널이 자기 글꼴·색으로 그린다(draw_overlay 머리말).
         vis = draw_overlay(frame, det, cands=cands, pick=pick, cmd=cmd,
                            status_extra=_status_line(perception.matcher),
-                           pose=perception.pose, fps=fps)
+                           pose=perception.pose, fps=fps, hud_text=False)
         ok, buf = cv2.imencode(".jpg", vis,
                                [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
         if ok:
             try:
                 send_frame(conn, buf.tobytes())
+                send_frame(conn, _pose_payload(det, cmd, perception.pose, fps))
                 if lidar_source is not None:                 # LiDAR telemetry (display only)
                     s = lidar_source.latest()
                     if s is not None:                        # order: FL F FR L R BL B BR

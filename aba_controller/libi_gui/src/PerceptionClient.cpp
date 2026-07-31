@@ -1,5 +1,7 @@
 #include "PerceptionClient.h"
 
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QtEndian>
 
 namespace {
@@ -9,6 +11,7 @@ constexpr int HEADER_BYTES = 4;
 // 8MB 면 정상 프레임을 자를 일이 없다.
 constexpr quint32 MAX_FRAME_BYTES = 8u * 1024 * 1024;
 const char LIDAR_PREFIX[] = "LIDR ";
+const char POSE_PREFIX[] = "POSE ";
 }
 
 PerceptionClient::PerceptionClient(QObject *parent) : QObject(parent) {
@@ -80,6 +83,7 @@ void PerceptionClient::onReadyRead() {
         // 라이다 텔레메트리는 같은 스트림에 섞여 온다. JPEG 으로 디코딩하려 들면 매번
         // 실패하며 프레임이 깜빡이므로 접두사로 갈라서 따로 처리한다.
         if (payload.startsWith(LIDAR_PREFIX)) { applyLidar(payload); continue; }
+        if (payload.startsWith(POSE_PREFIX))  { applyPose(payload);  continue; }
 
         QImage img;
         if (!img.loadFromData(payload, "JPG")) continue;
@@ -109,6 +113,23 @@ void PerceptionClient::applyLidar(const QByteArray &payload) {
     if (next == m_lidar) return;
     m_lidar = next;
     emit lidarChanged();
+}
+
+void PerceptionClient::applyPose(const QByteArray &payload) {
+    // "POSE <JSON>" — 자세·비율·주행 상태. 필드 구성은 perception_server._pose_payload.
+    // 값이 없는 항목은 JSON null 로 오거나 키가 아예 빠진다. QVariantMap 으로 그대로
+    // 넘겨 QML 이 undefined 검사로 거른다 — 여기서 기본값을 채우면 "값 없음"과
+    // "0" 이 구분되지 않는다(비율 0 은 실제로 의미가 다르다).
+    QJsonParseError err{};
+    const QJsonDocument doc =
+        QJsonDocument::fromJson(payload.mid(int(sizeof(POSE_PREFIX)) - 1), &err);
+    // 깨진 JSON 이면 예전 값을 그대로 둔다. 지우면 화면이 한 프레임씩 깜빡인다.
+    if (err.error != QJsonParseError::NoError || !doc.isObject()) return;
+
+    const QVariantMap next = doc.object().toVariantMap();
+    if (next == m_pose) return;
+    m_pose = next;
+    emit poseChanged();
 }
 
 bool PerceptionClient::takeFrame(QByteArray &payload) {

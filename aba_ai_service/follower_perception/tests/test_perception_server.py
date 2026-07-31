@@ -88,7 +88,12 @@ def test_serve_loop_streams_and_registers():
         got.append(fr)
     b.close()
 
-    assert len(got) == 4
-    img = cv2.imdecode(np.frombuffer(got[0], np.uint8), cv2.IMREAD_COLOR)
+    # 프레임마다 JPEG 하나 + POSE 하나가 같은 스트림에 섞여 나간다. 개수만 세면
+    # 둘이 뒤바뀌어도 통과하므로 접두사로 갈라서 각각 확인한다.
+    poses = [p for p in got if p.startswith(b"POSE ")]
+    jpegs = [p for p in got if not p.startswith(b"POSE ")]
+    assert len(jpegs) == 4
+    assert len(poses) == 4
+    img = cv2.imdecode(np.frombuffer(jpegs[0], np.uint8), cv2.IMREAD_COLOR)
     assert img.shape == (64, 64, 3)
     assert perc.matcher.is_registered is True
