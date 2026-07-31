@@ -43,6 +43,9 @@ from app.routers.line_dock import (
     LineConfig,
     _ir_on_tape,
     _line_loop,
+    # nav2 는 '우리가 껐을 때만' 되살린다 — line_dock 의 헬퍼를 그대로 쓴다(플래그 공유).
+    _nav2_restore,
+    _nav2_stop,
     _pm2,
     _read_wall_cm,
 )
@@ -304,7 +307,7 @@ async def _park_loop(cfg: ParkConfig) -> None:
     """진입각 정렬 → 테이프 탐색 → 라인 추종(+최종 벽/정지선 정지) 순차 실행."""
     try:
         if cfg.manage_nav2:
-            _pm2("stop", "nav2")  # cmd_vel 충돌 방지
+            _nav2_stop()  # cmd_vel 충돌 방지
 
         # 1) 진입각 정렬
         if cfg.rotate_ref == "marker" and cfg.marker_id is not None:
@@ -341,7 +344,7 @@ async def _park_loop(cfg: ParkConfig) -> None:
         await _motor_send(0, 0)
         _state["running"] = False
         if cfg.manage_nav2:
-            _pm2("start", "nav2")
+            _nav2_restore()
 
 
 # ────────────────────────────── 태스크/엔드포인트 ──────────────────────────────
@@ -383,7 +386,7 @@ async def _launch(
             await _motor_send(0, 0)
             _state["running"] = False
             if restart_nav2:
-                _pm2("start", "nav2")
+                _nav2_restore()
 
     _task = asyncio.create_task(_runner())
 
@@ -404,7 +407,7 @@ async def park_stop():
     """비상정지: 실행 중인 모든 루프 중단 + 모터 0 + nav2 복구."""
     await _cancel_task()
     await _motor_send(0, 0)
-    _pm2("start", "nav2")
+    _nav2_restore()
     _state.update(running=False, phase="idle", message="정지됨")
     return {"success": True, "message": "주차 정지"}
 
@@ -425,7 +428,7 @@ async def park_rotate(cfg: ParkConfig):
 async def park_wall_approach(cfg: ParkConfig):
     """(디버그) 벽 접근 프리미티브만 단독 실행."""
     if cfg.manage_nav2:
-        _pm2("stop", "nav2")
+        _nav2_stop()
     await _launch(lambda: _approach_wall(cfg), "wall", "벽 접근(단독)", restart_nav2=cfg.manage_nav2)
     return {"success": True, "message": "벽 접근 시작", "target_cm": cfg.wall_target_cm}
 
@@ -434,7 +437,7 @@ async def park_wall_approach(cfg: ParkConfig):
 async def park_search_line(cfg: ParkConfig):
     """(디버그) 테이프 탐색 프리미티브만 단독 실행."""
     if cfg.manage_nav2:
-        _pm2("stop", "nav2")
+        _nav2_stop()
     await _launch(lambda: _search_line(cfg), "search", "테이프 탐색(단독)", restart_nav2=cfg.manage_nav2)
     return {"success": True, "message": "테이프 탐색 시작"}
 

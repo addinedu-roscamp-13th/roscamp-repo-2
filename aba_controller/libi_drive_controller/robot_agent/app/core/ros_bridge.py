@@ -15,6 +15,9 @@ import threading
 import time
 from typing import Any
 
+# /api/state 의 scan 다운샘플 상한 (_scan_to_map_points).
+SCAN_MAX_POINTS = 360
+
 # ── 공유 상태 (스레드 세이프 읽기/쓰기) ──────────────────────
 _lock = threading.Lock()
 _state: dict[str, Any] = {
@@ -187,10 +190,49 @@ def get_current_pose() -> tuple[float, float, float] | None:
     return pose["x"], pose["y"], pose["yaw"]
 
 
+def _scan_to_map_points(scan: dict | None) -> dict | None:
+    """원시 LaserScan → 맵 좌표 점 목록 {"points": [[x,y], ...]}.
+
+    costmap 은 inflation 이 씌워진 결과라 센서가 실제로 뭘 보는지 구분되지 않는다.
+    이 레이어는 그 원본을 보여준다 — 스캔이 맵 벽선에 얹히지 않으면 AMCL 위치추정이
+    틀어진 것이므로, 로컬라이제이션 진단용으로도 쓴다.
+    """
+    node = _node
+    if not scan or node is None:
+        return None
+    ranges = scan.get("ranges") or []
+    n = len(ranges)
+    if n == 0:
+        return None
+    try:
+        ox, oy, oyaw = node._transform_origin_to_map(
+            0.0, 0.0, 0.0, scan.get("frame") or "base_scan"
+        )
+    except Exception:
+        return None  # TF 아직 없음 — 다음 스냅샷에서 다시 시도
+
+    c, s = math.cos(oyaw), math.sin(oyaw)
+    amin = scan["angle_min"]
+    ainc = scan["angle_increment"]
+    rmin, rmax = scan["range_min"], scan["range_max"]
+    # sllidar DenseBoost 는 한 바퀴 수천 점이라 그대로 실으면 페이로드가 커진다.
+    # 맵이 2.14×1.32m 라 360점이면 이미 과촘촘.
+    step = max(1, math.ceil(n / SCAN_MAX_POINTS))
+    pts = []
+    for i in range(0, n, step):
+        r = ranges[i]
+        if r is None or r < rmin or r > rmax:
+            continue  # None = inf/nan(미측정)
+        a = amin + i * ainc
+        lx, ly = r * math.cos(a), r * math.sin(a)
+        pts.append([round(ox + c * lx - s * ly, 3), round(oy + s * lx + c * ly, 3)])
+    return {"points": pts}
+
+
 def get_nav_snapshot() -> dict[str, Any]:
-    """대시보드용 통합 스냅샷: map+pose+path+costmap+battery."""
+    """대시보드용 통합 스냅샷: map+pose+path+costmap+scan+battery."""
     with _lock:
-        return {
+        snap = {
             "map": _state["map"],
             "pose": _state["tf_pose"],
             "path": _state["plan"] or [],
@@ -198,6 +240,10 @@ def get_nav_snapshot() -> dict[str, Any]:
             "global_costmap": _state["global_costmap"],
             "battery": dict(_state["battery"]),
         }
+        scan = _state["scan"]
+    # TF lookup 이 들어가므로 _lock 밖에서 변환한다.
+    snap["scan"] = _scan_to_map_points(scan)
+    return snap
 
 
 def send_nav_goal(x: float, y: float, yaw: float) -> bool:
@@ -561,6 +607,8 @@ def _bridge_thread() -> None:
             def _on_scan(self, msg: LaserScan) -> None:
                 with _lock:
                     _state["scan"] = {
+                        # frame_id 가 있어야 맵 좌표로 변환할 수 있다(_scan_to_map_points).
+                        "frame": msg.header.frame_id,
                         "angle_min": msg.angle_min,
                         "angle_max": msg.angle_max,
                         "angle_increment": msg.angle_increment,

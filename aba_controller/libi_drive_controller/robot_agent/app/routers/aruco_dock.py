@@ -332,9 +332,31 @@ def _pm2(action: str, name: str) -> None:
         pass
 
 
+# nav2 는 **우리가 껐을 때만** 되살린다. pm2 는 이미 켜져 있는 앱에 start 를 걸면
+# 재시작해 버리고(pm2.log: "Stopping app:nav2 → starting → online"), 그러면 AMCL 이
+# (0,0,0) 으로 리셋된다 = 화면상 "맵이 흐트러짐". 예전엔 /dock/stop 이 무조건 start 를
+# 불러서, 주차를 멈출 때마다 nav2 가 재시작됐다(2026-07-31 실측: 하루 44회).
+# line_dock 을 import 하면 순환 참조가 되므로(line_dock 이 이 파일을 읽는다) 여기에 둔다.
+_nav2_stopped_by_us = False
+
+
+def _nav2_stop() -> None:
+    global _nav2_stopped_by_us
+    _pm2("stop", "nav2")
+    _nav2_stopped_by_us = True
+
+
+def _nav2_restore() -> None:
+    global _nav2_stopped_by_us
+    if not _nav2_stopped_by_us:
+        return  # 끈 적이 없으면 건드리지 않는다(건드리면 AMCL 만 날아간다)
+    _pm2("start", "nav2")
+    _nav2_stopped_by_us = False
+
+
 def _enter_low_cpu_mode(cfg: DockConfig) -> None:
     if cfg.manage_nav2:
-        _pm2("stop", "nav2")
+        _nav2_stop()
 
 
 def _leave_low_cpu_mode(cfg: DockConfig) -> None:
@@ -344,7 +366,7 @@ def _leave_low_cpu_mode(cfg: DockConfig) -> None:
         except Exception:
             pass
     if cfg.manage_nav2:
-        _pm2("start", "nav2")
+        _nav2_restore()
 
 
 async def _rear_turn_if_needed(cfg: DockConfig) -> None:
@@ -546,10 +568,18 @@ async def _dock_loop(cfg: DockConfig) -> None:
                 if float(np.ptp(ys)) >= 8.0:
                     a, b = np.polyfit(ys, xs, 1)
                     lookahead_y = h * 0.72
-                    guide_cx = float(a * lookahead_y + b)
-                    guide_cx = max(0.0, min(float(w), guide_cx))
-                    guide_ex = (guide_cx - w / 2.0) / (w / 2.0)
-                    guide_count = len(centers)
+                    raw_cx = float(a * lookahead_y + b)
+                    # ★ 두 유도마커의 높이차가 작으면(위 조건 8px 은 아슬아슬하다) 직선의
+                    #   기울기가 폭주해 외삽점이 화면 밖으로 날아간다. 예전엔 그걸 프레임
+                    #   끝으로 잘라 썼는데, 그러면 ex=±1.0 이 되어 아래 '극단 가장자리'
+                    #   가드에 걸려 **다 온 로봇이 영영 멈춰 선다**
+                    #   (2026-07-31 실측: guide_cx=480(=w), 그때 대상 마커는 marker_ex=-0.27,
+                    #    거리 10cm 로 멀쩡히 정면에 있었다).
+                    #   화면 밖으로 나간 외삽은 믿지 않고 마커 자체를 기준으로 둔다.
+                    if 0.0 <= raw_cx <= float(w):
+                        guide_cx = raw_cx
+                        guide_ex = (guide_cx - w / 2.0) / (w / 2.0)
+                        guide_count = len(centers)
             ex = guide_ex
             # LPF: 검출 픽셀 노이즈 방어 — 이후 모든 제어·판정은 필터된 ex 를 쓴다
             ex_f = ex if ex_f is None else (cfg.ex_lpf_alpha * ex + (1.0 - cfg.ex_lpf_alpha) * ex_f)
@@ -942,7 +972,7 @@ async def stop():
         camera.stop()
     except Exception:
         pass
-    _pm2("start", "nav2")
+    _nav2_restore()
     _state.update(running=False, phase="idle", message="정지됨")
     return {"success": True, "message": "도킹 정지"}
 

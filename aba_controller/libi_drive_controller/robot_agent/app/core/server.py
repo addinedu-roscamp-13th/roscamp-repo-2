@@ -89,6 +89,9 @@ def create_app() -> FastAPI:
         from app.routers import park_dock
         api.include_router(park_dock.router, prefix="/robot", tags=["park-dock"])
         api.include_router(park_dock.router, prefix="/admin/robot", tags=["park-dock-legacy"], include_in_schema=False)
+        from app.routers import parkp
+        api.include_router(parkp.router, prefix="/robot", tags=["parkp"])
+        api.include_router(parkp.router, prefix="/admin/robot", tags=["parkp-legacy"], include_in_schema=False)
         api.include_router(human_follow.router, prefix="/robot", tags=["human-follow"])
         api.include_router(human_follow.router, prefix="/admin/robot", tags=["human-follow-legacy"], include_in_schema=False)
 

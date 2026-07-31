@@ -185,6 +185,31 @@ def _pm2(action: str, name: str) -> None:
         pass
 
 
+# ── nav2 전원 관리 ───────────────────────────────────────────────────────────
+# ★ pm2 는 **이미 켜져 있는** 앱에 start 를 걸면 재시작한다(pm2.log: "Stopping app:nav2
+#   → exited code[0] → starting → online"). nav2 가 재시작되면 map_server 가 다시 뜨고
+#   AMCL 이 initialPoseReceived 로 (0,0,0) 에 앉는다 = 화면상 "맵이 흐트러짐".
+#   예전엔 정지 엔드포인트들이 `_pm2("start","nav2")` 를 **무조건** 불렀고, 정지 버튼은
+#   dock/line/park 셋을 한꺼번에 부르므로 주차를 멈출 때마다 nav2 가 2~3회 재시작됐다
+#   (2026-07-31 실측: 재시작 44회). 그래서 '우리가 껐을 때만' 되살린다.
+#   이 플래그는 프로세스 전역이다 — 세 라우터(dock/line/park)가 같은 nav2 를 공유한다.
+_nav2_stopped_by_us = False
+
+
+def _nav2_stop() -> None:
+    global _nav2_stopped_by_us
+    _pm2("stop", "nav2")
+    _nav2_stopped_by_us = True
+
+
+def _nav2_restore() -> None:
+    global _nav2_stopped_by_us
+    if not _nav2_stopped_by_us:
+        return  # 우리가 끈 적이 없다 → 되살릴 것도 없다(건드리면 AMCL 만 날아간다)
+    _pm2("start", "nav2")
+    _nav2_stopped_by_us = False
+
+
 def _grab_frame() -> np.ndarray | None:
     jpeg = camera.get_jpeg()
     if not jpeg:
@@ -418,7 +443,7 @@ async def _line_loop(cfg: LineConfig) -> None:
         await _motor_send(0, 0)
         _state["running"] = False
         if cfg.manage_nav2:
-            _pm2("start", "nav2")
+            _nav2_restore()
 
 
 @router.get("/line/detect")
@@ -450,7 +475,7 @@ async def line_start(cfg: LineConfig):
     _state.update(running=False, phase="initializing", message="바닥 센서 확인 및 초기화 중", telemetry={"left": 0, "right": 0})
 
     if cfg.manage_nav2:
-        _pm2("stop", "nav2")
+        _nav2_stop()
 
     _state.update(running=True, phase="starting", message="바닥 센서 확인 중 - 직진만 유지", telemetry={"left": 0, "right": 0})
     _task = asyncio.create_task(_line_loop(cfg))
@@ -468,7 +493,7 @@ async def line_stop():
             pass
     _task = None
     await _motor_send(0, 0)
-    _pm2("start", "nav2")
+    _nav2_restore()
     _state.update(running=False, phase="idle", message="정지됨")
     return {"success": True, "message": "라인 미세조정 정지"}
 
