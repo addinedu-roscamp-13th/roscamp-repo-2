@@ -565,12 +565,12 @@ ReturningBranch (Sequence, memory=False)
 │   │   ├── ReturnOrSkip (Selector, memory=False)
 │   │   │   ├── AlreadyDocked                   # 충전소에 놓인 채 부팅 → 전부 건너뜀
 │   │   │   └── ReturnDriveSteps (Sequence, memory=True)
-│   │   │       ├── Absorb[GoToParkingEntrance] # ① 주차장 입구로 주행
-│   │   │       ├── Absorb[FaceApproachYaw]     # ② 접근 자세로 회전 (절대각)
+│   │   │       ├── Absorb[GoToParkingEntrance] # ① 충전소통로 정점으로 주행
+│   │   │       ├── Absorb[FaceApproachYaw]     # ② 지금 헤딩에서 180° 회전
 │   │   │       ├── Absorb[ReleaseNav]          # ③ nav2 목표 해제 (바퀴를 넘기기 전)
 │   │   │       ├── Absorb[ArucoApproach]       # ④ 뒷캠 ArUco 로 6cm ← **다른 저장소**
 │   │   │       ├── Absorb[DockNudge]           # ⑤ 개루프 3cm 후진
-│   │   │       └── Absorb[DockSettle]          # ⑥ 안정화 대기 후 도킹으로 침
+│   │   │       └── Absorb[DockSettle]          # ⑥ 안정화 → is_docked 선언
 │   │   └── SetNextMode("CHARGING")
 │   └── exit_watchdog([FaultDetected])
 └── RequestTransition()
@@ -599,9 +599,16 @@ PatrolBranch (Sequence, memory=False)
 ├── IsMode("PATROL")
 ├── UndockOrSkip (Selector, memory=False)
 │   ├── UndockNotNeeded            # 도킹 아님 또는 이미 나옴 → 통과 (평소)
-│   └── Absorb[Undock]             # 6cm 전진 + pose 로 실제 이동 확인
+│   └── GiveUp[Undock]             # 15cm 명령 · 10cm 이동을 pose 로 확인
 └── Parallel(...)                  # ← Undock 이 RUNNING 인 동안 여긴 tick 되지 않는다
 ```
+
+⚠️ **`Absorb` 가 아니라 `GiveUp` 이다.** `AbsorbFailure` 는 재시도를 소진하면 fault 를 세우고
+**RUNNING 을 유지**한다. 그게 맞는 이유는 그쪽이 `Parallel(SuccessOnOne)` **안**에 있고 형제
+`FaultDetected` 가 같은 tick 에 그 fault 를 본다는 것인데, 이 게이트는 **주행 Parallel 앞**에
+있어서 RUNNING 을 유지하면 뒤 Parallel 이 영영 tick 되지 않는다 — fault 를 볼 노드가 없어
+PATROL 에 멈춘 채 무한 재시도한다. 그래서 소진 시 **SUCCESS** 를 낸다(성공이 아니라
+"fault 를 볼 수 있는 곳까지 흐름을 보내려고" 통과시키는 것이다).
 
 왜 필요한가: `nav2_params.yaml` 의 `inscribed 0.088 < inflation_radius 0.09` 라 **벽에서
 9cm 안쪽은 전부 cost 253(통행불가)** 이다. 도킹이 끝나면 로봇 중심이 정확히 그 경계(9cm)에
@@ -617,13 +624,37 @@ PatrolBranch (Sequence, memory=False)
 빠뜨리면 그 경로로 나갈 때 nav2 가 "경로 없음"으로 실패하는데, 증상이 도킹과 멀리 떨어져
 나타나 원인을 못 찾는다. 조립 단계에서 터지는 편이 낫다.
 
-⚠️ **래치는 `DockSettle` 이 푼다.** `is_docked` 는 반경 0.12m 판정이라 6cm 나와도 참이고,
-브랜치 루트가 `memory=False` 라 래치 없이는 매 tick 다시 민다. 그렇다고 게이트가 전이를
-보고 풀면 안 된다 — 게이트는 **브랜치마다 별개 인스턴스**라 PATROL→WORKING 으로 옮길 때
-그쪽 인스턴스가 남의 래치를 지운다. 도킹이 실제로 끝나는 한 곳에서만 푼다.
+⚠️ **래치는 `DockSettle` 이 푼다.** 브랜치 루트가 `memory=False` 라 래치 없이는 매 tick 다시
+민다. 그렇다고 게이트가 전이를 보고 풀면 안 된다 — 게이트는 **브랜치마다 별개 인스턴스**라
+PATROL→WORKING 으로 옮길 때 그쪽 인스턴스가 남의 래치를 지운다. 도킹이 실제로 끝나는
+한 곳에서만 푼다.
 
 ⚠️ `Undock` 은 **시간이 아니라 실제 이동량**으로 판정한다. `NudgeDriver` 는 시간 기반이라
-바퀴가 헛돌아도 성공하는데, 그러면 nav2 실패가 한참 뒤에 나타난다.
+바퀴가 헛돌아도 성공하는데, 그러면 nav2 실패가 한참 뒤에 나타난다. 이동량은 **시작 헤딩에
+투영**해서 센다 — 시작점 대비 직선거리로 재면 옆으로 밀린 거리와 AMCL 재국소화 점프까지
+전진으로 세어, 벽에서 안 나왔는데 나왔다고 판정한다.
+
+### [2026-07-31] 명령 거리 ≠ 판정 거리
+
+실측: 다른 상태로 갈 때마다 로봇이 **앞으로 세 번** 나갔다.
+
+```
+드라이버 : undock_distance_m 를 개루프로 명령
+Undock  : pose 로 잰 이동량 ≥ undock_distance_m 여야 성공   ← 여유가 0
+```
+
+개루프 실이동은 명령값보다 **항상 조금 적다**(가속 램프·바퀴 슬립·모터 데드밴드). 첫 시도가
+판정선에 못 미치면 `GiveUp` 이 재시도하는데, 재시도는 `initialise()` 에서 **기준점을 새로
+잡으므로** 매번 처음부터 전체 거리를 다시 요구한다. 그래서 세 번 밀었고 실제로는 30cm 를 갔다.
+
+명령과 판정을 분리해서 고쳤다(`main.py` 가 드라이버에만 여유를 더한다):
+
+```
+명령 = undock_distance_m(0.10) + undock_slip_margin_m(0.05) = 15cm
+판정 = undock_distance_m                                     = 10cm   ← 안전에 필요한 값
+```
+
+여유를 0 으로 되돌리면 세 번 밀기가 그대로 돌아온다.
 ### [2026-07-27] 한 leaf → 5단계
 
 예전에는 `ReturnNavigation` 하나가 팔 홈복귀·주행·도킹을 통째로 했다. 어디서 실패했는지
@@ -643,14 +674,29 @@ ERROR 전이로 바꿀 tick 조차 없이 브랜치가 죽는다. 재시도를 �
 ### [2026-07-30] 뒷캠 ArUco 정밀 주차로 재편
 
 **없앤 것: `GoToParking`(nav2 로 주차장 정점) · `TurnAround`(180°).** ②가 이제 "주차장을
-바라본다"가 아니라 **접근 자세로 돌린다**(고정 절대각 `returning.approach_yaw_rad`,
-기본 0.0 = 화장실 쪽). 그러면 충전 단자가 뒤를 향해 뒷캠이 마커를 보므로 180° 를 따로
-돌 필요가 없고, 주차장 정점까지 nav2 로 가는 구간은 ③의 ArUco 접근이 대신한다.
+바라본다"가 아니라 **등이 충전소를 향하도록 돌린다.** 그러면 뒷캠이 마커를 보므로 180° 를
+따로 돌 필요가 없고, 충전소 정점까지 nav2 로 가는 구간은 ④의 ArUco 접근이 대신한다.
 **AMCL 오차가 충전 단자 폭보다 큰 구간을 nav2 에게 맡기지 않는 것**이 재편의 요점이다.
+
+#### [2026-07-31] ②의 목표각 — 절대각도, 좌표 계산도 아닌 **상대 180°**
+
+세 번 바꿨고 앞의 둘은 현장에서 틀렸다.
+
+| 시도 | 왜 틀렸나 |
+|---|---|
+| 고정 절대각(정점 yaw + 180°) | ①은 **x·y 만 보고** 성공한다. 실제 헤딩이 그 정점 yaw 라는 보장이 없다 — 상황마다 다른 곳을 봤다 |
+| 충전소 좌표에서 `atan2` | 로봇이 충전소와 거의 일직선에 서면 방위각이 작은 오차에도 크게 튄다. 38cm 앞에서 y 가 2cm 어긋나면 3°, 가까울수록 심해진다 |
+| **`wrap_angle(pose.yaw + π)`** | ①이 만들어 준 자세를 그대로 이어받는다. 그 자세가 충전소를 보는 자세이므로 반대편이 정확히 등을 진다 |
+
+`params.yaml` 의 `returning.approach_yaw_rad` 에 값을 넣으면 그 절대각이 이긴다(현장 보정용).
+기본값은 `null` — 상대 180° 다.
+
+⚠️ 목표각은 `_YawStep` 이 **한 번만** 정한다. 매 tick 다시 계산하면 돌면서 목표도 같이
+움직여 영원히 안 닿는다.
 
 | 단계 | 하는 일 | 실패하면 |
 |---|---|---|
-| ② `FaceApproachYaw` | 절대각 회전. 위치를 모르면 시작 안 함 | timeout(60s) → 흡수·재시도 |
+| ② `FaceApproachYaw` | 상대 180° 회전. 자세를 모르면 시작 안 함 | timeout(60s) → 흡수·재시도 |
 | ③ `ReleaseNav` | `/fleet_cmd{stop}` → `cancel_nav()`. 끊을 목표 없으면 무동작 | fleet_link 무응답 |
 | ④ `ArucoApproach` | `/fleet_cmd{dock_action}` 왕복. **구현은 다른 저장소** | `aruco_timeout_sec`(180s) |
 | ⑤ `DockNudge` | `cmd_vel_dock` 정속 발행 (거리÷속도 초) | 드라이버가 스스로 끝냄 |
@@ -662,14 +708,62 @@ goal 은 살아 있다. 예전엔 바로 뒤 `GoToParking` 이 새 goal 로 **�
 없애면서 선점 주체가 사라졌다. 특히 로봇이 이미 입구에 접근 각도로 서 있으면 ②도 goal 을
 한 번도 안 보내고 성공해서, **죽은 nav2 목표가 ArUco 접근과 바퀴를 두고 다툰다.**
 
-⚠️ **④에 답하는 쪽은 하나여야 한다.** 기본 액션 이름은 `aruco_dock` 이고 지금은 **아무도
-답하지 않는다** — fleet_link 가 모르는 이름이라 `400 알 수 없는 action` 이 즉시 와서
-재시도 끝에 ERROR 로 간다. 일부러 그렇게 뒀다: `"dock"` 이면 fleet_link 가 잡아
-`park_dock`(라인 트레이싱, **실물 미검증**)을 실제로 돌리고 성공까지 답한다 — 뒷캠 ArUco 인
-줄 알고 있는데 다른 알고리즘이 도는, 가장 나쁜 종류의 조용한 실패다. 외부 노드를 붙이는
-날 그 노드가 `aruco_dock` 을 듣게 하면 끝이다. (`park_dock` 을 쓰려면 `-p dock_action:=dock`)
-둘이 동시에 답하면 먼저 온 결과로 ⑤가 시작된다 — 팔에서 이미 밟은 함정이다
+⚠️ **④에 답하는 쪽은 하나여야 한다.** 기본 액션 이름은 `aruco_dock` 이고, 지금은
+`robot_agent` 의 `app/core/marker_dock.py` 가 답한다(2026-07-30 이식, 2026-07-31 실기 성공).
+`"dock"` 으로 바꾸면 fleet_link 가 잡아 `park_dock`(라인 트레이싱, **실물 미검증**)이 대신
+돌고 성공까지 답한다 — 뒷캠 ArUco 인 줄 알고 있는데 다른 알고리즘이 도는, 가장 나쁜 종류의
+조용한 실패다. 둘이 동시에 답하면 먼저 온 결과로 ⑤가 시작된다 — 팔에서 이미 밟은 함정이다
 (CLAUDE.md `LIBI_ARM_VIA_BT`).
+
+### [2026-07-31] `/is_docked` 를 **BT 가 선언한다**
+
+위치로 판정하던 `dock_confirm.py` 가 `pi.sh` 에서 빠졌고(`pi.sh:203`), 그 기본 정점 이름
+`주차장` 도 navgraph 에서 없어졌다. 즉 **아무도 그 토픽을 발행하지 않고 있었다.** 결과:
+
+- `AlreadyDocked` 가 영원히 실패 → 충전소에 놓인 채 켜도 입구까지 나갔다 온다
+- `UndockNotNeeded` 가 None 을 "도킹 아님"으로 읽어 **탈출을 건너뛴다** → nav2 "경로 없음"
+
+위치로 추정하는 대신 **개루프 후진이 끝난 사실로 선언**한다(사용자 결정).
+
+```
+DockSettle 성공  →  DOCK_DECLARED = True
+                    ↓  state_io 가 /is_docked (Bool, latched) 로 발행
+                    ↓  providers 가 되받아 IS_DOCKED 를 채움
+Undock 성공      →  DOCK_DECLARED = False
+```
+
+⚠️ **블랙보드의 `IS_DOCKED` 에 직접 쓰면 안 된다.** `providers.as_dict()` 가 매 tick 그 키를
+구독값으로 덮어쓴다 — 써 봐야 다음 tick 에 지워진다. 그래서 선언용 키를 따로 두고 토픽을
+한 바퀴 돌린다. 덤으로 `sim_battery`·FMS 같은 다른 구독자도 같은 값을 본다.
+
+⚠️ **내리는 쪽이 핵심이다.** 안 내리면 다음 복귀에서 `AlreadyDocked` 가 낡은 True 를 보고
+①~⑥을 통째로 건너뛴다 — 로봇은 도서관 한복판에 선 채 CHARGING 을 선언한다.
+
+⚠️ 선언 전(None)에는 **아무것도 발행하지 않는다.** 모르는 것을 False 로 단정하면 그것도
+판정이 된다.
+
+⚠️ `dock_confirm.py` 를 되살리면 **같은 토픽에 발행자가 둘**이 된다(위치 판정 ↔ BT 선언).
+서로 덮어쓴다.
+
+### [2026-07-31] CHARGING 전이가 유지 시간에 막혀 복귀가 ①부터 재시작했다
+
+실측 증상: 도킹이 완벽히 끝났는데 로봇이 충전소에서 **다시 나가** 입구로 갔다.
+
+```
+패널로 RETURNING 강제  →  hold_until = now + manual_hold_sec(300초)
+도킹 완료(300초 안)    →  SetNextMode("CHARGING")
+RequestTransition      →  _held("CHARGING") = True  →  FAILURE
+루트 Sequence 실패      →  다음 tick 에 IsMode("RETURNING") 여전히 참
+                        →  ReturnAndWatch 재초기화 → ReturnSteps 가 ①부터
+```
+
+유지 시간은 "로봇이 사람의 결정을 스스로 되돌리는 것"을 막으려고 있다. 그런데 **도킹은 이미
+일어난 물리적 사실**이다. 그래서 `_ALWAYS_ALLOWED` 에 `CHARGING` 을 넣었다(ERROR·RETURNING 과
+같은 이유 — 고장과 저전압도 기다릴 수 없다).
+
+⚠️ 대안으로 "`DockSettle` 이 `hold_until` 을 지운다"가 있었는데 **더 넓다.** hold 를 통째로
+지우면 사람이 누른 의도가 CHARGING 뿐 아니라 IDLE·PATROL 전이에도 다 풀린다. 지금 방식은
+target 이 CHARGING 인 전이 하나만 뚫는다.
 
 ⚠️ **④의 취소 계약이 아직 없다.** timeout(180s) 뒤 BT 가 내는 `stop` 은 fleet_link 에서
 nav2 만 끊는다 — 외부 ArUco 접근은 안 멈춘다. 그 상태로 `AbsorbFailure` 가 재시도하면
