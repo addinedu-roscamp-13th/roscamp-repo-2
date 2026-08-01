@@ -246,9 +246,15 @@ public:
       RCLCPP_INFO(get_logger(), "보안순회 루프(CCW): %s", s.c_str());
     }
 
+    cbg_timer_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    cbg_srv_   = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    cbg_sub_   = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+
+    rclcpp::SubscriptionOptions sub_opt;
+    sub_opt.callback_group = cbg_sub_;
     state_sub_ = create_subscription<RmfRobotState>(
       "/robot_state", 10,
-      std::bind(&FleetNode::on_robot_state, this, std::placeholders::_1));
+      std::bind(&FleetNode::on_robot_state, this, std::placeholders::_1), sub_opt);
     path_pub_ = create_publisher<PathRequest>("/robot_path_requests", rclcpp::QoS(10).reliable());
     // ── QoS 계약 ────────────────────────────────────────────────────────────
     //
@@ -290,33 +296,38 @@ public:
     // ⚠️ TTL 은 필수다. 푸는 쪽이 죽으면 로봇이 **영영 순회를 못 하게** 되기 때문이다.
     hold_sub_ = create_subscription<libi_fleet_msgs::msg::RobotHold>(
       "/fms/robot_hold", rclcpp::QoS(10).reliable(),
-      [this](const libi_fleet_msgs::msg::RobotHold::SharedPtr m) { on_robot_hold(m); });
+      [this](const libi_fleet_msgs::msg::RobotHold::SharedPtr m) { on_robot_hold(m); }, sub_opt);
     goal_pub_ = create_publisher<libi_fleet_msgs::msg::FleetGoals>(
       "/fms/goals", rclcpp::QoS(1).reliable());
 
     srv_ = create_service<SubmitTask>(
       "/fms/submit_task",
-      std::bind(&FleetNode::on_submit, this, std::placeholders::_1, std::placeholders::_2));
+      std::bind(&FleetNode::on_submit, this, std::placeholders::_1, std::placeholders::_2),
+      rclcpp::ServicesQoS(), cbg_srv_);
     plugins_srv_ = create_service<SetPlugins>(
       "/fms/set_plugins",
-      std::bind(&FleetNode::on_set_plugins, this, std::placeholders::_1, std::placeholders::_2));
+      std::bind(&FleetNode::on_set_plugins, this, std::placeholders::_1, std::placeholders::_2),
+      rclcpp::ServicesQoS(), cbg_srv_);
     reload_srv_ = create_service<std_srvs::srv::Trigger>(
       "/fms/reload_navgraph",
-      std::bind(&FleetNode::on_reload, this, std::placeholders::_1, std::placeholders::_2));
+      std::bind(&FleetNode::on_reload, this, std::placeholders::_1, std::placeholders::_2),
+      rclcpp::ServicesQoS(), cbg_srv_);
     mode_srv_ = create_service<SetRobotMode>(
       "/fms/set_robot_mode",
-      std::bind(&FleetNode::on_set_mode, this, std::placeholders::_1, std::placeholders::_2));
+      std::bind(&FleetNode::on_set_mode, this, std::placeholders::_1, std::placeholders::_2),
+      rclcpp::ServicesQoS(), cbg_srv_);
     battery_srv_ = create_service<SetBattery>(
       "/fms/set_battery",
-      std::bind(&FleetNode::on_set_battery, this, std::placeholders::_1, std::placeholders::_2));
+      std::bind(&FleetNode::on_set_battery, this, std::placeholders::_1, std::placeholders::_2),
+      rclcpp::ServicesQoS(), cbg_srv_);
     // libi_modes 상태 자동 구독(#16) — 브릿지가 /libi/fsm_state 로 올린다. set_robot_mode 불필요.
     fsm_sub_ = create_subscription<std_msgs::msg::String>(
       "/libi/fsm_state", 10,
-      std::bind(&FleetNode::on_fsm_state, this, std::placeholders::_1));
+      std::bind(&FleetNode::on_fsm_state, this, std::placeholders::_1), sub_opt);
 
     planner_thread_ = std::thread(&FleetNode::planner_loop, this);
     timer_ = create_wall_timer(std::chrono::milliseconds(150),
-                               std::bind(&FleetNode::on_timer, this));
+                               std::bind(&FleetNode::on_timer, this), cbg_timer_);
     // 선행 통과는 arrive_radius 보다 커야 동작한다. 작으면 **조용히 꺼진 것과 같아져**
     // "왜 여전히 노드마다 서지"를 한참 찾게 된다. 그래서 켜짐/꺼짐을 시작할 때 못 박는다.
     if (prefetch_radius_ > arrive_radius_) {
@@ -345,6 +356,7 @@ public:
 private:
   void on_robot_state(const RmfRobotState::SharedPtr msg)
   {
+    std::lock_guard<std::recursive_mutex> lk(state_mu_);
     auto & r = robots_[msg->name];
     r.name = msg->name;
     r.x = msg->location.x;
@@ -423,6 +435,7 @@ private:
   void on_submit(const std::shared_ptr<SubmitTask::Request> req,
                  std::shared_ptr<SubmitTask::Response> res)
   {
+    std::lock_guard<std::recursive_mutex> lk(state_mu_);
     int goal = -1;
     try { goal = std::stoi(req->dropoff); } catch (...) { goal = -1; }
     if (goal < 0 || goal >= graph_.size()) {
@@ -541,6 +554,7 @@ private:
     }
 
     if (r.busy) { cancel_task(robot); }   // 순회/기존 task 취소하고 이 배차로 대체 (특정 배차·경매 낙찰 공통)
+    ++state_gen_;   // 상태가 바뀌었다 — 계산 중인 시간표는 낡았다
     r.busy = true;
     // 콘솔이 지정한 커스텀 작업 이름(requester 필드에 실려옴). 비우면 자동 T-N.
     std::string tid = req->requester.empty()
@@ -668,9 +682,16 @@ private:
     {
       std::lock_guard<std::mutex> lk(planner_mu_);
       if (!result_ready_) { return; }
+      const uint64_t gen = result_gen_;
       routes = std::move(result_routes_);
       snap = std::move(result_snap_);
       result_ready_ = false;
+      if (gen != state_gen_) {
+        RCLCPP_DEBUG(get_logger(),
+                     "[traffic] 낡은 시간표 폐기(세대 %lu≠%lu) — 계산 중에 상태가 바뀌었다",
+                     gen, state_gen_);
+        return;   // 계산 중에 상태가 바뀌었다. 다음 요청이 곧 온다.
+      }
     }
     apply_routes(routes, snap);
   }
@@ -853,6 +874,7 @@ private:
 
   void on_timer()
   {
+    std::lock_guard<std::recursive_mutex> lk(state_mu_);
     // 워커가 계산해 둔 시간표를 먼저 집어 간다 — 이번 틱의 이동 판단이 새 계획을 쓰도록.
     apply_planner_result();
     service_replan_requests();
@@ -985,6 +1007,7 @@ private:
             r.busy = false; r.task_id.clear();
             publish_task_state(t.id, "COMPLETED", t.robot);
             RCLCPP_INFO(get_logger(), "[%s] %s 작업 완료", t.id.c_str(), t.robot.c_str());
+            ++state_gen_;
             it = tasks_.erase(it);
             continue;
           }
@@ -1135,6 +1158,7 @@ private:
   //    "dispatch 실패"로 둔갑해 주문을 통째로 죽인 적이 있다. 타입 메시지로 바꿨다.
   void on_robot_hold(const libi_fleet_msgs::msg::RobotHold::SharedPtr msg)
   {
+    std::lock_guard<std::recursive_mutex> lk(state_mu_);
     if (msg->robot.empty()) { return; }
     if (!msg->hold) {
       if (hold_until_.erase(msg->robot)) {
@@ -1174,6 +1198,7 @@ private:
       std::lock_guard<std::mutex> lk(planner_mu_);
       // graph_ 포인터는 노드 수명 내내 유효하다(멤버). 스냅샷은 값 복사라 안전하다.
       pending_snap_ = std::move(snap);
+      pending_gen_ = state_gen_;
       pending_ready_ = true;
     }
     planner_cv_.notify_one();
@@ -1184,11 +1209,13 @@ private:
   {
     for (;;) {
       PlanSnapshot snap;
+      uint64_t gen = 0;
       {
         std::unique_lock<std::mutex> lk(planner_mu_);
         planner_cv_.wait(lk, [this] { return pending_ready_ || planner_stop_; });
         if (planner_stop_) { return; }
         snap = std::move(pending_snap_);
+        gen = pending_gen_;
         pending_ready_ = false;
       }
       // ⚠️ 여기가 **긴 구간**이다. 어떤 잠금도 쥐지 않는다.
@@ -1199,6 +1226,7 @@ private:
         if (pending_ready_) { continue; }
         result_routes_ = std::move(routes);
         result_snap_ = std::move(snap);
+        result_gen_ = gen;
         result_ready_ = true;
       }
     }
@@ -1277,6 +1305,7 @@ private:
   // 로봇의 활성 task 취소: 점유(현재+예약 노드) 해제 후 task 제거, busy 해제.
   void cancel_task(const std::string & robot)
   {
+    ++state_gen_;
     for (auto it = tasks_.begin(); it != tasks_.end();) {
       if (it->robot == robot) {
         if (it->idx >= 1 && it->idx - 1 < it->path.size()) {
@@ -1406,6 +1435,7 @@ private:
     //    전부 순회 중이면 CBS 가 한 번도 안 돌았다(실측: 3대 순회 60초에 재계획 0회).
     //    그 상태는 이름만 CBS 고 실제로는 반응형이다.
     replan_all_routes();
+    ++state_gen_;
     publish_task_state(tid, "PATROL", r.name);
     RCLCPP_INFO(get_logger(), "[%s] %s 순회 시작 (시작 v%d, %zu nodes)",
                 tid.c_str(), r.name.c_str(), path[0], path.size());
@@ -1425,6 +1455,7 @@ private:
     traffic_->request_move(r.name, path[0], path[0], compute_priority(r.name, t));   // 진입점 점유
     tasks_.push_back(t);
     replan_all_routes();   // 주간 순회와 같은 이유 — start_patrol 주석 참고
+    ++state_gen_;
     publish_task_state(tid, "SECURITY_PATROL", r.name);
     RCLCPP_INFO(get_logger(), "[%s] %s 보안순회 시작 (시작 v%d, %zu nodes)",
                 tid.c_str(), r.name.c_str(), path[0], path.size());
@@ -1433,6 +1464,7 @@ private:
   void on_set_plugins(const std::shared_ptr<SetPlugins::Request> req,
                       std::shared_ptr<SetPlugins::Response> res)
   {
+    std::lock_guard<std::recursive_mutex> lk(state_mu_);
     try {
       if (!req->dispatcher.empty()) {
         dispatcher_ = disp_loader_.createSharedInstance(req->dispatcher);
@@ -1456,6 +1488,7 @@ private:
   void on_reload(const std::shared_ptr<std_srvs::srv::Trigger::Request>,
                  std::shared_ptr<std_srvs::srv::Trigger::Response> res)
   {
+    std::lock_guard<std::recursive_mutex> lk(state_mu_);
     Navgraph g;
     if (g.load(navgraph_file_)) {
       graph_ = g;
@@ -1471,6 +1504,7 @@ private:
   void on_set_mode(const std::shared_ptr<SetRobotMode::Request> req,
                    std::shared_ptr<SetRobotMode::Response> res)
   {
+    std::lock_guard<std::recursive_mutex> lk(state_mu_);
     const std::string & m = req->mode;
     if (!kLibiModesStates.count(m)) {
       res->ok = false; res->reason = "bad_mode"; return;
@@ -1499,6 +1533,7 @@ private:
   void on_set_battery(const std::shared_ptr<SetBattery::Request> req,
                       std::shared_ptr<SetBattery::Response> res)
   {
+    std::lock_guard<std::recursive_mutex> lk(state_mu_);
     double v = req->value;
     if (v < 0.0) { v = 0.0; } else if (v > 100.0) { v = 100.0; }
     auto & r = robots_[req->robot];   // 미관측 로봇도 생성(관측되면 위치 갱신)
@@ -1515,6 +1550,7 @@ private:
   // ⚠️ robot_id(FsmState) 와 robot name(RmfRobotState) 이 같은 키여야 매칭(런타임 확인 필요).
   void on_fsm_state(const std_msgs::msg::String::SharedPtr msg)
   {
+    std::lock_guard<std::recursive_mutex> lk(state_mu_);
     const std::string robot = json_str_field(msg->data, "robot_id");
     const std::string state = json_str_field(msg->data, "current_state");
     if (robot.empty() || state.empty() || !kLibiModesStates.count(state)) { return; }
@@ -1592,10 +1628,38 @@ private:
   rclcpp::Publisher<libi_fleet_msgs::msg::FleetRoutes>::SharedPtr route_pub_;
   rclcpp::Subscription<libi_fleet_msgs::msg::RobotHold>::SharedPtr hold_sub_;
 
+  // ── [2026-08-01] 공유 상태 잠금 ──────────────────────────────────────────
+  //
+  // 예전에는 `rclcpp::spin()` 단일 스레드라 잠금이 없어도 안전했다. MultiThreadedExecutor
+  // 로 옮기면서 `tasks_`(19곳)·`robots_`(23곳)·`robot_mode_`·`hold_until_` 을 여러
+  // 콜백이 동시에 만질 수 있게 됐다.
+  //
+  // **콜백 진입점 9곳에만** 건다. 내부 헬퍼는 전부 그 아래에서 불리므로 자동으로 덮인다 —
+  // 헬퍼마다 거는 것보다 빠뜨릴 자리가 적다.
+  //
+  // ⚠️ recursive 인 이유: 진입점끼리 서로 부른다(on_submit → replan_all_routes → …).
+  //    non-recursive 로 두면 그 경로에서 자기 자신에 걸려 굳는다.
+  // ⚠️ **플래너 워커는 이 잠금을 잡지 않는다.** 거기가 긴 구간이고, 잡으면 애초에
+  //    콜백 밖으로 뺀 의미가 사라진다. traffic_ 는 자기 잠금을 따로 갖고 있다.
+  mutable std::recursive_mutex state_mu_;
+
+  // 콜백그룹 — 서로 기다리지 않게 나눈다. 각 그룹은 MutuallyExclusive 라 그룹 안에서는
+  // 직렬이고, 그룹끼리만 병렬이다. 공유 상태는 state_mu_ 가 지키므로 경쟁은 없다.
+  rclcpp::CallbackGroup::SharedPtr cbg_timer_;   // 제어 루프 — 가장 늦으면 안 된다
+  rclcpp::CallbackGroup::SharedPtr cbg_srv_;     // 서비스(배차·모드·리로드)
+  rclcpp::CallbackGroup::SharedPtr cbg_sub_;     // 구독(로봇 상태·FSM·붙잡기)
+
   // 플래너 워커 — 탐색을 executor 스레드 밖으로 뺀다.
   std::thread planner_thread_;
   std::mutex planner_mu_;
   std::condition_variable planner_cv_;
+  // ⚠️ **세대번호.** 탐색이 도는 동안 배차·취소·모드변경이 상태를 바꿀 수 있다. 이름으로
+  //    task 를 다시 찾는 것만으로는 "그 사이 다른 일을 받은 로봇" 에 낡은 시간표를 씌우게
+  //    된다. 스냅샷을 만든 세대와 결과를 적용하는 세대가 같을 때만 반영한다.
+  //    (codex 지적: "결과 반영 시 계획 세대번호/로봇 상태를 재검증하라")
+  uint64_t state_gen_{0};        // 상태가 바뀔 때마다 오른다
+  uint64_t pending_gen_{0};
+  uint64_t result_gen_{0};
   PlanSnapshot pending_snap_;
   PlanSnapshot result_snap_;
   std::vector<PlannedRoute> result_routes_;
@@ -1617,7 +1681,14 @@ private:
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<libi_fleet::FleetNode>());
+  // ⚠️ 단일 스레드 spin 이 아니다. 예전에는 150 ms 타이머와 서비스 4개, 구독 6개가 한
+  //    스레드를 놓고 줄을 섰다 — 서비스 하나가 느리면 그동안 도착 판정도 통행 허가도
+  //    멈춘다. 콜백그룹을 나눠(아래 생성자) 서로 기다리지 않게 한다.
+  //    공유 상태는 state_mu_ 하나로 지킨다.
+  auto node = std::make_shared<libi_fleet::FleetNode>();
+  rclcpp::executors::MultiThreadedExecutor exec;
+  exec.add_node(node);
+  exec.spin();
   rclcpp::shutdown();
   return 0;
 }

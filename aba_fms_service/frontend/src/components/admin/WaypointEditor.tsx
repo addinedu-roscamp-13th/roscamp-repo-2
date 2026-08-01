@@ -584,9 +584,14 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
       ctx.fillText(name, x + r + 4, y - r - 2);
     });
 
-    // 전 로봇 — fleet 피드 위치. goto 선택 로봇은 아래 wsState(초록 정밀 pose)로 덮인다.
+    // 전 로봇 — fleet 피드 위치. goto 선택 로봇은 아래 wsState(정밀 pose)로 덮는다.
     fleetRobots.forEach((r) => {
-      if (r.name === gotoRobot?.name) return; // 선택 로봇은 wsState 로 그린다
+      // ⚠️ **wsState 가 있을 때만 건너뛴다.** 예전에는 선택했다는 이유만으로 무조건
+      //    건너뛰었는데, 그 정밀 pose 는 로봇 IP 로 직접 붙는 별도 WebSocket 이라
+      //    robot_agent 가 안 떠 있거나 네트워크가 흔들리면 안 온다. 그러면 **선택한
+      //    로봇만 지도에서 사라진다** — 관제는 fleet 피드로 위치를 알고 있는데도.
+      //    (실측: sim 에는 그 WebSocket 자체가 없어 선택 로봇이 통째로 안 보였다.)
+      if (r.name === gotoRobot?.name && wsState?.pose) return;
       const [x, y] = worldToCanvas(map, vp, r.x, r.y);
       // ⚠️ 점이 아니라 **화살표**다. 점만 찍으면 로봇이 어디를 보고 있는지 알 수 없어,
       //    서가를 등지고 섰는지·도킹 방향이 맞는지를 화면에서 못 가른다.
