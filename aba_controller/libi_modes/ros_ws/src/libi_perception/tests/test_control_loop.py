@@ -388,3 +388,16 @@ def test_guide_restart_carries_over_the_actual_camera():
     # 새 컨텍스트가 그 사실을 물려받았어야 한다 — home_camera(back)라고
     # 낙관적으로 가정했다면 여기서 'back' 이 나온다(고쳐지지 않았다는 뜻).
     assert loop._search_ctx.camera_now() == 'front'
+
+
+def test_guide_recovery_gives_up_after_one_restart():
+    """docking 이 빌려 쓰는 guide_watch 세션(GuideExec 이 아니라 BackCamOn 이 연다)에는
+    45초 종결자가 없다. 무제한 재시작을 두면 그 세션에서 캠이 도킹 내내 앞뒤로 튄다
+    (2026-08-01 최종 브랜치 리뷰 발견 — 실제로 도킹을 막을 수 있는 버그였다).
+    재시작은 1회만 허용하고, 두 번째 소진에서는 ENDED 로 끝낸다.
+    """
+    loop, clock = _search_exhausted("guide")   # 1차 소진 -> 이미 재시작 1회 씀
+    assert loop.state == 'SEARCHING'
+    clock.t = 20_000.0                          # 재시작한 트리도 소진시킨다
+    loop.tick()
+    assert loop.state == 'ENDED'

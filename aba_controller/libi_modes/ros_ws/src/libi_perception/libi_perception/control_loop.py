@@ -42,6 +42,16 @@ class ControlLoop:
         #: 아무도 등록하지 않았는데 로봇이 혼자 돌며 앞뒤 캠을 번갈아 켠다(실측 2026-07-28).
         self._acquired = False
         self._search_ctx = None
+        #: 이번 소실 에피소드에서 재시작한 횟수. **재시작은 1회만 허용한다.**
+        #:
+        #: `guide_watch` 는 진짜 안내(GuideExec, 45초 종결자 있음)뿐 아니라 복귀·도킹이
+        #: 뒷캠을 고정하려고 빌려 쓰는 세션(`BackCamOn`, 종결자 **없음** — Parallel 이
+        #: 끝날 때까지 절대 안 끝난다)에도 걸린다. 무제한 재시작을 두면 그 세션에서
+        #: 캠이 도킹 내내 앞뒤로 튀어 시각 서보가 죽는다(2026-08-01 최종 리뷰 발견).
+        #: 1회로 캡하면 진짜 안내는 45초 종결자가 여전히 실질 권한을 쥐고(첫 라운드
+        #: ~32.8초 + 재시작 1회로 45초를 넘기기 충분하다), 빌려 쓴 세션은 최대
+        #: 2라운드(~65.6초) 뒤 ENDED 로 정착한다.
+        self._search_restarts = 0
         self._search_tree = None
         self._last_tick = None
 
@@ -145,6 +155,7 @@ class ControlLoop:
                 # 여기서는 계속 정지 명령만 내며 등록을 기다린다.
                 if self.miss >= self.cfg.N_MISS_FRAMES and self._acquired:
                     self.switch.lost()
+                    self._search_restarts = 0
                     self._start_search()
         elif self.switch.state == 'SEARCHING':
             status = tick_tree(self._search_tree)
@@ -157,7 +168,7 @@ class ControlLoop:
                 self._last_tick = None
             elif status == py_trees.common.Status.FAILURE:
                 self.publish(0.0, 0.0)
-                if self._is_guide():
+                if self._is_guide() and self._search_restarts < 1:
                     # 안내는 여기서 끝내지 않는다. `ENDED` 에는 빠져나오는 길이
                     # 없어서(switch._TRANSITIONS 의 restart 를 안내 경로에서 아무도
                     # 안 부른다) 사람이 돌아와도 재획득 판정이 죽는다. 회복
@@ -170,6 +181,9 @@ class ControlLoop:
                     #
                     # 종료 판정 권한은 `GuideExec` 의 guide_lost_timeout_sec 이 쥔다.
                     # 타임라인은 통째로 반복한다 — 45초라 어차피 1.4바퀴다.
+                    #
+                    # 재시작은 1회로 캡한다 — 근거는 __init__ 의 _search_restarts 설명.
+                    self._search_restarts += 1
                     self._start_search()
                 else:
                     self.switch.search_failed()
