@@ -130,8 +130,17 @@ def requester_visible(det):
     요청자를 길잡이가 영영 정상으로 읽는다.
 
     자세 소스가 없는 배포(`posture=None`)에서는 `motion_ok` 가 True 라 예전과 같다.
+
+    ⚠️ **예측(`is_predicted`)은 자세보다 먼저 거른다.** 파이프라인은 검출이 끊겨도
+    `COAST_LIMIT`(30프레임 ≈ 2초) 동안 α-β 예측 위치를 계속 내보낸다. 그건 추종이
+    문틀·서가에 잠깐 가려질 때 끊기지 않으려고 둔 장치이고, 추종은 지금도 그대로
+    쓴다. 하지만 안내의 요점은 **그 사람이 실제로 따라오는지 확인하는 것**이라
+    유령을 보고 전진하면 안 된다. `Side` 검사보다 앞에 두는 이유는, 뒤에 두면
+    예측된 `Side` 가 True 로 빠져나가기 때문이다.
     """
     if det is None or not getattr(det, 'is_owner', False):
+        return False
+    if getattr(det, 'is_predicted', False):
         return False
     if getattr(det, 'posture', None) in _DRIVE_BLOCKED_BUT_PRESENT:
         return True

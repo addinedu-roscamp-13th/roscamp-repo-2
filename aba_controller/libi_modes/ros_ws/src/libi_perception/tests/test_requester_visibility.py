@@ -7,10 +7,10 @@
 from libi_perception.detection import Detection
 
 
-def _det(posture, motion_ok):
+def _det(posture, motion_ok, is_predicted=False):
     return Detection(cx=100.0, cy=100.0, area=1000.0, bbox=(0, 0, 10, 10),
                      track_id=1, is_owner=True, confidence=0.9,
-                     is_predicted=False, posture=posture, motion_ok=motion_ok)
+                     is_predicted=is_predicted, posture=posture, motion_ok=motion_ok)
 
 
 def _visible(det):
@@ -67,3 +67,18 @@ def test_non_owner_is_not_visible():
     d = _det("Standing", motion_ok=True)
     d.is_owner = False
     assert _visible(d) is False
+
+
+def test_predicted_detection_is_not_visible():
+    """α-β 예측 bbox 는 '보인다' 가 아니다.
+
+    파이프라인은 검출이 끊겨도 COAST_LIMIT(30프레임 ≈ 2초) 동안 예측 위치를
+    내보낸다. 안내의 요점은 **그 사람이 실제로 따라오는지 확인하는 것**이므로
+    유령을 보고 전진하면 안 된다. 추종은 이 함수를 안 쓰므로 영향받지 않는다.
+    """
+    assert _visible(_det("Standing", motion_ok=True, is_predicted=True)) is False
+
+
+def test_predicted_beats_every_other_signal():
+    """자세가 완벽해도 예측이면 안 보이는 것이다 — 순서가 뒤바뀌면 안 된다."""
+    assert _visible(_det("Side", motion_ok=False, is_predicted=True)) is False
