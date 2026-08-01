@@ -297,3 +297,94 @@ def test_watch_still_tracks_a_predicted_detection():
     loop.tick()
     loop.tick(); loop.tick(); loop.tick()
     assert loop.state == 'TRACKING'
+
+
+# ── 안내 회복은 세션이 살아 있는 한 끝나지 않는다 ────────────────────────────
+# `ENDED` 에는 빠져나오는 길이 없다(switch._TRANSITIONS 에 restart 만 있고 안내
+# 경로에서 아무도 안 부른다). 거기 떨어지면 사람이 돌아와도 재획득 판정이 죽는다.
+# 회복 타임라인(≈32.8초)이 guide_lost_timeout_sec(45초)보다 짧아 실제로 밟힌다.
+
+def _search_exhausted(role):
+    """한 번 잡았다가 놓치고 탐색까지 소진시킨 루프를 돌려준다."""
+    clock = _Clock()
+    calls = {'n': 0}
+
+    def src():
+        calls['n'] += 1
+        return _det() if calls['n'] == 1 else None
+
+    loop = ControlLoop(get_detection=src, get_scan=_clear_scan, publish=_Pub(),
+                       cfg=_cfg(N_MISS_FRAMES=1), now=clock, role=role)
+    clock.t = 0.0
+    loop.tick()                 # TRACKING
+    loop.tick()                 # 놓침 -> SEARCHING
+    clock.t = 10_000.0
+    loop.tick()                 # 탐색 소진
+    return loop, clock
+
+
+def test_guide_restarts_the_search_instead_of_ending():
+    loop, _ = _search_exhausted("guide")
+    assert loop.state == 'SEARCHING'
+
+
+def test_guide_restart_resets_the_search_timeline():
+    """되감지 않으면 다음 tick 에 또 소진돼 사실상 아무것도 안 한다."""
+    loop, clock = _search_exhausted("guide")
+    clock.t = 10_001.0
+    loop.tick()
+    assert loop.state == 'SEARCHING'
+
+
+def test_guide_can_still_reacquire_after_a_restart():
+    """이 변경의 요점 — 사람이 돌아오면 추종으로 복귀한다.
+
+    ⚠️ tick 이 **두 번** 필요하다(브리프 원안은 한 번이었으나 캠 계승 시험과
+    같은 근거로 고쳤다 — 아래 참고). 재시작 직후의 첫 tick 에서는
+    `CheckReacquired` 가 아직 이전 캠(front)에 머문 상태라 이 검출을 거부한다
+    (`test_guide_restart_carries_over_the_actual_camera` 가 잡는 바로 그 창).
+    그 tick **안에서** `HoldFront` 가 캠을 home(back)으로 되돌리지만, Selector
+    는 `CheckReacquired` → `SearchPhases` 순으로 매 tick 한 번씩만 훑으므로
+    갱신된 캠은 다음 tick 에야 보인다. 그래서 두 번째 tick 에서 캠(back)과
+    검출이 함께 맞아떨어져야 재획득한다.
+    """
+    loop, clock = _search_exhausted("guide")
+    loop.get_detection = lambda: _det()
+    loop.tick()
+    assert loop.state == 'SEARCHING', (
+        "첫 tick 은 아직 이전 캠(front)에 머문 상태 — 여기서 바로 재획득되면"
+        " 캠 계승 전 상태를 재획득으로 오인하는 버그가 되돌아온 것이다")
+    loop.tick()
+    assert loop.state == 'TRACKING'
+
+
+def test_follow_still_ends_when_the_search_is_exhausted():
+    """추종은 예전 그대로 — 회복이 소진되면 세션이 실패로 끝나야 한다."""
+    loop, _ = _search_exhausted("follow")
+    assert loop.state == 'ENDED'
+
+
+def test_watch_still_ends_when_the_search_is_exhausted():
+    """등록감시에는 45초 종결자가 없다 — 무한 반복시키면 영영 안 끝난다."""
+    loop, _ = _search_exhausted("watch")
+    assert loop.state == 'ENDED'
+
+
+def test_guide_restart_carries_over_the_actual_camera():
+    """재시작 **직후, 트리가 한 번도 안 돈 시점**의 캠 상태를 잰다.
+
+    `_search_exhausted()` 는 마지막 tick 안에서 소진과 재시작이 **같은 tick**에
+    다 일어난다(가이드는 FAILURE 를 받는 즉시 `_start_search()` 를 다시 부르므로).
+    그 순간, 새 컨텍스트가 "나는 이미 home(back)" 이라고 낙관적으로 가정하면,
+    다음 tick 에 `CheckReacquired` 가 **아직 실제로는 front 인** 캠에서 온
+    검출을 "정위치에서 봤다"로 오인할 수 있다(codex 2026-08-01 발견).
+
+    ⚠️ 여기서 tick 을 한 번 더 돌리면 `HoldFront` 페이즈가 자기 차례에 캠 전환을
+    직접 요청해 값이 `back` 으로 바뀐다 — 그건 **정상 동작**이고 이 시험이
+    잡으려는 창이 아니다. 그래서 재시작 **직후**, 추가 tick 없이 확인한다.
+    """
+    loop, _ = _search_exhausted("guide")
+    # 소진된 회복의 마지막 구간(SweepBackHome)은 peek 캠(front)에서 끝난다.
+    # 새 컨텍스트가 그 사실을 물려받았어야 한다 — home_camera(back)라고
+    # 낙관적으로 가정했다면 여기서 'back' 이 나온다(고쳐지지 않았다는 뜻).
+    assert loop._search_ctx.camera_now() == 'front'

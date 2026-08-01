@@ -87,11 +87,17 @@ class ControlLoop:
 
     def _start_search(self):
         lkd = self.tracker.last_direction or 1.0
+        # 재시작이면(이전 컨텍스트가 있으면) 그게 실제로 남겨 둔 캠을 물려준다.
+        # 안 넘기면 새 컨텍스트가 home_camera 라고 낙관적으로 가정하는데, 소진된
+        # 회복은 peek 캠에서 끝나는 경우가 있어 그 가정이 틀릴 수 있다.
+        prev_camera = (self._search_ctx.camera_now()
+                       if self._search_ctx is not None else None)
         self._search_ctx = SearchContext(self._filtered_detection, self.publish,
                                          self.cfg, self.now, lkd=lkd,
                                          select_camera=self.select_camera,
                                          peek_people=self.peek_people,
-                                         role=self.role)
+                                         role=self.role,
+                                         initial_camera=prev_camera)
         # Stamp the search start when SEARCHING begins, not on the tree's first tick —
         # those can be ticks apart, which would understate elapsed search time.
         self._search_ctx.start = self.now()
@@ -151,5 +157,20 @@ class ControlLoop:
                 self._last_tick = None
             elif status == py_trees.common.Status.FAILURE:
                 self.publish(0.0, 0.0)
-                self.switch.search_failed()
+                if self._is_guide():
+                    # 안내는 여기서 끝내지 않는다. `ENDED` 에는 빠져나오는 길이
+                    # 없어서(switch._TRANSITIONS 의 restart 를 안내 경로에서 아무도
+                    # 안 부른다) 사람이 돌아와도 재획득 판정이 죽는다. 회복
+                    # 타임라인(≈32.8초)이 guide_lost_timeout_sec(45초)보다 짧아
+                    # 그 구간이 실제로 밟힌다.
+                    #
+                    # ⚠️ `switch.restart()` 를 쓰면 안 된다 — ENDED 에서만 합법이고
+                    #    TRACKING 으로 돌려보낸다. SEARCHING 을 유지한 채 탐색만
+                    #    새로 시작해야 `CheckReacquired` 가 계속 돈다.
+                    #
+                    # 종료 판정 권한은 `GuideExec` 의 guide_lost_timeout_sec 이 쥔다.
+                    # 타임라인은 통째로 반복한다 — 45초라 어차피 1.4바퀴다.
+                    self._start_search()
+                else:
+                    self.switch.search_failed()
         # ENDED: idle — the follow session is over.

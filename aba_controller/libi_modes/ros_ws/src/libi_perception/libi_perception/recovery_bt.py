@@ -35,7 +35,8 @@ class SearchContext:
     """
 
     def __init__(self, get_detection, publish, cfg, now, lkd=1.0,
-                 select_camera=None, peek_people=None, role="follow"):
+                 select_camera=None, peek_people=None, role="follow",
+                 initial_camera=None):
         self.get_detection = get_detection
         self.publish = publish
         self.cfg = cfg
@@ -49,10 +50,12 @@ class SearchContext:
         #: 달라 크로스카메라 재식별을 못 믿는다. 신원 확인은 회전 후 정위치 캠에서 한다.
         self.peek_people = peek_people or (lambda: 0)
         self.role = role
-        #: 지금 어느 캠을 보고 있나. `select_camera` 는 요청만 하고 실제 발행은
-        #: follow_node 가 하므로, 재획득 판정에 쓸 "지금 보는 캠"을 여기서 기억한다.
-        #: 이게 없으면 `CheckReacquired` 가 반대 캠 검출을 정면 재획득으로 오인한다.
-        self._camera_now = self.home_camera
+        #: 지금 어느 캠을 보고 있나. 새 탐색(재시작 아님)은 정위치 캠이 맞다.
+        #: 재시작이면 호출자가 **이전 탐색이 실제로 남겨 둔 캠**을 넘긴다 —
+        #: 안 넘기면 여기가 `home_camera` 라고 낙관적으로 가정하는데, 소진된
+        #: 회복은 보통 `peek` 캠에서 끝나므로 그 가정이 틀린다(2026-08-01 codex).
+        self._camera_now = (initial_camera if initial_camera in ("front", "back")
+                            else self.home_camera)
         #: 추종에서 반대 캠에 잡혔다 → 몸을 돌려야 제어가 된다.
         self.align_latched = False
         #: 이번 탐색에서 이미 한 번 돌았나. **탐색 1회당 정렬 1회**로 막는다 —
