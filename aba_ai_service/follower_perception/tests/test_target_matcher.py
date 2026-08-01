@@ -236,5 +236,5 @@ def test_match_skips_a_candidate_whose_crop_is_empty():
     owner = Cand(track_id=1, bbox=(40, 40, 60, 60))          # 유효한 crop
     ghost = Cand(track_id=2, bbox=(200, 200, 250, 250))      # 화면 밖 — 빈 crop
 
-    result = matcher.match([owner, ghost], frame)
+    result = matcher.match([ghost, owner], frame)
     assert result == 1, "화면 밖 후보(빈 crop)가 owner 로 이기면 안 된다"
