@@ -51,6 +51,18 @@ class _Pose:
         return 2.4
 
 
+class _Matcher:
+    """TargetMatcher 흉내. payload 가 읽는 속성만 갖춘다."""
+
+    def __init__(self, registered=True, reid_sim=0.81, hsv_sim=0.42,
+                 hsv_threshold=0.30):
+        self.is_registered = registered
+        self.last_reid_sim = reid_sim
+        self.last_hsv_sim = hsv_sim
+        self.reid_threshold = 0.68
+        self.hsv_threshold = hsv_threshold
+
+
 def _decode(payload):
     assert payload.startswith(b"POSE "), payload[:16]
     return json.loads(payload[len(b"POSE "):].decode("utf-8"))
@@ -101,6 +113,39 @@ def test_calibration_block_appears_only_while_measuring():
 
     done = _decode(_pose_payload(_Det(), None, _Pose(calibrating=False), 15.0))
     assert "calibrating" not in done
+
+
+def test_calibration_block_is_withheld_until_registration():
+    """등록 전에는 "측정 중"을 내보내면 안 된다.
+
+    `pose.calibrating` 은 "표본이 아직 다 안 찼다"라 프로세스 시작부터 참인데, 표본은
+    owner 가 잡힌 프레임에서만 쌓인다 — 등록 전에는 **0/60 에서 영영 안 움직인다.**
+    그대로 내보내면 패널이 「등록」을 누르기도 전에 안 줄어드는 카운트다운을 띄운다
+    (실측 2026-08-01).
+    """
+    pose = _Pose(calibrating=True)
+
+    before = _decode(_pose_payload(_Det(), None, pose, 15.0, _Matcher(registered=False)))
+    assert "calibrating" not in before
+
+    after = _decode(_pose_payload(_Det(), None, pose, 15.0, _Matcher(registered=True)))
+    assert after["calibrating"] == {"remainingSec": 2.4, "got": 23, "need": 60}
+
+
+def test_payload_carries_reid_and_hsv_confidence_with_thresholds():
+    """숫자만 보내면 "이게 높은 건지"를 사람이 못 읽는다 — 판정선을 같이 보낸다."""
+    body = _decode(_pose_payload(_Det(), None, _Pose(), 15.0, _Matcher()))
+    assert (body["reidSim"], body["reidThreshold"]) == (0.81, 0.68)
+    assert (body["hsvSim"], body["hsvThreshold"]) == (0.42, 0.30)
+
+    # 등록 전에는 비교할 템플릿이 없다 — 지난 값을 남겨 두면 거짓말이 된다.
+    before = _decode(_pose_payload(_Det(), None, _Pose(), 15.0, _Matcher(registered=False)))
+    assert "reidSim" not in before
+
+    # HSV 게이트를 끈 구성(hsv_threshold=None)에서는 HSV 만 빠지고 ReID 는 남는다.
+    off = _decode(_pose_payload(_Det(), None, _Pose(), 15.0, _Matcher(hsv_threshold=None)))
+    assert off["reidSim"] == 0.81
+    assert "hsvSim" not in off
 
 
 def test_payload_survives_no_detection_and_no_pose():

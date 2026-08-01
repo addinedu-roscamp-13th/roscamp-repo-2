@@ -271,7 +271,16 @@ def _pose_payload(det, cmd, pose, fps, matcher=None):
         if matcher.hsv_threshold is not None:
             body["hsvSim"] = _num(matcher.last_hsv_sim)
             body["hsvThreshold"] = _num(matcher.hsv_threshold)
-    if pose is not None and getattr(pose, "calibrating", False):
+    # ⚠️ **등록 전에는 내보내지 않는다.** `pose.calibrating` 은 "표본을 아직 다 못
+    # 모았다"는 뜻이라(pose_estimator.py:166 `not self._calibrator.done`) 프로세스가
+    # 뜨는 순간부터 참이다. 그런데 표본은 owner 가 잡힌 프레임에서만 쌓이고
+    # (pipeline.py:173-180), 등록 전에는 `matcher.match` 가 늘 None 이라 **0/60 에서
+    # 영영 안 움직인다.** 남은 시간도 `(need-got)/fps` 라 같은 값에 고정된다.
+    # 그대로 내보내면 패널이 「등록」을 누르기도 전에 "기준 측정 중 0/60 · 3.8초 남음"
+    # 을 띄우고 그 숫자가 줄지도 않는다(실측 2026-08-01).
+    # matcher 를 안 받은 호출은 판단 근거가 없으므로 예전대로 내보낸다.
+    if (pose is not None and getattr(pose, "calibrating", False)
+            and (matcher is None or matcher.is_registered)):
         got, need = pose.calibration_progress
         body["calibrating"] = {"remainingSec": pose.calibration_remaining_sec(fps),
                                "got": got, "need": need}
