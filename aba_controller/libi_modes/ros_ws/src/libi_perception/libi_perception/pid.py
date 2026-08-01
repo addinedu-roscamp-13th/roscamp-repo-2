@@ -86,8 +86,22 @@ class FollowPID:
         # bearing -> angular_z
         # cx 는 위에서 기준 폭으로 환산했으므로 중심도 기준 폭 기준이다.
         e_cx = (cfg.IMAGE_WIDTH / 2.0) - cx
-        if abs(e_cx) < cfg.ANGLE_DEADZONE:
+        # [2026-08-01] 거리축과 **같은 방식**으로 바꿨다 — 0 으로 죽이지 않고 빼낸다.
+        #
+        # 예전에는 구간 밖에서 오차를 통째로 썼다. `ANGLE_DEADZONE` 이 45 일 때는
+        # 경계 바로 밖에서 `KP_ANGLE × 45 = 0.045 rad/s` 라 티가 덜 났는데, 가운데
+        # 칸(106.67)으로 넓히면서 그게 **0.107 rad/s** 가 됐다 — 사람이 칸 경계를
+        # 한 픽셀 넘는 순간 그 속도로 튄다. 빼내면 경계에서 0 부터 이어진다.
+        # (거리축 주석에 같은 논리가 있다. 그쪽은 2026-07-31 에 이미 고쳤고
+        #  "방위각처럼 그냥 0 으로 죽이면" 이라며 여기를 남은 문제로 적어 뒀었다.)
+        #
+        # 구간 안에서는 적분·미분 기억도 턴다 — 이유는 거리축과 같다.
+        if abs(e_cx) <= cfg.ANGLE_DEADZONE:
             e_cx = 0.0
+            self._i_cx = 0.0
+            self._prev_cx = 0.0
+        else:
+            e_cx -= math.copysign(cfg.ANGLE_DEADZONE, e_cx)
         self._i_cx = clamp(self._i_cx + e_cx * dt,
                            -cfg.INTEGRAL_ANGLE_CLAMP, cfg.INTEGRAL_ANGLE_CLAMP)
         d_cx = (e_cx - self._prev_cx) / dt

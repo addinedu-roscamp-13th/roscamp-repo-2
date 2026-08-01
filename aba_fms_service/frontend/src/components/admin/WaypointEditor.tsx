@@ -270,7 +270,14 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
         setPlan(p && typeof p === "object" && p.robots ? (p as FleetPlan) : null);
         const rt = snap?.stale ? {} : snap?.routes;
         setRoutes(rt && typeof rt === "object" ? (rt as Record<string, number[][]>) : {});
-        const rows = payload?.snapshot?.robots;
+        // ⚠️ 마커도 `stale` 이면 **지운다.** 위 plan/routes 만 지우고 여기는 빠져
+        //    있었는데, 그러면 fleet_node 가 죽거나 로봇이 내려가도 **마지막 위치에
+        //    로봇이 계속 떠 있다.** 실측 2026-08-01: pinky-3 스택을 완전히 내린
+        //    상태에서도 지도에 pinky-3 이 그대로 찍혀 있었다. "지도에 있으니 거기
+        //    있다"는 화면의 거짓말이라, 없는 로봇을 보고 배차를 판단하게 된다.
+        //    위치를 모를 때는 마지막으로 알던 자리를 보여주지 않는 것이 맞다
+        //    (libi_gui 의 poseValid 도 같은 규칙이다).
+        const rows = payload?.snapshot?.stale ? [] : payload?.snapshot?.robots;
         if (Array.isArray(rows)) {
           setFleetRobots(
             rows
@@ -402,8 +409,17 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
     if (!ctx) return;
     const rect = canvas.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.max(1, Math.round(rect.width * dpr));
-    canvas.height = Math.max(1, Math.round(rect.height * dpr));
+    // ⚠️ **크기가 실제로 바뀔 때만 대입한다.** `canvas.width` 는 같은 값을 넣어도
+    // 캔버스를 통째로 리셋하고 화면을 비운다(HTML 사양). `draw` 의 의존성에
+    // `nowSec`(0.5초마다 갱신)이 있어 이 함수가 초당 2번 도는데, 그때마다 비웠다
+    // 다시 그리니 지도가 **눈에 띄게 깜빡였다**. 크기는 거의 안 바뀌므로 대부분의
+    // 호출에서 이 블록을 건너뛰게 되고, 아래 fillRect 가 이전 프레임을 덮어쓴다.
+    const w = Math.max(1, Math.round(rect.width * dpr));
+    const h = Math.max(1, Math.round(rect.height * dpr));
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.fillStyle = "#020617";
     ctx.fillRect(0, 0, rect.width, rect.height);

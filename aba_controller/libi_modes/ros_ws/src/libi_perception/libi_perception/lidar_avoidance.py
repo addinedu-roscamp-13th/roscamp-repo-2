@@ -71,14 +71,29 @@ def apply_avoidance(linear_x, angular_z, scan, cfg):
             linear_x = 0.0
 
     # side arcs: shy away
+    #
+    # ⚠️ [2026-08-01] **양쪽을 더하지 않는다 — 더 가까운 쪽만 본다.**
+    #
+    #   예전에는 좌우 기여를 합산했다:
+    #       if left  < AVOID_DIST: steer -= (AVOID_DIST - left)  * KP
+    #       if right < AVOID_DIST: steer += (AVOID_DIST - right) * KP
+    #   좁은 복도처럼 **양쪽이 다 임계 안**이면 두 항이 서로 상쇄돼 `steer ≈ 0` 이 된다.
+    #   벽 사이에 끼어 회피가 가장 필요한 순간에 회피가 **꺼지는** 것이다.
+    #   (좌 0.35m / 우 0.13m 처럼 한쪽이 훨씬 가까워도 그만큼 깎여 나간다.)
+    #
+    #   물리적으로도 합산은 틀렸다. 피할 대상은 **둘 중 더 가까운 벽 하나**이고,
+    #   반대쪽 벽은 "그쪽으로 갈 여유가 있다"는 뜻이지 반대 방향으로 밀 근거가 아니다.
+    #   그래서 가까운 쪽을 골라 그 **반대 방향**으로만 조향한다.
     lo, hi = cfg.SIDE_ARC
     left, _ = arc(range(lo, hi))
     right, _ = arc(range(360 - hi + 1, 360 - lo + 1))
     steer = 0.0
-    if left < cfg.AVOID_DIST:
-        steer -= (cfg.AVOID_DIST - left) * cfg.AVOID_KP    # wall on left -> steer right
-    if right < cfg.AVOID_DIST:
-        steer += (cfg.AVOID_DIST - right) * cfg.AVOID_KP   # wall on right -> steer left
+    nearest = min(left, right)
+    if nearest < cfg.AVOID_DIST:
+        push = (cfg.AVOID_DIST - nearest) * cfg.AVOID_KP
+        # 왼쪽이 더 가까우면 오른쪽으로(음수), 오른쪽이 더 가까우면 왼쪽으로(양수).
+        # 같으면 한쪽을 정해야 한다 — 붙었을 때 0 을 내면 그대로 끼인다.
+        steer = -push if left <= right else push
     angular_z = clamp(angular_z + steer, -cfg.ANGULAR_Z_MAX, cfg.ANGULAR_Z_MAX)
 
     return linear_x, angular_z

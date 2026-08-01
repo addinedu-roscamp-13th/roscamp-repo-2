@@ -128,7 +128,14 @@ Item {
             // setMode 는 그대로 둔다 — 추종이 이미 끝난 뒤 눌러도 화면은 넘어가야 한다.
             // (추종 중이었다면 following 이 꺼지며 Main.qml 의 Connections 가 같은
             //  화면으로 한 번 더 보내지만, 같은 값이라 아무 일도 안 일어난다.)
+            // ⚠️ 등록 해지를 **여기서 직접** 부른다. `stopAdminFollow()` 안의
+            // `followingChanged` 에 얹으면(Main.qml) **추종 중일 때만** 해지된다 —
+            // 그 함수는 `if (!m_following) return` 으로 먼저 빠져나가기 때문이다.
+            // 등록만 해놓고 추종을 아직 안 건 상태로 뒤로 나가면 대상이 그대로 남아,
+            // 다음에 들어왔을 때 옛 사람이 등록돼 있다. 뒤로가기는 이 화면이 만든 것을
+            // 되돌리는 버튼이므로 상태와 무관하게 지운다(reset 은 여러 번 불러도 무해).
             onBack: {
+                perception.resetTarget();
                 controller.stopAdminFollow();
                 controller.setMode("adminControl");
             }

@@ -90,6 +90,35 @@ def test_right_obstacle_steers_left():
     assert ang > 0
 
 
+def test_narrow_corridor_steers_away_from_the_nearer_wall():
+    """⚠️ **좁은 길에서 회피가 꺼지던 회귀.**
+
+    예전에는 좌우 기여를 **합산**했다. 복도처럼 양쪽이 다 임계 안이면 두 항이
+    상쇄돼 `steer ≈ 0` 이 됐다 — 벽 사이에 끼어 회피가 가장 필요한 순간에 회피가
+    사라지는 것이다. 지금은 **더 가까운 쪽 하나만** 보고 그 반대로 민다.
+    """
+    scan = _clear_scan()
+    scan[45] = 0.35             # 왼쪽 벽 (멀다)
+    scan[315] = 0.13            # 오른쪽 벽 (가깝다)
+    _, ang = apply_avoidance(0.10, 0.0, scan, _cfg())
+    assert ang > 0, f"가까운 오른쪽 벽에서 멀어져야 한다: {ang}"
+
+    # 좌우를 뒤집으면 방향도 뒤집힌다.
+    scan = _clear_scan()
+    scan[45] = 0.13
+    scan[315] = 0.35
+    _, ang = apply_avoidance(0.10, 0.0, scan, _cfg())
+    assert ang < 0, f"가까운 왼쪽 벽에서 멀어져야 한다: {ang}"
+
+
+def test_symmetric_corridor_still_picks_a_side():
+    """양쪽이 **똑같이** 가까워도 0 을 내면 안 된다 — 그대로 끼인 채 못 빠져나온다."""
+    scan = _clear_scan()
+    scan[45] = scan[315] = 0.20
+    _, ang = apply_avoidance(0.10, 0.0, scan, _cfg())
+    assert ang != 0.0, "대칭이라고 회피를 포기하면 복도에 갇힌다"
+
+
 # ── 하드 스톱 ────────────────────────────────────────────────────────────────
 
 

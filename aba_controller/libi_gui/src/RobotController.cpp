@@ -413,9 +413,17 @@ void RobotController::stopAdminFollow() {
     if (!m_isAdmin) { emit toast(QStringLiteral("관리자만 조작할 수 있습니다.")); return; }
     if (!m_following) return;
     m_following = false; m_followSawWorking = false; emit followingChanged();
-    setRobotState(QStringLiteral("대기"));
+    // 추종을 끝낸 로봇은 **순찰로 돌아간다.** "대기"가 아니다 —
+    // `FollowExec._release` 가 성공·실패 상관없이 `NEXT_MODE=PATROL` 을 예약하므로
+    // (working_actions.py) 로봇은 어차피 순찰로 간다. 화면만 "대기"로 두면 다음
+    // /libi/fsm_state 가 도착하는 순간 어긋난다.
+    // requestTransition 도 같이 보낸다 — 안 보내면 로컬만 "순찰"이라 화면과 FSM 이
+    // 갈린다(startPatrol 의 같은 자리 주석 참고). IDLE→PATROL 은 정규 간선이다.
+    setRobotState(QStringLiteral("순찰"));
+    requestTransition(QStringLiteral("PATROL"));
+    if (!m_patrol) { m_patrol = true; emit patrolActiveChanged(); }
     setTaskStatus(QStringLiteral("명령 대기"));
-    log(QStringLiteral("관리자 추종 종료"));
+    log(QStringLiteral("관리자 추종 종료 — 순찰로 복귀"));
     emit toast(QStringLiteral("관리자 추종을 종료했습니다."));
     reportFollowRelease();
 }

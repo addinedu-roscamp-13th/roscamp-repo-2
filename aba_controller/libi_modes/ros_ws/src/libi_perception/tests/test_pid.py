@@ -170,14 +170,34 @@ def test_distance_deadzone_is_continuous_at_the_edge():
     assert 0.0 < lin < 0.0030 * 2, f"경계에서 튀었다: {lin}"
 
 
-def test_distance_deadzone_matches_the_original_ten_percent_band():
-    """원본 `cmd_preview.SIZE_DEADBAND` 는 30/300 = 목표의 10% 였다.
+def test_distance_deadzone_matches_the_measured_stop_band():
+    """[2026-08-01] 사용자가 패널 화면으로 직접 잡은 경계다.
 
-    제어가 bang-bang 에서 PID 로 옮겨가며 사라졌던 값이다. 비율이 어긋나면
-    "예전 거리감"이 재현되지 않는다.
+    원래는 원본 `cmd_preview.SIZE_DEADBAND` 의 30/300 = **10%** 를 물려받았는데,
+    그 폭은 너무 좁아 사람이 조금만 움직여도 로봇이 계속 따라붙어 깨작였다.
+    스크린샷 실측으로 "이 정도면 전진 √area≈214 / 이 정도면 후진 √area≈352" 를
+    받아 그 사이를 정지 구간으로 잡았다 — 280 ± 69 = **211~349**, 목표의 25%.
+
+    비율이 아니라 **경계 자체**를 못박는다. 목표나 폭 어느 쪽이 바뀌어도 실측
+    경계에서 벗어나면 여기서 잡힌다.
     """
     from libi_perception import config
-    assert abs(config.DIST_DEADZONE / config.TARGET_SIZE - 0.10) < 0.005
+    lo = config.TARGET_SIZE - config.DIST_DEADZONE
+    hi = config.TARGET_SIZE + config.DIST_DEADZONE
+    assert abs(lo - 214) <= 5, f"전진 경계가 실측(214)과 어긋난다: {lo}"
+    assert abs(hi - 352) <= 5, f"후진 경계가 실측(352)과 어긋난다: {hi}"
+
+
+def test_bearing_deadzone_equals_the_on_screen_center_third():
+    """화면 3등분 가운데 칸 안에서는 안 돈다.
+
+    가이드선은 `w//3`, `2*w//3` 에 그려지므로(perception_server.draw_overlay)
+    가운데 칸은 중심 ±w/6 다. 데드존이 그보다 좁으면 **화면상 가운데 칸에 있는데도
+    로봇이 도는** 상태가 된다 — 눈에 보이는 선과 제어 경계가 어긋나 화면이 거짓말을
+    한다. 실제로 45px(칸의 42%)이라 그랬다.
+    """
+    from libi_perception import config
+    assert abs(config.ANGLE_DEADZONE - config.IMAGE_WIDTH / 6.0) < 1.0
 
 
 def test_deadzone_does_not_suppress_reverse_when_too_close():
@@ -219,3 +239,30 @@ def test_entering_the_band_does_not_kick_the_derivative():
         pid.compute(cx=320.0, area=approach_area, dt=0.05)   # 구간 밖 한 프레임
         lin, _ = pid.compute(cx=320.0, area=360.0 ** 2, dt=0.05)  # 구간 안으로
         assert lin == 0.0, f"구간 진입에서 D 가 튀었다: {lin}"
+
+
+def test_bearing_deadzone_does_not_step_at_the_boundary():
+    """[2026-08-01] 방위축도 거리축처럼 오차를 **빼낸다**.
+
+    0 으로 죽이는 방식이면 경계 바로 밖에서 `KP_ANGLE × ANGLE_DEADZONE` 이 통째로
+    나온다. 데드존을 가운데 칸(106.67)으로 넓히면서 그 계단이 0.107 rad/s 가 됐다 —
+    사람이 칸 경계를 1px 넘는 순간 그 속도로 튄다.
+    """
+    dz = 106.67
+    cfg = _cfg(ANGLE_DEADZONE=dz, IMAGE_WIDTH=640, KP_ANGLE=0.0010,
+               ANGULAR_SMOOTHING=1.0)          # EMA 를 꺼서 그 tick 값을 그대로 본다
+    pid = FollowPID(cfg)
+    # 구간 밖으로 1px 만 나간 지점.
+    _, ang = pid.compute(cx=640 / 2.0 - dz - 1.0, area=280.0 ** 2, dt=0.05)
+    assert 0.0 < abs(ang) < 0.0010 * 2, f"경계에서 튀었다: {ang}"
+
+
+def test_bearing_deadzone_is_silent_inside_the_center_third():
+    """가운데 칸 안이면 각속도 0. 경계 자체도 구간 안이다(<= 로 잡는다)."""
+    dz = 106.67
+    pid = FollowPID(_cfg(ANGLE_DEADZONE=dz, IMAGE_WIDTH=640))
+    for off in (0.0, dz / 2.0, dz):
+        _, ang = pid.compute(cx=640 / 2.0 - off, area=280.0 ** 2, dt=0.05)
+        # 경계(off == dz)에서는 부동소수점 잔차가 남는다(1e-17 수준). 바퀴에는
+        # 의미 없는 값이라 정확한 0 대신 "무시 가능"으로 본다.
+        assert abs(ang) < 1e-12, f"가운데 칸 안({off}px)인데 돌았다: {ang}"
