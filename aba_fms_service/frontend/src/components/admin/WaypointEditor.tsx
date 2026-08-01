@@ -279,14 +279,24 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
         //    (libi_gui 의 poseValid 도 같은 규칙이다).
         const rows = payload?.snapshot?.stale ? [] : payload?.snapshot?.robots;
         if (Array.isArray(rows)) {
-          setFleetRobots(
-            rows
-              .filter((r) => r.x != null && r.y != null)
-              .map((r) => ({
-                name: r.name, x: r.x, y: r.y,
-                yaw: typeof r.yaw === "number" ? r.yaw : null,
-                state: r.state ?? null,
-              })),
+          const next = rows
+            .filter((r) => r.x != null && r.y != null)
+            .map((r) => ({
+              name: r.name, x: r.x, y: r.y,
+              yaw: typeof r.yaw === "number" ? r.yaw : null,
+              state: r.state ?? null,
+            }));
+          // ⚠️ 값이 같으면 **상태를 안 바꾼다.** 백엔드가 ROS 메시지마다 스냅샷을
+          //    통째로 밀기 때문에(fleet_link `_notify`), 로봇이 가만히 있어도 초당
+          //    수십 번 새 배열이 온다. 그대로 setState 하면 참조가 매번 달라져
+          //    리렌더 → 캔버스 재그리기가 계속 돈다. 얕은 비교로 끊는다.
+          setFleetRobots((prev) =>
+            prev.length === next.length
+            && prev.every((p, i) =>
+              p.name === next[i].name && p.x === next[i].x
+              && p.y === next[i].y && p.yaw === next[i].yaw
+              && p.state === next[i].state)
+              ? prev : next,
           );
         }
       } catch {
@@ -767,7 +777,21 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
     };
   })();
 
-  useEffect(() => { draw(); }, [draw]);
+  // ⚠️ **프레임당 한 번만 그린다.** 그냥 `draw()` 를 부르면 지도가 눈에 띄게 깜빡인다.
+  //
+  //   백엔드가 ROS 메시지 **하나하나마다** 스냅샷을 WebSocket 으로 민다
+  //   (fleet_link.py 의 on_task_state/on_robot_state/on_occupancy/on_plan/on_routes/
+  //   on_goals 가 각각 `_notify()`). 로봇이 여럿이면 초당 수십 번이고, 그때마다
+  //   setFleetRobots/setPlan/setRoutes 가 **새 객체**로 갱신돼 리렌더 → `draw` 재생성
+  //   → 캔버스 전체 재그리기가 된다. 브라우저가 실제로 칠하는 건 60fps 인데 그보다
+  //   훨씬 자주 지우고 그리니 중간 상태가 보인다.
+  //
+  //   rAF 로 묶으면 한 프레임 안에 몇 번이 몰려도 **마지막 한 번만** 그린다
+  //   (다음 effect 실행이 이전 예약을 취소한다). 값은 최신이고 그림은 한 번이다.
+  useEffect(() => {
+    const id = requestAnimationFrame(() => draw());
+    return () => cancelAnimationFrame(id);
+  }, [draw]);
 
   // 그리드 레이아웃이 자리잡기 전에 캔버스 크기를 재면 0px로 잡혀 안 보이는 문제 방지 —
   // 컨테이너 실제 크기 변화를 관찰해서 다시 그린다.
