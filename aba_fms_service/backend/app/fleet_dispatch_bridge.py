@@ -177,8 +177,40 @@ def _complete_arm_later(cmd_id: str) -> None:
     t.start()
 
 
+#: 팔 다리 하나가 도는 최대 시간. 이 안에 안 끝나면 fleet_node 가 붙잡기를 스스로 푼다
+#  (경고와 함께). 로봇이 영영 순회를 못 하는 것보다 낫다.
+HOLD_TTL_SEC = float(os.environ.get("LIBI_ARM_HOLD_TTL_SEC", "180"))
+
+#: 붙잡은 cmd_id → 로봇. 결과가 올 때 누구를 풀지 알아야 한다(결과에는 로봇이 없다).
+_held_by_cmd: dict[str, str] = {}
+
+
+def _robot_of_cmd(cmd_id: str) -> str:
+    return _held_by_cmd.pop(cmd_id, "")
+
+
+def _release_hold(robot: str) -> None:
+    """로봇의 붙잡기를 풀고 역인덱스도 정리한다."""
+    if not robot:
+        return
+    fleet_link.set_robot_hold(robot, False)
+    for k, v in list(_held_by_cmd.items()):
+        if v == robot:
+            _held_by_cmd.pop(k, None)
+
+
 def real_dispatch(task_id: str, robot: str, leg) -> str:
     """orchestrator 가 다리 하나를 내보낼 때 부른다. 반환값이 cmd_id."""
+    # ── 주행이 아닌 다리(팔) 동안은 로봇을 **붙잡는다** ────────────────────────
+    #
+    # fleet_node 는 주행 다리만 안다. 팔 다리는 여기서 로봇에 직접 쏘므로 fleet_node 는
+    # 그 로봇이 유휴라고 보고 **순회를 새로 걸어 버린다** — 실측으로 서가에 막 도착한
+    # 로봇이 150 ms 뒤 떠났다. 팔이 그 서가에서 집어야 하는데.
+    #
+    # 그동안 이걸 막은 것은 로봇 상태기계가 WORKING 이라 순회 조건이 안 맞았던 것뿐이라,
+    # 그 링크가 끊기면 그대로 사고가 난다. 붙잡기를 주문 계약으로 끌어올린다.
+    if robot and leg.type != LegType.NAVIGATE:
+        fleet_link.set_robot_hold(robot, True, HOLD_TTL_SEC)
     if leg.type == LegType.NAVIGATE:
         waypoint = str(leg.params.get("waypoint", ""))
         if not waypoint:
@@ -235,6 +267,7 @@ def real_dispatch(task_id: str, robot: str, leg) -> str:
                 robot, action="perform_action", args=arm_args,
             )
             if cmd_id:
+                _held_by_cmd[str(cmd_id)] = robot
                 log.info(
                     "[arm] %s NAVIGATE→BT %s(%s) at %s robot=%s cmd=%s",
                     task_id, action, leg.params.get("book", ""), where, robot, cmd_id,
@@ -415,6 +448,9 @@ def real_lifecycle(robot: str, phase: str) -> None:
         # "이미 보낸 목적지"로 걸러져 로봇이 출발하지 않는다.
         with _nav_lock:
             _last_nav.pop(robot, None)
+        # 주문이 끝났으니 붙잡기도 확실히 푼다 — 마지막 다리가 팔이면 결과 훅이
+        # 먼저 풀지만, 결과가 유실됐을 때의 이중 안전망이다(중복 해제는 무해하다).
+        _release_hold(robot)
     cmd_id = fleet_telemetry.send_command_async(robot, action=action, args={})
     if cmd_id:
         log.info("[lifecycle] %s → %s (cmd=%s)", robot, action, cmd_id)
@@ -433,6 +469,11 @@ def on_cmd_result(res: dict) -> None:
         return
     ok = bool(res.get("ok"))
     log.info("[arm] BT 결과 cmd=%s ok=%s status=%s", cmd_id, ok, res.get("status"))
+    # ⚠️ **결과가 오면 반드시 푼다.** 안 풀면 그 로봇은 TTL 이 만료될 때까지 순회를 못 한다.
+    #    다음 다리가 주행이면 fleet_node 가 곧바로 다시 몰고 가므로 여기서 풀어도 안전하다.
+    robot = _robot_of_cmd(cmd_id)
+    if robot:
+        fleet_link.set_robot_hold(robot, False)
     try:
         _orc().on_result(cmd_id, ok, str(res.get("msg") or ""))
     except Exception:  # noqa: BLE001
@@ -445,7 +486,7 @@ def on_cmd_result(res: dict) -> None:
 RELEASE_MODE = os.environ.get("LIBI_RELEASE_MODE", "PATROL")
 
 
-def real_release(robot: str) -> None:
+def real_release(robot: str) -> None:   # noqa: D401
     """주문이 취소·실패했을 때 로봇을 fleet_node 에서 놓아준다.
 
     ⚠️ **왜 set_robot_mode 인가**: fleet_node 에는 전용 취소 서비스가 없다. `cancel_task()`
@@ -477,6 +518,8 @@ def real_release(robot: str) -> None:
         return
     with _nav_lock:
         _last_nav.pop(robot, None)      # 놓아준 로봇의 목적지 기억도 지운다
+    # 주문이 끝났으니 붙잡기도 푼다. 안 풀면 취소된 주문 때문에 로봇이 TTL 동안 순회를 못 한다.
+    _release_hold(robot)
 
     try:
         cmd_id = fleet_telemetry.send_command_async(robot, action="mission_stop", args={})
@@ -665,17 +708,35 @@ _auto_assign_stop = threading.Event()
 _ACCEPTING_STATES = {"IDLE", "PATROL"}
 
 
+def _reject_reason(r: dict) -> str | None:
+    """이 로봇을 후보에서 뺀 이유. 넣어도 되면 None.
+
+    ## 왜 사유를 따로 내는가
+    예전에는 `ready()` 가 bool 만 냈다. 그래서 후보가 0이면 배차 루프가 **조용히** 0건을
+    반환하고 주문은 PENDING 에 그대로 남았다 — 화면에도 로그에도 아무것도 안 나온다.
+    실측: 로봇 3대가 멀쩡히 순회 중인데 주문이 영영 안 나갔다. 원인은 상태기계 링크가
+    없어 `state` 가 None 이었던 것뿐인데, 그 사실이 어디에도 안 드러났다.
+    """
+    if r.get("stale"):
+        return "위치 신호 끊김"
+    state = r.get("state")
+    on_fms_patrol = str(r.get("task_id") or "").startswith("P-")
+    if state is None:
+        # ⚠️ **좁게만 허용한다.** FMS 가 **자기가 배정한** 순회를 돌리고 있는 로봇이면,
+        #    적어도 움직일 수 있다는 것은 FMS 자신이 안다(그 순회를 자기가 걸었으므로).
+        #    그 근거가 없으면 모르는 상태에 일을 주는 것이라 거절한다 — ERROR·충전 중인
+        #    로봇에 배차하는 것보다 멈춰 서는 편이 낫다.
+        return None if on_fms_patrol else "상태 미상 (상태기계 링크 확인)"
+    if state not in _ACCEPTING_STATES:
+        return f"상태 {state}"
+    if r.get("busy") and not on_fms_patrol:
+        return "다른 작업 중"   # 순회(P-*)는 선점 가능, 그 외 작업 중은 후보 제외
+    return None
+
+
 def pick_robot(robots: list[dict]) -> str | None:
     """대기 중인 주문 하나에 배정할 로봇을 고른다. 근거: `dispatch-shared.ts:pickRobot`."""
-    def ready(r: dict) -> bool:
-        state = r.get("state")
-        if state not in _ACCEPTING_STATES or r.get("stale"):
-            return False
-        if r.get("busy") and not str(r.get("task_id") or "").startswith("P-"):
-            return False   # 순회(P-*)는 선점 가능, 그 외 작업 중은 후보 제외
-        return True
-
-    candidates = [r for r in robots if ready(r)]
+    candidates = [r for r in robots if _reject_reason(r) is None]
     if not candidates:
         return None
     candidates.sort(key=lambda r: (0 if r.get("state") == "PATROL" else 1,
@@ -694,6 +755,15 @@ def _auto_assign_once() -> int:
     for t in pending:
         robot = pick_robot(robots)
         if robot is None:
+            # ⚠️ **조용히 나가지 않는다.** 대기 주문이 있는데 후보가 0이면 그건 정상이
+            #    아니라 진단해야 할 상태다. 로봇별 거절 사유를 로그와 주문 사유에 남겨,
+            #    "왜 배차가 안 되지" 를 화면만 보고 알 수 있게 한다.
+            why = ", ".join(
+                f"{r.get('name')}: {_reject_reason(r)}" for r in robots
+            ) or "로봇 없음"
+            log.warning("[auto-assign] 대기 %d건인데 배차 가능한 로봇이 없습니다 — %s",
+                        len(pending), why)
+            _mark_stalled(pending, why)
             break   # 배차 가능한 로봇 소진 — 나머지는 다음 주기로
         try:
             orc.assign(t["id"], robot)
@@ -703,6 +773,16 @@ def _auto_assign_once() -> int:
         robots = [r for r in robots if r.get("name") != robot]   # 이번 주기엔 다시 안 고른다
         assigned += 1
     return assigned
+
+
+def _mark_stalled(pending: list[dict], why: str) -> None:
+    """대기 주문에 "왜 안 나가는지" 를 적는다. 화면이 그 사유를 그대로 보여 준다."""
+    orc = _orc()
+    for t in pending:
+        try:
+            orc.set_reason(t["id"], f"배차 대기 — {why}")
+        except (KeyError, AttributeError):
+            pass
 
 
 def _auto_assign_loop() -> None:

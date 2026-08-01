@@ -284,6 +284,9 @@ class Orchestrator:
                 raise ValueError(f"배정 불가: {robot} 는 이미 다른 주문에 배정돼 있습니다")
             task.robot = robot
             task.status = TaskStatus.ASSIGNED
+            # 배차가 나갔으니 "왜 안 나가는지" 설명은 지운다 — 안 지우면 실행 중인 주문에
+            # `배차 대기 — 상태 미상` 이 그대로 붙어 있어 화면이 거짓말을 한다(실측).
+            task.reason = ""
             if task_id in self._queue:
                 self._queue.remove(task_id)
             self._start_leg(task)
@@ -334,6 +337,18 @@ class Orchestrator:
                 self._start_leg(task)        # 다음 다리(없으면 COMPLETED)
             else:
                 self._fail_or_retry(task, msg or "다리 실패")
+
+    def set_reason(self, task_id: str, reason: str) -> None:
+        """대기 중인 주문에 사유를 적는다(배차가 왜 안 나가는지 등).
+
+        상태는 건드리지 않는다 — PENDING 은 그대로 두고 **설명만** 붙인다.
+        이미 끝난 주문에는 쓰지 않는다(끝난 이유를 덮어쓰면 안 된다).
+        """
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None or task.status is not TaskStatus.PENDING:
+                return
+            task.reason = reason
 
     def _fail_or_retry(self, task: Task, reason: str) -> None:
         leg = task.current_leg()

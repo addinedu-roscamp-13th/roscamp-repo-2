@@ -49,6 +49,14 @@ SRV_RELOAD = "/fms/reload_navgraph"
 TOPIC_TASK_STATES = "/fms/task_states"
 TOPIC_OCCUPANCY = "/fms/occupancy"
 TOPIC_ROUTES = "/fms/routes"
+#: CBS 시간표. /fms/routes 는 좌표뿐이라 "언제 어디" 를 모른다 — 예약 시각을 화면에
+#  띄우려면 도착틱이 필요하다. transient_local 이라 늦게 붙어도 마지막 값을 받는다.
+#  반응형 교통에서는 아무것도 안 온다(= 예약 표시가 없는 것이 정상).
+TOPIC_PLAN = "/fms/plan"
+#: 주문 다리 사이에 로봇을 붙잡아 순회로 떠나지 않게 한다.
+#  fleet_node 는 주행 다리만 알아서, 팔 다리가 도는 동안 로봇이 유휴로 보인다.
+#  TTL 이 있어 푸는 쪽이 죽어도 로봇이 영영 묶이지 않는다.
+TOPIC_HOLD = "/fms/robot_hold"
 TOPIC_GOALS = "/fms/goals"
 TOPIC_ROBOT_STATE = "/robot_state"
 #: fleet_node 가 발행하는 주행 경로. 예전엔 로봇 쪽 path_request_driver 가 직접 받아
@@ -70,10 +78,14 @@ _echo: dict[str, dict[str, Any]] = {}
 _tasks: list[dict[str, Any]] = []
 _occupancy: dict[str, str] = {}
 _routes: dict[str, list] = {}
+#: 마지막 시간표. robots 가 비어 있으면 **계획을 버린 상태**다(reason 에 이유).
+#  화면은 그때 경로 강조를 지워야 한다 — 옛 예약을 계속 띄우면 화면만 거짓이 된다.
+_plan: dict[str, Any] = {}
 _goals: dict[str, int] = {}
 _plugins: dict[str, str] = {"dispatcher": "", "traffic": ""}
 _last_ros_at: float = 0.0
 
+_hold_pub: Any = None
 _clients: dict[str, Any] = {}
 _node: Any = None
 
@@ -88,6 +100,7 @@ def _empty_robot() -> dict[str, Any]:
         "name": "",
         "x": None,
         "y": None,
+        "yaw": None,      # 로봇이 바라보는 방향(rad). 화면이 화살표로 그린다
         "task_id": "",
         "task_state": "",
         "progress": 0.0,
@@ -184,6 +197,9 @@ def apply_robot_state(robots: dict[str, dict[str, Any]], payload: dict) -> str |
     loc = payload.get("location") or {}
     entry["x"] = loc.get("x")
     entry["y"] = loc.get("y")
+    # 방향까지 접는다. 점만 찍으면 로봇이 **어디를 보고 있는지** 알 수 없어, 서가를 등지고
+    # 섰는지 도킹 방향이 맞는지를 화면에서 못 가른다.
+    entry["yaw"] = loc.get("yaw")
     entry["_last_ros_at"] = time.time()
     return name
 
@@ -263,6 +279,7 @@ def build_rows(
             "name": name,
             "x": base.get("x"),
             "y": base.get("y"),
+            "yaw": base.get("yaw"),
             "task_id": base.get("task_id", ""),
             "task_state": base.get("task_state", ""),
             "progress": base.get("progress", 0.0),
@@ -302,10 +319,15 @@ def snapshot() -> dict[str, Any]:
             "tasks": list(_tasks),
             "occupancy": dict(_occupancy),
             "routes": {k: list(v) for k, v in _routes.items()},
+            "plan": dict(_plan),
             "goals": dict(_goals),
             "plugins": dict(_plugins),
             "linked": _node is not None,
             "domain_id": FLEET_DOMAIN_ID,
+            # 브라우저가 자기 시계와의 오차를 빼기 위해 쓴다. 계획의 epoch_wall 은
+            # fleet_node 의 벽시계인데, 브라우저 시계가 몇 초 틀어져 있으면 "T-12.3초" 가
+            # 그만큼 통째로 어긋난다. 서버와 fleet_node 는 같은 기계라 이 값으로 보정된다.
+            "server_now": time.time(),
             "stale": (time.time() - _last_ros_at) > FRESH_SEC if _last_ros_at else True,
         }
 
@@ -409,6 +431,25 @@ def set_robot_mode(robot: str, mode: str) -> dict[str, Any]:
     return {"ok": bool(res.ok), "reason": res.reason}
 
 
+def set_robot_hold(robot: str, hold: bool, ttl_sec: float = 120.0) -> bool:
+    """주문 다리 사이에 로봇을 붙잡거나 푼다.
+
+    ⚠️ **거는 쪽과 푸는 쪽이 짝이 맞아야 한다.** 안 풀면 TTL 이 만료될 때까지 그 로봇은
+    순회를 못 한다(fleet_node 가 만료를 경고와 함께 스스로 푼다 — 영구 점유는 없다).
+    """
+    if _hold_pub is None:
+        return False
+    # ⚠️ `String` 은 **ROS 스레드 안에서만** import 돼 있다(이 모듈은 rclpy 없이도 import
+    #    돼야 하므로). 모듈 스코프에서 쓰면 NameError 가 나고, 그게 dispatch 실패로
+    #    둔갑해 주문이 통째로 FAILED 가 된다 — 실제로 그랬다.
+    from std_msgs.msg import String
+
+    m = String()
+    m.data = json.dumps({"robot": robot, "hold": bool(hold), "ttl_sec": float(ttl_sec)})
+    _hold_pub.publish(m)
+    return True
+
+
 def set_battery(robot: str, value: float) -> dict[str, Any]:
     if _node is None:
         return {"ok": False, "reason": "fleet_link_down"}
@@ -482,6 +523,7 @@ def _fleet_thread() -> None:
         import rclpy
         from rclpy.executors import SingleThreadedExecutor
         from rclpy.node import Node
+        from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
         from std_msgs.msg import String
         from std_srvs.srv import Trigger
 
@@ -514,7 +556,12 @@ def _fleet_thread() -> None:
         def on_robot_state(msg) -> None:
             payload = {
                 "name": msg.name,
-                "location": {"x": msg.location.x, "y": msg.location.y},
+                "location": {
+                    "x": msg.location.x,
+                    "y": msg.location.y,
+                    # rmf RobotState 는 yaw 를 늘 싣고 있었다 — 그동안 버리고 있었을 뿐이다.
+                    "yaw": getattr(msg.location, "yaw", None),
+                },
             }
             with _lock:
                 apply_robot_state(_robots, payload)
@@ -527,6 +574,24 @@ def _fleet_thread() -> None:
                 _occupancy.clear()
                 _occupancy.update({str(k): str(v) for k, v in parsed.items()})
                 touch()
+            _notify()
+
+        def on_plan(msg) -> None:
+            try:
+                parsed = json.loads(msg.data)
+            except Exception:
+                return
+            if not isinstance(parsed, dict):
+                return
+            with _lock:
+                _plan.clear()
+                _plan.update(parsed)
+                # ⚠️ **여기서 touch() 를 부르면 안 된다.** 이 토픽은 transient_local 이라
+                #    fleet_node 가 죽은 뒤에도 우리가 재구독하면 **마지막 값이 다시 배달된다**.
+                #    그걸 "방금 수신" 으로 세면 stale 이 영원히 false 로 남고, 아무도 지키지
+                #    않는 예약을 화면이 계속 카운트다운한다. 생존 판정은 주기 발행 토픽
+                #    (robot_state·occupancy·routes)에 맡긴다 — 그건 재전송이 없다.
+                pass
             _notify()
 
         def on_routes(msg) -> None:
@@ -548,7 +613,15 @@ def _fleet_thread() -> None:
         node.create_subscription(TaskState, TOPIC_TASK_STATES, on_task_state, 10)
         node.create_subscription(RmfRobotState, TOPIC_ROBOT_STATE, on_robot_state, 10)
         node.create_subscription(String, TOPIC_OCCUPANCY, on_occupancy, 10)
+        global _hold_pub
+        _hold_pub = node.create_publisher(String, TOPIC_HOLD, 10)
         node.create_subscription(String, TOPIC_ROUTES, on_routes, 10)
+        # ⚠️ transient_local 로 발행하므로 **구독도 같은 durability** 여야 붙는다.
+        #    reliable/volatile 로 잡으면 QoS 불일치로 조용히 한 건도 안 온다.
+        node.create_subscription(
+            String, TOPIC_PLAN, on_plan,
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                       reliability=ReliabilityPolicy.RELIABLE))
         def on_path_request(msg) -> None:
             """fleet_node 가 허가한 다음 노드. 로봇 BT 로 넘긴다.
 
