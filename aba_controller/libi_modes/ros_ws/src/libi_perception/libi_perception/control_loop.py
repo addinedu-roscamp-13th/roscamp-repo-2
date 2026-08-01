@@ -2,6 +2,7 @@ import time
 
 import py_trees
 
+from . import session as sess
 from .recovery_bt import SearchContext, create_searching_tree, tick_tree
 from .switch import FollowSwitch
 from .tracking_controller import TrackingController
@@ -48,6 +49,33 @@ class ControlLoop:
     def state(self):
         return self.switch.state
 
+    def _is_guide(self) -> bool:
+        """안내 역할인가.
+
+        ⚠️ `watch` 는 **뺀다.** 안내에는 `GuideExec` 의 45초 종료 판정자가 있지만
+        등록감시에는 없다. 또 등록 중에는 사람이 패널 화면을 보고 있으므로 카메라
+        전환을 앞당길 이유가 없다.
+        """
+        return self.role == sess.GUIDE
+
+    def _filtered_detection(self):
+        """검출의 **유일한** 출입구. TRACKING 분기와 회복 트리(`SearchContext`)가
+        **반드시 이 함수를 통해서만** 검출을 봐야 한다 — 원본 `self.get_detection`
+        을 어느 한쪽이라도 직접 부르면 그쪽은 예측 bbox 를 걸러내지 못한다.
+
+        안내에서는 예측 bbox 를 '보인다' 로 치지 않는다. 가시성 발행
+        (`follow_node.requester_visible`)이 이미 거부하므로, 여기서 안 거르면
+        한 프로세스 안에 "놓쳤다" 가 두 개가 된다 — 정지(0.5초)와 탐색 진입(4초)이
+        어긋나는 것보다 나쁜 건, 회복 중에도 예측 bbox 가 재획득으로 읽혀
+        SEARCHING 이 즉시 TRACKING 으로 되돌아가는 것이다.
+
+        추종은 코스팅이 제어의 연속성을 만들어 주므로 건드리지 않는다.
+        """
+        det = self.get_detection()
+        if det is not None and self._is_guide() and getattr(det, 'is_predicted', False):
+            return None
+        return det
+
     @property
     def search_tree(self):
         """지금 도는 회복 BT. SEARCHING 이 아니면 None.
@@ -59,7 +87,7 @@ class ControlLoop:
 
     def _start_search(self):
         lkd = self.tracker.last_direction or 1.0
-        self._search_ctx = SearchContext(self.get_detection, self.publish,
+        self._search_ctx = SearchContext(self._filtered_detection, self.publish,
                                          self.cfg, self.now, lkd=lkd,
                                          select_camera=self.select_camera,
                                          peek_people=self.peek_people,
@@ -86,7 +114,7 @@ class ControlLoop:
 
     def tick(self):
         if self.switch.state == 'TRACKING':
-            det = self.get_detection()
+            det = self._filtered_detection()
             if det is not None:
                 self.miss = 0
                 self._acquired = True
