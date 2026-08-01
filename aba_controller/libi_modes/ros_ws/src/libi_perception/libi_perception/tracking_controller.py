@@ -25,9 +25,19 @@ class TrackingController:
                                     image_width=getattr(detection, "image_width", 0))
         if forward_blocked:
             lin = 0.0
-        lin, ang = apply_avoidance(lin, ang, scan, self.cfg)
+        # ⚠️ [2026-08-01] **LKD 는 회피 전 값으로 기록한다.**
+        #
+        #   LKD 의 뜻은 "사람이 어느 쪽으로 갔나" 다 — 회복 탐색(`LkdPeek`·`Scan1`)이
+        #   그 방향부터 본다. 그런데 예전에는 `apply_avoidance` 를 거친 **뒤**의 각속도를
+        #   기록했다. 측면 회피는 벽 반대쪽으로 미는 값이라, 오른쪽에 벽이 있으면
+        #   사람이 오른쪽으로 사라져도 각속도가 왼쪽(양수)이 되어 **LKD 가 뒤집힌다.**
+        #   실측 2026-08-01: "분명 오른쪽에서 사라졌는데 왼쪽으로 peek 한다".
+        #
+        #   회피는 "지금 벽을 피하는 방향"이고 LKD 는 "아까 사람이 간 방향"이다.
+        #   둘은 다른 질문이므로 섞으면 안 된다.
         if abs(ang) > 0.01:
             self.last_direction = 1.0 if ang > 0 else -1.0
+        lin, ang = apply_avoidance(lin, ang, scan, self.cfg)
         self.publish(lin, ang)
 
     def reset(self):

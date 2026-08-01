@@ -8,6 +8,7 @@ def _cfg(**over):
                 LINEAR_X_MAX=0.12, LINEAR_X_REVERSE_MAX=0.06,
                 IMAGE_WIDTH=640, KP_ANGLE=0.0010, KI_ANGLE=0.0, KD_ANGLE=0.0,
                 INTEGRAL_ANGLE_CLAMP=200.0, ANGLE_DEADZONE=45.0, ANGULAR_Z_MAX=0.60,
+                ANGLE_RESUME_RATIO=1.3,  # 운영값과 같게 — 빼면 히스테리시스가 꺼진다
                 ANGULAR_SMOOTHING=1.0)   # smoothing=1 -> deterministic single-step
     base.update(over)
     return SimpleNamespace(**base)
@@ -241,28 +242,57 @@ def test_entering_the_band_does_not_kick_the_derivative():
         assert lin == 0.0, f"구간 진입에서 D 가 튀었다: {lin}"
 
 
-def test_bearing_deadzone_does_not_step_at_the_boundary():
-    """[2026-08-01] 방위축도 거리축처럼 오차를 **빼낸다**.
+def test_bearing_hysteresis_needs_a_clear_exit_before_turning():
+    """⚠️ **문턱이 하나면 칸 경계에서 좌우로 깨작인다("도리도리").**
 
-    0 으로 죽이는 방식이면 경계 바로 밖에서 `KP_ANGLE × ANGLE_DEADZONE` 이 통째로
-    나온다. 데드존을 가운데 칸(106.67)으로 넓히면서 그 계단이 0.107 rad/s 가 됐다 —
-    사람이 칸 경계를 1px 넘는 순간 그 속도로 튄다.
+    멈춘 상태에서는 가운데 칸을 `ANGLE_RESUME_RATIO` 배만큼 **확실히** 벗어나야
+    돌기 시작한다. 경계 바로 밖은 아직 멈춘 채다.
     """
-    dz = 106.67
-    cfg = _cfg(ANGLE_DEADZONE=dz, IMAGE_WIDTH=640, KP_ANGLE=0.0010,
-               ANGULAR_SMOOTHING=1.0)          # EMA 를 꺼서 그 tick 값을 그대로 본다
-    pid = FollowPID(cfg)
-    # 구간 밖으로 1px 만 나간 지점.
-    _, ang = pid.compute(cx=640 / 2.0 - dz - 1.0, area=280.0 ** 2, dt=0.05)
-    assert 0.0 < abs(ang) < 0.0010 * 2, f"경계에서 튀었다: {ang}"
+    dz, ratio = 106.67, 1.3
+    pid = FollowPID(_cfg(ANGLE_DEADZONE=dz, ANGLE_RESUME_RATIO=ratio, IMAGE_WIDTH=640))
+    # 칸을 갓 벗어난 정도로는 아직 안 돈다.
+    _, ang = pid.compute(cx=640 / 2.0 - (dz + 5.0), area=280.0 ** 2, dt=0.05)
+    assert ang == 0.0, f"경계 바로 밖에서 벌써 돌았다: {ang}"
+    # 복귀 문턱을 넘으면 **오차를 통째로 써서 확실히** 돈다 — 힘없이 못 도는 일이 없다.
+    _, ang = pid.compute(cx=640 / 2.0 - (dz * ratio + 10.0), area=280.0 ** 2, dt=0.05)
+    assert ang > 0.10, f"돌기로 했으면 실제로 돌 만큼 나와야 한다: {ang}"
+
+
+def test_bearing_hysteresis_keeps_turning_until_back_in_the_zone():
+    """일단 돌기 시작하면 **가운데 칸에 들어올 때까지** 계속 돈다.
+
+    복귀 문턱으로 멈추면 칸에 못 들어온 채 서 버린다 — 그러면 사람이 칸 밖에
+    있는데 로봇이 가만히 있는 상태가 된다.
+    """
+    dz, ratio = 106.67, 1.3
+    pid = FollowPID(_cfg(ANGLE_DEADZONE=dz, ANGLE_RESUME_RATIO=ratio, IMAGE_WIDTH=640))
+    pid.compute(cx=640 / 2.0 - 250.0, area=280.0 ** 2, dt=0.05)      # 돌기 시작
+    # 복귀 문턱(138.7)과 칸(106.67) 사이 — 아직 칸 밖이므로 계속 돌아야 한다.
+    _, ang = pid.compute(cx=640 / 2.0 - 120.0, area=280.0 ** 2, dt=0.05)
+    assert ang > 0.0, f"칸에 못 들어왔는데 멈췄다: {ang}"
+    # 칸 안으로 들어오면 멈춘다.
+    _, ang = pid.compute(cx=640 / 2.0 - 50.0, area=280.0 ** 2, dt=0.05)
+    assert ang == 0.0, f"가운데 칸 안인데 돈다: {ang}"
 
 
 def test_bearing_deadzone_is_silent_inside_the_center_third():
-    """가운데 칸 안이면 각속도 0. 경계 자체도 구간 안이다(<= 로 잡는다)."""
+    """가운데 칸 안이면 각속도 0 — 이게 사용자가 요구한 규칙이다."""
     dz = 106.67
     pid = FollowPID(_cfg(ANGLE_DEADZONE=dz, IMAGE_WIDTH=640))
-    for off in (0.0, dz / 2.0, dz):
+    for off in (0.0, dz / 2.0, dz - 1.0):
         _, ang = pid.compute(cx=640 / 2.0 - off, area=280.0 ** 2, dt=0.05)
-        # 경계(off == dz)에서는 부동소수점 잔차가 남는다(1e-17 수준). 바퀴에는
-        # 의미 없는 값이라 정확한 0 대신 "무시 가능"으로 본다.
-        assert abs(ang) < 1e-12, f"가운데 칸 안({off}px)인데 돌았다: {ang}"
+        assert ang == 0.0, f"가운데 칸 안({off}px)인데 돌았다: {ang}"
+
+
+def test_bearing_deadzone_uses_screen_fraction_not_fixed_pixels():
+    """비율(w/6)로 잡아야 해상도가 달라져도 **화면에 보이는 그 칸**과 같다."""
+    from types import SimpleNamespace
+    base = _cfg(IMAGE_WIDTH=640, ANGLE_DEADZONE=9999.0)   # 픽셀값은 일부러 틀리게
+    cfg = SimpleNamespace(**{**vars(base), "ANGLE_DEADZONE_FRAC": 1.0 / 6.0})
+    pid = FollowPID(cfg)
+    # 640/6 = 106.67 안 → 0. 픽셀값(9999)이 쓰였다면 이것도 0 이라 구분이 안 되므로
+    # 칸 밖도 같이 본다.
+    _, inside = pid.compute(cx=640 / 2.0 - 50.0, area=280.0 ** 2, dt=0.05)
+    assert inside == 0.0
+    _, outside = pid.compute(cx=640 / 2.0 - 300.0, area=280.0 ** 2, dt=0.05)
+    assert outside > 0.0, "비율이 아니라 고정 픽셀(9999)이 쓰였다"

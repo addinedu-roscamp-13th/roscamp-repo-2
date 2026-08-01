@@ -70,6 +70,10 @@ Item {
     // ── 주행 상태 (영상 위 왼쪽 위) ─────────────────────────────────────
     readonly property string driveState: (poseInfo && poseInfo.state) ? poseInfo.state : ""
 
+    //: α-β 코스팅 중 — 검출이 끊겼는데 예측으로 이어 붙이는 중이다.
+    //  영상의 주황색 bbox 와 같은 뜻인데, 축소되면 색만으로는 안 읽혀 글자로도 띄운다.
+    readonly property bool coasting: !!(poseInfo && poseInfo.isPredicted)
+
     readonly property color driveStateColor: {
         var s = root.driveState;
         if (s === "FOLLOWING") return S.success;
@@ -210,6 +214,14 @@ Item {
                         text: root.confLabel
                         visible: text !== ""
                         color: "white"; font.pixelSize: 14; font.family: S.fontFamily
+                    }
+                    // α-β 필터가 실제로 일하는 순간. 이게 떠 있는 동안은 검출이 끊긴
+                    // 채 예측으로 따라가는 중이라, 몇 초씩 이어지면 튜닝을 의심해야 한다.
+                    Text {
+                        text: "α-β 예측 추종 중"
+                        visible: root.coasting
+                        color: S.warning; font.pixelSize: 14; font.bold: true
+                        font.family: S.fontFamily
                     }
                 }
             }

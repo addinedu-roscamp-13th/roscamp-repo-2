@@ -81,3 +81,35 @@ def test_non_standing_blocks_regardless_of_direction():
 
 def test_unknown_posture_source_does_not_block():
     assert may_coast("side", None) is True
+
+
+# ── 바닥에 발이 닿은 대상이 코스팅을 잃던 회귀 (2026-08-01) ──────────────────
+
+def test_feet_at_bottom_with_jitter_still_coasts():
+    """⚠️ **따라가는 사람은 가까우면 발이 늘 화면 아래 가장자리에 있다.**
+
+    예전에는 `at_bottom and vy > 0` 이라, 검출이 1~2px 흔들려 vy 가 조금만 양수여도
+    DOWN 으로 떨어졌다. DOWN 은 `_COASTABLE` 이 아니라 **α-β 코스팅이 통째로
+    건너뛰어진다** — 잠깐 가려진 것도 즉시 소실이 되어 회복 탐색이 바로 돌았다
+    (실측: "사라지면 바로 peek 된다"). 임계를 둬서 흔들림은 걸러낸다.
+    """
+    bbox = (250, 100, 390, H - 5)            # 발이 바닥에 닿음
+    d = classify_exit(bbox, [0.0, 2.0, 0.0], W, H)   # 2px/frame — 검출 흔들림 수준
+    assert d != "down", f"흔들림을 아래로 빠진 것으로 읽었다: {d}"
+    assert may_coast(d, None), "코스팅이 막히면 안 된다"
+
+
+def test_real_fall_at_bottom_still_blocks_coasting():
+    """⚠️ 안전 방향. 진짜로 아래로 빠지는 것은 여전히 막아야 한다 —
+    코앞에 쓰러진 사람을 예측 위치로 밀고 들어가면 들이받는다."""
+    bbox = (250, 100, 390, H - 5)
+    d = classify_exit(bbox, [0.0, H * 0.05, 0.0], W, H)   # 임계(0.02)의 2배 이상
+    assert d == "down"
+    assert not may_coast(d, None)
+
+
+def test_area_surge_still_blocks_coasting():
+    """면적 급증(코앞으로 다가와 시야를 덮음)은 가장자리와 무관하게 정지다."""
+    d = classify_exit((100, 100, 500, 400), [0.0, 0.0, 9000.0], W, H)
+    assert d == "down"
+    assert not may_coast(d, None)

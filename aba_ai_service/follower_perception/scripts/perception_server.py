@@ -262,6 +262,11 @@ def _pose_payload(det, cmd, pose, fps, matcher=None):
         "refRatio": _num(getattr(pose, "ref_ratio", None)),
         "sideTrip": _num(getattr(pose, "side_trip", None)),
         "axis": getattr(pose, "last_axis", None),
+        # α-β 코스팅 중인가 — **검출이 끊겼는데 예측으로 이어 붙이는 중**이라는 뜻이다.
+        # 예전에는 JPEG 의 주황색 bbox 로만 알 수 있었는데(draw_overlay 의 is_predicted),
+        # 영상이 축소되면 색 구분이 어렵고 "필터가 도는 건지"를 값으로 못 봤다.
+        # 화면이 글자로 띄울 수 있게 값으로 내보낸다(FollowScreen).
+        "isPredicted": bool(getattr(det, "is_predicted", False)) if det is not None else None,
     }
     # ReID/HSV 매칭 신뢰도 — _status_line 과 같은 소스(matcher.last_reid_sim/last_hsv_sim).
     # 예전엔 hud_text=False 라 패널로 가는 JPEG 에서 이 글자가 빠졌고, POSE 에도 없었다.

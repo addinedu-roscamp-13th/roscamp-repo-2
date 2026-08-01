@@ -24,7 +24,10 @@ SMOOTHER_ALPHA = 0.45
 SMOOTHER_BETA = 0.15
 FRAME_DT = 0.05                # nominal seconds per frame (20 FPS)
 PREDICT_DT = 0.05             # latency-compensation lookahead
-COAST_LIMIT = 30              # max consecutive missed frames still output (predicted; ~2s @15fps)
+# [2026-08-01] 30 → 10 (사용자 지정 스펙). ~0.7s @15fps.
+#   30 은 2초다 — 안 보이는 사람을 2초나 예측으로 밀고 들어간다. 짧게 잡으면 가려짐은
+#   여전히 넘기면서(문틀·서가는 몇 프레임이다) 진짜 소실은 빨리 회복으로 넘긴다.
+COAST_LIMIT = 10              # max consecutive missed frames still output (predicted)
 
 # HSV histogram
 HSV_BINS = 16                 # per channel; total 48-d (H+S+V)

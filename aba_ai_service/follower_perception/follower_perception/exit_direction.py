@@ -22,6 +22,11 @@
 """
 from .constants import EXIT_AREA_SURGE, EXIT_EDGE_MARGIN_RATIO
 
+#: "아래로 빠졌다"로 보는 최소 세로속도 — 프레임 높이 대비 비율(px/frame).
+#: 240px 프레임에서 0.02 = 4.8px/frame ≈ 초당 72px(15fps). 검출 흔들림(1~2px)은
+#: 여유 있게 걸러지고 실제 낙하·접근만 남는다.
+_DOWN_VY_FRAC = 0.02
+
 SIDE = "side"
 DOWN = "down"
 UP = "up"
@@ -52,7 +57,17 @@ def classify_exit(bbox, velocity, frame_w, frame_h,
     # 커지다 사라지는 경우(코앞으로 다가와 시야를 덮음)를 가장자리 검사로는 못 잡는다.
     if varea >= area_surge:
         return DOWN
-    if at_bottom and vy > 0:
+    # ⚠️ [2026-08-01] `vy > 0` 이 아니라 **뚜렷하게 아래로 움직일 때만** DOWN 이다.
+    #
+    #   따라가는 사람은 가까우면 **발이 늘 화면 아래 가장자리에 닿아 있다**
+    #   (`at_bottom` 이 상시 참). 거기서 `vy > 0` 만 보면 검출이 한 픽셀 흔들려
+    #   vy 가 +0.3 만 돼도 DOWN 으로 떨어지고, DOWN 은 `_COASTABLE` 이 아니라
+    #   **코스팅이 통째로 건너뛰어진다** — 잠깐 가려진 것도 즉시 소실로 처리돼
+    #   회복 탐색이 바로 돈다(실측 2026-08-01: "사라지면 바로 peek 된다").
+    #
+    #   진짜 "아래로 빠짐"은 프레임 높이에 비해 의미 있는 속도를 갖는다. 임계를
+    #   두면 검출 흔들림은 걸러지고 실제 낙하·접근만 남는다. 0 이면 예전 동작.
+    if at_bottom and vy > frame_h * _DOWN_VY_FRAC:
         return DOWN
     if at_top and vy < 0:
         return UP
