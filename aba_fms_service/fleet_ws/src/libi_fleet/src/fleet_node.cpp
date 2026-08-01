@@ -1,3 +1,6 @@
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -16,6 +19,11 @@
 #include <libi_fleet_msgs/srv/set_robot_mode.hpp>
 #include <libi_fleet_msgs/srv/set_battery.hpp>
 #include <libi_fleet_msgs/msg/task_state.hpp>
+#include "libi_fleet_msgs/msg/fleet_goals.hpp"
+#include "libi_fleet_msgs/msg/fleet_occupancy.hpp"
+#include "libi_fleet_msgs/msg/fleet_plan.hpp"
+#include "libi_fleet_msgs/msg/fleet_routes.hpp"
+#include "libi_fleet_msgs/msg/robot_hold.hpp"
 #include <std_srvs/srv/trigger.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <rmf_fleet_msgs/msg/robot_state.hpp>
@@ -242,13 +250,28 @@ public:
       "/robot_state", 10,
       std::bind(&FleetNode::on_robot_state, this, std::placeholders::_1));
     path_pub_ = create_publisher<PathRequest>("/robot_path_requests", rclcpp::QoS(10).reliable());
-    task_pub_ = create_publisher<TaskState>("/fms/task_states", 10);
-    occ_pub_ = create_publisher<std_msgs::msg::String>("/fms/occupancy", 10);
+    // ── QoS 계약 ────────────────────────────────────────────────────────────
+    //
+    // 기본값(RELIABLE·depth 10)을 그대로 쓰면 두 가지가 섞인다: **놓치면 안 되는 사건**과
+    // **최신값만 의미 있는 상태 스트림**. 후자를 depth 10 으로 두면 구독자가 잠깐 느릴 때
+    // 큐에 옛 값이 쌓였다가 몰려 나온다 — 화면이 과거를 재생한다.
+    //
+    // ⚠️ **RELIABLE 은 유지한다.** BEST_EFFORT 로 내리면 RELIABLE 로 구독하는 쪽과
+    //    QoS 불일치가 되어 **조용히 한 건도 안 온다.** 여기 소비자(백엔드)는 기본값으로
+    //    구독하므로, 바꾸려면 양쪽을 같이 고쳐야 한다. 지금 얻을 것은 깊이뿐이다.
+    //
+    //   사건(놓치면 안 됨)     : task_states, robot_hold, robot_path_requests → depth 10
+    //   상태 스트림(최신만)    : occupancy, routes, goals                     → depth 1
+    //   래치(늦게 붙어도 필요) : plan                                          → transient_local
+    task_pub_ = create_publisher<TaskState>("/fms/task_states", rclcpp::QoS(10).reliable());
+    occ_pub_ = create_publisher<libi_fleet_msgs::msg::FleetOccupancy>(
+      "/fms/occupancy", rclcpp::QoS(1).reliable());
     // 시간 계획(CBS)의 **시간표**. 재계획할 때마다 한 번 낸다.
     // /fms/routes 는 좌표만 있어 "언제 어디" 를 알 수 없다 — 지연으로 예약 시각이 밀리는
     // 것을 밖에서 보려면 도착틱이 필요하다. 반응형 교통에서는 아무것도 안 나간다.
-    plan_pub_ = create_publisher<std_msgs::msg::String>("/fms/plan", rclcpp::QoS(1).transient_local());
-    route_pub_ = create_publisher<std_msgs::msg::String>("/fms/routes", 10);
+    plan_pub_ = create_publisher<libi_fleet_msgs::msg::FleetPlan>("/fms/plan", rclcpp::QoS(1).transient_local());
+    route_pub_ = create_publisher<libi_fleet_msgs::msg::FleetRoutes>(
+      "/fms/routes", rclcpp::QoS(1).reliable());
     // ── [2026-08-01] 주문 도중 순회로 떠나지 않게 붙잡는다 ──────────────────
     //
     // 주문 하나는 여러 다리(주행 → 팔 → 주행 → 팔)로 되어 있는데, fleet_node 는
@@ -265,10 +288,11 @@ public:
     // 주문 도중에 떠난다. 그래서 붙잡기를 주문 계약으로 끌어올린다.
     //
     // ⚠️ TTL 은 필수다. 푸는 쪽이 죽으면 로봇이 **영영 순회를 못 하게** 되기 때문이다.
-    hold_sub_ = create_subscription<std_msgs::msg::String>(
-      "/fms/robot_hold", 10,
-      [this](const std_msgs::msg::String::SharedPtr m) { on_robot_hold(m); });
-    goal_pub_ = create_publisher<std_msgs::msg::String>("/fms/goals", 10);
+    hold_sub_ = create_subscription<libi_fleet_msgs::msg::RobotHold>(
+      "/fms/robot_hold", rclcpp::QoS(10).reliable(),
+      [this](const libi_fleet_msgs::msg::RobotHold::SharedPtr m) { on_robot_hold(m); });
+    goal_pub_ = create_publisher<libi_fleet_msgs::msg::FleetGoals>(
+      "/fms/goals", rclcpp::QoS(1).reliable());
 
     srv_ = create_service<SubmitTask>(
       "/fms/submit_task",
@@ -290,6 +314,7 @@ public:
       "/libi/fsm_state", 10,
       std::bind(&FleetNode::on_fsm_state, this, std::placeholders::_1));
 
+    planner_thread_ = std::thread(&FleetNode::planner_loop, this);
     timer_ = create_wall_timer(std::chrono::milliseconds(150),
                                std::bind(&FleetNode::on_timer, this));
     // 선행 통과는 arrive_radius 보다 커야 동작한다. 작으면 **조용히 꺼진 것과 같아져**
@@ -305,6 +330,17 @@ public:
     }
     RCLCPP_INFO(get_logger(), "libi_fleet FMS up");
   }
+
+  ~FleetNode() override
+  {
+    {
+      std::lock_guard<std::mutex> lk(planner_mu_);
+      planner_stop_ = true;
+    }
+    planner_cv_.notify_all();
+    if (planner_thread_.joinable()) { planner_thread_.join(); }
+  }
+
 
 private:
   void on_robot_state(const RmfRobotState::SharedPtr msg)
@@ -555,6 +591,7 @@ private:
     }
 
     std::vector<ActiveTask *> planned;
+    std::set<int> taken_goals;   // 이번 스냅샷에서 이미 누가 목표로 잡은 정점
     for (auto & t : tasks_) {
       if (t.path.size() < 2 || t.idx < 1 || t.idx >= t.path.size()) { continue; }
       PlanRequest pr;
@@ -573,13 +610,74 @@ private:
       pr.goal = t.patrol ? t.path[std::min(t.idx + 1, t.path.size() - 1)] : t.path.back();
       pr.priority = compute_priority(t.robot, t);
       if (pr.start == pr.goal) { continue; }   // 이미 목표 — 계획할 것이 없다
+
+      // ⚠️ **목표가 겹치면 계획이 통째로 실패한다.** 계획은 목표 도착 후 그 정점에 영원히
+      //    앉아 있다고 보므로(kNeverEnds) 두 로봇의 목표가 같으면 해가 아예 없다.
+      //
+      //    순회는 목표를 "다음 정점 하나" 로 두는데, **두 대가 한 칸 간격으로 같은 루프를
+      //    돌면 그 다음 정점이 같아진다.** 실측: 3대 순회 시작 직후 v4 가 겹쳐
+      //    `시간표를 세우지 못했습니다(0/3)` 가 뜨고 그 뒤로 재계획이 0회였다 —
+      //    이름만 CBS 인 상태로 되돌아간다.
+      //
+      //    순회는 랩을 따라가면 되므로 **한 칸 더 밀어** 피한다. 그래도 겹치면 이번
+      //    라운드에서 뺀다(그 로봇은 반응형 예약이 지켜 준다). 배달은 밀 수 없다 —
+      //    목적지가 정해져 있으므로 거절 사유를 남기는 쪽이 맞다(on_submit 의 goal_taken).
+      if (taken_goals.count(pr.goal)) {
+        if (!t.patrol) { continue; }
+        bool moved = false;
+        for (size_t k = t.idx + 2; k < t.path.size(); ++k) {
+          if (!taken_goals.count(t.path[k]) && t.path[k] != pr.start) {
+            pr.goal = t.path[k];
+            moved = true;
+            break;
+          }
+        }
+        if (!moved) { continue; }
+      }
+      taken_goals.insert(pr.goal);
       snap.robots.push_back(pr);
       planned.push_back(&t);
     }
     if (snap.robots.empty()) { return; }
 
-    const std::vector<PlannedRoute> routes = traffic_->replan(snap);
-    if (routes.size() != planned.size()) {
+    // ── [2026-08-01] 탐색은 **콜백 밖에서** 한다 ─────────────────────────────
+    //
+    // 이 노드는 `rclcpp::spin()` 단일 스레드다. 150 ms 타이머(도착 판정·통행 허가·
+    // 목표 발행)와 서비스 4개, 구독 6개가 그 한 스레드를 공유한다. 여기서 CBS 를 직접
+    // 돌리면 **탐색이 도는 동안 관제가 통째로 멈춘다** — 도착도 못 보고 통행 허가도
+    // 못 내주고 배차 요청에도 응답을 못 한다.
+    //
+    // 지금 지도(22정점)에서는 1 ms 라 안 드러나지만, 틱을 잘게 쪼갠 설정에서 8.9 초까지
+    // 측정된 적이 있다. 지도가 커지면 그날 바로 터진다.
+    //
+    // 그래서 스냅샷 조립(싼 일)만 여기서 하고 탐색은 워커에 넘긴다. 결과는 타이머가
+    // 집어 간다. CbsTraffic 은 원래 탐색을 자기 잠금 밖에서 하도록 설계돼 있어
+    // (GateStaysResponsiveDuringReplan 이 그걸 붙들고 있다) 다른 스레드에서 불러도 된다.
+    if (!hand_to_planner(std::move(snap))) { return; }
+  }
+
+  // 워커가 계산해 둔 시간표가 있으면 적용한다. 타이머가 매 틱 부른다.
+  //
+  // ⚠️ **결과를 ActiveTask 포인터로 들고 오지 않는다.** 탐색이 도는 동안 task 가
+  //    끝나거나 취소되면 그 포인터가 대롱거린다. 로봇 **이름으로 다시 찾는다** —
+  //    사라졌으면 그 로봇 몫만 조용히 버린다.
+  void apply_planner_result()
+  {
+    std::vector<PlannedRoute> routes;
+    PlanSnapshot snap;
+    {
+      std::lock_guard<std::mutex> lk(planner_mu_);
+      if (!result_ready_) { return; }
+      routes = std::move(result_routes_);
+      snap = std::move(result_snap_);
+      result_ready_ = false;
+    }
+    apply_routes(routes, snap);
+  }
+
+  void apply_routes(const std::vector<PlannedRoute> & routes, const PlanSnapshot & snap)
+  {
+    if (routes.size() != snap.robots.size()) {
       // ⚠️ 조용히 넘어가면 안 된다. 계획이 안 서면 시스템은 반응형으로 도는데, 관제 화면에는
       //    아무 표시가 없어 "CBS 를 켰는데 왜 그대로지" 를 나중에 디버깅하게 된다.
       //
@@ -594,7 +692,7 @@ private:
       }
       RCLCPP_WARN(get_logger(),
                   "[traffic] 시간표를 세우지 못했습니다(%zu/%zu) — 반응형으로 운행합니다.%s",
-                  routes.size(), planned.size(),
+                  routes.size(), snap.robots.size(),
                   dup.empty() ? "" : (" 목표 중복:" + dup + " (같은 정점을 목표로 둘 수 없습니다)").c_str());
       // ⚠️ **빈 시간표를 반드시 낸다.** `/fms/plan` 은 transient_local 이라 마지막 값이
       //    계속 살아 있다 — 여기서 아무것도 안 내면 관제 화면은 **이미 버린 예약을**
@@ -607,8 +705,13 @@ private:
     const double epoch = now_sec();
     const double tick_sec = traffic_->tick_seconds();
     for (size_t i = 0; i < routes.size(); ++i) {
-      ActiveTask & t = *planned[i];
-      if (routes[i].robot != t.robot || routes[i].path.size() < 2) { continue; }
+      if (routes[i].path.size() < 2) { continue; }
+      // 이름으로 다시 찾는다 — 탐색 중에 사라진 task 는 그냥 건너뛴다.
+      ActiveTask * tp = nullptr;
+      for (auto & cand : tasks_) { if (cand.robot == routes[i].robot) { tp = &cand; break; } }
+      if (tp == nullptr) { continue; }
+      ActiveTask & t = *tp;
+      if (t.path.size() < 2 || t.idx < 1 || t.idx >= t.path.size()) { continue; }
       std::vector<int> np, na;
       np.insert(np.end(), routes[i].path.begin(), routes[i].path.end());
       na.insert(na.end(), routes[i].arrive_tick.begin(), routes[i].arrive_tick.end());
@@ -655,46 +758,36 @@ private:
   void publish_plan(const std::vector<PlannedRoute> & routes, double epoch, double tick_sec,
                     const std::string & reason = "")
   {
+    libi_fleet_msgs::msg::FleetPlan m;
+    m.seq = ++plan_seq_;
     // ⚠️ `epoch` 는 **steady_clock** 이다 — 내부 마감 계산에는 그게 맞지만(NTP 로 튀지
     //    않는다) 부팅 후 경과초라 바깥에서는 아무 의미가 없다. 관제 화면이 "몇 시에
     //    예약"을 그리려면 벽시계가 따로 필요하다. 같은 순간의 system_clock 을 함께 싣는다.
     //    화면은 `epoch_wall + arrive*tick_sec` 로 예약 시각을 얻는다.
     //    (둘을 합치지 않는 이유: steady 를 벽시계로 바꾸면 NTP 보정 때 마감이 통째로 밀려
     //     멀쩡한 계획이 "지연" 으로 판정된다.)
-    const double wall = std::chrono::duration<double>(
+    m.epoch = epoch;
+    m.epoch_wall = std::chrono::duration<double>(
       std::chrono::system_clock::now().time_since_epoch()).count();
-    std::string j = "{\"seq\":" + std::to_string(++plan_seq_) +
-                    ",\"epoch\":" + std::to_string(epoch) +
-                    ",\"epoch_wall\":" + std::to_string(wall) +
-                    ",\"tick_sec\":" + std::to_string(tick_sec) +
-                    ",\"drift_limit\":" + std::to_string(traffic_->drift_limit()) +
-                    ",\"reason\":\"" + reason + "\",\"robots\":{";
-    bool first = true;
+    m.tick_sec = tick_sec;
+    m.drift_limit = traffic_ ? traffic_->drift_limit() : 0;
+    m.reason = reason;
     for (const auto & r : routes) {
-      if (!first) { j += ","; }
-      j += "\"" + r.robot + "\":{\"path\":[";
-      for (size_t i = 0; i < r.path.size(); ++i) {
-        j += (i ? "," : "") + std::to_string(r.path[i]);
-      }
-      j += "],\"arrive\":[";
-      for (size_t i = 0; i < r.arrive_tick.size(); ++i) {
-        j += (i ? "," : "") + std::to_string(r.arrive_tick[i]);
-      }
+      libi_fleet_msgs::msg::RobotPlan rp;
+      rp.robot = r.robot;
+      rp.path = r.path;
+      rp.arrive_tick = r.arrive_tick;
       // ⚠️ **좌표를 같이 싣는다.** 정점 인덱스만 주면 받는 쪽이 인덱스→좌표 표를 따로
       //    들고 있어야 하는데, 화면이 쓰는 waypoint.yaml 과 여기 navgraph 의 정점 순서가
       //    같다는 보장이 없다. 한 칸만 어긋나도 화면은 **조용히 엉뚱한 정점**에 예약
       //    시각을 붙인다(실측: 라벨이 아예 안 떴다). 좌표로 주면 그 가정 자체가 사라진다.
-      j += "],\"xy\":[";
-      for (size_t i = 0; i < r.path.size(); ++i) {
-        const Vertex & v = graph_.vertex(r.path[i]);
-        j += (i ? "," : "");
-        j += "[" + std::to_string(v.x) + "," + std::to_string(v.y) + "]";
+      for (int v : r.path) {
+        const Vertex & vx = graph_.vertex(v);
+        rp.xs.push_back(vx.x);
+        rp.ys.push_back(vx.y);
       }
-      j += "]}";
-      first = false;
+      m.robots.push_back(std::move(rp));
     }
-    j += "}}";
-    std_msgs::msg::String m; m.data = j;
     plan_pub_->publish(m);
   }
 
@@ -760,6 +853,8 @@ private:
 
   void on_timer()
   {
+    // 워커가 계산해 둔 시간표를 먼저 집어 간다 — 이번 틱의 이동 판단이 새 계획을 쓰도록.
+    apply_planner_result();
     service_replan_requests();
 
     // ── 로봇 인식 상태 경고 ────────────────────────────────────────────────
@@ -990,78 +1085,68 @@ private:
   }
 
   // 각 로봇의 남은 경로(현재 노드→목표)를 JSON 으로 발행(시각화용): {"robot":[[x,y],...]}.
+  // 각 로봇의 남은 경로(현재 노드→목표)를 발행(시각화용).
+  //
+  // ⚠️ 시간표(FleetPlan)와 달리 **매 틱 나간다.** 계획이 없어도(반응형 교통) 경로는 있고,
+  //    화면은 그때도 경로를 보여야 한다.
   void publish_routes()
   {
-    std::string j = "{";
-    bool first = true;
+    libi_fleet_msgs::msg::FleetRoutes m;
     for (const auto & t : tasks_) {
-      if (!first) { j += ","; }
-      j += "\"" + t.robot + "\":[";
-      size_t start = t.idx > 0 ? t.idx - 1 : 0;   // 현재 향해 출발한 노드부터
+      libi_fleet_msgs::msg::RobotRoute r;
+      r.robot = t.robot;
+      const size_t start = t.idx > 0 ? t.idx - 1 : 0;   // 현재 향해 출발한 노드부터
       for (size_t i = start; i < t.path.size(); ++i) {
         const Vertex & v = graph_.vertex(t.path[i]);
-        if (i > start) { j += ","; }
-        j += "[" + std::to_string(v.x) + "," + std::to_string(v.y) + "]";
+        r.xs.push_back(v.x);
+        r.ys.push_back(v.y);
       }
-      j += "]";
-      first = false;
+      m.routes.push_back(std::move(r));
     }
-    j += "}";
-    std_msgs::msg::String m; m.data = j;
     route_pub_->publish(m);
   }
 
-  // 각 로봇의 최종 목적지 발행(배차 task만; 순회는 제외 → 콘솔에서 "—"). {"robot": goalVertex}.
+  // 각 로봇의 최종 목적지 발행(배차 task 만; 순회는 목적지가 없어 빠진다).
   void publish_goals()
   {
-    std::string j = "{";
-    bool first = true;
+    libi_fleet_msgs::msg::FleetGoals m;
     for (const auto & t : tasks_) {
       if (t.patrol) { continue; }              // 순회는 최종 목적지 없음
-      if (!first) { j += ","; }
-      j += "\"" + t.robot + "\":" + std::to_string(t.path.back());
-      first = false;
+      if (t.path.empty()) { continue; }
+      m.robots.push_back(t.robot);
+      m.goals.push_back(t.path.back());
     }
-    j += "}";
-    std_msgs::msg::String m; m.data = j;
     goal_pub_->publish(m);
   }
 
-  // 교통 플러그인의 실제 예약(노드→로봇)을 JSON 으로 발행(시각화용).
+  // 노드 점유 현황 발행(시각화용).
   void publish_occupancy()
   {
-    std::string j = "{";
-    bool first = true;
-    for (const auto & no : traffic_->occupancy()) {
-      if (!first) { j += ","; }
-      j += "\"" + std::to_string(no.first) + "\":\"" + no.second + "\"";
-      first = false;
+    libi_fleet_msgs::msg::FleetOccupancy m;
+    for (const auto & [node, robot] : traffic_->occupancy()) {
+      m.nodes.push_back(node);
+      m.robots.push_back(robot);
     }
-    j += "}";
-    std_msgs::msg::String m; m.data = j;
     occ_pub_->publish(m);
   }
 
-  // {"robot":"pinky-1","hold":true,"ttl_sec":120}. hold=false 면 즉시 푼다.
-  void on_robot_hold(const std_msgs::msg::String::SharedPtr msg)
+  // ⚠️ 예전에는 std_msgs/String 에 JSON 을 실어 `find("\"hold\":true")` 로 파싱했다.
+  //    스키마 검증이 없어 오타 하나가 런타임에야 드러났고, 실제로 발행 쪽 NameError 가
+  //    "dispatch 실패"로 둔갑해 주문을 통째로 죽인 적이 있다. 타입 메시지로 바꿨다.
+  void on_robot_hold(const libi_fleet_msgs::msg::RobotHold::SharedPtr msg)
   {
-    const std::string robot = json_str_field(msg->data, "robot");
-    if (robot.empty()) { return; }
-    const bool hold = msg->data.find("\"hold\":true") != std::string::npos;
-    if (!hold) {
-      if (hold_until_.erase(robot)) {
-        RCLCPP_INFO(get_logger(), "[hold] %s 해제", robot.c_str());
+    if (msg->robot.empty()) { return; }
+    if (!msg->hold) {
+      if (hold_until_.erase(msg->robot)) {
+        RCLCPP_INFO(get_logger(), "[hold] %s 해제", msg->robot.c_str());
       }
       return;
     }
-    double ttl = 120.0;
-    const size_t k = msg->data.find("\"ttl_sec\":");
-    if (k != std::string::npos) {
-      try { ttl = std::stod(msg->data.substr(k + 10)); } catch (...) {}
-    }
+    double ttl = static_cast<double>(msg->ttl_sec);
     if (ttl <= 0.0 || ttl > 600.0) { ttl = 120.0; }   // 터무니없는 값은 기본으로
-    hold_until_[robot] = now_sec() + ttl;
-    RCLCPP_INFO(get_logger(), "[hold] %s 붙잡음 (%.0fs) — 주문 다리 사이", robot.c_str(), ttl);
+    hold_until_[msg->robot] = now_sec() + ttl;
+    RCLCPP_INFO(get_logger(), "[hold] %s 붙잡음 (%.0fs) — 주문 다리 사이",
+                msg->robot.c_str(), ttl);
   }
 
   // 지금 붙잡혀 있나. 만료된 것은 여기서 치운다 — 푸는 쪽이 죽어도 스스로 풀린다.
@@ -1077,6 +1162,46 @@ private:
       return false;
     }
     return true;
+  }
+
+  // ── 플래너 워커 ────────────────────────────────────────────────────────
+  //
+  // 스냅샷 하나만 들고 있는다(큐가 아니다). 새 요청이 오면 **덮어쓴다** — 낡은 스냅샷으로
+  // 계산해 봐야 그 결과는 어차피 버려진다. 계획은 "지금 상태"에 대한 답이어야 한다.
+  bool hand_to_planner(PlanSnapshot && snap)
+  {
+    {
+      std::lock_guard<std::mutex> lk(planner_mu_);
+      // graph_ 포인터는 노드 수명 내내 유효하다(멤버). 스냅샷은 값 복사라 안전하다.
+      pending_snap_ = std::move(snap);
+      pending_ready_ = true;
+    }
+    planner_cv_.notify_one();
+    return true;
+  }
+
+  void planner_loop()
+  {
+    for (;;) {
+      PlanSnapshot snap;
+      {
+        std::unique_lock<std::mutex> lk(planner_mu_);
+        planner_cv_.wait(lk, [this] { return pending_ready_ || planner_stop_; });
+        if (planner_stop_) { return; }
+        snap = std::move(pending_snap_);
+        pending_ready_ = false;
+      }
+      // ⚠️ 여기가 **긴 구간**이다. 어떤 잠금도 쥐지 않는다.
+      std::vector<PlannedRoute> routes = traffic_->replan(snap);
+      {
+        std::lock_guard<std::mutex> lk(planner_mu_);
+        // 계산하는 사이 새 요청이 왔으면 이 결과는 이미 낡았다 — 버리고 다시 돈다.
+        if (pending_ready_) { continue; }
+        result_routes_ = std::move(routes);
+        result_snap_ = std::move(snap);
+        result_ready_ = true;
+      }
+    }
   }
 
   std::string mode_of(const std::string & robot) const
@@ -1461,13 +1586,24 @@ private:
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr fsm_sub_;   // libi_modes FsmState 자동구독(#16)
   rclcpp::Publisher<PathRequest>::SharedPtr path_pub_;
   rclcpp::Publisher<TaskState>::SharedPtr task_pub_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr occ_pub_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr plan_pub_;
+  rclcpp::Publisher<libi_fleet_msgs::msg::FleetOccupancy>::SharedPtr occ_pub_;
+  rclcpp::Publisher<libi_fleet_msgs::msg::FleetPlan>::SharedPtr plan_pub_;
   int plan_seq_{0};
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr route_pub_;
-  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr hold_sub_;
+  rclcpp::Publisher<libi_fleet_msgs::msg::FleetRoutes>::SharedPtr route_pub_;
+  rclcpp::Subscription<libi_fleet_msgs::msg::RobotHold>::SharedPtr hold_sub_;
+
+  // 플래너 워커 — 탐색을 executor 스레드 밖으로 뺀다.
+  std::thread planner_thread_;
+  std::mutex planner_mu_;
+  std::condition_variable planner_cv_;
+  PlanSnapshot pending_snap_;
+  PlanSnapshot result_snap_;
+  std::vector<PlannedRoute> result_routes_;
+  bool pending_ready_{false};
+  bool result_ready_{false};
+  bool planner_stop_{false};
   std::map<std::string, double> hold_until_;   // 로봇 → 붙잡기 만료 시각(steady 초)
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr goal_pub_;
+  rclcpp::Publisher<libi_fleet_msgs::msg::FleetGoals>::SharedPtr goal_pub_;
   rclcpp::Service<SubmitTask>::SharedPtr srv_;
   rclcpp::Service<SetPlugins>::SharedPtr plugins_srv_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reload_srv_;

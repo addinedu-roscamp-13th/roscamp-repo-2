@@ -8,6 +8,13 @@ find_package(geometry_msgs REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/TaskState.msg"
   "msg/RobotState.msg"
+  "msg/RobotHold.msg"
+  "msg/RobotPlan.msg"
+  "msg/FleetPlan.msg"
+  "msg/FleetOccupancy.msg"
+  "msg/RobotRoute.msg"
+  "msg/FleetRoutes.msg"
+  "msg/FleetGoals.msg"
   "srv/SubmitTask.srv"
   "srv/SetPlugins.srv"
   "srv/SetRobotMode.srv"

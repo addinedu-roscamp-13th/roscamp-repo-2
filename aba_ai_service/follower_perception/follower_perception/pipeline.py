@@ -79,6 +79,8 @@ class FollowerPerception:
             self._reg_streak = 1
         if self._reg_streak >= REGISTRATION_STABLE_FRAMES:
             roi = TargetMatcher._crop(frame, target.bbox)
+            if roi is None:
+                return False
             self.matcher.register(roi)
             self.smoother.reset()
             self._last_owner = None
@@ -124,6 +126,8 @@ class FollowerPerception:
         if target is None:
             return None
         roi = TargetMatcher._crop(image_bgr, target.bbox)
+        if roi is None:
+            return None
         self.matcher.register(roi)
         self.smoother.reset()
         self._last_owner = None

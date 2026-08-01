@@ -439,13 +439,15 @@ def set_robot_hold(robot: str, hold: bool, ttl_sec: float = 120.0) -> bool:
     """
     if _hold_pub is None:
         return False
-    # ⚠️ `String` 은 **ROS 스레드 안에서만** import 돼 있다(이 모듈은 rclpy 없이도 import
-    #    돼야 하므로). 모듈 스코프에서 쓰면 NameError 가 나고, 그게 dispatch 실패로
-    #    둔갑해 주문이 통째로 FAILED 가 된다 — 실제로 그랬다.
-    from std_msgs.msg import String
+    # ⚠️ 메시지 타입은 **함수 안에서** import 한다. 이 모듈은 rclpy 없이도 import 돼야
+    #    하는데(테스트·오프라인), 모듈 스코프에서 쓰면 NameError 가 나고 그게 dispatch
+    #    실패로 둔갑해 주문이 통째로 FAILED 가 된다 — 실제로 그랬다.
+    from libi_fleet_msgs.msg import RobotHold
 
-    m = String()
-    m.data = json.dumps({"robot": robot, "hold": bool(hold), "ttl_sec": float(ttl_sec)})
+    m = RobotHold()
+    m.robot = robot
+    m.hold = bool(hold)
+    m.ttl_sec = float(ttl_sec)
     _hold_pub.publish(m)
     return True
 
@@ -528,6 +530,9 @@ def _fleet_thread() -> None:
         from std_srvs.srv import Trigger
 
         from libi_fleet_msgs.msg import TaskState
+        from libi_fleet_msgs.msg import (
+            FleetGoals, FleetOccupancy, FleetPlan, FleetRoutes, RobotHold,
+        )
         from libi_fleet_msgs.srv import SetBattery, SetPlugins, SetRobotMode, SubmitTask
         from rmf_fleet_msgs.msg import PathRequest
         from rmf_fleet_msgs.msg import RobotState as RmfRobotState
@@ -569,20 +574,32 @@ def _fleet_thread() -> None:
             _notify()
 
         def on_occupancy(msg) -> None:
-            parsed = parse_json_map(msg.data)
             with _lock:
                 _occupancy.clear()
-                _occupancy.update({str(k): str(v) for k, v in parsed.items()})
+                _occupancy.update(
+                    {str(n): str(r) for n, r in zip(msg.nodes, msg.robots)}
+                )
                 touch()
             _notify()
 
         def on_plan(msg) -> None:
-            try:
-                parsed = json.loads(msg.data)
-            except Exception:
-                return
-            if not isinstance(parsed, dict):
-                return
+            # 타입 메시지 → 화면이 쓰던 것과 **같은 모양**의 dict. UI 계약은 안 바뀐다.
+            parsed = {
+                "seq": int(msg.seq),
+                "epoch": float(msg.epoch),
+                "epoch_wall": float(msg.epoch_wall),
+                "tick_sec": float(msg.tick_sec),
+                "drift_limit": int(msg.drift_limit),
+                "reason": str(msg.reason),
+                "robots": {
+                    r.robot: {
+                        "path": [int(v) for v in r.path],
+                        "arrive": [int(a) for a in r.arrive_tick],
+                        "xy": [[float(x), float(y)] for x, y in zip(r.xs, r.ys)],
+                    }
+                    for r in msg.robots
+                },
+            }
             with _lock:
                 _plan.clear()
                 _plan.update(parsed)
@@ -595,7 +612,10 @@ def _fleet_thread() -> None:
             _notify()
 
         def on_routes(msg) -> None:
-            parsed = parse_json_map(msg.data)
+            parsed = {
+                r.robot: [[float(x), float(y)] for x, y in zip(r.xs, r.ys)]
+                for r in msg.routes
+            }
             with _lock:
                 _routes.clear()
                 _routes.update(parsed)
@@ -603,23 +623,24 @@ def _fleet_thread() -> None:
             _notify()
 
         def on_goals(msg) -> None:
-            parsed = parse_json_map(msg.data)
             with _lock:
                 _goals.clear()
-                _goals.update({str(k): v for k, v in parsed.items()})
+                _goals.update(
+                    {str(r): int(g) for r, g in zip(msg.robots, msg.goals)}
+                )
                 touch()
             _notify()
 
         node.create_subscription(TaskState, TOPIC_TASK_STATES, on_task_state, 10)
         node.create_subscription(RmfRobotState, TOPIC_ROBOT_STATE, on_robot_state, 10)
-        node.create_subscription(String, TOPIC_OCCUPANCY, on_occupancy, 10)
+        node.create_subscription(FleetOccupancy, TOPIC_OCCUPANCY, on_occupancy, 10)
         global _hold_pub
-        _hold_pub = node.create_publisher(String, TOPIC_HOLD, 10)
-        node.create_subscription(String, TOPIC_ROUTES, on_routes, 10)
+        _hold_pub = node.create_publisher(RobotHold, TOPIC_HOLD, 10)
+        node.create_subscription(FleetRoutes, TOPIC_ROUTES, on_routes, 10)
         # ⚠️ transient_local 로 발행하므로 **구독도 같은 durability** 여야 붙는다.
         #    reliable/volatile 로 잡으면 QoS 불일치로 조용히 한 건도 안 온다.
         node.create_subscription(
-            String, TOPIC_PLAN, on_plan,
+            FleetPlan, TOPIC_PLAN, on_plan,
             QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
                        reliability=ReliabilityPolicy.RELIABLE))
         def on_path_request(msg) -> None:
@@ -633,7 +654,7 @@ def _fleet_thread() -> None:
                 return
             _fire_path_request_hooks(str(msg.robot_name or ""), pts[1:])
 
-        node.create_subscription(String, TOPIC_GOALS, on_goals, 10)
+        node.create_subscription(FleetGoals, TOPIC_GOALS, on_goals, 10)
         node.create_subscription(PathRequest, TOPIC_PATH_REQUESTS, on_path_request, 10)
 
         _clients[SRV_SUBMIT] = node.create_client(SubmitTask, SRV_SUBMIT)
