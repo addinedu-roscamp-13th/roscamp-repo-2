@@ -6,6 +6,7 @@
 #include <QUuid>
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <geometry_msgs/msg/twist.hpp>
+#include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_msgs/msg/float64.hpp>
@@ -21,6 +22,7 @@ struct RosLink::Impl {
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr stateSub;
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr panelResSub;
     rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr poseSub;
+    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odomSub;
 
     // 상관 상태는 **패널 쪽에** 있다 — FMS 는 받은 id 를 되돌려 주기만 한다.
     // 둘 다 UI 스레드에서만 건드린다(수신은 시그널로 넘어온 뒤에 처리).
@@ -65,6 +67,14 @@ RosLink::RosLink(QObject *parent) : QObject(parent), d_(new Impl) {
                 emit poseReceived(p.x, p.y, yaw);
             });
     }
+
+    // pinky_bringup(bringup.py) 이 엔코더로 계산해 30Hz 로 쏘는 실측 바퀴 속도.
+    // AI 서버 cmd_vel 미리보기(POSE.linearX/angularZ)와 달리 실제로 바퀴가 도는 값이다.
+    d_->odomSub = d_->node->create_subscription<nav_msgs::msg::Odometry>(
+        "odom", 10,
+        [this](nav_msgs::msg::Odometry::SharedPtr msg) {
+            emit odomReceived(msg->twist.twist.linear.x, msg->twist.twist.angular.z);
+        });
 
     // ── 패널 요청 통로 (FMS app/panel_bridge.py) ──────────────────────────────
     // 방향이 fleet_cmd 와 반대다: 여기서는 **로봇이 요청하고 서버가 승인**한다.

@@ -47,6 +47,9 @@ signals:
                           QString errorCode, double batteryPercent, bool docked);
     /** /amcl_pose — map 프레임 좌표[m]와 yaw[rad]. 그림 좌표 변환은 RobotController 가 한다. */
     void poseReceived(double x, double y, double yawRad);
+    /** odom — pinky_bringup 이 엔코더로 계산해 30Hz 로 쏘는 실측 바퀴 속도[m/s, rad/s].
+     *  AI 서버가 보내는 cmd_vel 미리보기(POSE.linearX/angularZ)와 달리 이게 실제 바퀴다. */
+    void odomReceived(double linearX, double angularZ);
     /** 내부용 — ROS spin 스레드에서 UI 스레드로 넘기는 다리(큐잉 연결). 직접 쓰지 않는다. */
     void panelResultArrived(QString id, QJsonObject body);
 

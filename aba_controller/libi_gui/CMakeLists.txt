@@ -19,6 +19,8 @@ find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 # 지도에 실제 로봇 위치를 찍는다 — /amcl_pose (PoseWithCovarianceStamped)
 find_package(geometry_msgs REQUIRED)
+# 실측 바퀴 속도 — odom (Odometry)
+find_package(nav_msgs REQUIRED)
 
 add_executable(libi_gui
     src/main.cpp
@@ -49,6 +51,7 @@ target_link_libraries(libi_gui PRIVATE
     rclcpp::rclcpp
     ${std_msgs_TARGETS}
     ${geometry_msgs_TARGETS}
+    ${nav_msgs_TARGETS}
 )
 
 # 기본 OFF — 로봇에 올리는 빌드는 이 옵션 없이 돌리므로 산출물이 달라지지 않는다.

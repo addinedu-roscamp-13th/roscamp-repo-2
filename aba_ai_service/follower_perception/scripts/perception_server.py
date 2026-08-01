@@ -246,7 +246,7 @@ def _num(v):
     return f if np.isfinite(f) else None
 
 
-def _pose_payload(det, cmd, pose, fps):
+def _pose_payload(det, cmd, pose, fps, matcher=None):
     """패널이 글자로 그릴 값들. `POSE ` + JSON 한 줄.
 
     LIDR 은 정수 8개라 공백으로 갈라도 되지만 여기는 문자열·실수·없음이 섞인다.
@@ -263,6 +263,14 @@ def _pose_payload(det, cmd, pose, fps):
         "sideTrip": _num(getattr(pose, "side_trip", None)),
         "axis": getattr(pose, "last_axis", None),
     }
+    # ReID/HSV 매칭 신뢰도 — _status_line 과 같은 소스(matcher.last_reid_sim/last_hsv_sim).
+    # 예전엔 hud_text=False 라 패널로 가는 JPEG 에서 이 글자가 빠졌고, POSE 에도 없었다.
+    if matcher is not None and matcher.is_registered:
+        body["reidSim"] = _num(matcher.last_reid_sim)
+        body["reidThreshold"] = _num(matcher.reid_threshold)
+        if matcher.hsv_threshold is not None:
+            body["hsvSim"] = _num(matcher.last_hsv_sim)
+            body["hsvThreshold"] = _num(matcher.hsv_threshold)
     if pose is not None and getattr(pose, "calibrating", False):
         got, need = pose.calibration_progress
         body["calibrating"] = {"remainingSec": pose.calibration_remaining_sec(fps),
@@ -333,7 +341,7 @@ def serve_loop(conn, frames, perception, *, poll_cmd=None, jpeg_quality=80,
         if ok:
             try:
                 send_frame(conn, buf.tobytes())
-                send_frame(conn, _pose_payload(det, cmd, perception.pose, fps))
+                send_frame(conn, _pose_payload(det, cmd, perception.pose, fps, perception.matcher))
                 if lidar_source is not None:                 # LiDAR telemetry (display only)
                     s = lidar_source.latest()
                     if s is not None:                        # order: FL F FR L R BL B BR

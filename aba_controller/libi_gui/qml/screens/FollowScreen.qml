@@ -19,6 +19,18 @@ Item {
     readonly property var calibInfo: (poseInfo && poseInfo.calibrating)
                                      ? poseInfo.calibrating : null
 
+    // 측정 중 → 측정 끝난 순간을 잡아 "측정 완료" 배너를 잠깐 띄운다.
+    property bool wasCalibrating: false
+    property bool calibJustFinished: false
+    onCalibInfoChanged: {
+        if (!calibInfo && wasCalibrating) {
+            calibJustFinished = true;
+            calibDoneTimer.restart();
+        }
+        wasCalibrating = !!calibInfo;
+    }
+    Timer { id: calibDoneTimer; interval: 2000; onTriggered: root.calibJustFinished = false }
+
     readonly property string postureLabel: {
         if (calibInfo) return "기준 측정 중";
         if (!poseInfo || !poseInfo.posture) return "";
@@ -67,12 +79,22 @@ Item {
         return S.danger;
     }
 
-    readonly property string cmdVelLabel: {
-        if (!poseInfo || poseInfo.linearX === undefined || poseInfo.linearX === null)
+    // odom 실측값이다(RobotController.odomLinVel/AngVel, pinky_bringup 이 엔코더로 계산해
+    // 30Hz 로 쏘는 값) — 예전엔 AI 서버가 bbox 크기만 보고 계산한 cmd_vel 미리보기
+    // (POSE.linearX/angularZ)를 찍어서, 로봇이 안 움직여도 속도가 찍히는 등 실제 바퀴와
+    // 어긋났다.
+    readonly property string cmdVelLabel:
+        "lin.x " + controller.odomLinVel.toFixed(2) + "   ang.z " + controller.odomAngVel.toFixed(2)
+
+    // ReID/HSV 매칭 신뢰도(perception_server._pose_payload). 등록 전이거나 아직 후보를
+    // 한 번도 못 봤으면 키가 없다 — 그때는 통째로 숨긴다.
+    readonly property string confLabel: {
+        if (!poseInfo || poseInfo.reidSim === undefined || poseInfo.reidSim === null)
             return "";
-        var a = (poseInfo.angularZ === undefined || poseInfo.angularZ === null)
-                ? 0.0 : poseInfo.angularZ;
-        return "lin.x " + poseInfo.linearX.toFixed(2) + "   ang.z " + a.toFixed(2);
+        var s = "reid " + poseInfo.reidSim.toFixed(2) + "/" + poseInfo.reidThreshold.toFixed(2);
+        if (poseInfo.hsvSim !== undefined && poseInfo.hsvSim !== null)
+            s += "   hsv " + poseInfo.hsvSim.toFixed(2) + "/" + poseInfo.hsvThreshold.toFixed(2);
+        return s;
     }
 
     // 화면이 살아있는 동안만 스트림을 받는다 — 추종을 안 하는데 영상을 계속 끌어오면
@@ -177,6 +199,11 @@ Item {
                         visible: text !== ""
                         color: "white"; font.pixelSize: 14; font.family: S.fontFamily
                     }
+                    Text {
+                        text: root.confLabel
+                        visible: text !== ""
+                        color: "white"; font.pixelSize: 14; font.family: S.fontFamily
+                    }
                 }
             }
 
@@ -190,6 +217,41 @@ Item {
                     anchors.centerIn: parent
                     text: perception.connected ? "연결됨" : "끊김"
                     color: "white"; font.pixelSize: 15; font.bold: true; font.family: S.fontFamily
+                }
+            }
+
+            // 자세 측정(등록 직후) 안내 — 헤더의 작은 글씨(postureLabel/ratioLabel)와
+            // 별도로, 영상 위에 크게 띄워 "지금 뭘 기다리는지"를 바로 알 수 있게 한다.
+            Rectangle {
+                anchors.centerIn: parent
+                width: calibCol.implicitWidth + 48
+                height: calibCol.implicitHeight + 32
+                radius: S.radCard
+                color: "#CC000000"
+                visible: root.calibInfo !== null || root.calibJustFinished
+
+                Column {
+                    id: calibCol
+                    anchors.centerIn: parent
+                    spacing: 8
+                    Text {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: root.calibJustFinished
+                              ? "✅ 측정 완료! 추종을 시작합니다"
+                              : "🧍 자세를 측정하고 있어요 — 잠시만 기다려주세요"
+                        color: "white"; font.pixelSize: 22; font.bold: true
+                        font.family: S.fontFamily
+                        horizontalAlignment: Text.AlignHCenter
+                    }
+                    Text {
+                        visible: !root.calibJustFinished && root.calibInfo !== null
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: root.calibInfo
+                              ? root.calibInfo.remainingSec.toFixed(1) + "초 남음  ("
+                                + root.calibInfo.got + "/" + root.calibInfo.need + ")"
+                              : ""
+                        color: "white"; font.pixelSize: 16; font.family: S.fontFamily
+                    }
                 }
             }
         }

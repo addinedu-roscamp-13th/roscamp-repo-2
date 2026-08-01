@@ -55,6 +55,11 @@ class RobotController : public QObject {
     Q_PROPERTY(double mapX READ mapX NOTIFY poseChanged)          // 그림 가로 0..1
     Q_PROPERTY(double mapY READ mapY NOTIFY poseChanged)          // 그림 세로 0..1
     Q_PROPERTY(double mapHeadingDeg READ mapHeadingDeg NOTIFY poseChanged)
+
+    // odom 실측 바퀴 속도[m/s, rad/s] — pinky_bringup 이 엔코더로 계산해 30Hz 로 쏜다.
+    // AI 서버가 화면에 주던 cmd_vel 미리보기(bbox 만 보고 계산, 실제 바퀴와 무관)를 대신한다.
+    Q_PROPERTY(double odomLinVel READ odomLinVel NOTIFY odomChanged)
+    Q_PROPERTY(double odomAngVel READ odomAngVel NOTIFY odomChanged)
     Q_PROPERTY(bool patrolActive READ patrolActive NOTIFY patrolActiveChanged)
     Q_PROPERTY(bool following READ following NOTIFY followingChanged)   // 관리자 추종 중
     Q_PROPERTY(QString emotion READ emotion WRITE setEmotion NOTIFY emotionChanged)
@@ -93,6 +98,8 @@ public:
     double mapX() const { return m_mapX; }
     double mapY() const { return m_mapY; }
     double mapHeadingDeg() const { return m_mapHeadingDeg; }
+    double odomLinVel() const { return m_odomLinVel; }
+    double odomAngVel() const { return m_odomAngVel; }
     /** 현재 pose 와 목적지 정점(map 좌표) 사이 거리[m]. pose 가 없으면 -1. */
     double distanceTo(double x, double y) const;
     /** 화면 표시명("과학 서가") → 실제 정점 이름("과학-인문학서가"). 없으면 빈 문자열. */
@@ -198,6 +205,7 @@ signals:
     void interactingRemainingChanged();
     void rosConnectedChanged();
     void poseChanged();
+    void odomChanged();
     void patrolActiveChanged();
     void followingChanged();
     //: 관리자가 「해제」를 누른 것이 **아니라**, 로봇이 스스로 추종을 끝냈다.
@@ -264,6 +272,7 @@ private:
     bool m_poseValid = false;
     double m_mapX = 0.5, m_mapY = 0.5, m_mapHeadingDeg = 0.0;
     double m_poseWorldX = 0.0, m_poseWorldY = 0.0;   // map 프레임 원본(거리 계산용)
+    double m_odomLinVel = 0.0, m_odomAngVel = 0.0;
     QTimer m_poseFreshness;
     QTimer m_fsmFreshness;   // 상태 수신이 끊기면 rosConnected 를 되돌린다
     // FMS 가 알려준 목적지 정점 좌표(map 프레임). 남은 거리는 이것과 현재 pose 로 잰다.

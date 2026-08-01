@@ -906,6 +906,11 @@ void RobotController::attachRos(RosLink *ros) {
         emit poseChanged();
     });
 
+    connect(ros, &RosLink::odomReceived, this, [this](double linX, double angZ) {
+        m_odomLinVel = linX; m_odomAngVel = angZ;
+        emit odomChanged();
+    });
+
     connect(ros, &RosLink::fsmStateReceived, this,
         [this](QString state, double remaining, QString errorCode,
                double battery, bool docked) {
