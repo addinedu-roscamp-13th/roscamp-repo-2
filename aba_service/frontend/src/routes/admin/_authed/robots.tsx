@@ -281,7 +281,7 @@ function RobotsPage() {
                           aria-hidden
                         >
                           <polygon
-                            points="10,0 -5,7 -2,0 -5,-7"
+                            points="8,0 -5,7.5 -3,0 -5,-7.5"
                             fill={robotHex(r.name)}
                             stroke="#fff"
                             strokeWidth="1.5"

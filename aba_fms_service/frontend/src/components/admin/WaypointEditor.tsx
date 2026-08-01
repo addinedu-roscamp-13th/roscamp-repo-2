@@ -127,13 +127,13 @@ function drawRobotMarker(
     return;
   }
   const ang = canvasHeading(map, vp, wx, wy, yaw);
-  const L = 26;   // 코끝까지
-  const W = 14;   // 뒤쪽 반폭
+  const L = 16;   // 코끝까지. 길이와 폭을 비슷하게 둬 방향은 읽히되 뾰족하지 않게
+  const W = 15;   // 뒤쪽 반폭
   ctx.beginPath();
   ctx.moveTo(cx + L * Math.cos(ang), cy + L * Math.sin(ang));
-  ctx.lineTo(cx + W * Math.cos(ang + 2.5), cy + W * Math.sin(ang + 2.5));
+  ctx.lineTo(cx + W * Math.cos(ang + 2.45), cy + W * Math.sin(ang + 2.45));
   ctx.lineTo(cx + 6 * Math.cos(ang + Math.PI), cy + 6 * Math.sin(ang + Math.PI));
-  ctx.lineTo(cx + W * Math.cos(ang - 2.5), cy + W * Math.sin(ang - 2.5));
+  ctx.lineTo(cx + W * Math.cos(ang - 2.45), cy + W * Math.sin(ang - 2.45));
   ctx.closePath();
   ctx.fill();
   ctx.stroke();
