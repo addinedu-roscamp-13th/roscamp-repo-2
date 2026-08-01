@@ -401,3 +401,57 @@ def test_guide_recovery_gives_up_after_one_restart():
     clock.t = 20_000.0                          # 재시작한 트리도 소진시킨다
     loop.tick()
     assert loop.state == 'ENDED'
+
+
+# ── 측면은 전진만 막는다 (2026-08-01, 2026-07-26 설계로 복귀) ─────────────────
+
+def _side_det(cx=320.0):
+    """측면으로 판정된 대상. `motion_ok=False` 인 것은 누움과 같지만 처리는 다르다."""
+    return Detection(cx=cx, cy=240.0, area=100.0, bbox=(0, 0, 10, 10),
+                     track_id=1, is_owner=True, confidence=0.9, is_predicted=False,
+                     posture="Side", motion_ok=False)
+
+
+def test_side_blocks_forward_but_keeps_bearing():
+    """⚠️ **따라가는 사람은 대부분 등·옆을 보인다.**
+
+    측면을 누움과 똑같이 완전 정지로 묶으면 화면은 FOLLOWING 인데 바퀴는 0 인
+    상태가 계속된다(실측 2026-08-01). 측면에서 못 믿는 것은 거리(√area)뿐이고
+    방위(cx)는 멀쩡하므로, 전진만 막고 사람은 화면에 붙잡아 둔다.
+    """
+    pub = _Pub()
+    # 중앙에서 크게 벗어나 방위 오차가 데드존을 넘게 둔다.
+    loop = ControlLoop(lambda: _side_det(cx=40.0), _clear_scan, pub, _cfg(), now=_Clock())
+    loop.tick()
+    lin, ang = pub.calls[-1]
+    assert lin == 0.0, f"측면에서는 전진하면 안 된다: {lin}"
+    assert ang != 0.0, "측면이라도 방위는 따라가야 한다 — 안 그러면 사람을 놓친다"
+
+
+def test_side_centered_still_publishes_zero_angular():
+    """가운데 있으면 돌 이유가 없다 — 측면이라고 억지로 돌지 않는다."""
+    pub = _Pub()
+    loop = ControlLoop(lambda: _side_det(cx=320.0), _clear_scan, pub, _cfg(), now=_Clock())
+    loop.tick()
+    assert pub.calls[-1] == (0.0, 0.0)
+
+
+def test_lying_still_stops_completely():
+    """누움은 예전 그대로 **완전 정지**다 — 쓰러진 사람 쪽으로 돌지도 않는다."""
+    pub = _Pub()
+    det = Detection(cx=40.0, cy=240.0, area=100.0, bbox=(0, 0, 10, 10),
+                    track_id=1, is_owner=True, confidence=0.9, is_predicted=False,
+                    posture="Lying", motion_ok=False)
+    loop = ControlLoop(lambda: det, _clear_scan, pub, _cfg(), now=_Clock())
+    loop.tick()
+    assert pub.calls[-1] == (0.0, 0.0)
+
+
+def test_side_does_not_count_as_miss_either():
+    """측면도 "놓친 것"이 아니다 — 탐색 회전을 시작하면 안 된다."""
+    pub = _Pub()
+    loop = ControlLoop(lambda: _side_det(cx=40.0), _clear_scan, pub, _cfg(), now=_Clock())
+    for _ in range(10):
+        loop.tick()
+    assert loop.miss == 0
+    assert loop.state == 'TRACKING'

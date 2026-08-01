@@ -139,11 +139,32 @@ class ControlLoop:
                     # 재는 중이다. **miss 를 올리지 않는다**: 올리면 눈앞에 멀쩡히
                     # 보이는 대상을 두고 탐색 회전을 시작한다. 놓친 게 아니라
                     # 가지 않기로 한 것이다.
-                    self.publish(0.0, 0.0)
-                    # PID 도 리셋한다. 정지 구간 동안 적분항이 쌓이면 재개하는 순간
-                    # 튀어 나간다.
-                    self.tracker.reset()
-                    self._last_tick = None
+                    #
+                    # ⚠️ [2026-08-01] **측면만은 방위를 살린다 — 원래 스펙으로 되돌린 것이다.**
+                    #
+                    #   `posture_gate._STOP_NOW` 는 (Lying, Calibrating, Side) 를 모두
+                    #   같은 "완전 정지"로 묶는데, 2026-07-26 설계는 측면을 따로 뒀다:
+                    #       "전진 금지 │ 방위 PID 만 유지(yaw) — 사람을 화면에 붙잡되
+                    #        다가가지 않는다. 사람이 옆을 보는 건 흔하다(책 보기, 대화).
+                    #        그때마다 추종이 끊기면 쓸모가 없다. **'거리 판단만 못 믿겠다'
+                    #        이지 '사람을 놓쳤다'가 아니다.**"
+                    #
+                    #   실제로 **따라가는 사람은 대부분 등이나 옆을 보인다.** 완전 정지로
+                    #   묶으면 화면은 FOLLOWING 인데 바퀴는 0 인 상태가 계속된다
+                    #   (실측 2026-08-01: "화면엔 OWNER 가 잡히는데 안 움직인다").
+                    #
+                    #   측면에서 못 믿는 것은 **거리(√area)** 뿐이다 — 몸을 돌리면 폭이
+                    #   줄어 실제보다 멀어 보인다. 방위(cx)는 그 영향을 안 받으므로
+                    #   그대로 쓴다. 누움·기준측정은 예전대로 완전 정지다.
+                    if getattr(det, 'posture', None) == 'Side':
+                        self.tracker.step(det, self.get_scan(), self._dt(),
+                                          forward_blocked=True)
+                    else:
+                        self.publish(0.0, 0.0)
+                        # PID 도 리셋한다. 정지 구간 동안 적분항이 쌓이면 재개하는 순간
+                        # 튀어 나간다.
+                        self.tracker.reset()
+                        self._last_tick = None
                 else:
                     self.tracker.step(det, self.get_scan(), self._dt())
             else:
