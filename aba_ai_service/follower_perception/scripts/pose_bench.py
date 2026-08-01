@@ -537,6 +537,11 @@ def build_parser():
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
+    # ⚠️ `--conf-min` 은 이 파일의 지표와 라벨 게이트만 바꾼다. `posture.classify_posture`
+    #    는 **모듈 상수**(`yolo_pose/posture.py:22`)를 직접 읽으므로, 여기서 덮어쓰지
+    #    않으면 판정 내부는 계속 기본값(0.5)으로 돈다 — 통과율만 오르고 정확도는 안
+    #    변하는 거짓 표가 나온다.
+    load_posture_module().CONF_MIN = args.conf_min
     if not (len(args.video) == len(args.rotate) == len(args.label)):
         parser.error("--video/--rotate/--label 개수가 같아야 합니다 "
                       "(카메라 하나마다 세 개를 순서대로 짝지어 준다)")
