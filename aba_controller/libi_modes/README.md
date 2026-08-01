@@ -24,6 +24,20 @@ LIBI(도서관 배달·수거 모바일 매니퓰레이터)의 **미션 레벨 �
 > - `../libi_modes/ros_ws/src/libi_perception/recovery_bt.py` 추종 회복 BT — 별도 프로세스라
 >   `/libi/follow_bt_snapshot` 으로 내보내 미션 BT 의 `FollowExec` **밑에 접붙인다**
 > - (`aba_ai_service/follower_BT/` 는 py_trees 가 아니라 자체 상태기계다 — 대상 아님)
+>
+> **회복 BT 탐색 순서** (`SearchPhases`, 2026-08-01 기준)
+>
+> ```
+> LkdPeek → HoldFront → HoldBack → SweepFront{Out,Across,Home}
+>         → SweepBack{Out,Across,Home} → GiveUp
+> ```
+>
+> `LkdPeek` 은 마지막 관측 방향(LKD)으로 ~90° 꺾는 4.5초 구간이며 **추종 전용**이다
+> (길잡이는 `peek_sec` 이 0 이라 구간 자체가 빠진다 — 돌면 목적지 방향과 겹쳐 무한
+> 진동한다). `config.SEARCH_PEEK_ANGLE = 0` 이면 추종에서도 사라진다.
+>
+> ⚠️ 이 타임라인은 `search_planner.search_command()` 가 **참조 구현**이라 한쪽만 고치면
+> `test_recovery_bt` 의 동등성 검증이 거짓말을 한다. 항상 같이 고친다.
 
 ```
 aba_controller/libi_modes/ros_ws/src/libi_modes/

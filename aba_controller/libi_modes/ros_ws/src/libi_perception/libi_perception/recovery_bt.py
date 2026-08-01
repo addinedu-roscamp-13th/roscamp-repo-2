@@ -3,6 +3,7 @@
     BT_Searching (Selector, memory=False)
     ├── CheckReacquired          owner visible again -> SUCCESS (interrupts any phase)
     └── SearchPhases (Sequence, memory=True)
+        ├── LkdPeek              turn ~90 deg toward the last-known direction (follow only)
         ├── Hold                 stay still, give the owner a moment to reappear
         ├── Scan1                sweep toward the last-known direction
         ├── Turn180              turn around
@@ -24,6 +25,8 @@ against search_planner.search_command() across the full timeline at the real 20 
 """
 import py_trees
 from py_trees.common import Status
+
+from .search_planner import peek_sec
 
 
 class SearchContext:
@@ -281,6 +284,7 @@ def create_searching_tree(ctx):
     hold = cfg.SEARCH_HOLD_SEC
     w = cfg.ANGULAR_Z_SWEEP
     leg = sweep_leg_sec(cfg)            # 중앙 → 한쪽 끝
+    peek_turn = peek_sec(cfg, ctx.role)  # LKD 90° (추종 전용, 0 이면 구간이 빠진다)
     home, peek = ctx.home_camera, ctx.peek_camera
 
     def sweep(prefix, camera):
@@ -302,6 +306,10 @@ def create_searching_tree(ctx):
     spec = [
         # (이름, 길이, 각속도, 이 구간이 볼 카메라)
         #
+        # 사람이 나간 쪽부터 본다 — α-β coast 가 이미 유예를 줬으므로, 여기 왔다는 건
+        # "잠깐 가렸다"가 아니라 어딘가로 나갔다는 뜻이다. 근거는 config 주석 참고.
+        # 길잡이는 `peek_turn` 이 0 이라 이 구간이 통째로 빠진다(길이 0 → 트리에서 제외).
+        ('LkdPeek', peek_turn, lambda: cfg.ANGULAR_Z_SEARCH * ctx.lkd, home),
         # 앞을 보며 잠깐 기다린다 — 사람이 그냥 다시 나타나는 경우가 제일 흔하다.
         ('HoldFront', hold, lambda: 0.0, home),
         # 그 다음 **바로 뒤를 본다.** 캠 전환은 공짜라 돌 필요가 없다.

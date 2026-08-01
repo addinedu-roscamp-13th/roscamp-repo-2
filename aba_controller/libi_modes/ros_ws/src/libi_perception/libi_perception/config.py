@@ -125,7 +125,8 @@ FRONT_MIN_SAMPLES = 5
 # ---- miss / search ----
 N_MISS_FRAMES = 40            # consecutive None before TRACKING -> SEARCHING
 # 탐색(회복) 타임라인.
-#   HoldFront 5s(앞,정지) → HoldBack 5s(뒤,정지)
+#   LkdPeek ~4.5s(마지막 방향으로 90°, 추종 전용)
+#   → HoldFront 5s(앞,정지) → HoldBack 5s(뒤,정지)
 #   → SweepFront(좌우로 훑고 원위치) → SweepBack(뒤캠으로 같은 왕복) → GiveUp
 # 어느 구간에 있든 앞캠에서 보이면 즉시 재개, 뒤캠에서 잡히면 즉시 180° 회전한다
 # (recovery_bt 의 Selector 우선순위). 구간을 다 돌 필요가 없다.
@@ -134,6 +135,23 @@ SEARCH_SWEEP_ANGLE = 3.14159  # 훑는 전체 폭(rad). 중앙 기준 ±90°
 ANGULAR_Z_SWEEP = 0.55        # rad/s — 훑기 각속도 (ANGULAR_Z_MAX 아래로 유지)
 ANGULAR_Z_SEARCH = 0.35       # rad/s — 180° 정렬 회전(AlignHeading) 각속도
 SEARCH_TURN_ANGLE = 3.14159   # AlignHeading 이 도는 각도 (radians)
+# [2026-08-01] **LKD 90° peek — 되살린 것이다.**
+#
+#   `aba_ai_service/follower_BT/recovery.py` 의 `DrivePolicy` 에 처음부터 있었다:
+#       FOLLOWING --owner lost--> PEEK --~90 deg turned, still lost--> SEARCHING
+#       PEEK_ANGLE = math.radians(90)   # turn ~90 deg toward the last direction
+#   그런데 그 상태기계의 각속도는 `cmd_sink` 로만 나가고, 그 경로(`--drive-host`)는
+#   2026-07-28 에 폐기됐다. **화면에는 계속 "PEEK" 이 뜨는데 바퀴는 안 돌았다** —
+#   실제 주행을 하는 이쪽 트리에는 이 구간이 아예 없었기 때문이다.
+#
+#   서서 기다리는 유예는 이미 α-β coast(`COAST_LIMIT` 30프레임 ≈ 2s)가 준다. 그게
+#   만료되고 `N_MISS_FRAMES` 까지 지나 탐색에 들어온 시점이면, 사람은 "잠깐 가렸다"가
+#   아니라 **어딘가로 나간 것**이다. 그래서 훑기 전에 그 방향부터 본다.
+#
+#   ⚠️ **추종 전용이다.** 길잡이는 돌지 않는다 — 목적지 방향과 사람 방향이 겹치면
+#      회전 → 경로 재계획 → 재포착 → 재회전으로 무한 진동한다(`AlignHeading` 주석).
+#   ⚠️ 0 으로 두면 이 구간이 사라진다(길이 0 인 구간은 트리에서 빠진다).
+SEARCH_PEEK_ANGLE = 1.5708    # LKD 방향으로 꺾는 각도(rad). 0 이면 끔
 
 # ---- loop ----
 TICK_HZ = 20.0

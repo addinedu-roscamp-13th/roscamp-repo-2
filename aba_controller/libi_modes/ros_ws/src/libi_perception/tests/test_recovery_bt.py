@@ -11,11 +11,19 @@ from libi_perception.search_planner import search_command
 
 
 def _cfg(**over):
+    # ⚠️ 실제 config.py 와 같은 값을 둔다. `SEARCH_PEEK_ANGLE` 을 빼면
+    # `peek_sec` 의 getattr 기본값 0 으로 떨어져 LkdPeek 구간이 통째로 사라지고,
+    # 그러면 이 시험들이 **운영과 다른 타임라인**을 검증하게 된다.
     base = dict(SEARCH_HOLD_SEC=5.0, SEARCH_SWEEP_ANGLE=3.14159,
                 ANGULAR_Z_SWEEP=0.55,
-                ANGULAR_Z_SEARCH=0.35, SEARCH_TURN_ANGLE=3.14159)
+                ANGULAR_Z_SEARCH=0.35, SEARCH_TURN_ANGLE=3.14159,
+                SEARCH_PEEK_ANGLE=1.5708)
     base.update(over)
     return SimpleNamespace(**base)
+
+
+#: LkdPeek 길이 — 1.5708 / 0.35 ≈ 4.49초. 아래 시각들이 이 값에 기대고 있다.
+PEEK_SEC = 1.5708 / 0.35
 
 
 class _Clock:
@@ -48,7 +56,7 @@ def test_scanning_publishes_rotation_and_runs():
     root = create_searching_tree(ctx)
     clock.t = 0.0
     tick_tree(root)                  # establishes start time
-    clock.t = 12.0                   # into the first scan
+    clock.t = 20.0                   # into the first sweep (LkdPeek 4.5 + Hold 10 뒤)
     assert tick_tree(root) == py_trees.common.Status.RUNNING
     assert pub.calls[-1][1] != 0.0
 
@@ -75,6 +83,7 @@ def test_recovery_order_is_tree_structure():
     # 훑기를 세 구간으로 쪼개는 이유는 recovery_bt 의 `sweep()` 주석 참고 —
     # 시간축을 leaf 안에 숨기면 search_planner 와의 동등성 대조가 불가능해진다.
     assert [c.name for c in phases.children] == [
+        'LkdPeek',
         'HoldFront', 'HoldBack',
         'SweepFrontOut', 'SweepFrontAcross', 'SweepFrontHome',
         'SweepBackOut', 'SweepBackAcross', 'SweepBackHome',
@@ -94,7 +103,10 @@ def test_reacquire_interrupts_from_any_phase():
     ctx = SearchContext(get_detection=lambda: object() if visible['v'] else None,
                         publish=pub, cfg=_cfg(), now=clock)
     root = create_searching_tree(ctx)
-    for t in (0.0, 12.0, 20.0):      # hold, scan1, turn180
+    # ⚠️ **정위치 캠을 보는 구간만 고른다.** 반대 캠 구간(HoldBack·SweepBack)에서는
+    #    `CheckReacquired` 가 일부러 FAILURE 를 낸다 — 등을 진 채로 추종을 재개하면
+    #    앞캠 좌표로 도는 방위 PID 가 성립하지 않기 때문이다(그쪽 주석 참고).
+    for t in (0.0, 6.0, 20.0):       # LkdPeek, HoldFront, SweepFront
         clock.t = t
         assert tick_tree(root) == py_trees.common.Status.RUNNING
         visible['v'] = True
@@ -162,15 +174,60 @@ def _run_to(env, t, step=0.05):
 
 
 def test_camera_follows_the_phase_plan():
-    """HoldFront=앞, HoldBack=뒤, SweepFront=앞, SweepBack=뒤. 추종 기준.
+    """LkdPeek=앞, HoldFront=앞, HoldBack=뒤, SweepFront=앞, SweepBack=뒤. 추종 기준.
 
-    구간 길이: Hold 5+5, 한 훑기 = 4 × (π/2 / 0.55) ≈ 11.4초.
+    구간 길이: LkdPeek ≈4.49, Hold 5+5, 한 훑기 = 4 × (π/2 / 0.55) ≈ 11.4초.
     """
     env = _peek_ctx(role="follow")
-    _run_to(env, 2.0);  assert env.cams[-1] == "front"      # HoldFront
-    _run_to(env, 7.0);  assert env.cams[-1] == "back"       # HoldBack
-    _run_to(env, 12.0); assert env.cams[-1] == "front"      # SweepFront
-    _run_to(env, 25.0); assert env.cams[-1] == "back"       # SweepBack
+    _run_to(env, 2.0);  assert env.cams[-1] == "front"      # LkdPeek
+    _run_to(env, 7.0);  assert env.cams[-1] == "front"      # HoldFront
+    _run_to(env, 12.0); assert env.cams[-1] == "back"       # HoldBack
+    _run_to(env, 20.0); assert env.cams[-1] == "front"      # SweepFront
+    _run_to(env, 30.0); assert env.cams[-1] == "back"       # SweepBack
+
+
+# ── LKD 90° peek (2026-08-01) ────────────────────────────────────────────────
+
+def test_peek_turns_toward_the_last_known_direction():
+    """탐색 첫 구간은 **마지막 방향으로 도는 것**이다 — 서 있는 게 아니다.
+
+    `DrivePolicy` 에 있던 `FOLLOWING --lost--> PEEK(~90°) --> SEARCHING` 을 실주행
+    트리로 옮긴 것이다. 부호가 lkd 를 따라가야 왼쪽으로 사라진 사람을 오른쪽에서
+    찾는 일이 없다.
+    """
+    for lkd, sign in ((1.0, +1), (-1.0, -1)):
+        clock, pub = _Clock(), _Pub()
+        cfg = _cfg()
+        ctx = SearchContext(lambda: None, pub, cfg, clock, lkd=lkd)
+        root = create_searching_tree(ctx)
+        clock.t = 0.0
+        tick_tree(root)
+        clock.t = PEEK_SEC / 2.0                 # peek 구간 한가운데
+        tick_tree(root)
+        assert pub.calls[-1] == (0.0, sign * cfg.ANGULAR_Z_SEARCH), f'lkd={lkd}'
+
+        clock.t = PEEK_SEC + 0.1                 # 구간을 지나면 멈춰 선다(HoldFront)
+        tick_tree(root)
+        assert pub.calls[-1] == (0.0, 0.0), f'lkd={lkd}: peek 뒤에는 서서 봐야 한다'
+
+
+def test_guide_never_peeks():
+    """길잡이는 돌지 않는다 — 목적지 방향과 사람 방향이 겹치면 무한 진동한다.
+
+    `AlignHeading` 을 길잡이에서 뺀 것과 같은 이유다. 구간이 아예 없어야 한다.
+    """
+    ctx = SearchContext(lambda: None, _Pub(), _cfg(), _Clock(), role="guide")
+    phases = [c for c in create_searching_tree(ctx).children
+              if c.name == 'SearchPhases'][0]
+    assert 'LkdPeek' not in [c.name for c in phases.children]
+
+
+def test_peek_angle_zero_removes_the_phase():
+    """0 이면 끄는 스위치다 — 되돌릴 수 있어야 현장에서 판단할 수 있다."""
+    ctx = SearchContext(lambda: None, _Pub(), _cfg(SEARCH_PEEK_ANGLE=0.0), _Clock())
+    phases = [c for c in create_searching_tree(ctx).children
+              if c.name == 'SearchPhases'][0]
+    assert 'LkdPeek' not in [c.name for c in phases.children]
 
 
 def test_guide_home_camera_is_back():
@@ -268,7 +325,7 @@ def test_no_camera_hook_still_runs_the_old_way():
     root = create_searching_tree(ctx)
     clock.t = 0.0
     tick_tree(root)
-    clock.t = 12.0
+    clock.t = 20.0                   # 훑기 구간 (LkdPeek 4.5 + Hold 10 뒤)
     assert tick_tree(root) == py_trees.common.Status.RUNNING
     assert pub.calls[-1][1] != 0.0
 
@@ -285,6 +342,7 @@ def test_hold_zero_removes_both_hold_phases():
     root = create_searching_tree(ctx)
     phases = [c for c in root.children if c.name == 'SearchPhases'][0]
     assert [c.name for c in phases.children] == [
+        'LkdPeek',                   # 이 스위치는 Hold 와 무관하다 — 그대로 남는다
         'SweepFrontOut', 'SweepFrontAcross', 'SweepFrontHome',
         'SweepBackOut', 'SweepBackAcross', 'SweepBackHome',
         'GiveUp',

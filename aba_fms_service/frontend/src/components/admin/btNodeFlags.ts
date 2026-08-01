@@ -46,6 +46,20 @@ import type { BtNodeFlag } from "@/components/admin/BtGraphView";
  * 이 목록에 플래그로 등록된 이름은 없어서 범례 숫자는 안 바뀐다 — 그래도 여기 적는
  * 이유는, 다음 사람이 옛 이름으로 플래그를 달면 **조용히 안 붙기 때문**이다.
  *
+ * ## 2026-08-01 — `LkdPeek` 이 SearchPhases 맨 앞에 붙었다 (추종 전용)
+ *
+ *   LkdPeek → HoldFront → HoldBack → SweepFront{...} → SweepBack{...} → GiveUp
+ *
+ * 마지막 관측 방향(LKD)으로 ~90° 꺾는 4.5초짜리 구간이다. `aba_ai_service` 의
+ * `follower_BT/recovery.py` `DrivePolicy` 에 처음부터 있었는데(PEEK 상태), 그 상태기계의
+ * 각속도가 나가던 `--drive-host` 경로가 2026-07-28 에 폐기되면서 **화면에는 "PEEK" 이
+ * 뜨는데 바퀴는 안 도는** 상태였다. 실주행 트리로 옮긴 것이다.
+ *
+ * ⚠️ **길잡이에는 이 노드가 없다**(`peek_sec` 이 0 → 구간 제외). 관제 화면에서 길잡이
+ *    트리에 LkdPeek 이 안 보이는 것은 정상이며 누락이 아니다. `config.SEARCH_PEEK_ANGLE`
+ *    을 0 으로 두면 추종에서도 사라진다.
+ * 여기도 플래그로 등록된 이름은 없어 범례 숫자는 안 바뀐다.
+ *
  * ## 2026-07-30 — 복귀 6단계 재편 (뒷캠 ArUco 정밀 주차)
  *
  * 노드 **넷이 사라지고 다섯이 생겼다.** 옛 이름으로 단 플래그는 조용히 안 붙는다.
