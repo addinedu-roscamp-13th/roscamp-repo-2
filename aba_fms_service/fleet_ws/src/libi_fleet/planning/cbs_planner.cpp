@@ -311,7 +311,8 @@ std::string route_to_string(const Route & r)
   return s;
 }
 
-std::vector<Route> cbs_plan_timed(
+// 실제 계획 한 번. 지평선 재시도는 아래 cbs_plan_timed 가 감싼다.
+std::vector<Route> cbs_plan_once(
   const TimedGraph & g, const std::vector<int> & starts, const std::vector<int> & goals,
   const PlanOptions & opt)
 {
@@ -461,6 +462,54 @@ std::vector<Route> cbs_plan_timed(
     }
   }
   return prioritized();   // 제약트리 소진 → 폴백(위 주석 참고)
+}
+
+// [2026-08-01] **지평선을 실패했을 때만 키운다.**
+//
+// 자동 지평선은 `2×(자기 최단거리) + …` 인데, 두 로봇이 **인접**하면 그 값이 몇 틱밖에
+// 안 돼 비켜서는 우회로를 잘라 버린다. 실측(arte2): 순회경로-3↔순회경로-4 는 직선 4틱이라
+// 자동값으로는 실패하고 `horizon=2000` 이면 바로 풀렸다 — 해가 없던 게 아니라 못 보고 있었다.
+//
+// 그렇다고 처음부터 크게 잡으면 안 된다. 상태 수가 |V| × horizon 이라, 틱이 잘게 쪼개진
+// 설정(테스트의 TICK_SEC=0.02)에서 저수준 탐색이 통째로 터진다 — 실제로 테스트가 타임아웃했다.
+//
+// 그래서 **싼 값으로 먼저 풀고, 실패하면 그때 넓힌다.** 흔한 경우는 예전과 같은 비용이고,
+// 어려운 경우만 대가를 치른다. 호출자가 horizon 을 명시했으면 그 뜻을 존중해 재시도하지 않는다.
+std::vector<Route> cbs_plan_timed(
+  const TimedGraph & g, const std::vector<int> & starts, const std::vector<int> & goals,
+  const PlanOptions & opt)
+{
+  auto r = cbs_plan_once(g, starts, goals, opt);
+  if (!r.empty() || opt.horizon > 0) { return r; }
+
+  // 그래프 지름(모든 정점쌍 최단거리의 최댓값)을 하한으로 다시. 우회로도 결국
+  // 그래프 안의 경로이므로 공간적으로는 이 정도면 덮인다.
+  int diameter = 0;
+  int max_edge = 1;
+  for (int v = 0; v < static_cast<int>(g.size()); ++v) {
+    const std::vector<int> h = reverse_dijkstra(g, v);
+    for (int d : h) { if (d != kInf && d > diameter) { diameter = d; } }
+    for (const auto & e : g[v]) { max_edge = std::max(max_edge, e.second); }
+  }
+  if (diameter <= 0) { return r; }
+  PlanOptions wide = opt;
+  // ⚠️ **지름만으로는 모자란다 — 그건 거리를 재지 줄서기를 못 잰다.**
+  //    병목 정점 하나를 N 대가 차례로 통과해야 하면 완료 시각은 지름이 아니라 N 에 비례한다
+  //    (별 모양 그래프가 극단이다: 지름 2인데 잎이 10개면 중심에서 10번 줄을 선다).
+  //    그래서 대기 몫 N*(최대간선+clearance+1) 을 더한다.
+  //
+  //    ★ 이 항이 없으면 **"넓힌" 재시도가 첫 시도보다 좁아질 수 있다** — 첫 시도 식은
+  //      2*longest + N*(...) + 8 이라 N 이 크면 4*지름+16 을 넘는다. 지금 식은 지름이
+  //      longest 이상이므로(4D ≥ 2L, 16 > 8) 항상 첫 시도를 포함한다. 그 불변식을 깨지 말 것.
+  wide.horizon = 4 * diameter +
+    static_cast<int>(starts.size()) * (max_edge + opt.clearance + 1) + 16;
+  // ⚠️ 재시도는 **CBS 트리를 다시 돌지 않는다.** max_nodes=1 이면 첫 확장에서 곧장
+  //    우선순위 폴백으로 떨어진다 — 이 경우를 실제로 푸는 것이 그쪽이기 때문이다.
+  //    넓은 지평선으로 CBS 트리(최대 4000노드 × A* 6만 확장)를 다시 돌리면
+  //    틱이 잘게 쪼개진 설정에서 3분씩 걸린다(실측: 테스트 182초).
+  //    폴백은 로봇 수만큼의 A* 라 넓은 지평선에서도 싸다.
+  wide.max_nodes = 1;
+  return cbs_plan_once(g, starts, goals, wide);
 }
 
 std::vector<Path> cbs_plan(

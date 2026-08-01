@@ -163,6 +163,13 @@ public:
     //    같은 관례). 오늘 `주차장` 정점이 사라졌는데 코드가 번호를 들고 있어 init-pose 가
     //    죽은 전례가 있다. 비워 두면 규칙이 안 걸릴 뿐 오작동은 없다.
     const std::string excl_s = declare_parameter<std::string>("exclusive_region", "");
+    // [2026-08-01] 두 로봇이 물리적으로 겹치지 않으려면 필요한 최소 중심간 거리(m).
+    //
+    // nav2 의 inscribed 반경이 0.088 이므로 두 대는 0.176 이상 떨어져야 한다. arte2 는
+    // 순회 통로와 서비스 지점이 0.151 간격이라 **서로 다른 정점을 잡아도 겹친다** —
+    // 노드 예약의 전제가 지도에서 깨져 있다. 그래서 그만큼 가까운 정점끼리 동시 점유를 막는다.
+    // 0 이하면 규칙을 끈다(예전 동작). 지도를 고치면 이 값이 자연히 안 걸리게 된다.
+    const double min_sep = declare_parameter<double>("min_separation_m", 0.176);
 
     if (!graph_.load(navgraph_file_)) {
       RCLCPP_FATAL(get_logger(), "navgraph 로드 실패: %s", navgraph_file_.c_str());
@@ -182,6 +189,18 @@ public:
     active_traf_ = traf_name;
     dispatcher_ = disp_loader_.createSharedInstance(disp_name);
     traffic_ = traf_loader_.createSharedInstance(traf_name);
+    // 근접 정점 상호배제를 플러그인에 알려 준다(위 min_separation_m 주석 참고).
+    min_separation_m_ = min_sep;
+    traffic_->set_min_separation(graph_, min_separation_m_);
+    {
+      int pairs = 0;
+      for (int i = 0; i < graph_.size(); ++i) { pairs += static_cast<int>(traffic_->too_close_to(i).size()); }
+      if (pairs > 0) {
+        RCLCPP_WARN(get_logger(),
+                    "[traffic] 정점 %d쌍이 %.3fm 보다 가깝습니다 — 동시 점유를 막습니다. "
+                    "지도를 고치는 것이 근본 해결입니다.", pairs / 2, min_separation_m_);
+      }
+    }
     RCLCPP_INFO(get_logger(), "plugins: dispatcher=%s traffic=%s | navgraph=%d verts",
                 disp_name.c_str(), traf_name.c_str(), graph_.size());
 
@@ -230,6 +249,25 @@ public:
     // 것을 밖에서 보려면 도착틱이 필요하다. 반응형 교통에서는 아무것도 안 나간다.
     plan_pub_ = create_publisher<std_msgs::msg::String>("/fms/plan", rclcpp::QoS(1).transient_local());
     route_pub_ = create_publisher<std_msgs::msg::String>("/fms/routes", 10);
+    // ── [2026-08-01] 주문 도중 순회로 떠나지 않게 붙잡는다 ──────────────────
+    //
+    // 주문 하나는 여러 다리(주행 → 팔 → 주행 → 팔)로 되어 있는데, fleet_node 는
+    // **주행 다리만** 안다. 팔 다리는 상위 orchestrator 가 로봇에 직접 명령을 쏘고
+    // 결과를 기다리므로 그 사이 fleet_node 는 로봇이 할 일이 없다고 본다.
+    //
+    // 실측 사고: 주행 다리를 끝내고 150 ms 뒤 그 로봇이 **순회를 시작해 서가를 떠났다.**
+    // 그 순간 팔에게 그 서가에서 집으라는 명령이 나가는 중이었다.
+    //   [orchestrator:t1] pinky-1 도착 v4 / 작업 완료
+    //   [P-pinky-1]       pinky-1 순회 시작 (시작 v4) → v5 (GRANT)
+    //
+    // 그동안 이걸 막아 준 것은 로봇 상태기계가 WORKING 이라 순회 조건(mode==PATROL)이
+    // 안 맞았던 것뿐이다 — **보호가 링크 하나에 얹혀 있었다.** 그 링크가 끊기면 로봇이
+    // 주문 도중에 떠난다. 그래서 붙잡기를 주문 계약으로 끌어올린다.
+    //
+    // ⚠️ TTL 은 필수다. 푸는 쪽이 죽으면 로봇이 **영영 순회를 못 하게** 되기 때문이다.
+    hold_sub_ = create_subscription<std_msgs::msg::String>(
+      "/fms/robot_hold", 10,
+      [this](const std_msgs::msg::String::SharedPtr m) { on_robot_hold(m); });
     goal_pub_ = create_publisher<std_msgs::msg::String>("/fms/goals", 10);
 
     srv_ = create_service<SubmitTask>(
@@ -407,7 +445,20 @@ private:
       res->accepted = false; res->reason = "no_robot_available"; return;
     }
     auto & r = robots_[robot];
+    // ── [2026-08-01] 선점당하는 로봇의 **커밋 구간을 존중한다** ──────────────
+    //
+    // 예전에는 무조건 `nearest(x,y)` 에서 새 경로를 짰다. 그런데 선점 대상이 이미
+    // 레인 중간을 달리고 있으면 그건 **뒤돌아 가라**는 뜻이고, 그 사이에 cancel_task 가
+    // 예약을 다 놓아 버린다 — 로봇은 아직 옛 nav2 목표로 달리는데 그 노드가 비어
+    // 보여서, 다른 로봇이 그 자리를 잡을 수 있다. 실제로 이 창이 열려 있었다.
+    //
+    // 그래서 움직이는 중이면 **가고 있던 노드**에서 새 경로를 시작한다. replan_all_routes
+    // 가 쓰는 것과 같은 규칙이다(`pr.start = t.moving ? path[idx] : path[idx-1]`).
+    // 로봇은 하던 대로 그 노드까지 가고, 새 경로는 거기서부터 이어진다.
     int start = graph_.nearest(r.x, r.y);
+    for (const auto & t : tasks_) {
+      if (t.robot == robot && t.moving && t.idx < t.path.size()) { start = t.path[t.idx]; break; }
+    }
     auto path = graph_.dijkstra(start, goal);
     if (start == goal) { path = {goal, goal}; }   // 최근접 정점이 곧 목표 → 그 노드로 이동 후 완료(auction.cpp 와 일치, no_path 오거절 방지)
     if (path.size() < 2) {
@@ -505,12 +556,21 @@ private:
 
     std::vector<ActiveTask *> planned;
     for (auto & t : tasks_) {
-      if (t.patrol) { continue; }
       if (t.path.size() < 2 || t.idx < 1 || t.idx >= t.path.size()) { continue; }
       PlanRequest pr;
       pr.robot = t.robot;
       pr.start = t.moving ? t.path[t.idx] : t.path[t.idx - 1];   // 커밋 구간 존중
-      pr.goal = t.path.back();
+      // ── [2026-08-01] 순회도 계획에 넣는다 ────────────────────────────────
+      //
+      // 예전에는 `if (t.patrol) continue;` 로 통째로 뺐다. 그러면 CBS 는 **순회 로봇이
+      // 없는 셈 치고** 시간표를 짜고, 실행에서 반응형 예약이 막아 대기 → 지연 → 강등 →
+      // 재계획이 반복된다. 3대 중 한둘이 늘 순회 중이니 시간표가 계속 흔들렸다.
+      //
+      // 그렇다고 목표를 **랩 끝**으로 두면 안 된다. 계획은 목표 도착 후 그 정점에 영원히
+      // 앉아 있다고 보므로(kNeverEnds), 주 통로 위의 랩 끝 정점이 통째로 잠긴다.
+      // 그래서 **다음 한 정점만** 목표로 준다. 영구 점유가 한 칸 앞에만 생기고 다음
+      // 재계획에서 갱신된다. (codex 와 A/B/C 를 견줘 이 방식을 골랐다.)
+      pr.goal = t.patrol ? t.path[std::min(t.idx + 1, t.path.size() - 1)] : t.path.back();
       pr.priority = compute_priority(t.robot, t);
       if (pr.start == pr.goal) { continue; }   // 이미 목표 — 계획할 것이 없다
       snap.robots.push_back(pr);
@@ -536,6 +596,11 @@ private:
                   "[traffic] 시간표를 세우지 못했습니다(%zu/%zu) — 반응형으로 운행합니다.%s",
                   routes.size(), planned.size(),
                   dup.empty() ? "" : (" 목표 중복:" + dup + " (같은 정점을 목표로 둘 수 없습니다)").c_str());
+      // ⚠️ **빈 시간표를 반드시 낸다.** `/fms/plan` 은 transient_local 이라 마지막 값이
+      //    계속 살아 있다 — 여기서 아무것도 안 내면 관제 화면은 **이미 버린 예약을**
+      //    그대로 띄운 채로 남는다. 화면이 "예약 v7 에 12:03:41" 이라고 말하는데
+      //    실제로는 반응형으로 돌고 있는, 코드는 멀쩡한데 화면만 거짓인 상태가 된다.
+      publish_plan({}, now_sec(), traffic_->tick_seconds(), "시간표를 세우지 못했습니다");
       return;   // 기존 경로 그대로. 플러그인은 이미 반응형으로 내려가 있다.
     }
 
@@ -559,6 +624,18 @@ private:
         //    커밋 구간의 지연은 stuck 감지(no_move)와 drift_limit 이 이미 담당한다.
         if (na.size() > 1) { na[1] = -1; }
       }
+      // ⚠️ 순회는 **계획 구간 뒤에 canonical 랩을 도로 이어 붙인다.**
+      //    CBS 목표를 다음 한 정점으로 줄였으므로, 그것만 남기면 랩이 잘려 나가고
+      //    다음 틱에 "1바퀴 완주" 로 오인돼 랩이 계속 재생성된다.
+      if (t.patrol) {
+        t.plan_end_idx = static_cast<int>(np.size()) - 1;
+        for (size_t k = t.idx + 2; k < t.path.size(); ++k) {
+          np.push_back(t.path[k]);
+          na.push_back(-1);            // 이어 붙인 꼬리에는 마감이 없다
+        }
+      } else {
+        t.plan_end_idx = -1;
+      }
       t.path = np;
       t.plan_arrive = na;
       t.plan_epoch = epoch;
@@ -575,11 +652,23 @@ private:
   // 시간표를 밖으로 낸다(시각화·기록용). 재계획할 때마다 한 번.
   // seq 가 늘어나는 것이 "다시 짰다" 는 신호고, 같은 경로라도 arrive 가 달라지면
   // **예약 시각이 밀린 것**이다 — 지연이 관제에 반영됐다는 증거다.
-  void publish_plan(const std::vector<PlannedRoute> & routes, double epoch, double tick_sec)
+  void publish_plan(const std::vector<PlannedRoute> & routes, double epoch, double tick_sec,
+                    const std::string & reason = "")
   {
+    // ⚠️ `epoch` 는 **steady_clock** 이다 — 내부 마감 계산에는 그게 맞지만(NTP 로 튀지
+    //    않는다) 부팅 후 경과초라 바깥에서는 아무 의미가 없다. 관제 화면이 "몇 시에
+    //    예약"을 그리려면 벽시계가 따로 필요하다. 같은 순간의 system_clock 을 함께 싣는다.
+    //    화면은 `epoch_wall + arrive*tick_sec` 로 예약 시각을 얻는다.
+    //    (둘을 합치지 않는 이유: steady 를 벽시계로 바꾸면 NTP 보정 때 마감이 통째로 밀려
+    //     멀쩡한 계획이 "지연" 으로 판정된다.)
+    const double wall = std::chrono::duration<double>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
     std::string j = "{\"seq\":" + std::to_string(++plan_seq_) +
                     ",\"epoch\":" + std::to_string(epoch) +
-                    ",\"tick_sec\":" + std::to_string(tick_sec) + ",\"robots\":{";
+                    ",\"epoch_wall\":" + std::to_string(wall) +
+                    ",\"tick_sec\":" + std::to_string(tick_sec) +
+                    ",\"drift_limit\":" + std::to_string(traffic_->drift_limit()) +
+                    ",\"reason\":\"" + reason + "\",\"robots\":{";
     bool first = true;
     for (const auto & r : routes) {
       if (!first) { j += ","; }
@@ -590,6 +679,16 @@ private:
       j += "],\"arrive\":[";
       for (size_t i = 0; i < r.arrive_tick.size(); ++i) {
         j += (i ? "," : "") + std::to_string(r.arrive_tick[i]);
+      }
+      // ⚠️ **좌표를 같이 싣는다.** 정점 인덱스만 주면 받는 쪽이 인덱스→좌표 표를 따로
+      //    들고 있어야 하는데, 화면이 쓰는 waypoint.yaml 과 여기 navgraph 의 정점 순서가
+      //    같다는 보장이 없다. 한 칸만 어긋나도 화면은 **조용히 엉뚱한 정점**에 예약
+      //    시각을 붙인다(실측: 라벨이 아예 안 떴다). 좌표로 주면 그 가정 자체가 사라진다.
+      j += "],\"xy\":[";
+      for (size_t i = 0; i < r.path.size(); ++i) {
+        const Vertex & v = graph_.vertex(r.path[i]);
+        j += (i ? "," : "");
+        j += "[" + std::to_string(v.x) + "," + std::to_string(v.y) + "]";
       }
       j += "]}";
       first = false;
@@ -723,6 +822,7 @@ private:
       bool has = false;
       for (const auto & t : tasks_) { if (t.robot == r.name) { has = true; break; } }
       if (has) { continue; }
+      if (is_held(r.name)) { continue; }   // 주문 다리 사이 — 순회로 떠나면 안 된다
       const std::string m = mode_of(r.name);
       if (m == "PATROL" && patrol_route_.size() >= 2) { start_patrol(r); }
       else if (m == "SECURITY_PATROL" && security_patrol_route_.size() >= 2) { start_security_patrol(r); }
@@ -773,6 +873,13 @@ private:
         t.reroutes = 0;   // 노드 도달 = 진전 → 우회 카운터 리셋
         replan_streak_ = 0;   // 진전 → 재계획 backoff 도 원복
         t.wait_ticks = 0;   // 노드 도달 = 진전 → 타임드 우회 카운터 리셋
+        // ⚠️ **순회가 계획 구간 끝에 닿으면 그 자리에서 재계획을 건다.**
+        //    순회는 다음 한 정점까지만 계획된다. 그 칸을 넘어가 버린 뒤에 움직이면
+        //    실행 게이트가 "계획에 없는 칸" 으로 보고 강등한다 — 순회를 계획에 넣어
+        //    없애려던 churn 이 그대로 돌아온다. 넘기 **전에** 새 구간을 받아 둔다.
+        if (t.patrol && t.plan_end_idx >= 0 && static_cast<int>(t.idx) >= t.plan_end_idx) {
+          replan_requested_ = true;
+        }
         if (t.idx >= t.path.size()) {
           if (t.patrol) {
             t.path = make_patrol_path(r, -1, route_for(t));   // 현재 위치서 canonical 랩 재생성(방향 유지)
@@ -933,6 +1040,43 @@ private:
     j += "}";
     std_msgs::msg::String m; m.data = j;
     occ_pub_->publish(m);
+  }
+
+  // {"robot":"pinky-1","hold":true,"ttl_sec":120}. hold=false 면 즉시 푼다.
+  void on_robot_hold(const std_msgs::msg::String::SharedPtr msg)
+  {
+    const std::string robot = json_str_field(msg->data, "robot");
+    if (robot.empty()) { return; }
+    const bool hold = msg->data.find("\"hold\":true") != std::string::npos;
+    if (!hold) {
+      if (hold_until_.erase(robot)) {
+        RCLCPP_INFO(get_logger(), "[hold] %s 해제", robot.c_str());
+      }
+      return;
+    }
+    double ttl = 120.0;
+    const size_t k = msg->data.find("\"ttl_sec\":");
+    if (k != std::string::npos) {
+      try { ttl = std::stod(msg->data.substr(k + 10)); } catch (...) {}
+    }
+    if (ttl <= 0.0 || ttl > 600.0) { ttl = 120.0; }   // 터무니없는 값은 기본으로
+    hold_until_[robot] = now_sec() + ttl;
+    RCLCPP_INFO(get_logger(), "[hold] %s 붙잡음 (%.0fs) — 주문 다리 사이", robot.c_str(), ttl);
+  }
+
+  // 지금 붙잡혀 있나. 만료된 것은 여기서 치운다 — 푸는 쪽이 죽어도 스스로 풀린다.
+  bool is_held(const std::string & robot)
+  {
+    auto it = hold_until_.find(robot);
+    if (it == hold_until_.end()) { return false; }
+    if (now_sec() >= it->second) {
+      RCLCPP_WARN(get_logger(),
+                  "[hold] %s 붙잡기 만료 — 푸는 쪽이 안 왔다(주문이 끊겼거나 팔이 늦다). "
+                  "순회를 재개한다.", robot.c_str());
+      hold_until_.erase(it);
+      return false;
+    }
+    return true;
   }
 
   std::string mode_of(const std::string & robot) const
@@ -1133,6 +1277,10 @@ private:
     t.start_seq = ++task_seq_;
     traffic_->request_move(r.name, path[0], path[0], compute_priority(r.name, t));   // 진입점 점유
     tasks_.push_back(t);
+    // ⚠️ **순회도 시간표를 받아야 한다.** 예전에는 여기서 replan 을 안 불러, 편대가
+    //    전부 순회 중이면 CBS 가 한 번도 안 돌았다(실측: 3대 순회 60초에 재계획 0회).
+    //    그 상태는 이름만 CBS 고 실제로는 반응형이다.
+    replan_all_routes();
     publish_task_state(tid, "PATROL", r.name);
     RCLCPP_INFO(get_logger(), "[%s] %s 순회 시작 (시작 v%d, %zu nodes)",
                 tid.c_str(), r.name.c_str(), path[0], path.size());
@@ -1151,6 +1299,7 @@ private:
     t.start_seq = ++task_seq_;
     traffic_->request_move(r.name, path[0], path[0], compute_priority(r.name, t));   // 진입점 점유
     tasks_.push_back(t);
+    replan_all_routes();   // 주간 순회와 같은 이유 — start_patrol 주석 참고
     publish_task_state(tid, "SECURITY_PATROL", r.name);
     RCLCPP_INFO(get_logger(), "[%s] %s 보안순회 시작 (시작 v%d, %zu nodes)",
                 tid.c_str(), r.name.c_str(), path[0], path.size());
@@ -1166,6 +1315,7 @@ private:
       }
       if (!req->traffic.empty()) {
         traffic_ = traf_loader_.createSharedInstance(req->traffic);  // 잠금상태 초기화(테스트는 idle 시 스왑)
+        traffic_->set_min_separation(graph_, min_separation_m_);      // 교체해도 규칙이 사라지면 안 된다
         active_traf_ = req->traffic;
       }
       res->ok = true;
@@ -1275,6 +1425,7 @@ private:
   pluginlib::ClassLoader<TrafficBase> traf_loader_;
   std::shared_ptr<DispatcherBase> dispatcher_;
   std::shared_ptr<TrafficBase> traffic_;
+  double min_separation_m_{0.0};     // 두 로봇이 겹치지 않을 최소 중심간 거리(m)
   std::set<int> exclusive_region_;   // 동시 1대만 허용(충전소 사슬 등). 런처가 인덱스로 준다.
   std::string active_disp_;
   std::string active_traf_;
@@ -1314,6 +1465,8 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr plan_pub_;
   int plan_seq_{0};
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr route_pub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr hold_sub_;
+  std::map<std::string, double> hold_until_;   // 로봇 → 붙잡기 만료 시각(steady 초)
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr goal_pub_;
   rclcpp::Service<SubmitTask>::SharedPtr srv_;
   rclcpp::Service<SetPlugins>::SharedPtr plugins_srv_;

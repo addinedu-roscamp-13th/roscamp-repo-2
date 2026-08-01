@@ -90,7 +90,15 @@ private:
   std::string owner_of_node(int node, const std::string & self) const
   {
     auto it = node_owner_.find(node);
-    return (it != node_owner_.end() && it->second != self) ? it->second : "";
+    if (it != node_owner_.end() && it->second != self) { return it->second; }
+    // [2026-08-01] **물리적으로 겹치는 이웃도 본다.** 정점이 로봇 지름보다 가까우면
+    // "다른 정점"이어도 두 대가 동시에 있을 수 없다(traffic_base.hpp 의 set_min_separation).
+    // 설정하지 않으면 목록이 비어 있어 예전과 완전히 같은 동작이다.
+    for (int n : too_close_to(node)) {
+      auto jt = node_owner_.find(n);
+      if (jt != node_owner_.end() && jt->second != self) { return jt->second; }
+    }
+    return "";
   }
 
   // waitfor_ 는 각 로봇이 정확히 1명을 기다리는 함수형 그래프.

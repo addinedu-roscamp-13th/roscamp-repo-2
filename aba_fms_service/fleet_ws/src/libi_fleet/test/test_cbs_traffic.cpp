@@ -334,9 +334,16 @@ TEST(CbsTraffic, GateStaysResponsiveDuringReplan)
 
   std::atomic<bool> done{false};
   std::thread planner([&] {
-    for (int i = 0; i < 20; ++i) {
+    // ⚠️ **횟수가 아니라 시간으로 묶는다.** 계획 한 번의 비용은 지도와 틱 길이에 달려
+    //    있어 고정 횟수로 두면 테스트 길이가 그것들을 따라 널뛴다 — 실제로 arte2 에
+    //    레인 하나를 나눴더니(9-13 을 9-10-13 으로) 회전비용이 붙어 한 번이 3 ms 에서
+    //    8.9 초가 됐고, 20회 고정이던 이 테스트가 3분으로 늘어 ament 기본 제한(60초)에
+    //    걸렸다. 재는 것은 "계획이 도는 동안" 게이트가 열려 있느냐지, 계획 횟수가 아니다.
+    //    (실운영 틱 1.0 초에서는 같은 계획이 1 ms 다 — 느린 것은 이 파일의 0.02 초뿐이다.)
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    do {
       tr.replan(make_snapshot(g, {{"A", 0, 3, 0}, {"B", 3, 0, 0}, {"C", 1, 2, 0}}));
-    }
+    } while (std::chrono::steady_clock::now() < until);
     done = true;
   });
 
@@ -378,4 +385,52 @@ TEST(CbsTraffic, BadSnapshotPlansNothing)
   PlanSnapshot no_graph;
   no_graph.robots = {{"A", 0, 3, 0}};
   EXPECT_TRUE(tr.replan(no_graph).empty()) << "그래프가 없으면 계획할 수 없다";
+}
+
+// ── 🔴 회귀: 근접 정점 규칙이 CbsTraffic 을 **통과해서** 걸리는가 ─────────
+//
+// CbsTraffic 은 물리 점유 판정을 자기 안의 fallback_(ReservationDeadlock)에 위임한다.
+// set_min_separation 을 바깥 객체에만 걸면 fallback_ 은 설정을 못 받아 규칙이 **조용히
+// 꺼진 채로** 돈다. 실제로 그랬고, sim 에서 "규칙을 넣었는데 최소거리가 그대로"로 나타났다.
+// 그건 규칙이 무력한 게 아니라 규칙이 전달되지 않은 것이었다.
+//
+// ⚠️ 이 규칙은 **노드 충돌만** 막는다. 간선을 지나는 동안 쓸고 가는 통로는 보호하지 않는다.
+TEST(CbsTraffic, MinSeparationReachesPhysicalFallback)
+{
+  set_env(1, 1, 1000);
+  libi_fleet::CbsTraffic tr;
+  const auto g = load_graph();
+
+  // 서로 다른 두 정점 중 **가장 가까운** 쌍을 찾는다. 지도가 바뀌어도 따라온다.
+  int a = -1, b = -1;
+  double best = 1e9;
+  for (int i = 0; i < g.size(); ++i) {
+    for (int j = i + 1; j < g.size(); ++j) {
+      const double d = std::hypot(g.vertex(i).x - g.vertex(j).x,
+                                  g.vertex(i).y - g.vertex(j).y);
+      if (d < best) { best = d; a = i; b = j; }
+    }
+  }
+  ASSERT_GE(a, 0);
+
+  // 그 간격보다 **큰** 최소이격을 주면 두 정점은 동시 점유 불가여야 한다.
+  tr.set_min_separation(g, best + 0.01);
+  ASSERT_EQ(tr.request_move("R1", a, a, 0), MoveDecision::GRANT) << "먼저 온 로봇은 선다";
+  EXPECT_EQ(tr.request_move("R2", b, b, 0), MoveDecision::GRANT)
+    << "현재 위치 주장(from==to)은 막지 않는다 — 막아도 로봇이 안 비켜지고 기동만 막힌다";
+
+  // 진입은 막혀야 한다. 이게 fallback_ 까지 설정이 갔다는 증거다.
+  libi_fleet::CbsTraffic tr2;
+  tr2.set_min_separation(g, best + 0.01);
+  ASSERT_EQ(tr2.request_move("R1", a, a, 0), MoveDecision::GRANT);
+  const int far = (a + g.size() / 2) % g.size();
+  EXPECT_EQ(tr2.request_move("R2", far, b, 0), MoveDecision::WAIT)
+    << "v" << a << " 를 잡은 로봇이 있는데 " << best << "m 옆 v" << b << " 로 들여보냈다";
+
+  // 규칙을 끄면 예전과 같아야 한다(회귀 방지).
+  libi_fleet::CbsTraffic tr3;
+  tr3.set_min_separation(g, 0.0);
+  ASSERT_EQ(tr3.request_move("R1", a, a, 0), MoveDecision::GRANT);
+  EXPECT_EQ(tr3.request_move("R2", far, b, 0), MoveDecision::GRANT)
+    << "규칙을 껐는데도 막혔다";
 }

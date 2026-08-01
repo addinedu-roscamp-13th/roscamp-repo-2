@@ -105,6 +105,7 @@ public:
   }
   double speed_mps() const { return speed_mps_; }
   int clearance() const { return clearance_; }
+  int drift_limit() const override { return drift_limit_; }
 
   // 시간표가 못 쓰게 됐다 → fleet_node 가 스냅샷을 다시 모아 replan() 을 부른다.
   bool needs_replan() const override
@@ -187,6 +188,14 @@ public:
   }
 
   // ── 실행 게이트 ─────────────────────────────────────────────────────────
+  // ⚠️ **fallback_ 에도 넘겨야 한다.** 물리 점유 판정은 그쪽이 한다(request_move 참고).
+  //    안 넘기면 CBS 모드에서 근접 규칙이 조용히 꺼진 채로 돈다 — 실제로 그랬다.
+  void set_min_separation(const Navgraph & g, double min_sep) override
+  {
+    TrafficBase::set_min_separation(g, min_sep);
+    fallback_.set_min_separation(g, min_sep);
+  }
+
   MoveDecision request_move(const std::string & robot, int from, int to, int priority) override
   {
     std::lock_guard<std::mutex> lk(mu_);
