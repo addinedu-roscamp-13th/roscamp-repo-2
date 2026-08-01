@@ -74,11 +74,24 @@ class FakeNode:
                                      error=lambda *_a, **_k: None)
 
 
+class FakeLoop:
+    """`publish_snapshot` 이 보는 최소 표면 — 트리는 없고 상태·회복 트리만 있다.
+
+    `search_tree` 를 인자로 받는다 — TRACKING 뿐 아니라 **SEARCHING 상태에서
+    실제로 회복 서브트리가 실려 나가는지**까지 시험하려면 발행 여부만으로는
+    부족하다(2026-08-01 codex 지적).
+    """
+    def __init__(self, state='TRACKING', search_tree=None):
+        self.state = state
+        self.search_tree = search_tree
+
+
 class FakeSession:
-    def __init__(self):
+    def __init__(self, loop=None):
         self.started = 0
         self.stopped = 0
         self.state = 'running'
+        self._loop = loop if loop is not None else FakeLoop()
 
     def start(self):
         self.started += 1
@@ -113,7 +126,9 @@ def rc():
                                  cam=lambda: node.pubs[config.CAMERA_SELECT_TOPIC].sent,
                                  vis=lambda: node.pubs[config.REQUESTER_VISIBLE_TOPIC].sent,
                                  area=lambda: node.pubs[config.REQUESTER_AREA_TOPIC].sent,
-                                 result=lambda: node.pubs['fleet_cmd_result'].sent)
+                                 result=lambda: node.pubs['fleet_cmd_result'].sent,
+                                 snap=lambda: node.pubs[
+                                     '/libi/follow_bt_snapshot'].sent)
 
 
 # ── 세션 라우팅 ─────────────────────────────────────────────────────────────
@@ -309,3 +324,53 @@ def test_stopping_a_guide_watch_session_also_stops_the_loop(rc):
     rc.send(action='guide_watch', id='g1')
     rc.send(action='stop', id='stop-g1')
     assert rc.session.stopped == 1
+
+
+# ── 스냅샷은 안내에서도 나가야 한다 ──────────────────────────────────────────
+# 관제 BT 화면의 접합점은 이미 FollowExec·GuideExec 둘 다 안다
+# (libi_modes/ros/state_io.py `_GRAFT_POINTS`). 빠진 건 발행자쪽뿐이었다.
+
+def _tree_of(payload):
+    return json.loads(payload)['tree']
+
+
+def test_snapshot_published_for_guide(rc):
+    rc.send(action='guide_watch', id='g1')
+    rc.ctl.tick()
+    assert _tree_of(rc.snap()[-1]) is not None
+
+
+def test_snapshot_carries_the_recovery_subtree_for_guide(rc):
+    """발행 여부가 아니라 **회복 서브트리 자체가 실려 나가는지**를 잰다.
+
+    이전 시험은 TRACKING 고정 FakeLoop 로 "뭔가 나가는가"만 쟀다 — SEARCHING
+    상태에서 search_tree 가 실제로 페이로드에 들어가는지는 안 쟀다
+    (2026-08-01 codex 지적).
+    """
+    class FakeNode:
+        """`snapshot_dict()`가 읽는 최소 표면 — kind는 `type(node).__name__`으로
+        계산되므로(follow_node._kind) 여기 별도 속성을 안 둔다."""
+        name = 'BT_Searching'
+        status = types.SimpleNamespace(name='RUNNING')
+        children = []
+
+    rc.send(action='guide_watch', id='g1')
+    rc.session._loop = FakeLoop(state='SEARCHING', search_tree=FakeNode())
+    rc.ctl.tick()
+    tree = _tree_of(rc.snap()[-1])
+    assert tree is not None
+    assert tree['name'] == 'BT_Searching'
+
+
+def test_snapshot_still_published_for_follow(rc):
+    """추종은 예전 그대로."""
+    rc.send(action='follow_admin', id='f1')
+    rc.ctl.tick()
+    assert _tree_of(rc.snap()[-1]) is not None
+
+
+def test_snapshot_not_published_for_watch(rc):
+    """등록감시에서는 두 잎 다 안 돈다 — 내면 안 도는 잎 밑에 붙어 화면이 거짓말한다."""
+    rc.send(action='watch', id='w1')
+    rc.ctl.tick()
+    assert _tree_of(rc.snap()[-1]) is None

@@ -301,18 +301,34 @@ class RemoteControl:
                     f'종료 요청이 어느 세션도 안 가리킨다 (요청={target}, '
                     f'현재={self._sessions.session_id or "없음"}) — 세션은 그대로 돈다')
 
+    def _should_snapshot(self) -> bool:
+        """스냅샷을 낼 세션인가.
+
+        추종(주행 세션)과 **길잡이**만 낸다. `watch` 는 안 된다.
+
+        관제의 접합점 선택(`libi_modes/ros/state_io._pick_graft_point`)은
+        `FollowExec`·`GuideExec` 중 tick 을 쥔 잎을 찾고, 없으면 `FollowExec` 으로
+        폴백한다. `watch` 는 패널이 직접 여는 것이라 그 시점 미션 상태가
+        `INTERACTING` 이고 두 잎 다 안 돈다. 그때 발행하면 **안 도는 잎 밑에
+        서브트리가 붙어** 화면이 거짓말한다 — 이 변경이 고치려던 바로 그 병이다.
+        """
+        return self._active_id is not None or self._sessions.role == sess.GUIDE
+
     def publish_snapshot(self):
-        """추종 상태를 `FollowExec` 밑에 붙일 서브트리로 내보낸다.
+        """추종·안내 상태를 실행 잎 밑에 붙일 서브트리로 내보낸다.
 
         SEARCHING 이면 회복 BT 를 그대로, TRACKING 이면 잎 하나로 요약한다 —
         추종 중엔 트리가 존재하지 않지만(ControlLoop 이 SEARCHING 에서만 만든다)
         화면에서 "지금 따라가는 중"이 보여야 한다.
+
+        ⚠️ 예전엔 `_active_id` 로만 막았다. 그 값은 주행 역할에만 설정되므로
+        **안내 회복 트리가 관제 화면에 한 번도 안 떴다.**
         """
         import json
 
         from std_msgs.msg import String
         loop = getattr(self._session, '_loop', None)
-        if self._active_id is None or loop is None:
+        if loop is None or not self._should_snapshot():
             payload = None
         else:
             tree = getattr(loop, 'search_tree', None)
