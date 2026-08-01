@@ -71,6 +71,8 @@ export interface RobotRow {
   name: string;
   x: number | null;
   y: number | null;
+  /** 로봇이 바라보는 방향(rad). 점만 찍으면 어디를 보고 서 있는지 알 수 없다. */
+  yaw: number | null;
   state: string | null;
   battery: number | null;
   busy: boolean;
