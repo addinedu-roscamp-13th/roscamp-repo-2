@@ -14,6 +14,8 @@
 """
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import text
@@ -113,10 +115,28 @@ async def list_books(
     `zone` 이 곧 waypoint 정점 이름이다(문학서가·예술서가·과학-인문학서가 — waypoint.yaml 과
     글자까지 같다). 그래서 프런트가 책을 고르면 출발지를 별도 매핑 없이 채울 수 있다.
     """
-    rows = await db.execute(text(
-        "SELECT id, title_kr, author, category, zone, shelf, in_stock, unavailable "
-        "FROM cb_books ORDER BY zone, title_kr"
-    ))
+    # ⚠️ [2026-08-02] **테이블이 없을 때 500 을 내면 안 된다.**
+    #
+    #   `cb_books` 는 aba_service 소유라 그 서비스를 안 띄운 배포·개발 DB 에는 **없다**.
+    #   그때 여기서 예외가 그대로 올라가면 FastAPI 가 500 을 내는데, **500 응답에는
+    #   CORS 헤더가 안 붙는다.** 그래서 브라우저 콘솔에는 진짜 원인 대신
+    #       "has been blocked by CORS policy"
+    #   가 찍힌다(실측 2026-08-02 — 이것 때문에 CORS 설정을 한참 뒤졌다).
+    #   화면은 "주문 화면이 CORS 때문에 안 된다" 고 거짓말하고, 진짜 원인인
+    #   `Table 'labi.cb_books' doesn't exist` 는 서버 로그에만 남는다.
+    #
+    #   그래서 **빈 목록 + 이유**를 정직하게 돌려준다. 주문 화면은 책 없이도 떠야 하고
+    #   (정점만 골라 배차할 수 있다), 사람은 왜 비었는지 화면에서 알 수 있어야 한다.
+    try:
+        rows = await db.execute(text(
+            "SELECT id, title_kr, author, category, zone, shelf, in_stock, unavailable "
+            "FROM cb_books ORDER BY zone, title_kr"
+        ))
+    except Exception as exc:                      # noqa: BLE001 — 원인을 그대로 전달한다
+        logging.getLogger(__name__).warning("cb_books 를 읽지 못했습니다: %s", exc)
+        return {"books": [], "reason":
+                "도서 목록을 읽지 못했습니다 — aba_service 의 cb_books 테이블이 없습니다. "
+                "회원/사서 웹(aba_service)을 먼저 띄우거나 DB 를 마이그레이션하세요."}
     return {"books": [dict(r) for r in rows.mappings()]}
 
 

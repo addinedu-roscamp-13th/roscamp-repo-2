@@ -152,8 +152,17 @@ tmux new-session -d -s "$SESSION" -n urls \
 # ── 1) AI 추종 서버 ────────────────────────────────────────────────────────
 if [ "$WITH_AI" = true ]; then
   echo "[libi_laptop] ── AI 추종 서버 (앞캠 UDP:$VIDEO_PORT → 뷰어 :$VIEWER_PORT → $ROBOT 주행)"
+  # ⚠️ **ROS 를 소싱하고 로봇 도메인을 물려준다.** AI 서버는 원래 ROS 를 전혀 모른 채로
+  #    돌았는데, 그러면 로봇이 내는 두 가지를 못 듣는다:
+  #      · `/libi/camera_select` — 앞↔뒤 전환. 모르면 ByteTrack id 를 시점이 통째로 바뀐
+  #        프레임에 이어 붙이고, 전환 직후 재학습 창(`REGISTRATION_LEARN_SEC`)도 안 열려
+  #        뒷캠에서 owner 를 못 잡는다(노란 예측 박스만 나온다).
+  #      · `/libi/perception_role` — 지금 추종인가 길잡이인가. 모르면 길잡이에서도 자세를
+  #        재고 **골격을 JPEG 에 구워** 패널로 보낸다(패널은 그 그림을 못 끈다).
+  #    레포 `.venv` 는 `include-system-site-packages = true` 라 소싱만 하면 rclpy 가 잡힌다.
+  #    못 붙어도 죽지 않는다 — perception_server 가 경고만 찍고 예전대로 돈다.
   tmux new-window -t "$SESSION" -n ai \
-    bash -c "cd '$REPO_ROOT' && VIDEO_PORT='$VIDEO_PORT' VIEWER_PORT='$VIEWER_PORT' ./scripts/laptop/ai_follower_service.sh '$ROBOT'$AI_EXTRA; exec bash"
+    bash -c "cd '$REPO_ROOT' && [ -f /opt/ros/jazzy/setup.bash ] && . /opt/ros/jazzy/setup.bash; ROS_DOMAIN_ID='$DOMAIN_ID' VIDEO_PORT='$VIDEO_PORT' VIEWER_PORT='$VIEWER_PORT' ./scripts/laptop/ai_follower_service.sh '$ROBOT' --camera-topic /libi/camera_select$AI_EXTRA; exec bash"
 fi
 
 # [2026-07-29] 뒷캠 **수신 창을 없앴다.** 받을 게 없었다.

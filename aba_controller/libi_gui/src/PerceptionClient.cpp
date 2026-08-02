@@ -35,6 +35,11 @@ PerceptionClient::PerceptionClient(QObject *parent) : QObject(parent) {
     connect(&m_sock, &QTcpSocket::connected, this, &PerceptionClient::onConnected);
     connect(&m_sock, &QTcpSocket::disconnected, this, &PerceptionClient::onDisconnected);
     connect(&m_sock, &QTcpSocket::readyRead, this, &PerceptionClient::onReadyRead);
+    // 예약된 reset 이 **실제로 다 나갔을 때만** 예약을 지운다 (resetTarget 머리말).
+    connect(&m_sock, &QTcpSocket::bytesWritten, this, [this](qint64) {
+        if (m_pendingReset && m_sock.bytesToWrite() == 0)
+            m_pendingReset = false;
+    });
     // 연결 실패도 재시도로 이어져야 한다 — AI 서버가 GUI 보다 늦게 떠도 알아서 붙는다.
     connect(&m_sock, &QAbstractSocket::errorOccurred,
             this, [this](QAbstractSocket::SocketError) {
@@ -68,6 +73,10 @@ void PerceptionClient::onConnected() {
     m_buf.clear();
     m_connected = true; emit connectedChanged();
     setStatus(QStringLiteral("연결됨 — %1").arg(endpoint()));
+    // 끊겨 있는 동안 예약된 등록 초기화를 지금 보낸다 (resetTarget 머리말 참고).
+    // 플래그는 여기서 안 지운다 — 실제로 다 나간 것을 확인하는 onBytesWritten 이 지운다.
+    if (m_pendingReset && sendCommand("reset\n"))
+        setStatus(QStringLiteral("연결됨 — 예약된 등록 초기화를 보냈습니다."));
 }
 
 void PerceptionClient::onDisconnected() {
@@ -153,14 +162,34 @@ bool PerceptionClient::takeFrame(QByteArray &payload) {
 }
 
 void PerceptionClient::registerTarget() { sendCommand("register\n"); }
-void PerceptionClient::resetTarget()    { sendCommand("reset\n"); }
 
-void PerceptionClient::sendCommand(const char *cmd) {
+// ⚠️ [2026-08-02] **reset 은 끊겨 있어도 버리면 안 된다.**
+//
+//   `reset` 은 "이전 사람의 등록을 지워라"는 뜻이다. 이게 유실되면 AI 서버가 옛
+//   ReID/HSV 템플릿을 그대로 들고 있어서, **다음에 추종을 켜면 등록하지 않았는데도
+//   옛 사람을 알아서 따라간다**(사용자 보고 2026-08-02). 추종은 보통 세션이 끝나는
+//   시점에 해제되는데, 그때가 정확히 소켓이 끊기기 쉬운 순간이다.
+//
+//   `register` 와 달리 지연 재전송이 안전하다: register 는 "지금 화면 가운데 사람"을
+//   집는 것이라 늦게 도착하면 **엉뚱한 사람이 등록된다.** reset 은 비우는 일이라
+//   늦어도 결과가 같고, 두 번 실행돼도 무해하다(멱등).
+//   ⚠️ 예약을 **보내기 전에** 세운다. `write()` 는 OS 로 넘겼다는 뜻이 아니라 Qt
+//      송신 큐에 넣었다는 뜻일 뿐이라, 그 직후 연결이 끊기면 바이트가 조용히 사라진다
+//      (codex 지적 2026-08-02). 그래서 "썼으니 됐다"로 지우지 않고, **실제로 다 나갔을
+//      때**(`bytesWritten` 에서 `bytesToWrite()==0`) 지운다. 재연결 때 한 번 더 가도
+//      reset 은 멱등이라 무해하다 — 유실보다 중복이 낫다.
+void PerceptionClient::resetTarget() {
+    m_pendingReset = true;
+    if (!sendCommand("reset\n"))
+        setStatus(QStringLiteral("연결이 끊겨 등록 초기화를 예약했습니다 — 연결되면 보냅니다."));
+}
+
+bool PerceptionClient::sendCommand(const char *cmd) {
     if (m_sock.state() != QAbstractSocket::ConnectedState) {
         setStatus(QStringLiteral("연결되지 않아 명령을 보내지 못했습니다."));
-        return;
+        return false;
     }
-    m_sock.write(cmd);
+    return m_sock.write(cmd) >= 0;
 }
 
 void PerceptionClient::setStatus(const QString &s) {

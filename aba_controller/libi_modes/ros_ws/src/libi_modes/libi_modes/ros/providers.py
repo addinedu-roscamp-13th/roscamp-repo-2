@@ -106,6 +106,8 @@ class RosProviders:
         self._arm_args = None
         #: 그 팔 명령의 `/fleet_cmd` id. 완료 결과를 이 id 로 올려야 FMS 가 다리를 닫는다.
         self._arm_cmd_id = None
+        #: 지금 도는 `guide` 홉의 `/fleet_cmd` id — 위 `_on_cmd` 의 ⚠️ 주석 참고.
+        self._guide_cmd_id = None
         self._robot_pose = None
         self._command_received_at = 0.0
         self._ui_last_touch_at = 0.0
@@ -264,6 +266,15 @@ class RosProviders:
                 return
             # guide 는 이름을 그대로 둔다 — GuideExec.handles 와 같아야 잡힌다.
             self._active_command = action if action in self._guide_actions else "navigate"
+            # ⚠️ [2026-08-02] **길잡이 홉의 id 를 보관한다 — 팔(`_arm_cmd_id`)과 같은 이유.**
+            #
+            #   길잡이가 교통관제를 타면서 `guide` 는 "최종 목적지 하나"가 아니라
+            #   **fleet_node 가 허가한 홉의 연속**이 됐다. 요청자를 놓치면 그 홉을
+            #   `/fleet_cmd_result{ok:false}` 로 닫아야 FMS 가 예약을 풀고 로봇을
+            #   붙잡는다(RobotHold). 그 회신은 **FMS 가 보낸 그 id** 여야 한다.
+            #   `navigate` 는 여기 해당 없다 — NavigationExec 은 도착으로 닫는다.
+            if action in self._guide_actions:
+                self._guide_cmd_id = str(cmd.get("id") or "")
         elif action in self._mission_actions:
             # ⚠️ **자기 메아리를 조심한다.** BT 드라이버도 같은 `/fleet_cmd` 로 실행 층
             #    액션(`goal`)을 발행하고, 이 노드가 그걸 도로 구독한다. 그때 무조건
@@ -356,6 +367,7 @@ class RosProviders:
             "nav_target": lambda: self._nav_target,
             "arm_args": lambda: self._arm_args,
             "arm_cmd_id": lambda: self._arm_cmd_id,
+            "guide_cmd_id": lambda: self._guide_cmd_id,
             "robot_pose": lambda: self._robot_pose,
             "requester_visible": self._fresh_requester_visible,
             "requester_seen_at": lambda: self._requester_seen_at,

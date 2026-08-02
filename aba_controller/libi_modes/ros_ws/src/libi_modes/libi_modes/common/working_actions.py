@@ -303,7 +303,7 @@ class GuideExec(NavigationExec):
                  arrive_timeout_sec: float, coast_sec: float, wait_sec: float,
                  stop_driver=None, watch_driver=None, far_area_min: float = 0.0,
                  near_area_max: float = 0.0, junctions=None,
-                 junction_hold_sec: float = 0.0,
+                 junction_hold_sec: float = 0.0, result_fn=None,
                  name: str | None = None, now_fn=time.monotonic):
         super().__init__(driver, arrive_tolerance, arrive_resend_sec, arrive_timeout_sec,
                          name=name or "GuideExec", now_fn=now_fn)
@@ -326,6 +326,9 @@ class GuideExec(NavigationExec):
         #: 갈림길 좌표 집합. 여기 닿으면 잠깐 서서 확인한다.
         self.junctions = junctions
         self.junction_hold_sec = junction_hold_sec
+        #: `result_fn(cmd_id, ok, msg)` — 이 홉의 결과를 `/fleet_cmd_result` 로 올린다.
+        #: 주입 안 하면(시험·팔 없는 배포) 아무 데도 안 알린다.
+        self.result_fn = result_fn
         self._halted = False
         self._watching = False
         self._junction_until = None
@@ -343,6 +346,12 @@ class GuideExec(NavigationExec):
         self._stop_acked = False
         #: 감시 세션을 마지막으로 재발행한 시각. 살아 있다는 신호다 — 위 주석.
         self._watch_renewed_at = None
+        #: 이번 소실에서 **어느 홉 id 로** 알렸나. 20Hz 로 같은 결과를 쏟으면 FMS 가
+        #: 같은 홉을 반복해서 닫으므로 한 번만 보낸다.
+        #: ⚠️ bool 이 아니라 **id** 를 들고 있는 이유: 소실 중에도 FMS 가 새 홉을 내릴 수
+        #:    있는데(늦게 도착한 명령), 그때 래치가 bool 이면 새 홉은 영영 못 닫는다.
+        #:    id 가 바뀌면 **새 사건**으로 본다(codex 검토 2026-08-02 P1).
+        self._lost_reported_id = None
 
     def setup(self, **kwargs):
         super().setup(**kwargs)
@@ -350,6 +359,7 @@ class GuideExec(NavigationExec):
         self.blackboard.register_key(key=Keys.REQUESTER_SEEN_AT, access=Access.READ)
         self.blackboard.register_key(key=Keys.REQUESTER_AREA, access=Access.READ)
         self.blackboard.register_key(key=Keys.GUIDE_SEARCH_FAILED, access=Access.READ)
+        self.blackboard.register_key(key=Keys.GUIDE_CMD_ID, access=Access.READ)
         self.blackboard.register_key(key=Keys.COMMAND_RECEIVED_AT, access=Access.READ)
         self.blackboard.register_key(key=Keys.NEXT_MODE, access=Access.WRITE)
         # 유지 시간(HOLD_UNTIL)을 뚫으려면 이 표시가 필요하다 — `_release` 주석.
@@ -601,6 +611,8 @@ class GuideExec(NavigationExec):
             # **정지가 먼저다.** `_halt()` 가 `mission_stop` 을 내 nav2 를 끊고, 그 뒤에야
             # 바퀴를 회복 트리에 넘긴다. 뒤집으면 둘이 같이 `/cmd_vel` 을 민다.
             self._halt()
+            # 놓쳤다는 사실을 FMS 에 알린다(홉을 실패로 닫는다) — `_report_lost` 주석.
+            self._report_lost()
             # 대기까지 다 지난 **놓쳤다고 판정한** 경우에만 회복 회전을 허가한다.
             #
             # ⚠️ **확인 전(`_never_confirmed`)에는 절대 허가하지 않는다.**
@@ -621,6 +633,8 @@ class GuideExec(NavigationExec):
         # 여기까지 왔으면 요청자가 보인다 — 회전 허가를 거둔다. 안 거두면 `follow_node`
         # 가 계속 `/cmd_vel` 을 낼 수 있고, nav2 와 두 주체가 같은 토픽을 민다.
         self._allow_rotate(False)
+        # 다시 보인다 = 다음 소실은 **새 사건**이다. 래치를 풀어 그때 또 보고할 수 있게 한다.
+        self._lost_reported_id = None
 
         area = bb.get(self.blackboard, Keys.REQUESTER_AREA)
         if self._too_far(area) or self._too_near(area):
@@ -738,6 +752,30 @@ class GuideExec(NavigationExec):
         self._rotate_allowed = False
         self._stop_acked = False
         self._watch_renewed_at = None
+        self._lost_reported_id = None
+
+    def _report_lost(self):
+        """이 홉을 **실패로 닫는다** — FMS 가 예약을 풀고 로봇을 붙잡게.
+
+        길잡이가 교통관제를 타면서 `guide` 는 fleet_node 가 허가한 홉의 연속이 됐다.
+        요청자를 놓친 순간 그 홉은 더 못 간다 — 그런데 아무 말도 안 하면 FMS 는 계속
+        "가는 중" 으로 알고 **그 로봇 몫으로 잡아 둔 노드·간선을 안 놓는다.** 다른
+        로봇이 그 길을 못 쓴다.
+
+        ⚠️ **같은 홉 id 로는 한 번만** 보고한다(`_lost_reported_id`). 20Hz 로 같은 id 를
+           쏟으면 FMS 가 같은 홉을 반복해서 닫고, 그때마다 재배차가 튄다.
+
+        ⚠️ `ok=false` 는 "실패했다" 이지 "안내가 끝났다" 가 아니다. 회복 BT 가 사람을
+           다시 찾으면 FMS 가 **새 홉**을 내려준다(새 id). 안내 자체의 끝은
+           `guide_search_failed` 가 정한다.
+        """
+        if self.result_fn is None:
+            return
+        cmd_id = bb.get(self.blackboard, Keys.GUIDE_CMD_ID)
+        if not cmd_id or cmd_id == self._lost_reported_id:
+            return
+        self._lost_reported_id = cmd_id
+        self.result_fn(cmd_id, False, "requester_lost")
 
     def _halt(self):
         if self._halted:

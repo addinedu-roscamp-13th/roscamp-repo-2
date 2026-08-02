@@ -29,6 +29,20 @@ struct PlanRequest
   int priority{0};
 };
 
+// 반복해서 계획 마감을 못 지킨 간선. **막지 않고 비싸게 만든다.**
+//
+// ⚠️ 막으면(blocked) 그래프가 끊길 수 있다 — 순회 루프는 고리 하나라 간선 한 줄만
+//    빼도 반대편으로 돌아가는 길이 없어지고, 그러면 시간표가 통째로 실패한다
+//    ("시간표를 세우지 못했습니다" → 편대 전체가 반응형으로 내려간다).
+//    비용만 올리면 **대안이 있을 때만** 갈아타고, 없으면 그 길로 계속 간다.
+//    "이 길이 실제로 느리다"는 관측을 모델에 되먹이는 것이지 통행 금지가 아니다.
+struct SlowEdge
+{
+  int from{-1};
+  int to{-1};
+  int extra_ticks{0};   // 이 간선 통과 비용에 더할 틱
+};
+
 struct PlanSnapshot
 {
   const Navgraph * graph{nullptr};
@@ -36,6 +50,8 @@ struct PlanSnapshot
   // 계획에 참여하지 않지만 자리를 차지하는 정점(수동 정지·오프라인 로봇 등).
   // 계획은 이 정점들을 영구 장애물로 보고 피해 간다.
   std::vector<int> blocked;
+  // 마감을 반복해서 못 지킨 간선(방향 있음). 비었으면 예전과 완전히 같은 동작이다.
+  std::vector<SlowEdge> slow_edges;
 };
 
 struct PlannedRoute

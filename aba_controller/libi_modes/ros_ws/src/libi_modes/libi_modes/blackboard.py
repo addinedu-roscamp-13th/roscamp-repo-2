@@ -48,6 +48,12 @@ class Keys:
     #    이제 회복이 스스로 "끝났다"고 말한다 — 근거는 libi_perception config 의 그 토픽 주석.
     #    감시가 안 돌거나 발행이 끊기면 None 이고, 그때는 끝난 것으로 치지 않는다.
     GUIDE_SEARCH_FAILED = "guide_search_failed"
+    # 지금 도는 `guide` 명령의 `/fleet_cmd` **id**. 요청자를 놓쳤을 때 이 id 로
+    # `/fleet_cmd_result{ok:false}` 를 올려 **그 홉을 닫는다** — 그래야 FMS 가 예약을
+    # 풀고 로봇을 붙잡아(RobotHold) 다른 로봇 길을 막지 않는다.
+    # ⚠️ `ARM_CMD_ID` 와 같은 규칙이다: FMS 는 **자기가 보낸 id** 로만 대조하므로 다른
+    #    값을 쓰면 조용히 무시되고 다리가 영영 안 닫힌다.
+    GUIDE_CMD_ID = "guide_cmd_id"
     COMMAND_RECEIVED_AT = "command_received_at"
     DOCK_RETRY_COUNT = "dock_retry_count"
     #: 이번 도킹에 대한 undock 을 이미 했나. **원샷 래치**다.

@@ -223,6 +223,9 @@ class FsmNode(Node):
             # 요청자를 놓쳤을 때 **실제로 멈추는** 수단. mission_stop → ros_bridge.cancel_nav().
             # 이게 없으면 GuideExec 은 "기다리는 중"만 표시하고 로봇은 계속 달린다.
             "guide_stop": FleetCmdDriver(self, "mission_stop").bind(cmd_pub),
+            # 요청자를 놓쳤다고 **FMS 에 알리는** 통로. 그 홉을 실패로 닫아야 FMS 가
+            # 예약을 풀고 로봇을 붙잡는다 — `GuideExec._report_lost` 주석.
+            "guide_result": self._publish_cmd_result,
             # 뒷캠 감시 세션. 이게 없으면 `/libi/requester_visible` 발행자가 없어
             # GuideExec 이 "감시 없음 → 그냥 주행"으로 읽고, 사람을 놓쳐도 계속 간다.
             # stop_action: 세션만 닫고 **주행은 안 끊는다** (FleetCmdDriver 주석 참고).
@@ -456,6 +459,25 @@ class FsmNode(Node):
         self.get_logger().warning(
             "[디버그] 배터리 자동 전이 OFF — 저전력 복귀·자동 순회 시작이 뜨지 않는다. "
             "복귀는 관제 UI 에서 직접 명령할 것.")
+
+    def _publish_cmd_result(self, cmd_id: str, ok: bool, msg: str) -> None:
+        """`/fleet_cmd_result` 로 임의의 명령 결과를 올린다.
+
+        `_publish_arm_result` 와 같은 모양이다 — 다른 건 id 를 **인자로 받는다**는 점뿐.
+        팔은 blackboard 에 하나뿐인 `ARM_CMD_ID` 를 쓰지만, 길잡이는 홉마다 id 가 달라서
+        부르는 쪽이 자기 id 를 알고 있다.
+
+        `status` 200/500 은 robot_agent 의 `publish_result` 와 같은 모양을 유지하려는
+        것이다 — FMS 쪽 소비자(`on_cmd_result`)가 한 형태만 알면 되게.
+        """
+        if not cmd_id or self._result_pub is None:
+            self.get_logger().warning(
+                f"명령 결과를 올릴 수 없다 (id={cmd_id!r}) — 관제가 그 홉을 못 닫는다")
+            return
+        self._result_pub.publish_json({"id": str(cmd_id), "ok": bool(ok),
+                                       "status": 200 if ok else 500,
+                                       "data": None, "msg": str(msg or "")})
+        self.get_logger().info(f"명령 결과 보고 cmd={cmd_id} ok={ok} {msg}")
 
     def _publish_arm_result(self, ok: bool, msg: str) -> None:
         """팔 동작이 끝났다고 `/fleet_cmd_result` 로 올린다 — **완료를 아는 쪽이 답한다.**

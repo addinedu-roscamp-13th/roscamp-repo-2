@@ -53,6 +53,34 @@ namespace
 // 10 초면 20 프레임을 놓친 것이라 오탐이 아니다.
 // 이 파일에서만 쓴다 — fleet_task.hpp 로 내보내지 않는다.
 constexpr double kRobotStaleSec = 10.0;
+
+// 로봇 소식이 이만큼 끊기면 **그 로봇의 task 를 거두고 예약도 푼다.**
+//
+// ⚠️ `kRobotStaleSec`(10초)보다 훨씬 길게 잡는다. 10초는 "새 일감을 주지 않는다" 는
+//    판단에 쓰는 값이라 짧아도 되지만, 예약 해제는 **되돌릴 수 없는 결정**이다.
+//    브릿지가 잠깐 끊겼다 붙는 정도로 예약을 풀면, 그 노드에 실제로 서 있는 로봇을
+//    향해 다른 로봇을 보내게 된다.
+//
+// ⚠️ 그렇다고 영원히 안 풀 수도 없다. 실측 2026-08-02: sim 로봇을 내렸는데
+//    `[P-pinky-2] 시간표 재계획` 이 5초마다 계속 돌고 그 유령이 노드를 잡고 있었다 —
+//    살아 있는 로봇의 경로가 그만큼 좁아진다. 아무도 안 푸는 예약은 결국 교통을 막는다.
+//
+//    그래서 **충분히 오래** 기다린 뒤 자동으로 거둔다. 로봇이 돌아오면 `/robot_state`
+//    가 다시 오고 순회 루프가 새 task 를 준다 — 복구도 자동이다.
+constexpr double kGhostTaskSec = 60.0;
+
+// ── 반복 지연 간선에 붙이는 벌점 ────────────────────────────────────────────
+//
+// 재계획은 원래 **같은 길을 다시 낸다** — 회피 대상에 들어가는 건 ERROR 로봇뿐이라
+// "저 길이 실제로 느리다"는 관측이 모델에 되먹여지지 않았다. 그래서 지연 → 재계획 →
+// 같은 경로 → 또 지연이 돈다. 그 고리를 끊는다.
+//
+// 3회: 1~2회는 사람이 잠깐 지나갔거나 리로컬라이제이션이 튄 것일 수 있다. 3회 연속
+//      같은 간선에서 마감을 놓치면 우연이 아니라 그 길의 성질이다.
+// 120초: 마지막 실패 뒤 이만큼 조용하면 잊는다. 치운 장애물 때문에 영원히 돌아가는
+//        일이 없게 한다. 순회 한 바퀴(≈10정점 × 몇 초)보다 넉넉하다.
+constexpr int kSlowEdgeMisses = 3;
+constexpr double kSlowEdgeTtlSec = 120.0;
 }  // namespace
 
 namespace libi_fleet
@@ -149,7 +177,14 @@ public:
     // ── 시간 계획(CBS) 재계획 정책 ─────────────────────────────────────────
     // 계획 도착 시각을 이만큼 넘기면 그 시간표는 이미 틀렸다고 본다. 장애물 회피·감속으로
     // 몇 초 밀리는 것은 정상이라 0 으로 두면 재계획만 반복한다.
-    plan_deadline_slack_ = declare_parameter<double>("plan_deadline_slack", 3.0);
+    //
+    // ⚠️ **CbsTraffic 의 지연 문턱(drift_limit_, 기본 10틱)과 같은 값으로 둔다.**
+    //    예전엔 3.0 이라, 교통 계층은 아직 "계획대로 가는 중" 으로 보고 통과를 열어 주는
+    //    +3~10초 구간에서 fleet_node 만 혼자 "마감 초과" 로 재계획을 걸었다. 실측 2026-08-02:
+    //    순회 경로가 5~10초마다 새로 짜였다. 재계획은 `t.path` 를 통째로 다시 쓰므로
+    //    (apply_plan 의 `t.path = np`) 그 빈도가 곧 랩이 흔들리는 빈도다.
+    //    두 문턱을 맞추면 "예약 창(±10초)을 실제로 깬 뒤에야 다시 짠다" 가 된다.
+    plan_deadline_slack_ = declare_parameter<double>("plan_deadline_slack", 10.0);
     // 재계획 최소 간격(틱). 매 틱 CBS 를 돌리면 관제가 그것만 하게 된다.
     replan_cooldown_ticks_ = declare_parameter<int>("replan_cooldown_ticks", 20);
 
@@ -484,6 +519,9 @@ private:
       for (const auto & kv : robots_) {
         const std::string m = mode_of(kv.first);
         if (!is_dispatchable(m)) { continue; }
+        // 소식이 끊긴 로봇은 경매 후보에서 뺀다. 옛 좌표로 낙찰되면 주문이
+        // 유령에게 가고, 그 주문은 아무도 수행하지 않는다(`state_stale` 머리말).
+        if (state_stale(kv.first)) { continue; }
         RobotInfo ri = kv.second;
         if (is_on_patrol(kv.first)) { ri.busy = false; }   // 순회는 중단 가능 → 경매 후보에 포함
         snapshot.push_back(ri);
@@ -603,6 +641,7 @@ private:
         snap.blocked.push_back(graph_.nearest(kv.second.x, kv.second.y));
       }
     }
+    snap.slow_edges = slow_edges_now();
 
     std::vector<ActiveTask *> planned;
     std::set<int> taken_goals;   // 이번 스냅샷에서 이미 누가 목표로 잡은 정점
@@ -753,7 +792,29 @@ private:
       //    다음 틱에 "1바퀴 완주" 로 오인돼 랩이 계속 재생성된다.
       if (t.patrol) {
         t.plan_end_idx = static_cast<int>(np.size()) - 1;
-        for (size_t k = t.idx + 2; k < t.path.size(); ++k) {
+        // ⚠️ **꼬리는 "계획이 실제로 도달한 정점" 다음부터** 잇는다. `t.idx + 2` 로 고정하면
+        //    안 된다 — 순회 목표는 보통 `idx+1` 이지만 다른 순회 로봇과 겹치면 랩을 따라
+        //    **더 뒤로 밀린다**(위 taken_goals 분기). 그때 그 사이 정점들이 계획 구간과
+        //    꼬리에 **두 번** 들어가, 랩이 `… 12 14 10 | 14 10 9 …` 처럼 되고 다음 재계획이
+        //    그 위에 또 쌓인다. 화면에서는 "순회 경로가 지 멋대로 바뀐다" 로 보인다.
+        //    (순회 로봇이 둘 이상일 때만 터져 1대 시험에서는 안 드러났다. 유령 task 도
+        //     같은 조건을 만든다 — 꺼진 로봇이 순회 task 를 들고 있으면 목표가 겹친다.)
+        //
+        //    인덱스를 기억해 두지 않고 **경로에서 되찾는다**. 탐색은 콜백 밖에서 도는데
+        //    그동안 `t.idx` 가 전진할 수 있어, 요청 시점에 계산한 인덱스는 결과가 올 때
+        //    이미 낡아 있을 수 있다. `np.back()`(=계획 목표)을 현재 idx 부터 찾으면
+        //    그 어긋남에 영향받지 않는다. (계산은 patrol_tail_index — 시험이 붙어 있다)
+        const size_t tail = patrol_tail_index(t.path, t.idx, np.back());
+        // CBS 가 지름길로 canonical 정점을 건너뛰었으면 그 정점은 이번 랩에서 순회되지
+        // 않는다. 조용히 넘기지 않고 로그로 남긴다 — arte2 지도에는 v13-v10 현(弦)이 실제로
+        // 있어(랩은 13→12→14→10) 목표가 멀리 밀리면 12·14 가 통째로 빠질 수 있다.
+        for (size_t k = t.idx; k + 1 < tail && k < t.path.size(); ++k) {
+          if (std::find(np.begin(), np.end(), t.path[k]) == np.end()) {
+            RCLCPP_WARN(get_logger(), "[%s] %s ⚠ 계획이 순회 정점 v%d 를 건너뛰었습니다(지름길)",
+                        t.id.c_str(), t.robot.c_str(), t.path[k]);
+          }
+        }
+        for (size_t k = tail; k < t.path.size(); ++k) {
           np.push_back(t.path[k]);
           na.push_back(-1);            // 이어 붙인 꼬리에는 마감이 없다
         }
@@ -847,12 +908,59 @@ private:
              std::chrono::steady_clock::now().time_since_epoch()).count();
   }
 
+  // ── 반복해서 마감을 못 지킨 간선을 기억한다 ───────────────────────────────
+  //
+  // 재계획은 **원래 같은 길을 다시 낸다.** 회피 대상(`blocked`)에 들어가는 건
+  // `is_immobile`(ERROR) 로봇뿐이라, "저 길이 실제로 느리다"는 관측이 모델에 전혀
+  // 되먹여지지 않았다. 그래서 지연 → 재계획 → **같은 경로** → 또 지연이 돌았다.
+  //
+  // ⚠️ **막지 않고 비싸게 만든다**(traffic_base.hpp `SlowEdge` 머리말). 순회 루프는
+  //    고리 하나라 간선 한 줄만 빼도 반대편 길이 없어져 시간표가 통째로 실패한다.
+  //    비용만 올리면 대안이 있을 때만 갈아타고, 없으면 그 길로 계속 간다.
+  //
+  // ⚠️ 벌점은 **잊힌다.** 사람이 잠깐 서 있었던 복도가 영원히 비싸지면, 치우고 난
+  //    뒤에도 로봇이 계속 돌아간다. 마지막 실패 뒤 TTL 이 지나면 항목을 버린다.
+  void note_deadline_miss(int from, int to)
+  {
+    if (from < 0 || to < 0 || from == to) { return; }
+    auto & e = edge_miss_[{from, to}];
+    e.first++;              // 연속 실패 횟수
+    e.second = now_sec();   // 마지막 실패 시각
+    if (e.first == kSlowEdgeMisses) {
+      RCLCPP_WARN(get_logger(),
+                  "[traffic] v%d→v%d 가 %d회 연속 마감을 못 지켰다 → 재계획에서 +%d틱 벌점(막지 않음)",
+                  from, to, kSlowEdgeMisses, drift_penalty_ticks());
+    }
+  }
+
+  // 제때 도착했으면 그 간선의 기록을 지운다. 한 번의 사고로 영구히 미움받지 않게.
+  void note_deadline_kept(int from, int to) { edge_miss_.erase({from, to}); }
+
+  int drift_penalty_ticks() const
+  {
+    return traffic_ ? std::max(1, traffic_->drift_limit()) : 10;
+  }
+
+  std::vector<SlowEdge> slow_edges_now()
+  {
+    std::vector<SlowEdge> out;
+    const double now = now_sec();
+    for (auto it = edge_miss_.begin(); it != edge_miss_.end(); ) {
+      if (now - it->second.second > kSlowEdgeTtlSec) { it = edge_miss_.erase(it); continue; }
+      if (it->second.first >= kSlowEdgeMisses) {
+        out.push_back({it->first.first, it->first.second, drift_penalty_ticks()});
+      }
+      ++it;
+    }
+    return out;
+  }
+
   // 계획 도착 시각을 넘겼나. 넘겼으면 그 시간표는 이미 남의 통과를 잘못 열어 주고 있다.
   //
   // ⚠️ 로봇이 늦는 것 자체는 막을 수 없다(장애물 회피·감속·리로컬라이제이션). 막을 수 있는 건
   //    **늦은 걸 모르는 것**이다. 계획은 "이 정점을 이 시각에 비운다"를 전제로 남에게 통과를
   //    열어 줬으므로, 그 전제가 깨진 순간 다시 짜야 한다.
-  void check_plan_deadline(const ActiveTask & t)
+  void check_plan_deadline(ActiveTask & t)
   {
     if (t.plan_arrive.empty() || t.idx >= t.plan_arrive.size()) { return; }
     if (t.plan_arrive[t.idx] < 0) { return; }   // 마감 없음(재계획 시점에 이미 이동 중이던 칸)
@@ -869,7 +977,44 @@ private:
                   t.id.c_str(), t.robot.c_str(), t.path[t.idx], t.plan_arrive[t.idx],
                   now_sec() - due + plan_deadline_slack_, t.idx, dbg.c_str());
     }
+    // 어느 **간선**이 마감을 못 지켰나 — 다음 재계획이 그 길을 비싸게 보게 한다.
+    // 매 틱 부르므로 마감 하나당 한 번만 센다(`missed_idx` 로 중복을 막는다).
+    if (t.idx >= 1 && static_cast<int>(t.idx) != t.missed_idx) {
+      t.missed_idx = static_cast<int>(t.idx);
+      note_deadline_miss(t.path[t.idx - 1], t.path[t.idx]);
+    }
     replan_requested_ = true;
+  }
+
+  // 이 로봇의 위치 정보가 낡았나. `/robot_state` 를 마지막으로 받은 지
+  // `kRobotStaleSec` 이 지났거나, 한 번도 못 받았으면 참이다.
+  //
+  // ## ⚠️ [2026-08-02] 왜 이걸 **새 일감 배정**에서 봐야 하나
+  //
+  // `robots_` 는 `/robot_state` 로만 채워지고 **어디서도 제거되지 않는다**(on_timer 주석).
+  // 그래서 로봇을 꺼도 목록에 남고, 아래 순회 루프가 `mode == "PATROL"` 만 보고
+  // **꺼진 로봇에게 순회를 다시 배정**했다. 실측 2026-08-02: pinky-3 의 Pi 를 완전히
+  // 내린 뒤에도 "[P-pinky-3] 순회 시작" 이 찍혔다. 그 유령이 노드를 예약하면
+  // **살아 있는 로봇의 길을 막는다** — 경고만 찍고 넘어갈 문제가 아니다.
+  //
+  // ⚠️ **기존 예약을 여기서 풀지는 않는다.** 통신이 끊긴 것과 로봇이 그 자리에서
+  //    사라진 것은 다르다. 마지막 예약 노드에 실제로 서 있을 수 있고, 그걸 말없이
+  //    풀면 다른 로봇을 그 자리로 보내게 된다. 막는 것은 **새로 주는 일**뿐이다.
+  //    (해제는 사람이 확인한 뒤 명시적으로 해야 한다 — 후속 과제)
+  // 소식이 끊긴 지 `sec` 을 넘었나. `state_stale` 은 `kRobotStaleSec` 고정이고
+  // 이건 호출부가 기준을 정한다 — 새 배정(10초)과 예약 해제(60초)는 기준이 달라야 한다.
+  bool state_stale_for(const std::string & name, double sec) const
+  {
+    auto it = last_state_at_.find(name);
+    if (it == last_state_at_.end()) { return true; }
+    return (now() - it->second).seconds() > sec;
+  }
+
+  bool state_stale(const std::string & name) const
+  {
+    auto it = last_state_at_.find(name);
+    if (it == last_state_at_.end()) { return true; }   // 한 번도 못 받았다
+    return (now() - it->second).seconds() > kRobotStaleSec;
   }
 
   void on_timer()
@@ -936,6 +1081,8 @@ private:
     for (auto & kv : robots_) {
       RobotInfo & r = kv.second;
       if (r.busy) { continue; }
+      // 소식이 끊긴 로봇에는 새 순회를 주지 않는다 — 근거는 `state_stale` 머리말.
+      if (state_stale(r.name)) { continue; }
       bool has = false;
       for (const auto & t : tasks_) { if (t.robot == r.name) { has = true; break; } }
       if (has) { continue; }
@@ -948,6 +1095,64 @@ private:
     for (auto it = tasks_.begin(); it != tasks_.end();) {
       ActiveTask & t = *it;
       RobotInfo & r = robots_[t.robot];
+
+      // ── 소식이 끊긴 로봇의 task 는 **거두고 예약도 푼다** ────────────────
+      //
+      // [2026-08-02] `state_stale` 은 **새 배정만** 막고 기존 task 는 놔뒀다(그 주석의
+      // "해제는 사람이 확인 후 — 후속 과제"). 그런데 실측에서 그 유령에 재계획이
+      // 계속 돌고 노드 예약이 유지됐다 — 살아 있는 로봇의 길이 그만큼 막힌다.
+      //
+      // ⚠️ `kGhostTaskSec`(60초)는 `kRobotStaleSec`(10초)보다 훨씬 길다. 근거는 그 상수
+      //    머리말 — 예약 해제는 되돌릴 수 없어서 브릿지가 잠깐 끊긴 정도로 풀면 안 된다.
+      //
+      // ⚠️ 배차 task 도 거둔다. 로봇이 사라진 채로 주문을 붙들고 있으면 그 주문은
+      //    영영 안 끝난다. `FAILED` 로 알려야 orchestrator 가 다시 배차할 수 있다.
+      if (state_stale_for(t.robot, kGhostTaskSec)) {
+        RCLCPP_WARN(get_logger(),
+                    "[%s] %s ⚠ 소식 끊긴 지 %.0fs 초과 → 예약 해제·task 정리 "
+                    "(로봇이 돌아오면 새로 배정됩니다)",
+                    t.id.c_str(), t.robot.c_str(), kGhostTaskSec);
+        if (t.idx < t.path.size()) { traffic_->release_node(t.robot, t.path[t.idx]); }
+        if (t.idx >= 1) { traffic_->release_node(t.robot, t.path[t.idx - 1]); }
+        r.busy = false; r.task_id.clear();
+        publish_task_state(t.id, t.patrol ? "CANCELLED" : "FAILED", t.robot);
+        ++state_gen_;
+        it = tasks_.erase(it);
+        continue;
+      }
+
+      // ── 순회 task 는 로봇이 순회를 그만두면 **여기서 거둔다** ──────────────
+      //
+      // [2026-08-02] 순회는 `t.patrol` 이라 끝에 닿아도 "1바퀴 → 계속" 으로 순환한다.
+      // 즉 **COMPLETED 로 지워지는 길이 없다.** 그래서 로봇이 IDLE·INTERACTING 으로
+      // 떨어져도 task 가 남고, `publish_routes()` 는 조건 없이 전부 발행하므로
+      // **대기 중인 로봇에 경로가 계속 뜬다**(사용자 실측: 로봇 「대기」인데 지도에
+      // 순회 경로가 그대로였다).
+      //
+      // ⚠️ 화면에서 거르면 안 된다 — 그러면 "관제가 실제로 어떤 상태인가" 가 안 보인다.
+      //    실제로 순회를 그만둔 것이므로 **관제가 자기 장부를 정리**하는 것이 맞다.
+      //
+      // ⚠️ 예약 노드를 반드시 같이 푼다. 안 풀면 그 정점이 영원히 잠겨 다른 로봇이
+      //    못 지난다(위 stuck 분기가 같은 이유로 release_node 를 부른다).
+      //
+      // ⚠️ 배차 task(`!t.patrol`)는 건드리지 않는다. 주문은 로봇이 잠깐 응대
+      //    (INTERACTING)로 빠져도 살아 있어야 하고, 끝내는 주체는 orchestrator 다.
+      if (t.patrol) {
+        const std::string m = mode_of(t.robot);
+        const bool still_patrolling =
+          (m == "PATROL") || (m == "SECURITY_PATROL") || m.empty();
+        if (!still_patrolling) {
+          RCLCPP_INFO(get_logger(), "[%s] %s 순회 중단(상태 %s) → 예약 해제·task 정리",
+                      t.id.c_str(), t.robot.c_str(), m.c_str());
+          if (t.idx < t.path.size()) { traffic_->release_node(t.robot, t.path[t.idx]); }
+          if (t.idx >= 1) { traffic_->release_node(t.robot, t.path[t.idx - 1]); }
+          r.busy = false; r.task_id.clear();
+          publish_task_state(t.id, "CANCELLED", t.robot);
+          ++state_gen_;
+          it = tasks_.erase(it);
+          continue;
+        }
+      }
 
       const Vertex & tv = graph_.vertex(t.path[t.idx]);
       double d = std::hypot(r.x - tv.x, r.y - tv.y);
@@ -987,6 +1192,19 @@ private:
                     t.path[t.idx]);
         t.idx++;
         t.moving = false;
+        // ⚠️ **도달도 "상태가 바뀐 것" 이다.** 탐색은 콜백 밖에서 도는데(hand_to_planner)
+        //    그동안 로봇이 한 칸 더 가면, 돌아온 시간표는 **이미 지나온 정점에서 시작한다.**
+        //    `apply_planner_result` 의 세대 검사가 그런 결과를 버리는 장치인데, 예전에는
+        //    task 생성·삭제에서만 세대를 올려 도달은 통과해 버렸다. 그대로 적용하면
+        //    `t.idx = 1` 로 되감기며 로봇에게 **왔던 길을 되돌아가라**고 낸다.
+        //    (codex 2026-08-02 적대적 검토 2(c). 순회 랩 꼬리 버그와 같은 자리에서 겹친다.)
+        ++state_gen_;
+        // 마감 안에 왔으면 그 간선의 벌점 기록을 지운다 — 한 번의 사고로 영구히
+        // 미움받지 않게. `missed_idx` 가 이 칸이면 이미 늦은 것이라 지우지 않는다.
+        if (t.idx >= 1 && static_cast<int>(t.idx) != t.missed_idx) {
+          note_deadline_kept(t.path[t.idx - 1], t.path[t.idx]);
+        }
+        t.missed_idx = -1;
         t.reroutes = 0;   // 노드 도달 = 진전 → 우회 카운터 리셋
         replan_streak_ = 0;   // 진전 → 재계획 backoff 도 원복
         t.wait_ticks = 0;   // 노드 도달 = 진전 → 타임드 우회 카운터 리셋
@@ -1595,7 +1813,9 @@ private:
   std::string navgraph_file_;
   std::string fleet_name_;
   int stuck_ticks_{0};   // 0 = 무진행 감지 비활성
-  double plan_deadline_slack_{3.0};   // 계획 도착 시각을 이만큼 넘기면 재계획(초)
+  double plan_deadline_slack_{10.0};  // 계획 도착 시각을 이만큼 넘기면 재계획(초). CbsTraffic::drift_limit 과 같게
+  // 간선별 (연속 마감 실패 횟수, 마지막 실패 시각). note_deadline_miss/kept 가 관리한다.
+  std::map<std::pair<int, int>, std::pair<int, double>> edge_miss_;
   int replan_cooldown_ticks_{20};     // 재계획 최소 간격(틱)
   int replan_cooldown_{0};
   bool replan_requested_{false};      // 도착 마감 초과로 fleet_node 가 스스로 요청

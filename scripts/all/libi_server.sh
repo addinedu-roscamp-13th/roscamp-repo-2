@@ -131,6 +131,42 @@ if [ "$WITH_WEB" = true ]; then
   "$REPO_ROOT/scripts/ui/library.sh" 2>&1 | sed 's/^/[library] /'
 fi
 
+# ── 4) 각 tmux 창이 실제로 무엇을 찍었는지 보여준다 ─────────────────────────
+#
+# ⚠️ 이 스크립트는 하위 스크립트를 `| sed` 파이프에 태운다(위 주석). 그래서
+#    `tmux_attach` 가 stdout 을 TTY 로 안 보고 **안 붙는다** — 안내 한 줄만 찍는다.
+#    결과적으로 세션 안에서 벌어진 일이 통째로 안 보인다.
+#
+#    실측 2026-08-02: `fleet_node` 가 `[WARN] 로봇 상태 끊김(10s 이상): pinky-3` 을
+#    수십 번 찍고 있었는데 화면에는 "기동 완료" 만 떴다. 기동이 성공한 것과 그 안이
+#    멀쩡한 것은 다르다. 붙지 않아도 **마지막 몇 줄은 보여야** 한다.
+#
+# 이 요약은 **붙기 전에** 찍는다. 아래 5) 가 `exec tmux attach` 로 세션에 붙어 버리면
+# 그 뒤 줄은 화면에 안 남으므로, 순서가 뒤집히면 안 된다.
+# ⚠️ **`|| true` 가 전부 필요하다. 이 스크립트는 `set -eo pipefail` 이다.**
+#
+#   실측 2026-08-02: `grep -vE '^\s*$'` 가 **빈 창**(방금 떠서 아직 아무것도 안 찍은
+#   창)에서 매칭 0건이라 **종료코드 1** 을 낸다. `pipefail` 이 그걸 파이프라인 실패로
+#   올리고 `set -e` 가 스크립트를 거기서 죽인다. 결과: 첫 창 몇 줄만 찍히고
+#   **"기동 완료" 도 tmux attach 도 영영 실행되지 않았다.** 에러 메시지 한 줄 없이.
+#   (사용자 실측: 요약 두 줄 뒤 곧바로 프롬프트로 돌아왔다.)
+#
+#   `[ "$X" -gt 0 ]` 도 X 가 숫자가 아니면 실패하므로 같이 막는다.
+SERVER_TAIL="${SERVER_TAIL:-8}"
+if { [ "$SERVER_TAIL" -gt 0 ] 2>/dev/null || false; } && command -v tmux >/dev/null 2>&1; then
+  echo
+  echo "[libi_server] ── 각 창의 마지막 ${SERVER_TAIL}줄"
+  for w in $(tmux list-windows -a -F '#{session_name}:#{window_index} #{session_name}' 2>/dev/null \
+             | awk '$2 ~ /^libi_/ {print $1}' || true); do
+    body="$(tmux capture-pane -p -t "$w" 2>/dev/null | grep -vE '^\s*$' | tail -n "$SERVER_TAIL" || true)"
+    [ -n "$body" ] || continue
+    echo "  ┌─ $w"
+    printf '%s\n' "$body" | sed 's/^/  │ /' || true
+  done
+  echo "  └─"
+  echo "  (이 요약을 끄려면 SERVER_TAIL=0 ./libi_server.sh)"
+fi
+
 cat <<EOF
 
 [libi_server] 서버 스택 기동 완료
@@ -141,3 +177,36 @@ $([ "$WITH_WEB" = true ] && echo "  도서관 웹   http://localhost:3000/      
   로봇별(추종 AI·패널):  $HERE/libi_laptop.sh --robot <이름>
   정리:                  $HERE/kill-libi_server.sh   (로봇 쪽은 $HERE/kill-libi_laptop.sh)
 EOF
+
+# ── 5) tmux 에 **실제로 붙는다** ────────────────────────────────────────────
+#
+# ⚠️ 하위 스크립트들의 `tmux_attach` 는 여기서 절대 안 붙는다 — 이 스크립트가 그들을
+#    `| sed` 파이프에 태워 stdout 이 TTY 가 아니기 때문이다(위 1)~3) 주석). 그래서
+#    "[bg] … 붙으려면 tmux attach -t …" 안내만 찍히고 끝났다.
+#
+#    그 안내를 읽고 사람이 손으로 붙어야 했는데, 실제로는 아무도 안 붙어서 창 안의
+#    경고가 통째로 안 보였다(실측 2026-08-02: fleet_node 가 `로봇 상태 끊김` 을
+#    수십 번 찍는 동안 화면엔 "기동 완료" 만 떴다).
+#
+# 그래서 마지막에 이 스크립트가 직접 붙는다. 여기 stdout 은 파이프가 아니라 사용자의
+# 터미널이므로 `[ -t 1 ]` 이 참이다.
+#
+# ⚠️ 여러 세션을 하나로 합치지 않는다. `tmux link-window` 로 모으는 방법이 있지만,
+#    링크는 **원본과 같은 창을 가리키므로** 합친 세션을 정리할 때 실수로 원본까지
+#    닫을 위험이 있다. 세션 전환은 tmux 가 이미 제공한다(`Ctrl-b s`).
+#
+# 붙을 세션: 기본 libi_fms(배차·교통 — fleet_node 가 여기 있다).
+# 다른 세션을 보고 싶으면 SERVER_ATTACH=libi_ui_fms 처럼 준다. 안 붙으려면 =none.
+SERVER_ATTACH="${SERVER_ATTACH:-libi_fms}"
+if [ "$SERVER_ATTACH" != "none" ] && command -v tmux >/dev/null 2>&1 \
+   && tmux has-session -t "$SERVER_ATTACH" 2>/dev/null; then
+  if [ -t 1 ]; then
+    echo
+    echo "[libi_server] tmux '$SERVER_ATTACH' 에 붙습니다."
+    echo "              세션 전환 Ctrl-b s · 창 전환 Ctrl-b n/p · 떼기 Ctrl-b d"
+    echo "              (안 붙으려면 SERVER_ATTACH=none $0 ...)"
+    exec tmux attach -t "$SERVER_ATTACH"
+  else
+    echo "[libi_server] 비-TTY 실행이라 안 붙습니다: tmux attach -t $SERVER_ATTACH"
+  fi
+fi

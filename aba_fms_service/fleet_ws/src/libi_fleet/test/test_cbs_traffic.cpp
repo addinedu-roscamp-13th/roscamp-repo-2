@@ -434,3 +434,81 @@ TEST(CbsTraffic, MinSeparationReachesPhysicalFallback)
   EXPECT_EQ(tr3.request_move("R2", far, b, 0), MoveDecision::GRANT)
     << "규칙을 껐는데도 막혔다";
 }
+
+// ── 반복 지연 간선: **막지 않고 비싸게** ─────────────────────────────────────
+//
+// 실기 증상(2026-08-02): "지연 +24.9s 인데 재경로를 안 찾는다".
+// 찾긴 찾는데 회피 대상(`blocked`)에 ERROR 로봇만 들어가서 **같은 길이 다시 나왔다.**
+// fleet_node 가 마감을 반복해 못 지킨 간선을 `slow_edges` 로 실어 주고, 계획이 그
+// 관측을 비용에 되먹인다.
+
+TEST(CbsTrafficSlowEdge, PenalisedEdgeMakesThePlannerPickAnother) {
+  set_env(/*clearance=*/1, /*slack=*/1, /*drift_limit=*/10);
+  libi_fleet::Navgraph g;
+  ASSERT_TRUE(g.load(TEST_NAVGRAPH_PATH, "L1"));
+  libi_fleet::CbsTraffic t;
+
+  PlanSnapshot snap;
+  snap.graph = &g;
+  PlanRequest r; r.robot = "a"; r.start = 0; r.goal = 4; r.priority = 0;
+  snap.robots.push_back(r);
+
+  const auto before = t.replan(snap);
+  ASSERT_EQ(before.size(), 1u);
+  ASSERT_GE(before[0].path.size(), 2u);
+  const int first_hop = before[0].path[1];
+
+  // 그 첫 홉이 반복해서 마감을 못 지켰다고 알려 준다.
+  snap.slow_edges.push_back({0, first_hop, 10});
+  const auto after = t.replan(snap);
+  ASSERT_EQ(after.size(), 1u);
+  ASSERT_GE(after[0].path.size(), 2u);
+  EXPECT_NE(after[0].path[1], first_hop) << "벌점을 줬는데 같은 길을 다시 냈다";
+  EXPECT_EQ(after[0].path.back(), 4) << "목적지는 그대로여야 한다";
+}
+
+// ⚠️ **막는 것과 다르다.** 대안이 없으면 그 길로 그냥 간다 — 여기서 끊어 버리면
+//    시간표가 통째로 실패하고("시간표를 세우지 못했습니다") 편대 전체가 반응형으로
+//    내려간다. 느린 길이라도 있는 길이 없는 길보다 낫다.
+TEST(CbsTrafficSlowEdge, PenaltyNeverDisconnectsTheGraph) {
+  set_env(1, 1, 10);
+  libi_fleet::Navgraph g;
+  ASSERT_TRUE(g.load(TEST_NAVGRAPH_PATH, "L1"));
+  libi_fleet::CbsTraffic t;
+
+  PlanSnapshot snap;
+  snap.graph = &g;
+  PlanRequest r; r.robot = "a"; r.start = 19; r.goal = 0; r.priority = 0;
+  snap.robots.push_back(r);
+
+  const auto before = t.replan(snap);
+  ASSERT_EQ(before.size(), 1u);
+  const int first_hop = before[0].path[1];
+
+  // 19→0 은 이 첫 홉 말고 길이 없다(실측: 막으면 도달 불가).
+  snap.slow_edges.push_back({19, first_hop, 1000});
+  const auto after = t.replan(snap);
+  ASSERT_EQ(after.size(), 1u) << "대안이 없는데 계획을 포기했다 — 벌점이 통행금지가 됐다";
+  EXPECT_EQ(after[0].path[1], first_hop);
+  EXPECT_EQ(after[0].path.back(), 0);
+}
+
+// 빈 slow_edges 는 예전과 완전히 같아야 한다.
+TEST(CbsTrafficSlowEdge, EmptyListChangesNothing) {
+  set_env(1, 1, 10);
+  libi_fleet::Navgraph g;
+  ASSERT_TRUE(g.load(TEST_NAVGRAPH_PATH, "L1"));
+  libi_fleet::CbsTraffic t1, t2;
+
+  PlanSnapshot a; a.graph = &g;
+  PlanRequest r; r.robot = "a"; r.start = 0; r.goal = 4;
+  a.robots.push_back(r);
+  PlanSnapshot b = a;
+  b.slow_edges.clear();
+
+  const auto pa = t1.replan(a);
+  const auto pb = t2.replan(b);
+  ASSERT_EQ(pa.size(), pb.size());
+  EXPECT_EQ(pa[0].path, pb[0].path);
+  EXPECT_EQ(pa[0].arrive_tick, pb[0].arrive_tick);
+}

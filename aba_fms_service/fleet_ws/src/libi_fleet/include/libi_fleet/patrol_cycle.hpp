@@ -16,4 +16,16 @@ std::vector<int> right_hand_boundary_cycle(const Navgraph & g);
 // 순회 방향을 CCW 로 고정할 때 winding 판정에 쓴다.
 double signed_area_2x(const Navgraph & g, const std::vector<int> & route);
 
+// 순회 재계획 결과(계획 구간) 뒤에 canonical 랩 꼬리를 이어 붙일 **시작 인덱스**.
+//
+// 순회는 랩 전체를 계획하지 않고 앞쪽 한 구간만 CBS 에 맡긴 뒤, 그 뒤를 원래 랩으로
+// 이어 붙인다. 이을 위치는 **계획이 실제로 도달한 정점(plan_goal)의 다음**이다.
+//
+// ⚠️ 이걸 `idx + 2` 로 고정하면 안 된다. 순회 목표는 보통 `idx+1` 이지만 다른 순회
+//    로봇과 목표가 겹치면 랩을 따라 **더 뒤로 밀린다**. 그때 그 사이 정점들이 계획
+//    구간과 꼬리에 두 번 들어가 랩이 뒤죽박죽이 된다(순회 로봇이 둘 이상일 때만 발생).
+//
+// plan_goal 을 path[idx..] 에서 못 찾으면 옛 동작(idx+2)으로 되돌린다.
+std::size_t patrol_tail_index(const std::vector<int> & path, std::size_t idx, int plan_goal);
+
 }  // namespace libi_fleet

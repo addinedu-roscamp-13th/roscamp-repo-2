@@ -126,6 +126,7 @@ def build_branches(params: dict, drivers: dict) -> dict:
                                   drivers.get("guide"), drivers.get("guide_stop"),
                                   drivers.get("guide_watch"),
                                   junctions=drivers.get("junctions"),
+                                  guide_result_fn=drivers.get("guide_result"),
                                   undock_gate=_undock(params, drivers)),
         "INTERACTING": interacting.create(params),
         "SECURITY_PATROL": security_patrol.create(params, drivers["security_patrol"],

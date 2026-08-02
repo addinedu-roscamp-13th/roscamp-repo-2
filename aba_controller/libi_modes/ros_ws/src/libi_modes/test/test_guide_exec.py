@@ -46,14 +46,14 @@ class _Clock:
 def leaf(seed):
     def _make(*, clock=None, stop=None, watch=None, far_area_min=0.0,
               near_area_max=0.0, junctions=None, junction_hold_sec=0.0,
-              **blackboard):
+              result_fn=None, **blackboard):
         clock = clock or _Clock()
         seed(**blackboard)
         node = GuideExec(FakeDriver(), TOLERANCE, RESEND, TIMEOUT, COAST, WAIT,
                          stop_driver=stop, watch_driver=watch,
                          far_area_min=far_area_min, near_area_max=near_area_max,
                          junctions=junctions, junction_hold_sec=junction_hold_sec,
-                         now_fn=clock)
+                         result_fn=result_fn, now_fn=clock)
         node.setup()
         node.initialise()
         node.test_clock = clock
@@ -673,6 +673,124 @@ def test_wait_holds_the_wheels_until_it_is_over(leaf, seed):
     clock.t = lost_at + RECOVER_AT + 0.1             # 대기 끝
     node.update()
     assert True in watch.rotate_calls, "대기가 끝났는데 회복 회전을 안 넘겼다"
+
+
+# ── 요청자를 놓치면 그 홉을 FMS 에 실패로 닫는다 (교통관제 연동 2026-08-02) ──────
+#
+# 길잡이가 fleet_node 의 홉을 받아 가게 되면서, 놓친 순간 그 홉은 더 못 간다.
+# 아무 말도 안 하면 FMS 는 "가는 중" 으로 알고 그 로봇 몫 노드·간선을 안 놓는다.
+
+class _Results:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, cmd_id, ok, msg):
+        self.calls.append((cmd_id, ok, msg))
+
+
+def test_lost_requester_closes_the_hop(leaf, seed):
+    res = _Results()
+    stop, clock = FakeDriver(), _Clock()
+    node = leaf(stop=stop, clock=clock, result_fn=res,
+                **{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+                   Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: True,
+                   Keys.REQUESTER_SEEN_AT: clock.t, Keys.GUIDE_CMD_ID: "guide-7-123"})
+    node.update()                                   # 뒷캠 확인 완료, 출발
+    assert res.calls == []
+
+    lost_at = clock.t
+    seed(**{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+            Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: False,
+            Keys.REQUESTER_SEEN_AT: lost_at, Keys.GUIDE_CMD_ID: "guide-7-123"})
+    clock.t = lost_at + COAST + 0.1
+    node.update()
+    assert res.calls == [("guide-7-123", False, "requester_lost")], \
+        "놓쳤는데 FMS 에 안 알렸다 — 예약이 계속 잡혀 있다"
+
+    # 20Hz 로 같은 id 를 쏟으면 FMS 가 같은 홉을 반복해서 닫는다.
+    clock.t += 0.5
+    node.update()
+    clock.t += 0.5
+    node.update()
+    assert len(res.calls) == 1, "소실 한 번에 한 번만 보고해야 한다"
+
+
+def test_reacquire_rearms_the_report(leaf, seed):
+    """다시 보였다가 또 놓치면 **새 사건**이라 다시 알려야 한다."""
+    res = _Results()
+    stop, clock = FakeDriver(), _Clock()
+    node = leaf(stop=stop, clock=clock, result_fn=res,
+                **{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+                   Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: True,
+                   Keys.REQUESTER_SEEN_AT: clock.t, Keys.GUIDE_CMD_ID: "hop-1"})
+    node.update()
+
+    lost_at = clock.t
+    seed(**{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+            Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: False,
+            Keys.REQUESTER_SEEN_AT: lost_at, Keys.GUIDE_CMD_ID: "hop-1"})
+    clock.t = lost_at + COAST + 0.1
+    node.update()
+    assert len(res.calls) == 1
+
+    # 다시 찾았다 — FMS 가 새 홉을 내려준다(새 id).
+    clock.t += 1.0
+    seed(**{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+            Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: True,
+            Keys.REQUESTER_SEEN_AT: clock.t, Keys.GUIDE_CMD_ID: "hop-2"})
+    node.update()
+
+    # 또 놓쳤다
+    lost_at = clock.t
+    seed(**{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+            Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: False,
+            Keys.REQUESTER_SEEN_AT: lost_at, Keys.GUIDE_CMD_ID: "hop-2"})
+    clock.t = lost_at + COAST + 0.1
+    node.update()
+    assert res.calls[-1] == ("hop-2", False, "requester_lost"), \
+        "재획득 뒤 래치가 안 풀렸다 — 두 번째 소실을 FMS 가 영영 모른다"
+
+
+def test_new_hop_during_a_loss_can_still_be_closed(leaf, seed):
+    """소실 중에 FMS 가 **늦게 도착한 홉**을 내리면 그것도 닫아야 한다.
+
+    ⚠️ 래치가 bool 이면 그 홉은 영영 안 닫혀 fleet 예약이 남는다
+       (codex 검토 2026-08-02 P1). id 가 바뀌면 새 사건으로 본다.
+    """
+    res = _Results()
+    stop, clock = FakeDriver(), _Clock()
+    node = leaf(stop=stop, clock=clock, result_fn=res,
+                **{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+                   Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: True,
+                   Keys.REQUESTER_SEEN_AT: clock.t, Keys.GUIDE_CMD_ID: "hop-1"})
+    node.update()
+
+    lost_at = clock.t
+    seed(**{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+            Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: False,
+            Keys.REQUESTER_SEEN_AT: lost_at, Keys.GUIDE_CMD_ID: "hop-1"})
+    clock.t = lost_at + COAST + 0.1
+    node.update()
+    assert res.calls == [("hop-1", False, "requester_lost")]
+
+    # 아직 안 보이는데 새 홉이 도착했다(FMS 가 소실을 알기 전에 낸 명령).
+    seed(**{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+            Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: False,
+            Keys.REQUESTER_SEEN_AT: lost_at, Keys.GUIDE_CMD_ID: "hop-2"})
+    clock.t += 0.5
+    node.update()
+    assert res.calls[-1] == ("hop-2", False, "requester_lost"), \
+        "늦게 온 홉이 안 닫힌다 — fleet 예약이 그대로 남는다"
+
+
+def test_no_result_fn_is_harmless(leaf, seed):
+    """주입 안 된 배포(시험대·팔 없는 구성)에서도 안내는 그대로 돈다."""
+    clock = _Clock()
+    node = leaf(clock=clock, stop=FakeDriver(),
+                **{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+                   Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: False,
+                   Keys.REQUESTER_SEEN_AT: 99.0})
+    assert node.update() == Status.RUNNING
 
 
 # ── 확인 전에는 회복 회전을 절대 허가하지 않는다 (2026-08-02, 리뷰 지적) ──────

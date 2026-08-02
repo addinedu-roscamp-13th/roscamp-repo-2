@@ -29,9 +29,24 @@ logging.basicConfig(
 
 app = FastAPI(title="LiBi Admin API", version="1.0.0")
 
+# ⚠️ [2026-08-02] **`allow_origins=["*"]` 과 `allow_credentials=True` 는 같이 못 쓴다.**
+#
+#   CORS 규격상 자격증명(쿠키·Authorization)을 실은 요청에는 서버가
+#   `Access-Control-Allow-Origin: *` 로 답하면 **브라우저가 응답을 버린다.**
+#   실측 2026-08-02 (`/admin/dispatch`):
+#       Access to fetch at 'http://localhost:9001/api/fleet/books' from origin
+#       'http://localhost:9002' has been blocked by CORS policy
+#   자격증명을 안 싣는 요청은 통과하므로 **일부 화면만 깨져** 원인이 안 보였다.
+#
+#   `allow_origin_regex` 를 쓰면 starlette 가 와일드카드 대신 **요청한 origin 을 그대로
+#   되돌려주므로** 자격증명과 같이 쓸 수 있다. 관제는 LAN 도구라 접속 IP 가 유동적이고
+#   (노트북 IP·localhost·로봇 패널), 목록을 손으로 유지하면 IP 가 바뀔 때마다 조용히
+#   깨진다 — 그 실패가 지금 이 버그와 똑같이 "화면 한 곳만 안 됨" 으로 나타난다.
+#
+#   ⚠️ 이 서버를 공개망에 두게 되면 그날 regex 를 실제 도메인으로 좁혀야 한다.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origin_regex=".*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

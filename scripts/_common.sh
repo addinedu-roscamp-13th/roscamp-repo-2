@@ -241,6 +241,102 @@ kill_pattern() {
   echo "SIGKILL(잔여): $pattern"
 }
 
+# 같은 이름의 ROS 노드가 **두 개 이상 뜨는 것**을 막는다.
+#
+# ## 왜 필요한가 — 실측 사고 2026-08-02
+#
+# `fleet_node`(배차·교통)가 **13시간 동안 두 개** 돌고 있었다. 13:36 에 띄운 것을
+# 안 죽인 채 20:21 에 세션을 새로 만든 탓이다. 둘 다 살아서:
+#
+#   · 같은 로봇에 **서로 다른 CBS 예약**을 발급했다 — 교통관제가 통째로 깨진 상태
+#   · 백엔드가 두 노드의 스냅샷을 번갈아 받아 관제 지도가 깜빡였다
+#   · 마커가 지도 반대편으로 순간이동했다 (계획 번호는 같은데 노드 수가 9↔5)
+#
+# **에러가 한 줄도 안 났다.** ROS 2 는 같은 이름 노드의 중복을 막지 않는다.
+# 증상만 보고는 AMCL·프론트 렌더링을 의심하게 되어 원인 추적이 아주 오래 걸린다.
+#
+# 그래서 기동 **전에** 끊는다. 죽이지는 않는다 — 돌던 노드가 지금 로봇을 통제
+# 중일 수 있고, 그걸 말없이 죽이면 주행 중인 로봇의 예약이 풀린다.
+# 사람이 무엇을 죽일지 정하도록 정확한 명령을 알려주고 멈춘다.
+#
+#   require_single_instance <패턴> <표시이름> [정리명령]
+# 패턴에 맞는 **실제 프로세스** 개수. 셸은 세지 않는다.
+#
+# ⚠️ `pgrep -f` 는 명령줄 전체를 보므로 **검사하는 셸 자신도 잡는다.** 패턴이 인자로
+#    들어가 있으면 자기 자신을 세어 "이미 돌고 있다"는 거짓 양성이 난다. 게다가
+#    `$(...)` 커맨드 치환이 만드는 서브셸은 부모의 명령줄을 그대로 물려받아
+#    조상 목록으로도 못 거른다(실측: 0개인데 2~3개로 셌다).
+#
+#    그래서 **프로세스 이름(comm)이 셸인 것을 뺀다.** 이 함수가 세려는 것은 언제나
+#    실행 파일(ros2 노드·서버)이지 그것을 감싼 셸이 아니다.
+#
+# ⚠️ `pgrep -f` 의 패턴은 **정규식(ERE)** 이다. `(`·`)`·`.`·`*` 가 들어간 문자열을
+#    그대로 넘기면 엉뚱하게 매칭된다. 경로처럼 메타문자 없는 패턴을 쓸 것.
+# ⚠️ **한 인스턴스가 프로세스 두 개인 경우가 있다.** `ros2 run <pkg> <node>` 는 파이썬
+#    런처(comm=`ros2`)를 띄우고 그 밑에 **실제 노드 바이너리**(comm=`fleet_node`)를 낳는다.
+#    둘 다 cmdline 에 노드 이름이 들어 있어 그대로 세면 **1개가 2개로 잡힌다**
+#    (실측 2026-08-02: `count_procs fleet_node` = 2, `ros2 node list` = 1).
+#    거부 여부는 맞게 나오지만 "이미 2개 돌고 있습니다" 라는 **문구가 거짓**이 된다.
+#
+#    그래서 **부모도 같이 매칭된 프로세스는 세지 않는다.** 한 인스턴스는 한 번만 세어진다:
+#      · `ros2 run` — 런처(부모)만 세고 노드(자식)는 접힌다 → 1
+#      · `ros2 launch` — 런처만 매칭되면 그것 하나 → 1
+#      · 진짜 중복 2벌 — 서로 부모-자식이 아니라 둘 다 세어진다 → 2 ✓
+#    `ros2` 를 이름으로 빼는 방법은 안 쓴다. 패턴이 런처에만 걸리는 launch 파일에서
+#    개수가 0 이 되어 **중복을 그냥 통과시킨다.**
+_matched_pids() {
+  local pattern="$1" pid comm
+  for pid in $(pgrep -f "$pattern" 2>/dev/null || true); do
+    comm="$(ps -o comm= -p "$pid" 2>/dev/null | tr -d ' ')"
+    [ -z "$comm" ] && continue
+    case " $_NOT_A_PROCESS " in *" $comm "*) continue ;; esac
+    printf '%s\n' "$pid"
+  done
+}
+
+# 부모가 같은 목록에 있으면 접는다(위 주석). 남은 pid 만 찍는다.
+_instance_pids() {
+  local all ppid pid
+  all="$(_matched_pids "$1")"
+  [ -n "$all" ] || return 0
+  for pid in $all; do
+    ppid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
+    case "
+$all
+" in *"
+$ppid
+"*) continue ;; esac
+    printf '%s\n' "$pid"
+  done
+}
+
+_NOT_A_PROCESS="bash sh dash zsh pgrep ps grep tee timeout xargs"
+count_procs() {
+  _instance_pids "$1" | grep -c . || true
+}
+
+# `count_procs` 와 **같은 기준**으로 걸러 목록을 찍는다. 개수와 목록이 다르면
+# 사람이 "2개라며 4줄이 뜨네" 하고 헷갈린다.
+list_procs() {
+  local pid
+  for pid in $(_instance_pids "$1"); do
+    ps -o pid=,lstart=,args= -p "$pid" 2>/dev/null | cut -c1-110
+  done
+}
+
+require_single_instance() {
+  local pattern="$1" label="$2" howto="${3:-}"
+  local n
+  n="$(count_procs "$pattern")"
+  [ "$n" -eq 0 ] && return 0
+
+  echo "[중복] ⚠ '$label' 이 이미 ${n}개 돌고 있습니다 — 새로 띄우면 **둘이 동시에 지휘**합니다."
+  list_procs "$pattern" | sed 's/^/         /'
+  echo "         같은 이름 ROS 노드가 둘이면 서로 다른 명령을 내보내고, **에러는 안 납니다.**"
+  [ -n "$howto" ] && echo "         정리: $howto"
+  die "'$label' 중복 기동을 막았습니다. 위 프로세스를 정리한 뒤 다시 실행하세요."
+}
+
 # kill_pattern 을 여러 개 돌리고, **정말 사라졌는지 확인한다.**
 # "죽였다" 와 "포트가 비었다" 는 다르고, 다음 기동이 실패하는 건 후자다.
 kill_patterns() {

@@ -152,13 +152,77 @@ type EdgeHold = {
 
 type ResvView = "node" | "edge" | "robot";
 
+// 예약 시각을 **벽시계로** 찍는다.
+//
+// ⚠️ 남은 시간(T-3.2s)만으로는 "언제까지 가기로 했는지" 를 알 수 없다. 화면을 보는
+//    사람은 로그·영상과 시각을 맞춰야 하는데, 상대시간은 본 순간에만 유효하다.
+//    `at` 은 `plan.epoch_wall + arrive*tick_sec`(fleet_node publish_plan) — 이미
+//    벽시계다. 초까지만 쓴다(틱이 1초라 밀리초는 의미가 없다).
+function clockLabel(at: number) {
+  const d = new Date(at * 1000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
 // 남은 시간 한 줄. drift_limit 안쪽은 정상 주행이라 "지연" 으로 쓰지 않는다.
-function leftLabel(left: number, late: boolean) {
-  if (left >= 0) return `T-${left.toFixed(1)}s`;
-  return late ? `지연 +${(-left).toFixed(1)}s` : "도착 중";
+// `at`(예약 시각, unix 초)을 주면 벽시계 마감을 같이 적는다.
+function leftLabel(left: number, late: boolean, at?: number) {
+  const when = at != null && Number.isFinite(at) ? ` · ${clockLabel(at)}` : "";
+  if (left >= 0) return `T-${left.toFixed(1)}s${when}`;
+  return late
+    ? `지연 +${(-left).toFixed(1)}s${when ? ` · ${clockLabel(at as number)}까지였다` : ""}`
+    : `도착 중${when ? ` · ${clockLabel(at as number)}까지` : ""}`;
+}
+
+// ⚠️ [2026-08-02] **묵은 계획을 현재처럼 그리지 않는다.**
+//
+//   실측: 로봇이 전부 멎으면 `fleet_node` 는 재계획할 이유가 없어 마지막 시간표를
+//   그대로 들고 있는다. 그 계획은 **틀리지 않았다** — 그냥 옛것이다. 그런데 화면은
+//   `epoch_wall + arrive*tick` 로 남은 시간을 재므로, 계획이 묵은 만큼이 그대로
+//   "지연" 으로 찍힌다. 04:11 계획을 09:15 에 보면 **지연 +18198.6s** 다.
+//   경로도 그때의 출발점(충전소)에서 그려져, 지금 도서관출입구에 선 로봇과 어긋난다.
+//
+//   숫자가 틀린 게 아니라 **재료가 5시간 묵은 것**인데, 화면에 그 말이 없어서
+//   "예약이 깨졌나 / 프론트 버그인가" 로 읽힌다. 어젯밤 고친 "꺼진 로봇 안 그리기" 와
+//   같은 부류 — **화면이 옛 것을 현재처럼 보여주는 것**.
+//
+//   기준을 `drift_limit`(플래너가 봐주는 폭)에 매단다. 그 폭을 크게 넘겼는데도
+//   재계획이 안 왔다는 건 계획이 살아 있지 않다는 뜻이다. 절대 하한 60초는 tick 이
+//   아주 짧은 설정에서 정상 주행을 묵었다고 오판하지 않기 위한 바닥이다.
+const PLAN_STALE_DRIFTS = 20;
+const PLAN_STALE_FLOOR_SEC = 60;
+// `nowSec` 을 받는다 — 컴포넌트가 500ms 마다 갱신하는 그 값이라, 배지가 시간과 함께
+// 자연히 갱신된다. 여기서 `Date.now()` 를 직접 부르면 렌더 밖에서는 안 변한다.
+function planAgeSec(plan: FleetPlan | null | undefined, nowSec: number,
+                    skew: number): number | null {
+  if (!plan || typeof plan.epoch_wall !== "number") return null;
+  return nowSec - skew - plan.epoch_wall;
+}
+function planStaleAfter(plan: FleetPlan | null | undefined): number {
+  const tick = plan?.tick_sec ?? 1;
+  const drift = plan?.drift_limit ?? 0;
+  return Math.max(PLAN_STALE_FLOOR_SEC, drift * tick * PLAN_STALE_DRIFTS);
+}
+// "5.1시간 전" 처럼 사람이 읽는 나이.
+function ageLabel(sec: number) {
+  if (sec < 90) return `${sec.toFixed(0)}초 전`;
+  if (sec < 5400) return `${(sec / 60).toFixed(1)}분 전`;
+  return `${(sec / 3600).toFixed(1)}시간 전`;
 }
 const clockOf = (at: number) =>
   new Date(at * 1000).toLocaleTimeString("ko-KR", { hour12: false });
+
+//: 두 값이 내용상 같은가. WebSocket 스냅샷이 **내용은 같은데 참조만 새로** 오는 것을
+//  끊는 데 쓴다. plan/routes 는 순수 데이터(숫자·문자열·배열)라 직렬화 비교가 안전하다.
+//  값이 같으면 이전 state 를 그대로 돌려줘 리렌더 자체를 안 일으킨다.
+function sameJson(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return false;   // 순환 참조 등 — 다르다고 보고 갱신한다(안전한 쪽)
+  }
+}
 
 export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps) {
   const queryClient = useQueryClient();
@@ -189,12 +253,27 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
   const [plan, setPlan] = useState<FleetPlan | null>(null);
   // 각 로봇의 **남은** 경로(월드 좌표). 매 틱 갱신되므로 화면이 비지 않는다.
   const [routes, setRoutes] = useState<Record<string, number[][]>>({});
+  // 길잡이는 GuideExec가 nav2에 직접 goal을 내므로 fleet_node routes가 없다. 목표만
+  // 별도 표시하고, 직선/순회선을 만들어 실제 Nav2 경로인 척하지 않는다.
+  const [guideTargets, setGuideTargets] = useState<Record<string, { x: number; y: number; name: string }>>({});
+  //: nav2 가 지금 실제로 따라가는 경로. `routes`(fleet_node 의 CBS 순회 경로)와 **다르다**
+  //  — 길잡이는 nav2 가 직접 몰아서 fleet_node 가 그 목적지를 모른다. 그래서 지도에
+  //  안내 경로가 안 그려지고 순찰 경로만 떴다(실측 2026-08-02: 화장실로 가는 중인데
+  //  순회 경로만 보였다). 로봇이 낸 값이라 **추정이 아니다.**
+  const [navPaths, setNavPaths] = useState<Record<string, number[][]>>({});
   // 예약까지 남은 시간을 초 단위로 다시 그리기 위한 틱. **통신이 아니라 브라우저 시계다** —
   // 예약 시각은 epoch + arrive*tick_sec 로 고정이라 서버에 더 물어볼 것이 없다.
   const [nowSec, setNowSec] = useState(() => Date.now() / 1000);
   // 브라우저 시계 - 서버 시계. 예약 시각은 fleet_node 의 벽시계 기준이라, 브라우저가
   // 몇 초 틀어져 있으면 "T-12.3초" 가 통째로 어긋난다(휴대폰이 특히 잘 틀어진다).
   const clockSkew = useRef(0);
+  //: `draw`(useCallback) 안에서 살아 있는 로봇 집합을 보려면 ref 가 필요하다.
+  //  상태를 직접 의존성에 넣으면 로봇이 움직일 때마다 draw 가 재생성돼
+  //  깜빡임을 다시 만든다(위 sameJson 가드와 같은 이유).
+  const liveRobotsRef = useRef<Set<string>>(new Set());
+  //: 계획이 묵었나. 그리기 콜백이 렌더 본문보다 먼저 정의되므로 ref 로 넘긴다
+  //  (`liveRobotsRef` 와 같은 이유).
+  const planStaleRef = useRef(false);
   useEffect(() => {
     const id = setInterval(() => setNowSec(Date.now() / 1000), 500);
     return () => clearInterval(id);
@@ -266,10 +345,34 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
         // ⚠️ `stale` 이면 **둘 다 지운다.** `/fms/plan` 은 transient_local 이고 백엔드도
         //    캐시하므로, fleet_node 가 죽어도 마지막 시간표가 영원히 남는다 — 아무도
         //    지키지 않는 예약을 화면이 계속 카운트다운하게 된다.
+        // ⚠️ [2026-08-02] **plan·routes 도 값이 같으면 상태를 안 바꾼다.**
+        //
+        //   아래 `fleetRobots` 에만 이 가드가 있었다. 백엔드는 ROS 메시지 하나하나마다
+        //   스냅샷을 통째로 밀기 때문에(fleet_link `_notify`) 내용이 **똑같아도**
+        //   초당 수십 번 새 객체가 온다. 그대로 setState 하면 참조가 매번 달라져
+        //   → 리렌더 → `draw` 재생성 → 캔버스 재그리기, 그리고 아래 예약 표가
+        //   통째로 갈아엎힌다. 화면이 눈에 띄게 깜빡이는 원인이다(실측 2026-08-02).
+        //
+        //   rAF 묶음은 **한 프레임 안의 중복만** 없앤다 — 참조가 계속 바뀌는 것 자체는
+        //   못 막는다. 그래서 근원인 여기서 끊는다.
+        //
+        //   비교는 JSON 직렬화로 한다. plan/routes 는 숫자·문자열·배열뿐인 순수
+        //   데이터고(키 순서는 서버가 같은 코드로 만드니 안정적이다), 깊은 비교를
+        //   손으로 쓰는 것보다 짧고 틀릴 자리가 없다. 크기도 노드 수십 개 수준이다.
         const p = snap?.stale ? null : snap?.plan;
-        setPlan(p && typeof p === "object" && p.robots ? (p as FleetPlan) : null);
+        const nextPlan = p && typeof p === "object" && p.robots ? (p as FleetPlan) : null;
+        setPlan((prev) => (sameJson(prev, nextPlan) ? prev : nextPlan));
         const rt = snap?.stale ? {} : snap?.routes;
-        setRoutes(rt && typeof rt === "object" ? (rt as Record<string, number[][]>) : {});
+        const nextRoutes = rt && typeof rt === "object" ? (rt as Record<string, number[][]>) : {};
+        setRoutes((prev) => (sameJson(prev, nextRoutes) ? prev : nextRoutes));
+        const np = snap?.stale ? {} : snap?.nav_paths;
+        const nextNavPaths = np && typeof np === "object"
+          ? (np as Record<string, number[][]>) : {};
+        setNavPaths((prev) => (sameJson(prev, nextNavPaths) ? prev : nextNavPaths));
+        const gt = snap?.stale ? {} : snap?.guide_targets;
+        const nextGuideTargets = gt && typeof gt === "object"
+          ? (gt as Record<string, { x: number; y: number; name: string }>) : {};
+        setGuideTargets((prev) => (sameJson(prev, nextGuideTargets) ? prev : nextGuideTargets));
         // ⚠️ 마커도 `stale` 이면 **지운다.** 위 plan/routes 만 지우고 여기는 빠져
         //    있었는데, 그러면 fleet_node 가 죽거나 로봇이 내려가도 **마지막 위치에
         //    로봇이 계속 떠 있다.** 실측 2026-08-01: pinky-3 스택을 완전히 내린
@@ -280,7 +383,18 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
         const rows = payload?.snapshot?.stale ? [] : payload?.snapshot?.robots;
         if (Array.isArray(rows)) {
           const next = rows
-            .filter((r) => r.x != null && r.y != null)
+            // ⚠️ [2026-08-02] **로봇별 `stale` 도 본다 — 좌표 유무만으로는 못 거른다.**
+            //
+            //   백엔드는 로봇마다 마지막 ROS 수신 시각을 들고 `stale` 을 실어 보낸다
+            //   (`fleet_link.build_rows`). 그런데 프론트는 전역 `snapshot.stale` 과
+            //   좌표 유무만 봤다. **꺼진 로봇도 마지막 좌표는 갖고 있으므로** 그 필터를
+            //   그대로 통과했다.
+            //
+            //   실측 2026-08-02: pinky-3 의 Pi 를 완전히 내린 뒤에도 지도에 계속 떠 있었다.
+            //   스냅샷을 직접 받아 보니 `{name: "pinky-3", stale: true, x: 0.067, ...}` —
+            //   **백엔드는 이미 죽었다고 말하고 있었는데 화면이 안 들었다.**
+            //   없는 로봇을 보고 사람이 배차를 판단하게 되므로 화면이 거짓말을 한 것이다.
+            .filter((r) => !r.stale && r.x != null && r.y != null)
             .map((r) => ({
               name: r.name, x: r.x, y: r.y,
               yaw: typeof r.yaw === "number" ? r.yaw : null,
@@ -509,6 +623,10 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
     //    fleet_node navgraph 의 정점 **순서가 같다는 보장이 없어서다.** 한 칸만
     //    어긋나도 엉뚱한 정점에 시각이 붙는데, 그건 화면만 보고는 못 알아챈다.
     const reservedAt = (rname: string, wx: number, wy: number): number | null => {
+      // 묵은 시간표에서 뽑은 "지연 +3697.5s" 는 계획이 묵은 만큼일 뿐 실제 지연이
+      // 아니다. 근원에서 끊는다 — 이 함수를 쓰는 라벨이 여러 곳이라 각각 막으면
+      // 하나를 빠뜨린다.
+      if (planStaleRef.current) return null;
       const pr = planRobots[rname];
       if (!pr || !plan || !Array.isArray(pr.xy)) return null;
       for (let i = 0; i < pr.xy.length; i += 1) {
@@ -520,7 +638,23 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
       return null;
     };
 
+    // ⚠️ [2026-08-02] **묵은 계획의 경로는 통째로 안 그린다.**
+    //
+    //   `routes` 는 `plan` 과 같은 플래너 출력이라 같이 얼어붙는다. 실측: 로봇은
+    //   (0.304, -1.656) 인데 경로 첫 점이 (0.6005, -0.3615) 로 **1.33m 어긋나 있었고**,
+    //   그 상태로 62분이 지나 있었다. 그걸 진하게 그리면 화면이 "로봇이 이 길로 가는
+    //   중" 이라고 **거짓 주장**을 한다. 어디까지가 관제 문제이고 어디부터 화면 문제인지
+    //   사람이 가릴 수 없게 된다(사용자 지적 2026-08-02).
+    //
+    //   지우는 대신 배지가 이유를 말한다 — "묵은 계획 · N분 전".
+    //   occupancy(누가 어느 노드를 잡고 있나)와 **로봇 마커는 계속 그린다** —
+    //   그건 현재 사실이다. 그래서 이 검사는 아래 콜백 **안**에 있다. 바깥에서
+    //   early return 하면 뒤따르는 로봇 마커까지 통째로 사라진다.
     Object.entries(routes).forEach(([rname, pts]) => {
+      if (planStaleRef.current) return;
+      // 안 켜진 로봇의 경로는 안 그린다 — `liveRobots` 주석 참고.
+      // 지도에 마커가 없는 로봇의 선만 떠 있으면 그게 유령이다.
+      if (!liveRobotsRef.current.has(rname)) return;
       if (!Array.isArray(pts) || pts.length < 2) return;
       const col = robotColor(rname);
       const isSelected = rname === gotoRobot?.name;
@@ -565,9 +699,9 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
       //    없는 문제를 만들어 낸다.
       const tol = (plan?.drift_limit ?? 0) * (plan?.tick_sec ?? 1);
       const overdue = left < -tol;
-      const label = left >= 0
-        ? `T-${left.toFixed(1)}s`
-        : overdue ? `지연 +${(-left).toFixed(1)}s` : "도착 중";
+      // 지도 위에도 **벽시계 마감**을 같이 찍는다 — "순회경로-5 도착 중" 만으로는
+      // 언제까지 가기로 했는지가 안 보인다(leftLabel 머리말).
+      const label = leftLabel(left, overdue, t);
       ctx.font = "bold 12px system-ui";
       ctx.lineJoin = "round";
       ctx.lineWidth = 3.5;
@@ -575,6 +709,38 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
       ctx.strokeText(label, cv[1][0] + 13, cv[1][1] - 12);
       ctx.fillStyle = overdue ? "#fca5a5" : col.hex;
       ctx.fillText(label, cv[1][0] + 13, cv[1][1] - 12);
+    });
+
+    // 길잡이 목표: nav2가 계산하는 실제 경로는 이 피드에 없으므로 선을 그리지 않는다.
+    // ⚠️ [2026-08-02] **nav2 원시 경로(`nav_paths`)는 그리지 않는다.**
+    //
+    //   길잡이 목적지가 fleet_node 에 없어 "화장실로 가는데 순찰 경로만 보인다" 를
+    //   고치려고 `/plan` 을 점선으로 그려 봤는데, **읽기가 더 나빠졌다.**
+    //   nav2 경로는 costmap 격자 위의 좌표열이라 **정점을 안 지나고** 벽 사이를
+    //   구불구불 지난다. 지도에는 정점·간선이 이미 그려져 있어서, 그 위에 격자 곡선이
+    //   겹치면 "저 줄파리 같은 건 뭐냐"가 된다(사용자 지적 2026-08-02).
+    //
+    //   원래 규칙이 더 낫다: **예약을 쥔 다음 구간은 진하게, 남은 경로는 연하게.**
+    //   둘 다 `routes`(fleet_node 가 정점 좌표로 주는 것)라 지도와 결이 같다.
+    //   길잡이 목적지는 선이 아니라 **다이아몬드 마커**로만 표시한다(아래).
+    //
+    //   `nav_paths` 자체는 백엔드에 남겨 둔다 — 지우면 "지금 nav2 가 어디로 가는가" 를
+    //   확인할 수단이 사라진다. 그리지 않을 뿐이다.
+
+    Object.entries(guideTargets).forEach(([rname, target]) => {
+      if (!liveRobotsRef.current.has(rname)) return;
+      const [x, y] = worldToCanvas(map, vp, target.x, target.y);
+      const col = robotColor(rname);
+      ctx.strokeStyle = col.hex;
+      ctx.fillStyle = "rgba(15,23,42,0.88)";
+      ctx.lineWidth = 3 * z;
+      ctx.beginPath();
+      ctx.moveTo(x, y - 12 * z); ctx.lineTo(x + 12 * z, y);
+      ctx.lineTo(x, y + 12 * z); ctx.lineTo(x - 12 * z, y); ctx.closePath();
+      ctx.fill(); ctx.stroke();
+      ctx.fillStyle = col.hex;
+      ctx.font = "bold 12px system-ui";
+      ctx.fillText(`안내 목표: ${target.name || rname} (경로: Nav2)`, x + 15 * z, y - 10 * z);
     });
 
     // 노드
@@ -657,7 +823,7 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
         ctx.fillText(gotoRobot.name, x + 9, y + 3);
       }
     }
-  }, [map, wsState, graph, zoom, pan, selected, linkFirst, selectedLane, mapImageReady, fleetRobots, gotoRobot, plan, routes, nowSec]);
+  }, [map, wsState, graph, zoom, pan, selected, linkFirst, selectedLane, mapImageReady, fleetRobots, gotoRobot, plan, routes, guideTargets, navPaths, nowSec]);
 
   // ── 예약 데이터 ──────────────────────────────────────────────────────────
   //
@@ -668,6 +834,24 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
   //
   // ⚠️ 정점 이름은 **좌표로 되찾는다.** 계획이 싣고 오는 것은 fleet_node navgraph 의
   //    인덱스인데, 화면이 든 waypoint.yaml 과 정점 순서가 같다는 보장이 없다.
+  // ⚠️ [2026-08-02] **살아 있는 로봇만 그린다.**
+  //
+  //   `fleet_node` 는 **설정에 있는 모든 로봇**의 CBS 계획을 발행한다 — 그 로봇이
+  //   실제로 켜져 있는지는 안 본다. 그대로 그리면 꺼 놓은 pinky-1·pinky-2 의
+  //   경로와 "T-15.4s" 카운트다운이 화면에 뜬다(실측 2026-08-02). 아무도 지키지
+  //   않는 예약을 보고 사람이 배차를 판단하게 되므로, 화면이 거짓말을 하는 것이다.
+  //
+  //   판단 기준은 **위치를 아는가** 하나다. `fleetRobots` 는 스냅샷이 stale 하거나
+  //   로봇이 내려가면 비워지고(위 WS 핸들러), 좌표가 없는 행은 애초에 걸러진다.
+  //   즉 "지금 지도에 찍히는 로봇" 과 "계획을 보여줄 로봇" 이 같아진다.
+  //
+  //   ⚠️ DB 와 무관하다. 계획은 ROS(`/fms/plan`)로 오고 DB 를 거치지 않는다.
+  const liveRobots = new Set(fleetRobots.map((r) => r.name));
+  liveRobotsRef.current = liveRobots;
+  // 계획의 나이. 크면 배지로 알린다 — 근거는 `planAgeSec` 위 주석.
+  const planAge = planAgeSec(plan, nowSec, clockSkew.current);
+  const planStale = planAge !== null && planAge > planStaleAfter(plan);
+  planStaleRef.current = planStale;
   const resv = (() => {
     const verts = Object.entries(graph.vertices);
     const empty = {
@@ -677,7 +861,10 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
       count: 0,
       edgeCount: 0,
     };
-    if (!plan) return empty;
+    // 묵은 계획에서는 예약 시각표를 만들지 않는다 — 아래 표의 "지연" 이 전부
+    // 계획이 묵은 만큼이 되어 거짓이 된다. `empty` 를 돌려주면 표는 "비어 있음" 으로
+    // 떨어지고, 배지가 왜 비었는지 말한다.
+    if (!plan || planStale) return empty;
     const nameAt = (wx: number, wy: number) => {
       for (const [n, v] of verts) if (Math.hypot(v.x - wx, v.y - wy) < 0.03) return n;
       return null;
@@ -693,6 +880,7 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
     const byRobot: { robot: string; hex: string; stops: Hold[] }[] = [];
 
     for (const [robot, pr] of Object.entries(plan.robots ?? {})) {
+      if (!liveRobots.has(robot)) continue;      // 안 켜진 로봇 — 위 주석
       if (!Array.isArray(pr.xy)) continue;
       const hex = robotColor(robot).hex;
       const stops: Hold[] = [];
@@ -735,6 +923,7 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
       return null;
     };
     for (const [robot, pts] of Object.entries(routes)) {
+      if (!liveRobots.has(robot)) continue;      // 안 켜진 로봇 — 위 주석
       if (!Array.isArray(pts) || pts.length === 0) continue;
       const hex = robotColor(robot).hex;
       const stops: Hold[] = [];
@@ -991,6 +1180,21 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
                 ? `계획 #${plan.seq} · 노드 ${resv.count} · 간선 ${resv.edgeCount} · 틱 ${plan.tick_sec}s`
                 : "계획 없음 · 반응형(노드예약)으로 운행 중"}
             </div>
+            {planStale && (
+              <div
+                className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 font-mono text-[11px] text-amber-300"
+                title={
+                  "재계획이 오래 없었습니다. fleet_node 는 로봇 상태가 끊기면 그 로봇을 " +
+                  "재계획 대상에서 빼므로(state_stale), 마지막 계획을 그대로 들고 있습니다.\n\n" +
+                  "그 계획의 경로선과 '지연' 값은 계획 당시 기준이라 지금과 어긋납니다 " +
+                  "(실측: 로봇 위치와 경로 시작점이 1.3m 차이). 그래서 그리지 않습니다.\n\n" +
+                  "노드 점유(occupancy)와 로봇 마커는 현재 사실이라 그대로 보여줍니다.\n" +
+                  "확인: fleet_node 창의 '로봇 상태 끊김' 경고 · pgrep -af robot_state_adapter"
+                }
+              >
+                묵은 계획 · {ageLabel(planAge!)} · 경로·시간표 숨김
+              </div>
+            )}
           </div>
         </div>
 
@@ -1038,7 +1242,7 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
                             h.late ? "text-rose-400" : "text-slate-200",
                           )}
                         >
-                          {leftLabel(h.left, h.late)}
+                          {leftLabel(h.left, h.late, h.at)}
                         </span>
                       </span>
                     ))}
@@ -1088,7 +1292,7 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
                             h.late ? "text-rose-400" : "text-slate-200",
                           )}
                         >
-                          {leftLabel(h.left, h.late)}
+                          {leftLabel(h.left, h.late, h.at)}
                         </span>
                       </span>
                     ))}
@@ -1143,7 +1347,7 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
                                 h.late ? "text-rose-400" : "text-slate-300",
                               )}
                             >
-                              {leftLabel(h.left, h.late)}
+                              {leftLabel(h.left, h.late, h.at)}
                             </span>
                           )}
                         </span>

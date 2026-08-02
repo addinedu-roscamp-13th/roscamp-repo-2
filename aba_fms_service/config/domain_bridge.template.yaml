@@ -57,6 +57,15 @@ topics:
     reversed: True
     remap: /robot_path_requests
 
+  # ── 길잡이 요청자 가시성 (교통관제 연동 2026-08-02) ──────────────────────────
+  # 요청자를 다시 찾았을 때 FMS 가 **경로를 다시 준다**. 소실은 로봇이
+  # `/fleet_cmd_result{msg:"requester_lost"}` 로 알려 주지만(그 홉을 닫으며),
+  # 재획득은 닫을 홉이 없어서 알릴 통로가 없었다 — 그래서 이 Bool 을 그대로 올린다.
+  # ⚠️ payload 에 robot_id 가 없다. 그래서 상태·스냅샷과 달리 **로봇별 토픽으로 나눈다.**
+  libi/requester_visible:
+    type: std_msgs/msg/Bool
+    remap: /{KEY}/requester_visible
+
   # ── libi_modes 미션 FSM (2026-07-20) ─────────────────────────────────────────
   # 상태·BT 스냅샷은 payload 안에 robot_id 가 들어 있어 서버에서 토픽을 나누지 않는다
   # (fsm_link 가 robot_id 로 캐시를 가른다) — 로봇이 여러 대여도 같은 토픽에 모인다.

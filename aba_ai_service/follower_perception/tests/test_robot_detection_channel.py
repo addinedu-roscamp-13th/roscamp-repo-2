@@ -116,10 +116,15 @@ def test_frame_resolution_rides_along():
     assert parsed.image_width == 320
     assert parsed.image_height == 240
 
-    # 폭이 실제로 조향을 고치는지까지 본다 — 키만 실리고 안 쓰이면 무의미하다.
-    _, ang = FollowPID(config).compute(parsed.cx, parsed.area, 0.05,
-                                       image_width=parsed.image_width)
-    assert abs(ang) < 1e-9, f"정중앙인데 각속도가 {ang} 다 — 해상도 환산이 안 걸렸다"
+    # [2026-08-02] PID 의 해상도 환산은 걷어냈다 — 이제 `config.IMAGE_WIDTH` 가 곧
+    # 카메라 폭이고 원본 픽셀이 그대로 들어간다. 그래서 여기서 볼 것은 "환산이
+    # 걸렸나"가 아니라 **payload 의 폭과 config 의 폭이 같은가**다. 어긋나면 사람이
+    # 정중앙에 있어도 각속도가 난다.
+    assert parsed.image_width == config.IMAGE_WIDTH, (
+        f"검출은 {parsed.image_width}px 프레임에서 나왔는데 config.IMAGE_WIDTH 는 "
+        f"{config.IMAGE_WIDTH} 다 — 튜닝값이 카메라와 안 맞는다")
+    _, ang = FollowPID(config).compute(parsed.cx, parsed.area, 0.05)
+    assert abs(ang) < 1e-9, f"정중앙인데 각속도가 {ang} 다"
 
 
 def test_missing_owner_sends_null():

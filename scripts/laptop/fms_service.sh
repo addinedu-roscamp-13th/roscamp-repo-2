@@ -145,11 +145,24 @@ cd "$REPO_ROOT"
 # ⚠️ 이 값은 **로봇 도메인(117~119)과 절대 겹치면 안 된다.**
 SERVER_DOMAIN="${LIBI_SERVER_DOMAIN_ID:-111}"
 
+# ⚠️ **중복 검사는 세션을 만들기 전에 한다.** 실측 사고 2026-08-02:
+#    13:36 에 띄운 fleet_node 를 안 죽인 채 20:21 에 세션을 새로 만들어 **13시간 동안
+#    두 개**가 돌았다. 둘이 같은 로봇에 서로 다른 CBS 예약을 발급해 교통관제가
+#    깨졌고, 관제 지도는 두 계획을 번갈아 그려 깜빡였다. **에러는 한 줄도 안 났다.**
+#
+#    ⚠️ 이 검사를 `tmux new-session` **뒤에** 두면, 중복이라 die 해도 그 사이에 만든
+#       bridge 창이 남는다 — 정리했다고 믿는데 도메인 브릿지 하나가 계속 도는
+#       상태가 된다(codex 지적). 아무것도 만들기 전에 멈춰야 한다.
+#    근거·상세는 `_common.sh` 의 `require_single_instance` 머리말.
+require_single_instance "libi_fleet/lib/libi_fleet/fleet_node" "fleet_node(배차·교통)" \
+  "./scripts/all/kill-libi_server.sh"
+
 tmux new-session -d -s "$SESSION" -n bridge \
   bash -c "cd '$FMS' && echo '[bridge] 로봇 도메인 <-> $SERVER_DOMAIN (DB rc_robots 기준)...' && ./scripts/ros-domain-bridge.sh; exec bash"
 
 # fleet_node(배차·교통) — 백엔드와 같은 서버 도메인에서 돈다(fleet_link 가 같은 도메인 전제).
 # fleet_ws 안 빌드면 colcon build. RMW/CycloneDDS 는 ~/.bashrc 설정을 따른다(bridge 와 동일).
+# 중복 기동 차단은 위 `require_single_instance` 가 이미 했다.
 if [ -f "$FLEET_WS/install/setup.bash" ] || ensure_built "$FLEET_WS"; then
   tmux new-window -t "$SESSION" -n fleet-node \
     bash -c "source /opt/ros/jazzy/setup.bash && source '$FLEET_WS/install/setup.bash' && export ROS_DOMAIN_ID=$SERVER_DOMAIN && echo '[fleet-node] 배차·교통 (domain $SERVER_DOMAIN)...' && ros2 run libi_fleet fleet_node --ros-args -p navgraph_file:='$NAVGRAPH' -p arrive_radius:=$ARRIVE_RADIUS -p prefetch_radius:=$PREFETCH_RADIUS -p patrol_route:='$PATROL_ROUTE' -p security_patrol_route:='$SECURITY_ROUTE' -p exclusive_region:='$EXCLUSIVE_REGION'; exec bash"

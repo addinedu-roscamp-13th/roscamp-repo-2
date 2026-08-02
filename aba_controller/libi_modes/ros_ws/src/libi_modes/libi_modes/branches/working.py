@@ -20,7 +20,7 @@ _COMMAND_MAP = {
 
 def create(params: dict, nav_driver, arm_driver, follow_driver=None,
            guide_driver=None, guide_stop_driver=None, guide_watch_driver=None,
-           junctions=None, *, undock_gate, clock=time.monotonic) -> py_trees.behaviour.Behaviour:
+           junctions=None, guide_result_fn=None, *, undock_gate, clock=time.monotonic) -> py_trees.behaviour.Behaviour:
     """WorkingBranch — execute whatever command the task adapter has dispatched.
 
     Deliberately NO BatteryCheck: the fleet manager accounts for battery when it assigns
@@ -69,7 +69,8 @@ def create(params: dict, nav_driver, arm_driver, follow_driver=None,
                                       watch_driver=guide_watch_driver,
                                       far_area_min=guide_far, near_area_max=guide_near,
                                       junctions=junctions,
-                                      junction_hold_sec=junction_hold, now_fn=clock),
+                                      junction_hold_sec=junction_hold,
+                                      result_fn=guide_result_fn, now_fn=clock),
                             ArmExec(arm_driver),
                             FollowExec(follow_driver),
                             py_trees.behaviours.Running(name="AwaitingCommand"),

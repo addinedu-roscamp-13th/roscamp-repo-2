@@ -89,4 +89,12 @@ double signed_area_2x(const Navgraph & g, const std::vector<int> & route)
   return area2;
 }
 
+std::size_t patrol_tail_index(const std::vector<int> & path, std::size_t idx, int plan_goal)
+{
+  for (std::size_t k = idx; k < path.size(); ++k) {
+    if (path[k] == plan_goal) { return k + 1; }
+  }
+  return idx + 2;
+}
+
 }  // namespace libi_fleet

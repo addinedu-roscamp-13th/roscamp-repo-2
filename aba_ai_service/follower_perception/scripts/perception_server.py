@@ -267,6 +267,15 @@ def _pose_payload(det, cmd, pose, fps, matcher=None):
         # 영상이 축소되면 색 구분이 어렵고 "필터가 도는 건지"를 값으로 못 봤다.
         # 화면이 글자로 띄울 수 있게 값으로 내보낸다(FollowScreen).
         "isPredicted": bool(getattr(det, "is_predicted", False)) if det is not None else None,
+        # 등록된 **그 사람**인가. 지금 파이프라인은 owner 만 내보내므로(pipeline.py 의
+        # 유일한 `Detection(...)` 이 `is_owner=True` 고정) 사실상 `det is not None` 과
+        # 같지만, **패널이 그 사실에 기대게 두지 않는다.**
+        #
+        # 길잡이 회복에서 화면이 "또 같이 뒤로 이동해주세요!" 를 띄우는 근거가 이 값이다
+        # (GuideScreen.qml). 언젠가 후보 검출을 같이 실어 보내게 되면 — `requester_visible`
+        # 이 이미 `det.is_owner` 를 검사하는 걸 보면 그럴 작정이었다 — 그때 이 문구는
+        # **지나가던 사람**을 보고 뜬다. 값을 명시해 두면 그날 여기만 맞으면 된다.
+        "isOwner": bool(getattr(det, "is_owner", False)) if det is not None else None,
     }
     # ReID/HSV 매칭 신뢰도 — _status_line 과 같은 소스(matcher.last_reid_sim/last_hsv_sim).
     # 예전엔 hud_text=False 라 패널로 가는 JPEG 에서 이 글자가 빠졌고, POSE 에도 없었다.
@@ -303,7 +312,7 @@ EOF = object()
 
 def serve_loop(conn, frames, perception, *, poll_cmd=None, jpeg_quality=80,
                cmd_sink=None, policy=None, lidar_source=None, detection_sink=None,
-               camera_source=None):
+               camera_source=None, role_source=None):
     last_t = time.monotonic()
     for frame in frames:
         # None = 심장박동(영상이 아직 안 옴). 소켓만 확인하고 넘어간다 — 이게 없으면
@@ -313,6 +322,7 @@ def serve_loop(conn, frames, perception, *, poll_cmd=None, jpeg_quality=80,
                 return
             continue
         _sync_camera(perception, camera_source)
+        _sync_role(perception, role_source)
         cmd = poll_cmd(conn) if poll_cmd else None
         if cmd is EOF:
             # 패널이 닫혔다. 여기서 안 빠지면 소켓이 CLOSE-WAIT 로 잔류하고,
@@ -349,13 +359,13 @@ def serve_loop(conn, frames, perception, *, poll_cmd=None, jpeg_quality=80,
         # 패널이 자기 글꼴·색으로 그린다(draw_overlay 머리말).
         vis = draw_overlay(frame, det, cands=cands, pick=pick, cmd=cmd,
                            status_extra=_status_line(perception.matcher),
-                           pose=perception.pose, fps=fps, hud_text=False)
+                           pose=_pose_or_none(perception), fps=fps, hud_text=False)
         ok, buf = cv2.imencode(".jpg", vis,
                                [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
         if ok:
             try:
                 send_frame(conn, buf.tobytes())
-                send_frame(conn, _pose_payload(det, cmd, perception.pose, fps, perception.matcher))
+                send_frame(conn, _pose_payload(det, cmd, _pose_or_none(perception), fps, perception.matcher))
                 if lidar_source is not None:                 # LiDAR telemetry (display only)
                     s = lidar_source.latest()
                     if s is not None:                        # order: FL F FR L R BL B BR
@@ -531,6 +541,28 @@ def _sync_camera(perception, camera_source):
         perception.set_camera(cam)
 
 
+def _sync_role(perception, role_source):
+    """로봇이 알려준 세션 역할을 반영한다. 자세 추정을 켜고 끄는 근거다.
+
+    못 받으면(구독 실패·ROS 미소싱) 아무것도 안 한다 — `pose_active` 가 "모름" 을
+    "켬" 으로 다루므로 예전과 똑같이 돈다.
+    """
+    if role_source is None:
+        return
+    role = role_source.latest()
+    if role is not None:
+        perception.set_role(role)
+
+
+def _pose_or_none(perception):
+    """골격을 그리고 자세 값을 실을 것인가 — 아니면 `None`(=자세 없음)으로 넘긴다.
+
+    ⚠️ 골격은 **서버가 JPEG 에 굽는다**(`draw_overlay`). 패널은 그 그림을 끌 수 없으므로
+       여기서 안 넘기는 것이 유일한 방법이다(`RobotController.cpp` 가 그렇게 적어 뒀다).
+    """
+    return perception.pose if getattr(perception, "pose_active", True) else None
+
+
 def _make_detection_sink(host, port):
     """로봇의 libi_perception 으로 주인 검출을 보내는 콜백.
 
@@ -559,12 +591,13 @@ def _make_detection_sink(host, port):
 
 
 def _run_local_show(frames, perception, cmd_sink=None, policy=None, detection_sink=None,
-                    camera_source=None):
+                    camera_source=None, role_source=None):
     """Local cv2 window (no Qt, no socket). Keys: r=register, x=reset, q/ESC=quit."""
     win = "perception  [r]register [x]reset [q]quit"
     last_t = time.monotonic()
     for frame in frames:
         _sync_camera(perception, camera_source)
+        _sync_role(perception, role_source)
         perception.run(frame)
         det = perception.get_latest()
         if detection_sink is not None:
@@ -584,7 +617,7 @@ def _run_local_show(frames, perception, cmd_sink=None, policy=None, detection_si
         fps = 1.0 / dt if dt > 0 else None
         vis = draw_overlay(frame, det, cands=cands, pick=pick, cmd=cmd,
                            status_extra=_status_line(perception.matcher),
-                           pose=perception.pose, fps=fps)
+                           pose=_pose_or_none(perception), fps=fps)
         cv2.imshow(win, vis)
         k = cv2.waitKey(1) & 0xFF
         if k in (ord("q"), 27):
@@ -640,6 +673,10 @@ def main():
                     help="로봇의 /libi/camera_select 를 구독해 카메라 전환을 따라간다. "
                          "예: --camera-topic /libi/camera_select. ROS sourced + 같은 "
                          "ROS_DOMAIN_ID 가 필요하다(--lidar-ros 와 같은 전제).")
+    ap.add_argument("--role-topic", dest="role_topic", default="/libi/perception_role",
+                    help="로봇의 세션 역할 토픽. **--camera-topic 을 준 경우에만** 구독한다"
+                         "(같은 ROS 소싱 전제). 역할을 알면 길잡이에서 자세·골격을 끈다 — "
+                         "자세 게이트는 추종 전용 안전 규칙이기 때문이다.")
     ap.add_argument("--pose", dest="pose", action="store_true",
                     help="자세 판정을 켠다. **기본은 꺼짐** — 켜면 누워 있는 사람에게는 "
                          "로봇이 다가가지 않는다(대신 프레임 예산을 더 쓴다).")
@@ -726,9 +763,22 @@ def main():
         except Exception as e:      # noqa: BLE001 — 구독 못 해도 추론은 돌아야 한다
             print(f"[warn] camera_select 구독 실패({e}) — 카메라 전환을 모른 채 돕니다")
 
+    # 자세(pose)는 **추종 전용**이다. 길잡이에서 끄려면 역할을 알아야 한다
+    # (scripts/role_source.py 머리말). camera_select 와 같은 ROS 옵트인에 얹는다.
+    role_source = None
+    if args.camera_topic:
+        try:
+            from scripts.role_source import RoleSource
+            role_source = RoleSource(topic=args.role_topic)
+            print(f"[ok] perception_role 구독 → {args.role_topic} "
+                  f"(길잡이에서 자세·골격 끔)")
+        except Exception as e:      # noqa: BLE001 — 구독 못 해도 추론은 돌아야 한다
+            print(f"[warn] perception_role 구독 실패({e}) — 길잡이에서도 자세를 잽니다")
+
     if args.show:
         _run_local_show(frames, perception, cmd_sink=cmd_sink, policy=policy,
-                        detection_sink=detection_sink, camera_source=camera_source)
+                        detection_sink=detection_sink, camera_source=camera_source,
+                        role_source=role_source)
         return
 
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -746,7 +796,8 @@ def main():
         try:
             serve_loop(conn, frames, perception, poll_cmd=make_socket_poller(),
                        cmd_sink=cmd_sink, policy=policy, lidar_source=lidar_source,
-                       detection_sink=detection_sink, camera_source=camera_source)
+                       detection_sink=detection_sink, camera_source=camera_source,
+                       role_source=role_source)
         finally:
             conn.close()
             print("[..] viewer disconnected; waiting again")

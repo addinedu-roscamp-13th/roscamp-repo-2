@@ -82,6 +82,10 @@ struct ActiveTask
   // 안 걸면 실행 게이트가 "계획에 없는 칸" 으로 보고 강등한다(그게 바로 없애려던 churn 이다).
   // -1 이면 순회가 아니거나 계획 구간이 없다는 뜻.
   int plan_end_idx{-1};
+  // 이 task 에서 **마감을 이미 놓친 것으로 센** path 인덱스. -1 이면 없다.
+  // `check_plan_deadline` 은 매 틱 도는데, 그때마다 세면 한 번 늦은 간선이 초당 6~7번씩
+  // 벌점을 먹어 문턱을 즉시 넘긴다. 칸 하나당 한 번만 센다.
+  int missed_idx{-1};
   double plan_epoch{0.0};        // 그 계획이 t=0 으로 잡은 시각(초, steady)
   double plan_tick_sec{1.0};     // 틱 하나의 실제 길이(초)
 

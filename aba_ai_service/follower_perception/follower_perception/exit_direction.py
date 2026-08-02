@@ -20,11 +20,22 @@
 동시에 걸릴 수 있는데(예: 왼쪽 아래 모서리), 그때 "옆"으로 읽으면 코앞에 있는
 대상을 향해 계속 전진한다.
 """
-from .constants import EXIT_AREA_SURGE, EXIT_EDGE_MARGIN_RATIO
+from .constants import EXIT_AREA_SURGE, EXIT_EDGE_MARGIN_RATIO, FRAME_DT
 
-#: "아래로 빠졌다"로 보는 최소 세로속도 — 프레임 높이 대비 비율(px/frame).
-#: 240px 프레임에서 0.02 = 4.8px/frame ≈ 초당 72px(15fps). 검출 흔들림(1~2px)은
-#: 여유 있게 걸러지고 실제 낙하·접근만 남는다.
+#: "아래로 빠졌다"로 보는 최소 세로속도 — 프레임 높이 대비 비율(**px/frame**).
+#: 240px 프레임에서 0.02 = 4.8px/frame. 검출 흔들림(1~2px)은 여유 있게 걸러지고
+#: 실제 낙하·접근만 남는다.
+#
+# ⚠️ [2026-08-02] **단위를 맞췄다 — 20배 예민했다.**
+#   `BBoxSmoother.velocity` 는 `velocity += (beta/dt) * residual` 라 **px/초**다.
+#   그런데 여기와 `EXIT_AREA_SURGE` 는 주석대로 **프레임당** 값이다. 그대로 비교하니
+#   실효 임계가 `4.8 px/sec = 0.24 px/frame` 이 되어, **정상적으로 다가오는 사람도**
+#   `DOWN` 으로 찍혔다. `DOWN` 은 `_COASTABLE` 이 아니라 코스팅이 통째로 꺼진다 —
+#   사용자 보고 2026-08-02: "알파베타 필터가 잘 안 나오네, 가끔은 보이기는 해".
+#   ("가끔"은 노이즈가 마침 위쪽이라 임계를 안 넘긴 순간이다.)
+#
+#   참조 구현(`arte_libi_perception`)은 이 게이트가 **아예 없어서** 잘 됐다.
+#   게이트 자체는 옳다(코앞·낙하로 밀고 들어가면 안 된다) — 단위만 고친다.
 _DOWN_VY_FRAC = 0.02
 
 SIDE = "side"
@@ -34,6 +45,30 @@ CENTER = "center"
 
 #: 예측 추종을 허용하는 방향. 나머지는 즉시 소실로 처리한다.
 _COASTABLE = (SIDE, CENTER)
+
+#: 예측 추종을 **막는** 자세. 나머지는 허용한다.
+#
+# ⚠️ [2026-08-02] **허용목록(Standing 만)에서 차단목록으로 뒤집었다.**
+#
+#   예전 규칙은 `last_posture != "Standing"` 이면 무조건 차단이었다. 그런데
+#   **따라가는 사람은 대부분 옆이나 등을 보인다** — 그러면 자세가 `Side` 이거나
+#   어깨·골반 신뢰도가 모자라 `Unknown` 이 된다. 즉 정상 추종의 대부분 구간에서
+#   α-β 코스팅이 **통째로 꺼져 있었다.** 사용자 보고 2026-08-02:
+#   "bbox 사라지면 알파베타 필터가 적용이 잘 안 되네".
+#
+#   그 규칙의 원래 목적은 문서에 적힌 대로 **"쓰러지는 중이던 대상을 예측 위치로
+#   쫓아가지 마라"** 하나다. 그건 `Lying` 이지 `Side` 가 아니다. `control_loop` 도
+#   2026-08-01 에 이미 "측면은 놓친 게 아니라 거리만 못 믿는 것"으로 되돌렸는데
+#   (전진만 막고 방위는 유지) 여기만 옛 규칙에 남아 있었다.
+#
+#   `Calibrating` 도 막는다 — 기준을 재는 중이라 자세 판정 자체를 못 믿는다.
+#
+#   ⚠️ 차단목록이라 모르는 자세 이름은 **허용**된다. 그게 안전한 이유:
+#     · 코스팅 상한이 1.4초이고 최대 전진이 0.06 m/s 라 최악 8cm 다
+#     · 로봇 코앞으로 오는 경우는 자세와 무관하게 `DOWN` 방향이 따로 막는다
+#     · 그 아래를 라이다 하드 스톱(9cm)이 받친다
+#   새 자세 이름이 위험하다고 판단되면 여기 추가하는 것이 유일한 할 일이다.
+_NO_COAST_POSTURES = ("Lying", "Calibrating")
 
 
 def classify_exit(bbox, velocity, frame_w, frame_h,
@@ -55,7 +90,11 @@ def classify_exit(bbox, velocity, frame_w, frame_h,
 
     # 면적 급증은 가장자리와 무관하게 "아주 가까워졌다"는 뜻이다. 프레임 안에서
     # 커지다 사라지는 경우(코앞으로 다가와 시야를 덮음)를 가장자리 검사로는 못 잡는다.
-    if varea >= area_surge:
+    # ⚠️ 속도는 px/**초**, 임계는 **프레임당**이다 — 프레임당으로 환산해 비교한다.
+    #    근거는 `_DOWN_VY_FRAC` 주석.
+    vy_per_frame = vy * FRAME_DT
+    varea_per_frame = varea * FRAME_DT
+    if varea_per_frame >= area_surge:
         return DOWN
     # ⚠️ [2026-08-01] `vy > 0` 이 아니라 **뚜렷하게 아래로 움직일 때만** DOWN 이다.
     #
@@ -67,9 +106,9 @@ def classify_exit(bbox, velocity, frame_w, frame_h,
     #
     #   진짜 "아래로 빠짐"은 프레임 높이에 비해 의미 있는 속도를 갖는다. 임계를
     #   두면 검출 흔들림은 걸러지고 실제 낙하·접근만 남는다. 0 이면 예전 동작.
-    if at_bottom and vy > frame_h * _DOWN_VY_FRAC:
+    if at_bottom and vy_per_frame > frame_h * _DOWN_VY_FRAC:
         return DOWN
-    if at_top and vy < 0:
+    if at_top and vy_per_frame < 0:
         return UP
     if at_side and abs(vx) > abs(vy):
         return SIDE
@@ -79,10 +118,10 @@ def classify_exit(bbox, velocity, frame_w, frame_h,
 def may_coast(direction, last_posture) -> bool:
     """예측 추종을 허용할지.
 
-    마지막 자세가 `Standing` 이 아니었으면 방향과 무관하게 막는다 — 쓰러지는 중이던
-    대상을 예측 위치로 쫓아가는 것은 정확히 피하려던 상황이다.
-    `last_posture` 가 None 이면 판정 소스가 없다는 뜻이라 막지 않는다.
+    마지막 자세가 `_NO_COAST_POSTURES`(Lying·Calibrating)면 방향과 무관하게 막는다 —
+    쓰러지는 중이던 대상을 예측 위치로 쫓아가는 것은 정확히 피하려던 상황이다.
+    그 외(Standing·Side·Unknown·None)는 허용한다 — 근거는 `_NO_COAST_POSTURES` 주석.
     """
-    if last_posture is not None and last_posture != "Standing":
+    if last_posture in _NO_COAST_POSTURES:
         return False
     return direction in _COASTABLE

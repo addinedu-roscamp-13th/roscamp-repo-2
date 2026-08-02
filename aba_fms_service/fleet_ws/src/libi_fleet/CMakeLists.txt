@@ -79,6 +79,12 @@ if(BUILD_TESTING)
   target_compile_definitions(test_patrol_cycle PRIVATE
     TEST_NAVGRAPH_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../../maps/library/new_map.navgraph.yaml")
 
+  # 순회 랩 꼬리 이어붙이기 — 순회 로봇이 둘 이상일 때만 터지던 중복 버그를 잡는다.
+  ament_add_gtest(test_patrol_splice test/test_patrol_splice.cpp)
+  target_include_directories(test_patrol_splice PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(test_patrol_splice libi_fleet_core)
+
   ament_add_gtest(test_security_patrol_cycle test/test_security_patrol_cycle.cpp)
   target_include_directories(test_security_patrol_cycle PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include)

@@ -74,7 +74,19 @@ if(LIBI_GUI_TESTS)
         src/RosLink.h
     )
     target_link_libraries(test_admin_follow_client PRIVATE
-        Qt5::Core Qt5::Network rclcpp::rclcpp std_msgs::std_msgs geometry_msgs::geometry_msgs)
+        Qt5::Core Qt5::Network rclcpp::rclcpp std_msgs::std_msgs geometry_msgs::geometry_msgs nav_msgs::nav_msgs)
+
+    # GuideExec가 WORKING을 벗어난 사실을 받은 패널은 완료 화면에 남지 않고 홈으로
+    # 돌아가야 한다. ROS 수신 콜백이 호출하는 RobotController 완료 분기를 단위로 본다.
+    add_executable(test_guide_completion_ui
+        tests/test_guide_completion_ui.cpp
+        src/RobotController.cpp
+        src/RobotController.h
+        src/RosLink.cpp
+        src/RosLink.h
+    )
+    target_link_libraries(test_guide_completion_ui PRIVATE
+        Qt5::Core Qt5::Network rclcpp::rclcpp std_msgs::std_msgs geometry_msgs::geometry_msgs nav_msgs::nav_msgs)
 
     # 패널 요청 통로(RosLink::panelRequest) — id 상관과 타임아웃만 본다. RobotController 는
     # 안 넣는다: 여기서 보려는 건 통로 자체지 화면 로직이 아니다.

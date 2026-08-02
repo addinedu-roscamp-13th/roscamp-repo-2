@@ -85,7 +85,15 @@ public:
     turn_rad_s_(env_d("LIBI_CBS_TURN_RAD_S", 0.15)),
     turn_min_rad_(env_d("LIBI_CBS_TURN_MIN_RAD", 0.35)),
     clearance_(env_i("LIBI_CBS_CLEARANCE", 1)),
-    slack_(env_i("LIBI_CBS_SLACK", 1)),
+    // 예약 시각의 허용 오차는 **양쪽 대칭 ±10초**다(tick_seconds_=1.0 기준).
+    //   slack_       = 일찍 온 쪽 — 계획보다 이만큼 빠르면 그냥 통과시킨다
+    //   drift_limit_ = 늦게 온 쪽 — 이만큼 넘으면 시간표를 버리고 반응형으로 내려간다
+    // ⚠️ 예전엔 slack_ 이 1 이라 비대칭이었다(일찍 1초 / 늦게 10초). 그래서 계획보다
+    //    2초만 빨라도 :233 에서 WAIT 로 세워 놓고 다음 틱을 기다리게 했는데, 실물은
+    //    가감속·회전 때문에 몇 초씩 앞뒤로 흔들린다 — 그 흔들림이 전부 정지로 바뀌면서
+    //    로봇이 계속 멈칫하고, 멈칫이 쌓여 반대쪽(지연) 문턱을 넘겨 재계획을 유발했다.
+    //    두 문턱을 같게 두면 "계획 근처면 그냥 간다" 가 되어 이 되먹임이 끊긴다.
+    slack_(env_i("LIBI_CBS_SLACK", 10)),
     drift_limit_(env_i("LIBI_CBS_DRIFT_LIMIT", 10)),
     node_stop_ticks_(env_i("LIBI_CBS_NODE_STOP_TICKS", 1))
   {
@@ -140,7 +148,7 @@ public:
     std::vector<Route> routes;
 
     if (snap.graph && !snap.robots.empty()) {
-      const TimedGraph g = build_graph(*snap.graph, snap.blocked);
+      const TimedGraph g = build_graph(*snap.graph, snap.blocked, snap.slow_edges);
       const int n = static_cast<int>(g.size());
       bool ok = true;
       starts.reserve(snap.robots.size());
@@ -282,7 +290,8 @@ private:
   // 들어오는 방향이 여럿이면 평균을 쓴다.
   // ponytail: 진입방향 평균 근사. 정확히 하려면 (진입간선, 진출간선) 쌍으로 그래프를
   //   확장해야 한다(정점 수 ×평균차수). 교차로가 병목이 되면 그때 승급.
-  TimedGraph build_graph(const Navgraph & ng, const std::vector<int> & blocked) const
+  TimedGraph build_graph(const Navgraph & ng, const std::vector<int> & blocked,
+                         const std::vector<SlowEdge> & slow = {}) const
   {
     const int n = ng.size();
     // 역인접(진입 간선) — 회전각 평균에 필요하다.
@@ -301,7 +310,12 @@ private:
         const double travel = (speed_mps_ > 0.0) ? dist / speed_mps_ : 0.0;
         const double turn = turn_seconds(ng, preds[v], v, w);
         const int ticks = ticks_for(1.0, 1.0 / std::max(1e-9, travel + turn), tick_seconds_);
-        g[v].push_back({w, ticks + node_stop_ticks_});
+        // 반복해서 마감을 못 지킨 간선은 **비싸게** 만든다(막지 않는다 — SlowEdge 머리말).
+        int extra = 0;
+        for (const auto & e : slow) {
+          if (e.from == v && e.to == w) { extra = e.extra_ticks; break; }
+        }
+        g[v].push_back({w, ticks + node_stop_ticks_ + extra});
       }
     }
     return g;

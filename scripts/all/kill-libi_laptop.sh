@@ -84,3 +84,24 @@ done
 kill_patterns "perception_server.py" "aba_ai_service/main.py"
 
 echo "[kill] 서버 스택(FMS·브릿지·도서관 웹)은 그대로 둡니다 — 정리는 $HERE/kill-libi_server.sh"
+
+# ── fleet_node 중복 감시 ─────────────────────────────────────────────────────
+#
+# ⚠️ **여기서 죽이지는 않는다.** fleet_node 는 서버 스택 소관이고(위 줄), 지금 로봇을
+#    통제 중일 수 있다. 말없이 죽이면 주행 중인 로봇의 예약이 풀린다.
+#
+# 대신 **중복만 알린다.** 실측 사고 2026-08-02: `kill-libi_laptop.sh` 로 노트북만
+# 내리고 서버 세션을 새로 띄우기를 반복하다 fleet_node 가 **13시간 동안 두 개** 돌았다.
+# 둘이 같은 로봇에 서로 다른 CBS 예약을 발급해 교통관제가 깨졌는데 **에러가 한 줄도
+# 안 났다** — 관제 지도 깜빡임·마커 순간이동으로만 드러나 원인 추적에 오래 걸렸다.
+#
+# 이 스크립트가 그 사고의 길목이라 여기에 그물을 둔다. 기동 쪽 차단은
+# `scripts/laptop/fms_service.sh` 의 `require_single_instance` 가 맡는다.
+_fleet_n="$(count_procs "libi_fleet/lib/libi_fleet/fleet_node")"
+[ -z "$_fleet_n" ] && _fleet_n=0
+if [ "$_fleet_n" -gt 1 ]; then
+  echo "[kill] ⚠⚠ fleet_node 가 ${_fleet_n}개 돌고 있습니다 — **둘이 동시에 지휘 중입니다.**"
+  list_procs "libi_fleet/lib/libi_fleet/fleet_node" | sed 's/^/         /'
+  echo "         같은 로봇에 서로 다른 예약이 나가 관제 지도가 깜빡이고 순회가 어긋납니다."
+  echo "         정리: $HERE/kill-libi_server.sh   (그 뒤 서버 스택을 다시 올리세요)"
+fi

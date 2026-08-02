@@ -21,6 +21,10 @@ from app.security import decode_token
 
 router = APIRouter(prefix="/api/fleet", tags=["fleet"])
 
+# 지도 피드는 상태 스냅샷이다. 제어/도착 사건은 별도 API·events WS를 쓰므로, 여기서는
+# 최신 상태만 10 Hz로 보내도 충분하며 ROS 콜백 빈도를 브라우저까지 전파하지 않는다.
+FLEET_FEED_INTERVAL_SEC = 0.1
+
 # plugins.xml 에 등록된 실제 구현. SetPlugins.srv 주석의 예시 이름은 구버전이라 믿지 않는다.
 DISPATCHER_PLUGINS = ["libi_fleet::Auction"]
 # 첫 항목이 fleet_node 기본값(CBS + 가중 Space-Time A*). 뒤 둘은 폴백/진단용 수동 교체.
@@ -115,7 +119,9 @@ async def fleet_feed_ws(websocket: WebSocket, token: str = Query(...)):
 
     await websocket.accept()
     loop = asyncio.get_running_loop()
-    queue: asyncio.Queue = asyncio.Queue(maxsize=64)
+    # fleet feed는 상태 스냅샷이다. 중간 상태를 보존할 이유가 없으므로 최신 1개만
+    # 보관한다(fleet_link._notify가 이전 것을 교체). task event는 별도 WS를 쓴다.
+    queue: asyncio.Queue = asyncio.Queue(maxsize=1)
     fleet_link.add_listener(loop, queue)
     try:
         # 접속 즉시 현재 캐시를 한 번 밀어준다 (빈 화면 방지)
@@ -123,6 +129,8 @@ async def fleet_feed_ws(websocket: WebSocket, token: str = Query(...)):
         while True:
             payload = await queue.get()
             await websocket.send_json({"ok": True, "snapshot": payload})
+            # 이 사이에 온 것은 maxsize=1 큐에서 최신 한 개로 합쳐진다.
+            await asyncio.sleep(FLEET_FEED_INTERVAL_SEC)
     except (WebSocketDisconnect, Exception):
         pass
     finally:

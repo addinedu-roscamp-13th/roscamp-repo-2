@@ -75,7 +75,7 @@ private:
     bool takeFrame(QByteArray &payload);      // 버퍼에서 완결된 프레임 하나를 꺼낸다
     void applyLidar(const QByteArray &payload);
     void applyPose(const QByteArray &payload);
-    void sendCommand(const char *cmd);
+    bool sendCommand(const char *cmd);      // 보냈으면 true, 끊겨서 못 보냈으면 false
     void setStatus(const QString &s);
 
     QTcpSocket m_sock;
@@ -87,6 +87,10 @@ private:
     quint16 m_port = 5007;
     bool m_connected = false;
     bool m_wanted = false;           // start() 로 켜둔 상태인지 (재시도 여부를 가른다)
+    //: 끊겨 있는 동안 요청된 등록 초기화. 연결되면 onConnected() 가 보낸다.
+    //: reset 만 예약한다 — register 는 "지금 화면 가운데 사람"이라 늦게 보내면
+    //: 엉뚱한 사람이 등록된다. 근거는 PerceptionClient.cpp 의 resetTarget 머리말.
+    bool m_pendingReset = false;
     int m_frameCounter = 0;
     QString m_statusText;
     QVariantMap m_lidar;
