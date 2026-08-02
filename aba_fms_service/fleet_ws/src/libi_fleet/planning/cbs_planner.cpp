@@ -105,6 +105,14 @@ std::vector<int> reverse_dijkstra(const TimedGraph & g, int goal)
   return d;
 }
 
+// 로봇 i 의 출발 시각(틱). 안 주면 0 — 예전과 같은 동작이다.
+// 음수는 0 으로 본다("모른다" 를 미래로 해석하지 않는다).
+int start_tick_of(const PlanOptions & opt, std::size_t i)
+{
+  if (i >= opt.start_ticks.size()) { return 0; }
+  return std::max(0, opt.start_ticks[i]);
+}
+
 // 가중 Space-Time A*: 제약을 지키며 start→goal 의 시각별 경로. 실패 시 빈 Route.
 //
 // 상태는 (정점, 도착틱). 확장은 두 가지다:
@@ -114,7 +122,7 @@ std::vector<int> reverse_dijkstra(const TimedGraph & g, int goal)
 // 대기를 1틱짜리 상태로 쪼개 두므로, 머무는 동안의 정점 제약이 자동으로 매 틱 검사된다.
 Route timed_astar(
   const TimedGraph & g, int start, int goal, const TimedConstraints & c, int horizon,
-  int max_expansions)
+  int max_expansions, int start_tick)
 {
   const std::vector<int> h = reverse_dijkstra(g, goal);
   if (h[start] == kInf) { return {}; }   // 도달 불가 그래프
@@ -141,8 +149,11 @@ Route timed_astar(
   //   물리적으로 두 로봇이 한 정점에 겹칠 수는 없지만, arte2 처럼 정점 간격이 좁고
   //   도착 판정 반경이 0.05 m 인 맵에서는 **초기 위치가 같은 정점으로 스냅**될 수 있다.
   //   그때 플래너가 안 돌아오면 배차 전체가 멈춘다.
-  if (vertex_blocked(c, start, 0)) { return {}; }
-  open.push({start, 0, h[start]});
+  // ⚠️ **출발 시각은 0 이 아닐 수 있다.** 이동 중 재계획이면 로봇이 `start` 에 닿기까지
+  //    남은 시간이 있고, 그 값이 `start_tick` 으로 들어온다 — 근거는 `PlanOptions::start_ticks`.
+  //    여기서 반영해야 arrive/depart 와 **충돌 제약이 같은 시간축**에서 밀린다.
+  if (vertex_blocked(c, start, start_tick)) { return {}; }
+  open.push({start, start_tick, start_tick + h[start]});
 
   int expansions = 0;
   while (!open.empty()) {
@@ -337,7 +348,10 @@ std::vector<Route> cbs_plan_once(
     for (int i = 0; i < N; ++i) {
       const std::vector<int> h = reverse_dijkstra(g, goals[i]);
       if (starts[i] >= 0 && starts[i] < static_cast<int>(h.size()) && h[starts[i]] != kInf) {
-        longest = std::max(longest, h[starts[i]]);
+        // ⚠️ 출발 시각을 더한다. 지평선은 **절대 시각**의 상한이라, 늦게 출발하는 로봇의
+        //    도착이 그만큼 뒤로 밀린다. 안 더하면 그 로봇만 지평선 밖으로 나가 계획이
+        //    실패하고, 편대 전체가 반응형으로 내려간다.
+        longest = std::max(longest, h[starts[i]] + start_tick_of(opt, i));
       }
     }
     horizon = 2 * longest + N * (max_edge + opt.clearance + 1) + 8;
@@ -355,7 +369,8 @@ std::vector<Route> cbs_plan_once(
   root.con.resize(N);
   root.routes.resize(N);
   for (int i = 0; i < N; ++i) {
-    root.routes[i] = timed_astar(g, starts[i], goals[i], root.con[i], horizon, opt.max_expansions);
+    root.routes[i] = timed_astar(g, starts[i], goals[i], root.con[i], horizon, opt.max_expansions,
+                                start_tick_of(opt, i));
     if (root.routes[i].empty()) { return {}; }
     root.cost += route_cost(root.routes[i]);
   }
@@ -390,7 +405,8 @@ std::vector<Route> cbs_plan_once(
     std::vector<Route> out(N);
     TimedConstraints acc;                 // 앞 로봇들이 만든 누적 장애물
     for (int idx : order) {
-      out[idx] = timed_astar(g, starts[idx], goals[idx], acc, horizon, opt.max_expansions);
+      out[idx] = timed_astar(g, starts[idx], goals[idx], acc, horizon, opt.max_expansions,
+                          start_tick_of(opt, idx));
       if (out[idx].empty()) { return {}; }
       for (size_t k = 0; k < out[idx].size(); ++k) {
         const Step & st = out[idx][k];
@@ -454,7 +470,8 @@ std::vector<Route> cbs_plan_once(
         child.con[agent].vertex.push_back({cf.u, o0 - opt.clearance, o1 + opt.clearance});
       }
       child.routes[agent] = timed_astar(g, starts[agent], goals[agent],
-                                        child.con[agent], horizon, opt.max_expansions);
+                                        child.con[agent], horizon, opt.max_expansions,
+                                        start_tick_of(opt, agent));
       if (child.routes[agent].empty()) { continue; }  // 이 가지 막힘
       child.cost = 0;
       for (const auto & r : child.routes) { child.cost += route_cost(r); }
