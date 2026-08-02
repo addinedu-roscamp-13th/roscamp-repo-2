@@ -82,10 +82,20 @@ struct ActiveTask
   // 안 걸면 실행 게이트가 "계획에 없는 칸" 으로 보고 강등한다(그게 바로 없애려던 churn 이다).
   // -1 이면 순회가 아니거나 계획 구간이 없다는 뜻.
   int plan_end_idx{-1};
-  // 이 task 에서 **마감을 이미 놓친 것으로 센** path 인덱스. -1 이면 없다.
+  // 이 task 에서 **마감을 이미 놓친 것으로 센** 간선. `{-1,-1}` 이면 없다.
   // `check_plan_deadline` 은 매 틱 도는데, 그때마다 세면 한 번 늦은 간선이 초당 6~7번씩
-  // 벌점을 먹어 문턱을 즉시 넘긴다. 칸 하나당 한 번만 센다.
-  int missed_idx{-1};
+  // 벌점을 먹어 문턱을 즉시 넘긴다. **한 번 지나는 동안 한 번만** 센다.
+  //
+  // ⚠️ [2026-08-02] **예전엔 path 인덱스였다. 재계획이 그 동일성을 깨뜨린다.**
+  //    재계획이 적용되면 `t.idx` 가 1 로 되감기는데 이 값은 옛 인덱스를 들고 있다.
+  //    그래서 두 방향으로 다 틀렸다:
+  //      · 우연히 값이 겹치면 **다른 간선**을 "이미 셌다" 로 보고 건너뛴다
+  //      · 안 겹치면 **같은 간선**을 두 번 센다
+  //    실측(sim, 2026-08-02): 마감 초과가 162건인데 `kSlowEdgeMisses`(3연속)에 한 번도
+  //    못 닿아 느린 간선 벌점이 **0건**이었다. 재계획이 3초마다 도니 인덱스 동일성이
+  //    성립할 틈이 없다. 간선 자체로 들고 있으면 재계획과 무관하게 같은 뜻이 된다.
+  int missed_from{-1};
+  int missed_to{-1};
   double plan_epoch{0.0};        // 그 계획이 t=0 으로 잡은 시각(초, steady)
   double plan_tick_sec{1.0};     // 틱 하나의 실제 길이(초)
 
@@ -100,22 +110,26 @@ struct ActiveTask
 ///    (codex 적대적 검토에서 드러났고 실제로 그렇게 돌고 있었다):
 ///      ① 크레딧이 방금 지나온 간선이 아니라 **앞으로 갈 간선**에 붙는다.
 ///         지나온 길의 벌점은 안 지워지고, 아직 안 가 본 길의 벌점이 지워진다.
-///      ② `missed_idx` 는 `check_plan_deadline` 이 **도달 전 인덱스**로 찍는다.
-///         올린 뒤 값과 비교하면 절대 안 맞아서, 늦게 도착한 간선에도 크레딧이 간다.
+///      ② 늦었던 간선 표시(`missed_from/to`)와 맞춰 봐야 하는데, 올린 뒤 인덱스로
+///         간선을 뽑으면 **다음 간선**과 비교하게 되어 늦게 도착한 간선에도 크레딧이 간다.
 ///      ③ 마지막 정점에서는 올린 `idx` 가 `path.size()` 라 `path[idx]` 가
 ///         **범위 밖 접근**이다(`std::vector::operator[]` — UB).
 ///    그래서 도달 인덱스를 명시적으로 받는 순수 함수로 뺐다. 여기서 범위도 같이 막는다.
 ///
 /// 반환 true 면 `from`/`to` 에 그 간선을 담는다. false 면 둘 다 안 건드린다.
 inline bool traversed_edge_to_credit(const std::vector<int> & path,
-                                     std::size_t arrived_idx, int missed_idx,
+                                     std::size_t arrived_idx,
+                                     int missed_from, int missed_to,
                                      int & from, int & to)
 {
   if (arrived_idx < 1 || arrived_idx >= path.size()) { return false; }
-  // 이 칸에서 이미 마감을 놓쳤다고 셌으면 크레딧을 주지 않는다 — 늦게 온 것이다.
-  if (static_cast<int>(arrived_idx) == missed_idx) { return false; }
-  from = path[arrived_idx - 1];
-  to = path[arrived_idx];
+  const int f = path[arrived_idx - 1];
+  const int t = path[arrived_idx];
+  // 이 **간선**에서 이미 마감을 놓쳤다고 셌으면 크레딧을 주지 않는다 — 늦게 온 것이다.
+  // 인덱스가 아니라 간선으로 비교하는 이유는 `ActiveTask::missed_from` 주석 참고.
+  if (f == missed_from && t == missed_to) { return false; }
+  from = f;
+  to = t;
   return true;
 }
 

@@ -1043,10 +1043,16 @@ private:
                   now_sec() - due + slack, t.idx, dbg.c_str());
     }
     // 어느 **간선**이 마감을 못 지켰나 — 다음 재계획이 그 길을 비싸게 보게 한다.
-    // 매 틱 부르므로 마감 하나당 한 번만 센다(`missed_idx` 로 중복을 막는다).
-    if (t.idx >= 1 && static_cast<int>(t.idx) != t.missed_idx) {
-      t.missed_idx = static_cast<int>(t.idx);
-      note_deadline_miss(t.path[t.idx - 1], t.path[t.idx]);
+    // 매 틱 부르므로 **한 번 지나는 동안 한 번만** 센다. 중복 방지를 인덱스가 아니라
+    // 간선으로 하는 이유는 `ActiveTask::missed_from` 주석 참고(재계획이 인덱스를 되감는다).
+    if (t.idx >= 1) {
+      const int mf = t.path[t.idx - 1];
+      const int mt = t.path[t.idx];
+      if (mf != t.missed_from || mt != t.missed_to) {
+        t.missed_from = mf;
+        t.missed_to = mt;
+        note_deadline_miss(mf, mt);
+      }
     }
     replan_requested_ = true;
   }
@@ -1268,14 +1274,17 @@ private:
         //    (codex 2026-08-02 적대적 검토 2(c). 순회 랩 꼬리 버그와 같은 자리에서 겹친다.)
         ++state_gen_;
         // 마감 안에 왔으면 **방금 지나온** 간선의 벌점 기록을 지운다 — 한 번의 사고로
-        // 영구히 미움받지 않게. `missed_idx` 가 이 칸이면 이미 늦은 것이라 지우지 않는다.
+        // 영구히 미움받지 않게. 그 간선에서 이미 늦었으면 지우지 않는다.
         // 판정은 `fleet_task.hpp` 의 순수 함수가 한다(범위 검사 포함) — 거기 ⚠️ 주석에
         // 예전 코드가 어떻게 세 가지를 한꺼번에 틀렸는지 적어 뒀다.
         int kept_from = 0, kept_to = 0;
-        if (traversed_edge_to_credit(t.path, arrived_idx, t.missed_idx, kept_from, kept_to)) {
+        if (traversed_edge_to_credit(t.path, arrived_idx, t.missed_from, t.missed_to,
+                                     kept_from, kept_to)) {
           note_deadline_kept(kept_from, kept_to);
         }
-        t.missed_idx = -1;
+        // 도달했으니 이번 통과는 끝났다 — 다음 통과에서 다시 셀 수 있게 푼다.
+        t.missed_from = -1;
+        t.missed_to = -1;
         t.reroutes = 0;   // 노드 도달 = 진전 → 우회 카운터 리셋
         replan_streak_ = 0;   // 진전 → 재계획 backoff 도 원복
         t.wait_ticks = 0;   // 노드 도달 = 진전 → 타임드 우회 카운터 리셋
