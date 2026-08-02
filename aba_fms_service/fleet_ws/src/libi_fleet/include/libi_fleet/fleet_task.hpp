@@ -91,4 +91,32 @@ struct ActiveTask
 
 };
 
+/// 정점에 도달했다 — **방금 지나온** 간선에 마감 준수 크레딧을 줄까.
+///
+/// `arrived_idx` 는 도달한 정점의 인덱스다(`ActiveTask::idx` 를 **올리기 전** 값).
+/// 크레딧 대상은 `path[arrived_idx-1] → path[arrived_idx]` 다.
+///
+/// ⚠️ [2026-08-02] **이 판정을 `idx++` 뒤에 하면 세 가지가 한꺼번에 틀어진다**
+///    (codex 적대적 검토에서 드러났고 실제로 그렇게 돌고 있었다):
+///      ① 크레딧이 방금 지나온 간선이 아니라 **앞으로 갈 간선**에 붙는다.
+///         지나온 길의 벌점은 안 지워지고, 아직 안 가 본 길의 벌점이 지워진다.
+///      ② `missed_idx` 는 `check_plan_deadline` 이 **도달 전 인덱스**로 찍는다.
+///         올린 뒤 값과 비교하면 절대 안 맞아서, 늦게 도착한 간선에도 크레딧이 간다.
+///      ③ 마지막 정점에서는 올린 `idx` 가 `path.size()` 라 `path[idx]` 가
+///         **범위 밖 접근**이다(`std::vector::operator[]` — UB).
+///    그래서 도달 인덱스를 명시적으로 받는 순수 함수로 뺐다. 여기서 범위도 같이 막는다.
+///
+/// 반환 true 면 `from`/`to` 에 그 간선을 담는다. false 면 둘 다 안 건드린다.
+inline bool traversed_edge_to_credit(const std::vector<int> & path,
+                                     std::size_t arrived_idx, int missed_idx,
+                                     int & from, int & to)
+{
+  if (arrived_idx < 1 || arrived_idx >= path.size()) { return false; }
+  // 이 칸에서 이미 마감을 놓쳤다고 셌으면 크레딧을 주지 않는다 — 늦게 온 것이다.
+  if (static_cast<int>(arrived_idx) == missed_idx) { return false; }
+  from = path[arrived_idx - 1];
+  to = path[arrived_idx];
+  return true;
+}
+
 }  // namespace libi_fleet

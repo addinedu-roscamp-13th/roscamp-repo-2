@@ -1239,6 +1239,9 @@ private:
         RCLCPP_INFO(get_logger(), "[%s] %s %s v%d", t.id.c_str(), t.robot.c_str(),
                     final_node ? "도착" : (reach > arrive_radius_ ? "선행통과" : "통과"),
                     t.path[t.idx]);
+        // 도달한 정점의 인덱스. **올리기 전** 값이라야 "방금 지나온 간선" 을 가리킨다 —
+        // 근거는 `traversed_edge_to_credit` 의 ⚠️ 주석.
+        const std::size_t arrived_idx = t.idx;
         t.idx++;
         t.moving = false;
         // ⚠️ **도달도 "상태가 바뀐 것" 이다.** 탐색은 콜백 밖에서 도는데(hand_to_planner)
@@ -1248,10 +1251,13 @@ private:
         //    `t.idx = 1` 로 되감기며 로봇에게 **왔던 길을 되돌아가라**고 낸다.
         //    (codex 2026-08-02 적대적 검토 2(c). 순회 랩 꼬리 버그와 같은 자리에서 겹친다.)
         ++state_gen_;
-        // 마감 안에 왔으면 그 간선의 벌점 기록을 지운다 — 한 번의 사고로 영구히
-        // 미움받지 않게. `missed_idx` 가 이 칸이면 이미 늦은 것이라 지우지 않는다.
-        if (t.idx >= 1 && static_cast<int>(t.idx) != t.missed_idx) {
-          note_deadline_kept(t.path[t.idx - 1], t.path[t.idx]);
+        // 마감 안에 왔으면 **방금 지나온** 간선의 벌점 기록을 지운다 — 한 번의 사고로
+        // 영구히 미움받지 않게. `missed_idx` 가 이 칸이면 이미 늦은 것이라 지우지 않는다.
+        // 판정은 `fleet_task.hpp` 의 순수 함수가 한다(범위 검사 포함) — 거기 ⚠️ 주석에
+        // 예전 코드가 어떻게 세 가지를 한꺼번에 틀렸는지 적어 뒀다.
+        int kept_from = 0, kept_to = 0;
+        if (traversed_edge_to_credit(t.path, arrived_idx, t.missed_idx, kept_from, kept_to)) {
+          note_deadline_kept(kept_from, kept_to);
         }
         t.missed_idx = -1;
         t.reroutes = 0;   // 노드 도달 = 진전 → 우회 카운터 리셋

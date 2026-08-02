@@ -88,6 +88,13 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(test_patrol_splice libi_fleet_core)
 
+  # 도착 시 마감 준수 크레딧을 **어느 간선**에 주는가 — `idx++` 뒤에 판정해 엉뚱한
+  # 간선에 붙고 마지막 노드에서 범위 밖을 읽던 결함의 회귀 방지.
+  ament_add_gtest(test_deadline_credit test/test_deadline_credit.cpp)
+  target_include_directories(test_deadline_credit PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(test_deadline_credit libi_fleet_core)
+
   ament_add_gtest(test_security_patrol_cycle test/test_security_patrol_cycle.cpp)
   target_include_directories(test_security_patrol_cycle PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
