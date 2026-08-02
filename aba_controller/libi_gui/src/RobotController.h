@@ -6,6 +6,7 @@
 #include <QStringList>
 #include <QVariantList>
 #include <QTimer>
+#include <QElapsedTimer>
 #include <functional>
 
 class QNetworkAccessManager;
@@ -152,6 +153,20 @@ public:
     Q_INVOKABLE void startGuideRegistration();
     Q_INVOKABLE void cancelGuideRegistration();
     Q_INVOKABLE void confirmGuideRegistration();   // 이용자를 탭해 등록이 끝났다
+    //: 학습 3초 동안 **주인이 실제로 잡혔다**고 패널이 알린다. 근거는 AI 서버가 POSE
+    //: JSON 에 싣는 `isOwner` 이고, 이 신호가 없으면 `confirmGuideRegistration` 의
+    //: 타이머가 등록을 실패로 처리한다 — 그 주석에 이유가 있다.
+    Q_INVOKABLE void reportRegistrationOwnerSeen();
+    // ⚠️ [2026-08-02] **끝난 안내의 단계를 되감는다 — 안 되감으면 길잡이를 두 번 못 쓴다.**
+    //
+    //   `guidePhase` 는 안내가 끝나도 `completed`(또는 `failed`/`cancelled`)로 남는다.
+    //   그 상태로 길잡이 화면에 다시 들어오면 `GuideScreen.qml:108` 의
+    //   `guidePhase !== "completed"` 가 목적지 고르는 화면을 통째로 숨겨서
+    //   **아무것도 못 고른다**(실측 2026-08-02).
+    //
+    //   `idle` 로 되돌리는 다른 두 곳(`clearError`·`resetToIdle`)은 **관리자 전용**이라
+    //   이용자 경로에는 되감을 길이 없었다. 그래서 화면을 나가는 자리에서 되감는다.
+    Q_INVOKABLE void resetGuidePhase();
 
 private:
     bool destinationXY(const QString &displayName, double *x, double *y) const;
@@ -249,6 +264,7 @@ private:
     void setRobotState(const QString &s);
     static QString mapState(const QString &canonical);   // ROS FSM canonical(EN) → 패널 한글 표시어휘
     void setTaskStatus(const QString &s);
+    void finishGuideIfLeftWorking(const QString &state);
     void setGuidePhase(const QString &p);
     void setGuideRegPhase(const QString &p);
     void setCurrentCamera(const QString &c);
@@ -289,6 +305,32 @@ private:
     //  (실측 2026-07-28: FMS 를 직접 부르면 WORKING 이 18초+ 유지되는데, 패널로 켜면
     //   몇 초 만에 IDLE 로 돌아왔다. 차이는 이 감시뿐이었다.)
     bool m_followSawWorking = false;
+    //  ⚠️ [2026-08-02] **`m_followSawWorking` 하나에만 매달리면 안 된다.**
+    //
+    //  `WORKING` 상태 메시지를 한 번이라도 놓치면(브릿지 재연결·DDS 유실·패널이 늦게
+    //  붙음) 이 값이 영영 false 로 남는다. 그러면 로봇이 추종을 끝내고 PATROL 로
+    //  가도 종료 감시가 성립하지 않아 **홈 복귀도, 등록 초기화(resetTarget)도 둘 다
+    //  건너뛴다** — 사용자가 겪은 "다시 추종 누르면 옛 사람이 그대로 등록돼 있다"와
+    //  "회복 BT 가 끝나도 홈으로 안 간다"가 같은 원인이다(codex 검증 2026-08-02).
+    //
+    //  그래서 시간 기반 폴백을 같이 둔다: 시작 후 `kFollowGraceMs` 가 지나면
+    //  WORKING 을 못 봤더라도 non-WORKING 상태를 종료로 친다. 유예가 있으므로
+    //  "승인 직후 스스로 해제" 회귀(2026-07-28)는 그대로 막힌다.
+    QElapsedTimer m_followSince;
+    static constexpr qint64 kFollowGraceMs = 5000;
+    // 안내 완료 상태가 홈 화면으로 바뀌는 바로 그 입력은 전역 MouseArea에도 남아 있을 수 있다.
+    // 그 잔여 탭으로 PATROL -> INTERACTING 을 즉시 되돌리지 않도록 짧게 차단한다.
+    QElapsedTimer m_guideEndedAt;
+    static constexpr qint64 kGuideEndTouchDebounceMs = 2000;
+    //: 등록 직후 앞캠에 머물며 갤러리를 채우는 시간(ms).
+    //: AI 쪽 `REGISTRATION_LEARN_SEC`(3.0초)와 **같은 값이어야** 한다 — 짧으면 학습이
+    //: 덜 끝난 채 뒷캠으로 넘어가 owner 를 못 잡는다(`confirmGuideRegistration` 주석).
+    static constexpr int kGuideLearnMs = 3000;
+    //: 이번 안내에서 WORKING 상태를 실제로 본 적이 있나. 안 봤으면 끝을 판정하지
+    //: 않는다 — 근거는 `finishGuideIfLeftWorking` 의 ⚠️ 주석(전이 직후 경쟁).
+    bool m_guideSawWorking = false;
+    //: 이번 등록의 학습 창에서 주인을 한 번이라도 봤나. 못 봤으면 등록을 되돌린다.
+    bool m_regOwnerSeen = false;
     QString m_emotion = QStringLiteral("happy");
     QString m_taskStatus = QStringLiteral("명령 대기");
     QString m_guidePhase = "idle";
