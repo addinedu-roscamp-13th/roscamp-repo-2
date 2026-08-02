@@ -584,3 +584,81 @@ TEST(CbsTraffic, DefaultDriftLimitIsZero)
   libi_fleet::CbsTraffic tr;
   EXPECT_EQ(tr.drift_limit(), 0) << "지연 관용 기본값이 0 이 아니다";
 }
+
+// ── 커밋 간선 예산 (`commit_deadline_tick`) ─────────────────────────────
+//
+// 로봇이 **가고 있는 중**에 재계획하면 계획은 그 목적지 정점을 t=0 으로 잡는다.
+// 그런데 로봇은 아직 도착 전이라, 0 을 마감으로 쓰면 계획이 서자마자 초과가 된다.
+// 그래서 예전엔 `fleet_node` 가 그 마감을 통째로 버렸고(센티널 -1), 그 구간이
+// **무감지**가 됐다 — sim 실측(2026-08-02)에서 25초 지연을 주입한 로봇의 마감 초과
+// 경고가 0건이었다.
+//
+// 답은 0 도 -1 도 아닌 **그 간선의 예산**이고, 그 값은 이 플러그인이 계산해야 한다.
+// `fleet_node` 가 거리·속도로 다시 계산하면 회전·노드 정지·slow-edge 가 빠져
+// 모델이 갈라진다.
+
+// 커밋 간선을 안 실어 보내면 예전 그대로 -1 이다 — 기존 호출자는 아무 영향 없다.
+TEST(CbsTraffic, NoCommitEdgeMeansNoDeadline)
+{
+  set_env(1, 0, 0);
+  set_env_fast_model();
+  libi_fleet::CbsTraffic tr;
+  const auto g = load_graph();
+
+  const auto routes = tr.replan(make_snapshot(g, {{"A", 0, 3, 0}}));
+  ASSERT_EQ(routes.size(), 1u);
+  EXPECT_EQ(routes[0].commit_deadline_tick, -1)
+    << "커밋 간선을 안 줬는데 마감을 지어냈다";
+}
+
+// 커밋 간선을 실어 보내면 **그 간선의 실제 비용**이 돌아온다.
+// 값을 상수로 박지 않고 `graph_for()` 로 대조한다 — 그래야 소요 모델을 고쳐도
+// 이 시험이 같이 따라온다(박아 두면 모델이 바뀔 때 조용히 거짓말을 한다).
+TEST(CbsTraffic, CommitEdgeBudgetMatchesTheTimeModel)
+{
+  set_env(1, 0, 0);
+  set_env_fast_model();
+  libi_fleet::CbsTraffic tr;
+  const auto g = load_graph();
+
+  const auto & nbrs = g.neighbors(0);
+  ASSERT_FALSE(nbrs.empty()) << "정점 0 에 나가는 간선이 없다";
+  const int from = 0, to = nbrs[0];
+
+  // 지금 0 → to 간선을 타고 가는 중이라고 알린다.
+  PlanRequest pr;
+  pr.robot = "A";
+  pr.start = to;
+  pr.goal = 3;
+  pr.committed_from = from;
+  const auto routes = tr.replan(make_snapshot(g, {pr}));
+  ASSERT_EQ(routes.size(), 1u);
+
+  const auto tg = tr.graph_for(g, {});
+  int expected = -1;
+  for (const auto & e : tg[from]) { if (e.first == to) { expected = e.second; } }
+  ASSERT_GT(expected, 0) << "시험 전제가 깨졌다 — 그 간선의 비용이 없다";
+
+  EXPECT_EQ(routes[0].commit_deadline_tick, expected)
+    << "커밋 간선 예산이 플래너의 소요 모델과 다르다";
+  EXPECT_GT(routes[0].commit_deadline_tick, routes[0].arrive_tick[0])
+    << "계획상 도착틱(0)과 같으면 계획이 서자마자 초과가 된다 — 그게 옛 churn 이다";
+}
+
+// 인접하지 않은 정점을 커밋 간선이라고 주면 마감을 지어내지 않는다.
+TEST(CbsTraffic, UnknownCommitEdgeYieldsNoDeadline)
+{
+  set_env(1, 0, 0);
+  set_env_fast_model();
+  libi_fleet::CbsTraffic tr;
+  const auto g = load_graph();
+
+  PlanRequest pr;
+  pr.robot = "A";
+  pr.start = 0;
+  pr.goal = 3;
+  pr.committed_from = 999;          // 그래프 밖
+  const auto routes = tr.replan(make_snapshot(g, {pr}));
+  ASSERT_EQ(routes.size(), 1u);
+  EXPECT_EQ(routes[0].commit_deadline_tick, -1) << "없는 간선의 예산을 지어냈다";
+}

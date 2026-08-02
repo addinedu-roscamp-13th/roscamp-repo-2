@@ -157,6 +157,10 @@ public:
     std::vector<int> starts, goals;
     std::vector<std::string> names;
     std::vector<Route> routes;
+    //: 커밋 간선(`committed_from → start`)의 예산(틱). `names` 와 같은 순서. -1 = 모른다.
+    //  **여기서 계산하는 것이 요점이다** — `build_graph` 가 이미 회전·정지·slow-edge 까지
+    //  넣은 값을 들고 있으므로, 호출자가 거리·속도로 다시 계산하면 모델이 갈라진다.
+    std::vector<int> commit_ticks;
 
     if (snap.graph && !snap.robots.empty()) {
       const TimedGraph g = build_graph(*snap.graph, snap.blocked, snap.slow_edges);
@@ -165,11 +169,13 @@ public:
       starts.reserve(snap.robots.size());
       goals.reserve(snap.robots.size());
       names.reserve(snap.robots.size());
+      commit_ticks.reserve(snap.robots.size());
       for (const auto & r : snap.robots) {
         if (r.start < 0 || r.goal < 0 || r.start >= n || r.goal >= n) { ok = false; break; }
         starts.push_back(r.start);
         goals.push_back(r.goal);
         names.push_back(r.robot);
+        commit_ticks.push_back(edge_cost_ticks(g, r.committed_from, r.start));
       }
       if (ok) {
         PlanOptions opt;
@@ -197,6 +203,9 @@ public:
       plan_[names[i]] = routes[i];
       PlannedRoute pr;
       pr.robot = names[i];
+      // 커밋 노드에 닿기까지 줄 예산. 호출자가 커밋 간선을 안 실어 보냈으면 -1 이다.
+      // (`commit_ticks` 는 `names` 와 같은 순서로만 채워진다 — 위 루프 참고.)
+      pr.commit_deadline_tick = (i < commit_ticks.size()) ? commit_ticks[i] : -1;
       for (const auto & s : routes[i]) {
         pr.path.push_back(s.v);
         pr.arrive_tick.push_back(s.arrive);
@@ -301,6 +310,20 @@ private:
   // 들어오는 방향이 여럿이면 평균을 쓴다.
   // ponytail: 진입방향 평균 근사. 정확히 하려면 (진입간선, 진출간선) 쌍으로 그래프를
   //   확장해야 한다(정점 수 ×평균차수). 교차로가 병목이 되면 그때 승급.
+  /// `from → to` 간선의 통과 비용(틱). 그 간선이 없으면 -1.
+  ///
+  /// `build_graph` 가 이미 넣어 둔 값을 그대로 읽는다 — 거리·회전·노드 정지·slow-edge
+  /// 벌점이 전부 반영돼 있다. 이 값을 밖에서 다시 계산하려 들면(예: 거리/속도) 모델이
+  /// 갈라지고, 갈라진 순간 화면·판정·플래너가 서로 다른 말을 하기 시작한다.
+  static int edge_cost_ticks(const TimedGraph & g, int from, int to)
+  {
+    if (from < 0 || to < 0 || from >= static_cast<int>(g.size())) { return -1; }
+    for (const auto & e : g[from]) {
+      if (e.first == to) { return e.second; }
+    }
+    return -1;
+  }
+
   TimedGraph build_graph(const Navgraph & ng, const std::vector<int> & blocked,
                          const std::vector<SlowEdge> & slow = {}) const
   {
