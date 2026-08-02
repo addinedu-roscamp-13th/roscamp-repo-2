@@ -512,3 +512,75 @@ TEST(CbsTrafficSlowEdge, EmptyListChangesNothing) {
   EXPECT_EQ(pa[0].path, pb[0].path);
   EXPECT_EQ(pa[0].arrive_tick, pb[0].arrive_tick);
 }
+
+// ── 🔴 회귀: 지연 관용은 **0** 이다 ───────────────────────────────────
+//
+// 예약 시각을 넘긴 시간표는 그 순간부터 남에게 틀린 통과 허가를 내주고 있다.
+// 그래서 봐주는 폭이 없다 — 계획 시각을 지나 요청이 오면 그 자리에서 강등하고
+// 재계획을 건다.
+//
+// ⚠️ **강등해도 로봇은 서지 않는다.** 판정은 반응형(물리 예약)으로 내려갈 뿐이라
+//    결정은 GRANT 일 수 있다. 그래서 이 시험이 보는 것은 결정이 아니라
+//    `needs_replan()` 이다 — 결정만 보면 아무것도 검증하지 않는 시험이 된다.
+TEST(CbsTraffic, LatenessDemotesWithNoTolerance)
+{
+  set_env(1, 0, 0);              // ← drift_limit 0
+  set_env_fast_model();
+  libi_fleet::CbsTraffic tr;
+  const auto g = load_graph();
+
+  const auto snap = make_snapshot(g, {{"A", 0, 3, 0}});
+  const auto routes = tr.replan(snap);
+  ASSERT_EQ(routes.size(), 1u);
+  if (routes[0].path.size() < 3 || routes[0].arrive_tick[2] < 1) {
+    GTEST_SKIP() << "0틱 출발 칸뿐이라 '늦음' 을 만들 수 없다";
+  }
+  EXPECT_FALSE(tr.needs_replan()) << "계획 직후인데 이미 재계획을 원한다";
+
+  const int a = routes[0].path[0], b = routes[0].path[1], c = routes[0].path[2];
+  tr.request_move("A", a, a, 0);
+  ASSERT_EQ(tr.request_move("A", a, b, 0), MoveDecision::GRANT);
+  tr.release_node("A", a);
+
+  // b→c 의 계획 출발 시각을 확실히 지나서 물어본다.
+  sleep_ticks(routes[0].arrive_tick[2] + 2.0);
+  tr.request_move("A", b, c, 0);
+
+  EXPECT_TRUE(tr.needs_replan())
+    << "계획 시각을 넘겨 요청했는데 시간표를 그대로 들고 있다";
+  EXPECT_EQ(tr.last_demote_reason(), "계획 대비 지연");
+}
+
+// 같은 상황에서 관용을 주면 강등하지 않는다 — 위 시험이 문턱을 실제로 보고 있다는 증거.
+// (이게 없으면 "sleep 하면 늘 강등" 을 통과시키는 시험일 수도 있다.)
+TEST(CbsTraffic, LatenessToleratedWhenDriftLimitSet)
+{
+  set_env(1, 0, 1000);
+  set_env_fast_model();
+  libi_fleet::CbsTraffic tr;
+  const auto g = load_graph();
+
+  const auto routes = tr.replan(make_snapshot(g, {{"A", 0, 3, 0}}));
+  ASSERT_EQ(routes.size(), 1u);
+  if (routes[0].path.size() < 3 || routes[0].arrive_tick[2] < 1) {
+    GTEST_SKIP() << "0틱 출발 칸뿐이라 '늦음' 을 만들 수 없다";
+  }
+
+  const int a = routes[0].path[0], b = routes[0].path[1], c = routes[0].path[2];
+  tr.request_move("A", a, a, 0);
+  ASSERT_EQ(tr.request_move("A", a, b, 0), MoveDecision::GRANT);
+  tr.release_node("A", a);
+
+  sleep_ticks(routes[0].arrive_tick[2] + 2.0);
+  tr.request_move("A", b, c, 0);
+
+  EXPECT_FALSE(tr.needs_replan()) << "1000틱을 봐주기로 했는데 강등했다";
+}
+
+// 기본값이 0 인가. 환경변수를 안 주면 이 정책이 그대로 적용돼야 한다.
+TEST(CbsTraffic, DefaultDriftLimitIsZero)
+{
+  unsetenv("LIBI_CBS_DRIFT_LIMIT");
+  libi_fleet::CbsTraffic tr;
+  EXPECT_EQ(tr.drift_limit(), 0) << "지연 관용 기본값이 0 이 아니다";
+}

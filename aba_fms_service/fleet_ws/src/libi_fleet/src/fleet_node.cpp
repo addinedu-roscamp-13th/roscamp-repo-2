@@ -79,8 +79,11 @@ constexpr double kGhostTaskSec = 60.0;
 //      같은 간선에서 마감을 놓치면 우연이 아니라 그 길의 성질이다.
 // 120초: 마지막 실패 뒤 이만큼 조용하면 잊는다. 치운 장애물 때문에 영원히 돌아가는
 //        일이 없게 한다. 순회 한 바퀴(≈10정점 × 몇 초)보다 넉넉하다.
+// 10틱: 벌점은 **대안 경로를 이길 만큼** 커야 한다. 이 지도의 간선 하나가 대체로
+//       몇 틱이라, 한 자릿수로는 재계획이 같은 길을 그대로 다시 고른다.
 constexpr int kSlowEdgeMisses = 3;
 constexpr double kSlowEdgeTtlSec = 120.0;
+constexpr int kSlowEdgeExtraTicks = 10;
 }  // namespace
 
 namespace libi_fleet
@@ -175,8 +178,17 @@ public:
     resend_ticks_ = declare_parameter<int>("resend_ticks", 7);   // ≈1초
 
     // ── 시간 계획(CBS) 재계획 정책 ─────────────────────────────────────────
-    // 재계획 최소 간격(틱). 매 틱 CBS 를 돌리면 관제가 그것만 하게 된다.
-    replan_cooldown_ticks_ = declare_parameter<int>("replan_cooldown_ticks", 20);
+    // 재계획 최소 간격(틱). **0 = 지체를 안 순간 그 틱에 바로 다시 짠다.**
+    //
+    // 예약 시각을 넘긴 시간표는 그 순간부터 남에게 **틀린 통과 허가**를 내주고 있다.
+    // 간격을 두는 것은 그 틀린 허가를 그만큼 더 유지하겠다는 뜻이라 0 으로 둔다.
+    //
+    // ponytail: 0 이면 backoff(:911) 도 같이 죽는다(0 × 2^n = 0). 복도가 막혀 계획으로
+    //   안 풀리는 지연이면 CBS 가 150ms 마다 무한히 돈다 — 탐색은 잠금 밖이라 로봇이
+    //   서지는 않지만 타이머 콜백을 먹는다(cbg_timer_ 는 MutuallyExclusive). CPU 가
+    //   실제로 문제가 되면 `replan_cooldown_ticks:=1` 로 바닥만 깔면 되고, 그러면
+    //   backoff 도 같이 살아난다(최대 16틱 ≈ 2.4초). 빌드 불필요.
+    replan_cooldown_ticks_ = declare_parameter<int>("replan_cooldown_ticks", 0);
 
     // 순회(patrol) 모드: 켜지면 idle 로봇이 patrol_route(외곽 루프)를 무한 순회.
     patrol_ = declare_parameter<bool>("patrol", true);
@@ -895,8 +907,9 @@ private:
   // 장애물·지체로 늦는 것은 정상 운영에서 늘 일어난다. 강등만 있고 복귀가 없으면 CBS 는
   // 첫 지연 한 번으로 영영 꺼진 채 남는다 — 그러면 붙인 의미가 없다.
   //
-  // ⚠️ 매 틱(150ms) 재계획하면 CBS 가 관제를 먹는다. 최소 간격을 둔다. 지연은 몇 초 단위로
-  //    풀리는 일이라 이 정도 지연 반응이면 충분하다.
+  // ⚠️ **기본 간격은 0 이다 — 지체를 안 그 틱에 바로 짠다**(:179). 아래 cooldown/backoff 는
+  //    그래서 기본 설정에서는 전부 통과한다. `replan_cooldown_ticks` 를 1 이상으로 주면
+  //    다시 살아난다 — CBS 가 타이머 콜백을 먹을 때 쓰는 손잡이다.
   void service_replan_requests()
   {
     if (!traffic_ || !traffic_->plans_routes()) { return; }
@@ -953,10 +966,13 @@ private:
   // 제때 도착했으면 그 간선의 기록을 지운다. 한 번의 사고로 영구히 미움받지 않게.
   void note_deadline_kept(int from, int to) { edge_miss_.erase({from, to}); }
 
-  int drift_penalty_ticks() const
-  {
-    return traffic_ ? std::max(1, traffic_->drift_limit()) : 10;
-  }
+  // ⚠️ **drift_limit 에 매달지 않는다.** 예전엔 `max(1, drift_limit())` 이었는데,
+  //    지연 관용을 0 으로 내리자 벌점이 1틱으로 같이 무너졌다 — 하필 벌점이 가장 필요한
+  //    설정에서다. 관용이 0 이면 재계획이 잦아지고, 재계획은 **원래 같은 길을 다시 낸다.**
+  //    그 되먹임을 끊는 것이 이 벌점인데 1틱은 대안 경로를 이기지 못한다.
+  //    두 값은 뜻이 다르다: 관용은 "언제 틀렸다고 볼 것인가", 벌점은 "얼마나 돌아갈 값어치가
+  //    있나". 같은 숫자를 쓸 이유가 없다.
+  int drift_penalty_ticks() const { return kSlowEdgeExtraTicks; }
 
   std::vector<SlowEdge> slow_edges_now()
   {
@@ -1831,7 +1847,7 @@ private:
   int stuck_ticks_{0};   // 0 = 무진행 감지 비활성
   // 간선별 (연속 마감 실패 횟수, 마지막 실패 시각). note_deadline_miss/kept 가 관리한다.
   std::map<std::pair<int, int>, std::pair<int, double>> edge_miss_;
-  int replan_cooldown_ticks_{20};     // 재계획 최소 간격(틱)
+  int replan_cooldown_ticks_{0};      // 재계획 최소 간격(틱). 0 = 즉시(:179 머리말)
   int replan_cooldown_{0};
   bool replan_requested_{false};      // 도착 마감 초과로 fleet_node 가 스스로 요청
   int replan_streak_{0};              // 진전 없이 이어진 재계획 횟수(backoff 지수)
