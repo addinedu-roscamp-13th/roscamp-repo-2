@@ -579,7 +579,7 @@ TEST(CbsTraffic, LatenessToleratedWhenDriftLimitSet)
 
 // 기본값이 0 인가. 환경변수를 안 주면 이 정책이 그대로 적용돼야 한다.
 // 사용자 스펙(2026-08-02): "지연시간이 넘어가면 바로 재계획. 화면은 거기까지 카운트다운".
-// 그 '지연시간' 이 `drift_limit × tick_sec` = **3초**다.
+// 그 '지연시간' 이 `drift_limit × tick_sec` = **5초**다.
 //
 // ⚠️ 이 값은 **화면의 카운트다운과 같은 값**이다(`/fms/plan` 의 `drift_limit` →
 //    `WaypointEditor.tsx` 의 `tol`). 화면이 0 을 찍는 순간과 재계획이 걸리는 순간이
@@ -587,15 +587,15 @@ TEST(CbsTraffic, LatenessToleratedWhenDriftLimitSet)
 //
 // ⚠️ **0 으로 내리지 마라.** 틱이 1초라 0.1초 흔들림도 틱 경계를 넘는 순간 지연이 되어
 //    재계획이 폭주한다(실측: 2분에 16회). 하한은 1 이다.
-TEST(CbsTraffic, DefaultDriftLimitIsThreeTicks)
+TEST(CbsTraffic, DefaultDriftLimitIsFiveTicks)
 {
   // ⚠️ 앞 시험들이 `set_env`/`set_env_fast_model` 로 환경을 더럽혀 둔다.
   //    **기본값**을 보는 시험이므로 둘 다 지우고 새로 만든다.
   unsetenv("LIBI_CBS_DRIFT_LIMIT");
   unsetenv("LIBI_CBS_TICK_SEC");
   libi_fleet::CbsTraffic tr;
-  EXPECT_EQ(tr.drift_limit(), 3) << "지연 관용 기본값이 3 이 아니다";
-  EXPECT_DOUBLE_EQ(tr.tick_seconds(), 1.0) << "틱이 1초가 아니면 '3초' 가 성립하지 않는다";
+  EXPECT_EQ(tr.drift_limit(), 5) << "지연 관용 기본값이 5 가 아니다";
+  EXPECT_DOUBLE_EQ(tr.tick_seconds(), 1.0) << "틱이 1초가 아니면 '5초' 가 성립하지 않는다";
   EXPECT_GE(tr.drift_limit(), 1) << "0 은 못 쓴다 — 틱 경계 반올림에 걸린다";
 }
 
@@ -655,8 +655,18 @@ TEST(CbsTraffic, CommitEdgeBudgetMatchesTheTimeModel)
 
   EXPECT_EQ(routes[0].commit_deadline_tick, expected)
     << "커밋 간선 예산이 플래너의 소요 모델과 다르다";
-  EXPECT_GT(routes[0].commit_deadline_tick, routes[0].arrive_tick[0])
-    << "계획상 도착틱(0)과 같으면 계획이 서자마자 초과가 된다 — 그게 옛 churn 이다";
+  // ⚠️ [2026-08-02] **계획의 첫 도착틱이 곧 커밋 예산이어야 한다.**
+  //
+  //   처음엔 예산을 `commit_deadline_tick` 으로만 내보내고 계획은 0틱 출발로 뒀다.
+  //   그러면 로봇이 그 칸을 실제로 타고 도착해 다음 간선을 요청하는 순간
+  //   `request_move` 가 `now - depart`(depart≈0) 를 보고 무조건 지연으로 강등한다
+  //   (실기 실측: 재계획 사유의 90%). 이제 `PlanOptions::start_ticks` 로 계획 자체가
+  //   그 시각에서 출발하므로 **둘이 같다.** 여기가 갈리면 그 회귀다.
+  ASSERT_FALSE(routes[0].arrive_tick.empty());
+  EXPECT_EQ(routes[0].arrive_tick[0], routes[0].commit_deadline_tick)
+    << "계획이 커밋 예산에서 출발하지 않는다 — 도착 즉시 지연 강등이 난다";
+  EXPECT_GT(routes[0].arrive_tick[0], 0)
+    << "0 에서 출발하면 계획이 서자마자 초과가 된다 — 그게 옛 churn 이다";
 }
 
 // 인접하지 않은 정점을 커밋 간선이라고 주면 마감을 지어내지 않는다.
