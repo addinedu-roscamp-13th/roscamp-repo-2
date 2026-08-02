@@ -37,9 +37,12 @@ def _counting(monkeypatch):
     calls = []
     real = sp.to_degree_indexed
 
-    def spy(msg):
+    # [2026-08-02] `to_degree_indexed` 가 `flip_180` 을 받게 되면서 인자가 늘었다.
+    # 스파이는 호출 횟수만 세는 것이 목적이라 시그니처를 통째로 위임한다 — 다음에
+    # 인자가 또 늘어도 여기서 안 깨진다.
+    def spy(*args, **kwargs):
         calls.append(1)
-        return real(msg)
+        return real(*args, **kwargs)
 
     monkeypatch.setattr(sp, "to_degree_indexed", spy)
     return calls
@@ -134,3 +137,45 @@ def test_max_age_zero_disables_the_check():
     node.cb(_scan())
     clock.t = 10_000.0
     assert p.get(), "검사가 꺼져 있는데 비웠다"
+
+
+# ── 라이다 180° 뒤집힘 (2026-08-02) ────────────────────────────────────────
+# 실측: 로봇 **뒤**를 손으로 막았는데 **앞으로 못 갔다** — 드라이버의 0° 가 로봇의 뒤다.
+
+class _Msg:
+    def __init__(self, ranges, angle_min=0.0, angle_increment=None):
+        self.ranges = ranges
+        self.angle_min = angle_min
+        self.angle_increment = (angle_increment if angle_increment is not None
+                                else math.radians(1.0))
+
+
+def test_flip_180_swaps_front_and_back():
+    ranges = [0.0] * 360
+    ranges[0] = 0.5                       # 드라이버 기준 0° 에 물체
+    flat = sp.to_degree_indexed(_Msg(ranges), flip_180=False)
+    flip = sp.to_degree_indexed(_Msg(ranges), flip_180=True)
+    assert flat[0] == 0.5 and flat[180] == 0.0
+    assert flip[180] == 0.5 and flip[0] == 0.0, "앞뒤가 안 바뀌었다"
+
+
+def test_flip_180_swaps_left_and_right():
+    """180° 회전은 앞뒤와 좌우를 **동시에** 뒤집는다."""
+    ranges = [0.0] * 360
+    ranges[90] = 0.5                      # 드라이버 기준 왼쪽
+    flip = sp.to_degree_indexed(_Msg(ranges), flip_180=True)
+    assert flip[270] == 0.5 and flip[90] == 0.0, "좌우가 안 바뀌었다"
+
+
+def test_flip_180_is_its_own_inverse():
+    ranges = [0.0] * 360
+    ranges[37] = 1.2
+    once = sp.to_degree_indexed(_Msg(ranges), flip_180=True)
+    back = sp.to_degree_indexed(_Msg(once, angle_min=0.0), flip_180=True)
+    assert back[37] == 1.2
+
+
+def test_shipped_config_marks_the_lidar_as_flipped():
+    """실제 하드웨어가 거꾸로 달려 있다 — 바로 달면 이 값을 False 로 되돌린다."""
+    from libi_perception import config
+    assert config.LIDAR_FLIP_180 is True

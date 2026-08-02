@@ -21,8 +21,7 @@ class TrackingController:
         같은 경로를 쓰는 이유: 라이다 회피와 LKD 기록이 그대로 따라온다. 여기서
         따로 계산하면 회복 탐색이 방향을 잃는다.
         """
-        lin, ang = self.pid.compute(detection.cx, detection.area, dt,
-                                    image_width=getattr(detection, "image_width", 0))
+        lin, ang = self.pid.compute(detection.cx, detection.area, dt)
         if forward_blocked:
             lin = 0.0
         # ⚠️ [2026-08-01] **LKD 는 회피 전 값으로 기록한다.**

@@ -5,6 +5,17 @@ def clamp(v, lo, hi):
     return max(lo, min(hi, v))
 
 
+def angle_deadzone(cfg) -> float:
+    """방위 정지 구간의 반폭(px).
+
+    비율(`ANGLE_DEADZONE_FRAC`)이 있으면 그쪽이 이기고, 없으면 고정 픽셀로 떨어진다.
+    `control_loop` 도 "사라질 때 가운데였나"를 같은 기준으로 판정해야 하므로 —
+    두 곳에 같은 식을 적어 두면 한쪽만 고쳐져 조용히 어긋난다 — 여기 한 번만 쓴다.
+    """
+    dz_frac = getattr(cfg, "ANGLE_DEADZONE_FRAC", None)
+    return (cfg.IMAGE_WIDTH * dz_frac) if dz_frac is not None else cfg.ANGLE_DEADZONE
+
+
 class FollowPID:
     """Distance PID (sqrt-area) -> linear_x (with reverse); bearing PID (cx) -> angular_z."""
 
@@ -21,39 +32,28 @@ class FollowPID:
         #: 지금 방위를 잡는 중인가. 히스테리시스가 이걸로 문턱을 고른다(compute 주석).
         self._turning = False
 
-    def compute(self, cx, area, dt, image_width=None):
-        """image_width 를 주면 그 해상도로 들어온 값을 **기준 폭(cfg.IMAGE_WIDTH)으로 환산**한다.
+    def compute(self, cx, area, dt):
+        """검출이 보낸 **카메라 원본 픽셀을 그대로** 쓴다. 해상도 환산 없다.
 
-        검출이 자기 해상도를 실어 보내면 그게 항상 옳다 — cfg 는 추측일 뿐이다.
+        ## [2026-08-02] 환산을 걷어냈다
 
-        ## [2026-07-30] 상수를 고치는 대신 입력을 환산한다
+        예전에는 `image_width` 를 받아 `k = cfg.IMAGE_WIDTH / image_width` 를 곱해
+        모든 좌표를 640 기준으로 끌어올렸다(2026-07-30, 카메라를 640→320 으로 내리면서
+        옛 튜닝값을 살리려고 넣은 것). 계산 자체는 정확했지만 화면에서 눈으로 잰
+        픽셀과 `config.py` 의 숫자가 늘 2배 달라 튜닝할 때마다 암산이 필요했다.
+        **사용자 지시로 제거했다** — 이제 화면에서 잰 값이 곧 설정값이다.
 
-        이 PID 의 튜닝값은 **전부 640 폭 기준 픽셀**이다:
-        `TARGET_SIZE=280`, `KP_DIST=0.0030`, `ANGLE_DEADZONE=45`, `INTEGRAL_*_CLAMP`.
-        그런데 카메라 해상도를 320x240 으로 내리자 같은 사람의 bbox 가 **선형으로 절반**이
-        됐다. 그러면 두 가지가 동시에 깨진다:
-
-          · 거리: `sqrt(w*h)` 가 절반 → 화면을 꽉 채워도 123 이라 **목표 280 에 영영 못 닿는다.**
-            오차가 계속 양수라 전진이 안 멈춘다 — 2026-07-28 에 겪은 "그냥 들이박네"와 같은 조건.
-          · 조향: 중심을 640/2=320 으로 잡는데 실제 중심은 160 → 사람이 늘 왼쪽에 있다고 본다.
-
-        상수를 해상도마다 다시 튜닝하면 그 표가 또 어긋난다. 대신 **들어온 픽셀을 기준
-        폭으로 환산**하면 아래 수식과 튜닝값이 하나도 안 바뀐다. 640 에서는 k=1 이라
-        예전과 **완전히 같은 계산**이다.
-
-        ⚠️ 이게 동작하려면 검출 쪽이 `image_width` 를 실어 보내야 한다. 안 보내면 k=1 로
-           떨어져 예전(=해상도가 640 이라는 가정) 그대로다.
+        ⚠️ 대신 `config.py` 의 픽셀 상수가 **카메라 해상도에 묶였다.** 해상도를
+           바꾸는 날 `IMAGE_WIDTH`·`TARGET_SIZE`·`DIST_DEADZONE`·`ANGLE_DEADZONE`·
+           `INTEGRAL_*_CLAMP` 와 게인을 손으로 같이 옮겨야 한다. 안 옮기면
+           2026-07-30 증상(화면을 꽉 채워도 목표에 못 닿아 전진이 안 멈춤,
+           중심이 어긋나 한쪽으로 계속 돔)이 **에러 없이** 되돌아온다.
         """
         cfg = self.cfg
         dt = dt if dt > 0 else 1e-3
-        width = image_width if image_width else cfg.IMAGE_WIDTH
-        # 기준 폭 환산 계수. 320 폭이면 k=2.0 → 픽셀값을 640 기준으로 되돌린다.
-        # 길이에 선형이므로 cx 와 sqrt(area) 에 같은 k 를 곱한다(면적이 아니라 변 길이다).
-        k = cfg.IMAGE_WIDTH / float(width) if width else 1.0
-        cx = cx * k
 
         # distance -> linear_x
-        size = math.sqrt(max(0.0, area)) * k
+        size = math.sqrt(max(0.0, area))
         e = cfg.TARGET_SIZE - size
         # 목표 근처에서는 아예 멈춘다.
         #
@@ -86,54 +86,44 @@ class FollowPID:
         lin = clamp(lin, -cfg.LINEAR_X_REVERSE_MAX, cfg.LINEAR_X_MAX)
 
         # bearing -> angular_z
-        # cx 는 위에서 기준 폭으로 환산했으므로 중심도 기준 폭 기준이다.
-        # ⚠️ [2026-08-01] **방위 데드존은 화면 비율로 잡는다 — 고정 픽셀이 아니다.**
+        # ⚠️ **방위 데드존은 화면 비율로 잡는다 — 고정 픽셀이 아니다.**
         #
         #   화면의 3등분 가이드선은 `w//3`·`2w//3` 에 그려지므로 가운데 칸은 언제나
-        #   **중심 ±w/6** 이다. 이걸 640 기준 고정 픽셀(106.67)로 두면 해상도가 바뀔
-        #   때마다 값을 다시 계산해야 하고, 실제로 화면에 보이는 선과 어긋난다.
-        #   비율로 두면 320이든 640이든 **눈에 보이는 그 칸**이 그대로 정지 구간이다.
-        #
+        #   **중심 ±w/6** 이다. 비율로 두면 눈에 보이는 그 칸이 그대로 정지 구간이다.
         #   `ANGLE_DEADZONE_FRAC = 1/6` 이 기본. 0 이면 구간을 끈다.
-        dz_frac = getattr(cfg, "ANGLE_DEADZONE_FRAC", None)
-        angle_deadzone = (cfg.IMAGE_WIDTH * dz_frac) if dz_frac is not None \
-            else cfg.ANGLE_DEADZONE
+        deadzone = angle_deadzone(cfg)
         e_cx = (cfg.IMAGE_WIDTH / 2.0) - cx
-        # [2026-08-01] 거리축과 **같은 방식**으로 바꿨다 — 0 으로 죽이지 않고 빼낸다.
+
+        # ── 정지 구간 ─────────────────────────────────────────────────────
         #
-        # 예전에는 구간 밖에서 오차를 통째로 썼다. `ANGLE_DEADZONE` 이 45 일 때는
-        # 경계 바로 밖에서 `KP_ANGLE × 45 = 0.045 rad/s` 라 티가 덜 났는데, 가운데
-        # 칸(106.67)으로 넓히면서 그게 **0.107 rad/s** 가 됐다 — 사람이 칸 경계를
-        # 한 픽셀 넘는 순간 그 속도로 튄다. 빼내면 경계에서 0 부터 이어진다.
-        # (거리축 주석에 같은 논리가 있다. 그쪽은 2026-07-31 에 이미 고쳤고
-        #  "방위각처럼 그냥 0 으로 죽이면" 이라며 여기를 남은 문제로 적어 뒀었다.)
+        # 규칙은 화면 그대로다: **bbox 중심이 3등분 가운데 칸 안이면 안 돈다.
+        # 칸을 벗어나면 돈다.** 그 이상도 이하도 아니어야 한다.
         #
-        # ── 정지 구간 + 히스테리시스 ──────────────────────────────────────
+        # ⚠️ [2026-08-02] **히스테리시스(`ANGLE_RESUME_RATIO`)를 걷어냈다.**
         #
-        # 규칙은 화면 그대로다: **bbox 중심이 3등분 가운데 칸 안이면 안 돈다.**
+        #   1.3 이면 "칸을 30% 더 벗어나야 비로소 돈다"가 된다. 320 폭에서 칸 경계는
+        #   53.3px 인데 실제로 도는 문턱은 69.3px 이라, 그 사이 16px 은 **사람이
+        #   가이드선 밖으로 명백히 나갔는데도 로봇이 안 도는** 구간이었다.
+        #   실측 2026-08-02: 사람이 왼쪽 칸에 확실히 있는 화면(e_cx=75.5)을 두고
+        #   "이게 가운데냐"는 질문이 나왔다 — 화면과 제어가 어긋나면 화면이 거짓말을
+        #   한다. 눈에 보이는 선이 곧 문턱이어야 한다.
         #
-        # 경계를 하나만 두면 둘 중 하나가 반드시 깨진다:
-        #   · 오차를 빼내면 → 칸 경계 바로 밖에서 명령이 0 에 가까워 **안 돈다**
-        #     (실측: -0.009 rad/s 에 odom 이 ±0.013 으로 떨기만 했다)
-        #   · 빼지 않으면 → 경계에서 0 → 0.107 로 튀고, 그 반동으로 칸 안팎을
-        #     오가며 **좌우로 계속 깨작인다**(사용자 표현: "도리도리")
+        # 히스테리시스가 있었던 이유는 진짜였다. 문턱 하나로는 둘 중 하나가 깨진다:
+        #   · 오차를 빼내면 → 경계 바로 밖에서 명령이 0 에 가까워 **안 돈다**
+        #     (실측: -0.009 rad/s 에 odom 이 ±0.013 으로 떨기만 했다 — 정지 마찰)
+        #   · 빼지 않으면 → 경계에서 0 → `KP × 53.3` 으로 튀고, 그 반동으로 칸
+        #     안팎을 오가며 **좌우로 깨작인다**("도리도리")
         #
-        # 그래서 **멈추는 선과 다시 도는 선을 다르게** 둔다.
-        #   · 도는 중  → 가운데 칸(`angle_deadzone`) 안에 들어오면 멈춘다
-        #   · 멈춘 상태 → 칸을 `ANGLE_RESUME_RATIO` 배만큼 확실히 벗어나야 다시 돈다
-        # 한 번 벗어나면 **오차를 통째로 쓴다** — 돌기로 했으면 실제로 돌아야 한다.
-        # 되돌아오는 문턱이 더 멀리 있으므로 경계에서 켜졌다 꺼졌다 하지 않는다.
-        #
-        # `ANGLE_RESUME_RATIO = 1.0` 이면 히스테리시스가 없다(문턱 하나).
-        resume = angle_deadzone * getattr(cfg, "ANGLE_RESUME_RATIO", 1.0)
-        threshold = angle_deadzone if self._turning else resume
-        if abs(e_cx) <= threshold:
-            self._turning = False
+        # 그래서 문턱을 옮기는 대신 **원인인 정지 마찰을 직접 보상한다**(아래
+        # `ANGULAR_Z_MIN`). 오차는 거리축과 똑같이 **빼내서** 경계에서 0 부터
+        # 이어지게 하고, 0 이 아닌 명령은 바퀴가 실제로 도는 크기까지 올린다.
+        # 튐도 없고, 힘없이 못 도는 것도 없고, 화면 선이 진짜 문턱이 된다.
+        if abs(e_cx) <= deadzone:
             e_cx = 0.0
             self._i_cx = 0.0
             self._prev_cx = 0.0
         else:
-            self._turning = True
+            e_cx -= math.copysign(deadzone, e_cx)
         self._i_cx = clamp(self._i_cx + e_cx * dt,
                            -cfg.INTEGRAL_ANGLE_CLAMP, cfg.INTEGRAL_ANGLE_CLAMP)
         d_cx = (e_cx - self._prev_cx) / dt
@@ -143,5 +133,19 @@ class FollowPID:
         s = cfg.ANGULAR_SMOOTHING
         self._ang = s * target_ang + (1.0 - s) * self._ang
         ang = clamp(self._ang, -cfg.ANGULAR_Z_MAX, cfg.ANGULAR_Z_MAX)
+
+        # ── 정지 마찰 보상 ────────────────────────────────────────────────
+        #
+        # 바퀴는 어느 크기 아래로는 **아예 안 돈다.** 그 아래 명령을 내는 것은
+        # 도는 것도 서는 것도 아닌 상태 — odom 만 떨고 로봇은 제자리다.
+        # 돌기로 정했으면(구간 밖) 실제로 돌아야 한다.
+        #
+        # ⚠️ 데드존 **안**에서는 절대 걸리면 안 된다. `e_cx = 0` 이면 `target_ang`
+        #    이 0 이고 저역통과가 남은 값을 0 으로 끌어내리는 중인데, 여기서 최소값을
+        #    씌우면 **가운데 칸에서 영원히 도는** 로봇이 된다. 그래서 원오차가 아니라
+        #    **빼낸 뒤의 `e_cx`** 로 판정한다.
+        ang_min = getattr(cfg, "ANGULAR_Z_MIN", 0.0)
+        if ang_min > 0 and e_cx != 0.0 and 0 < abs(ang) < ang_min:
+            ang = math.copysign(ang_min, ang)
 
         return lin, ang

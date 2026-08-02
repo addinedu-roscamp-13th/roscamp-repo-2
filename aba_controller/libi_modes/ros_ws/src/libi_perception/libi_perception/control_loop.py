@@ -3,6 +3,7 @@ import time
 import py_trees
 
 from . import session as sess
+from .pid import angle_deadzone
 from .recovery_bt import SearchContext, create_searching_tree, tick_tree
 from .switch import FollowSwitch
 from .tracking_controller import TrackingController
@@ -23,7 +24,7 @@ class ControlLoop:
     """
 
     def __init__(self, get_detection, get_scan, publish, cfg, now=time.monotonic,
-                 select_camera=None, peek_people=None, role="follow"):
+                 select_camera=None, peek_people=None, role="follow", log=None):
         self.get_detection = get_detection
         self.get_scan = get_scan
         self.publish = publish
@@ -33,6 +34,10 @@ class ControlLoop:
         self.select_camera = select_camera
         self.peek_people = peek_people
         self.role = role
+        #: 진단 로그 통로. 주입 안 하면 조용하다(테스트는 그대로 돈다).
+        self._log = log or (lambda _msg: None)
+        #: 이번 코스팅 에피소드를 이미 찍었나 — 20Hz 로 매번 찍으면 로그가 묻힌다.
+        self._coast_logged = False
         self.switch = FollowSwitch()
         self.tracker = TrackingController(publish, cfg)
         self.miss = 0
@@ -42,18 +47,21 @@ class ControlLoop:
         #: 아무도 등록하지 않았는데 로봇이 혼자 돌며 앞뒤 캠을 번갈아 켠다(실측 2026-07-28).
         self._acquired = False
         self._search_ctx = None
-        #: 이번 소실 에피소드에서 재시작한 횟수. **재시작은 1회만 허용한다.**
-        #:
-        #: `guide_watch` 는 진짜 안내(GuideExec, 45초 종결자 있음)뿐 아니라 복귀·도킹이
-        #: 뒷캠을 고정하려고 빌려 쓰는 세션(`BackCamOn`, 종결자 **없음** — Parallel 이
-        #: 끝날 때까지 절대 안 끝난다)에도 걸린다. 무제한 재시작을 두면 그 세션에서
-        #: 캠이 도킹 내내 앞뒤로 튀어 시각 서보가 죽는다(2026-08-01 최종 리뷰 발견).
-        #: 1회로 캡하면 진짜 안내는 45초 종결자가 여전히 실질 권한을 쥐고(첫 라운드
-        #: ~32.8초 + 재시작 1회로 45초를 넘기기 충분하다), 빌려 쓴 세션은 최대
-        #: 2라운드(~65.6초) 뒤 ENDED 로 정착한다.
-        self._search_restarts = 0
         self._search_tree = None
         self._last_tick = None
+        #: 마지막으로 **실제로 본** 대상이 화면 가운데(방위 정지 구간 안)에 있었나.
+        #:
+        #: 회복 탐색의 첫 단계 `LkdPeek` 는 "마지막으로 돌던 방향으로 90° 돌아본다" 인데,
+        #: 대상이 가운데에서 사라졌으면 그건 **어느 쪽으로 나간 게 아니라 가려진 것**이다.
+        #: 그때 LKD 로 도는 것은 근거 없는 추측이고, 사람이 다시 나타났을 때 로봇이
+        #: 엉뚱한 데를 보고 있게 된다. 사용자 지시(2026-08-02): "가운데에서 사라지면
+        #: peek 가 없어도 될 것 같다."
+        #:
+        #: 기본 False = "아직 아무것도 못 봤다" → peek 를 켠 채로 둔다(기존 동작).
+        self._last_centered = False
+        #: 안내에서 예측 bbox 를 처음 받은 시각. `GUIDE_COAST_SEC` 유예를 잰다.
+        #: 진짜 검출이 오거나 검출이 끊기면 None 으로 되감는다.
+        self._guide_coast_since = None
 
     @property
     def state(self):
@@ -62,8 +70,7 @@ class ControlLoop:
     def _is_guide(self) -> bool:
         """안내 역할인가.
 
-        ⚠️ `watch` 는 **뺀다.** 안내에는 `GuideExec` 의 45초 종료 판정자가 있지만
-        등록감시에는 없다. 또 등록 중에는 사람이 패널 화면을 보고 있으므로 카메라
+        ⚠️ `watch` 는 **뺀다.** 등록 중에는 사람이 패널 화면을 보고 있으므로 카메라
         전환을 앞당길 이유가 없다.
         """
         return self.role == sess.GUIDE
@@ -73,18 +80,51 @@ class ControlLoop:
         **반드시 이 함수를 통해서만** 검출을 봐야 한다 — 원본 `self.get_detection`
         을 어느 한쪽이라도 직접 부르면 그쪽은 예측 bbox 를 걸러내지 못한다.
 
-        안내에서는 예측 bbox 를 '보인다' 로 치지 않는다. 가시성 발행
-        (`follow_node.requester_visible`)이 이미 거부하므로, 여기서 안 거르면
-        한 프로세스 안에 "놓쳤다" 가 두 개가 된다 — 정지(0.5초)와 탐색 진입(4초)이
-        어긋나는 것보다 나쁜 건, 회복 중에도 예측 bbox 가 재획득으로 읽혀
-        SEARCHING 이 즉시 TRACKING 으로 되돌아가는 것이다.
+        추종은 코스팅이 제어의 연속성을 만들어 주므로 그대로 통과시킨다.
 
-        추종은 코스팅이 제어의 연속성을 만들어 주므로 건드리지 않는다.
+        ## 안내(guide)는 예측 bbox 를 **짧게만** 받는다
+
+        예전에는 안내에서 예측 bbox 를 통째로 거부했다 — 즉 코스팅이 **0초**였다.
+        이유는 있었다: 가시성 발행(`follow_node.requester_visible`)이 이미 예측을
+        거부하므로 여기서 안 거르면 한 프로세스에 "놓쳤다"가 두 개가 되고, 더 나쁜 건
+        회복 중에도 예측 bbox 가 재획득으로 읽혀 SEARCHING 이 즉시 TRACKING 으로
+        되돌아가는 것이었다.
+
+        ⚠️ [2026-08-02] 그런데 0초는 너무 짧다. 안내는 요청자가 뒤에서 따라오는
+        구조라 **잠깐 가려지는 일이 추종보다 오히려 잦다**(로봇이 앞서고 사람이 뒤,
+        서가·기둥이 계속 사이를 지난다). `GUIDE_COAST_SEC` 만큼 허용한다 —
+        추종(`COAST_LIMIT`)과 **같은 1.4초**다.
+
+        시간으로 재는 이유: 제어 루프(20Hz)와 검출(17fps)의 주기가 달라 **같은 예측
+        프레임을 여러 번 볼 수 있다.** 프레임 수를 세면 그만큼 짧아진다.
         """
         det = self.get_detection()
-        if det is not None and self._is_guide() and getattr(det, 'is_predicted', False):
+        if det is None:
+            self._guide_coast_since = None
             return None
-        return det
+        if not (self._is_guide() and getattr(det, 'is_predicted', False)):
+            self._guide_coast_since = None      # 진짜로 보였다 — 유예를 되감는다
+            return det
+
+        # ⚠️ **유예는 TRACKING 에서만 준다. 회복(SEARCHING) 중에는 절대 안 준다.**
+        #
+        #   회복 트리의 `CheckReacquired` 도 이 함수를 통해 검출을 본다. 여기서
+        #   예측 bbox 를 통과시키면 **예측만으로 재획득 판정이 나서** SEARCHING 이
+        #   즉시 TRACKING 으로 되돌아간다 — 로봇은 사람을 찾았다고 믿지만 실제로는
+        #   아무도 안 보인다. 그 상태로 다시 놓치고, 무한히 오간다.
+        #
+        #   코스팅의 뜻은 "보고 있던 것을 잠깐 이어서 민다" 이지 "못 본 것을 봤다고
+        #   치자" 가 아니다. 그래서 이미 놓쳤다고 판정한 뒤(SEARCHING)에는 안 준다.
+        if self.switch.state != 'TRACKING':
+            self._guide_coast_since = None
+            return None
+
+        # 안내 + 예측 + 추종 중 — 유예 안이면 통과, 넘으면 "안 보인다"로 친다.
+        now = self.now()
+        if self._guide_coast_since is None:
+            self._guide_coast_since = now
+        limit = getattr(self.cfg, "GUIDE_COAST_SEC", 0.0)
+        return det if (now - self._guide_coast_since) <= limit else None
 
     @property
     def search_tree(self):
@@ -95,7 +135,50 @@ class ControlLoop:
         """
         return self._search_tree if self.switch.state == 'SEARCHING' else None
 
+    def rotation_granted(self):
+        """길잡이 대기가 끝나 **회복 회전을 허가받았다** — 여기서 탐색을 시작한다.
+
+        길잡이의 소실 처리는 세 단계다(사용자 스펙 2026-08-02):
+
+            [0, coast)          α-β 로 계속 간다   ← `_filtered_detection`
+            [coast, +wait)      정지하고 기다린다   ← 트리 없이 SEARCHING (0 발행)
+            [coast+wait, …)     회복 BT            ← 여기서 트리를 만든다
+
+        대기 구간의 길이는 `GuideExec` 이 쥔다(`guide_wait_sec`). 그쪽이 nav2 를
+        끊고 다 기다린 뒤 `guide_watch{allow_rotate:true}` 로 알려 준다.
+
+        ⚠️ **대기 중에 트리를 돌리면 안 된다.** 바퀴는 `_publish_for_role` 이
+           삼키므로 로봇은 안 돌지만 **트리의 시계는 흐른다** — 한 라운드(32.8초)의
+           앞부분이 아무 일도 못 하고 지나간다. 실측으로 실제 회전은 13초뿐이었다.
+
+        ⚠️ **`guide_watch` 재발행 때 부르면 안 된다.** 그 명령은 lease 갱신으로
+           10초마다 다시 오고, 그때마다 여기를 부르면 탐색이 영영 처음으로 되감긴다
+           (`RemoteControl._on_cmd` 의 "같은 역할이면 인자만 갱신" 분기가 막으려던
+           바로 그 버그다). 허가가 **False → True 로 바뀌는 순간**에만 부른다.
+
+        ⚠️ `SEARCHING` 이 아니면 아무것도 안 한다. 추종 중(TRACKING)이나 이미 끝난
+           뒤(ENDED)에 탐색을 세우면 없던 회복이 생긴다.
+        """
+        if self.switch.state != 'SEARCHING':
+            return
+        self._build_search()
+
     def _start_search(self):
+        """소실 판정 직후. **길잡이는 여기서 트리를 만들지 않는다.**
+
+        길잡이는 `GuideExec` 이 대기(`guide_wait_sec`)를 마치고 회전을 허가할 때
+        비로소 탐색이 시작된다 — `rotation_granted` 참고. 그때까지는 `_search_tree`
+        가 None 이고, tick 은 0 을 발행하며 서서 기다린다.
+
+        추종·등록감시는 예전 그대로 즉시 탐색한다. 그쪽은 바퀴가 처음부터 자기 것이라
+        기다릴 이유가 없다.
+        """
+        if self._is_guide():
+            self._search_tree = None
+            return
+        self._build_search()
+
+    def _build_search(self):
         lkd = self.tracker.last_direction or 1.0
         # 재시작이면(이전 컨텍스트가 있으면) 그게 실제로 남겨 둔 캠을 물려준다.
         # 안 넘기면 새 컨텍스트가 home_camera 라고 낙관적으로 가정하는데, 소진된
@@ -107,7 +190,10 @@ class ControlLoop:
                                          select_camera=self.select_camera,
                                          peek_people=self.peek_people,
                                          role=self.role,
-                                         initial_camera=prev_camera)
+                                         initial_camera=prev_camera,
+                                         # 가운데에서 사라졌으면 LKD peek 를 끈다
+                                         # (근거: `_last_centered` 주석)
+                                         peek=not self._last_centered)
         # Stamp the search start when SEARCHING begins, not on the tree's first tick —
         # those can be ticks apart, which would understate elapsed search time.
         self._search_ctx.start = self.now()
@@ -134,7 +220,35 @@ class ControlLoop:
             if det is not None:
                 self.miss = 0
                 self._acquired = True
-                if not getattr(det, 'motion_ok', True):
+                # ⚠️ [2026-08-02] **코스팅이 실제로 도는지 로그로 드러낸다.**
+                #
+                #   "α-β 가 안 걸린다"를 몇 시간 쫓았는데, 화면(HUD)이 로봇 명령이
+                #   아니라 AI 서버 미리보기라 판단 근거가 없었다. 파이프라인만 따로
+                #   돌려 보면 예측은 정상으로 나왔다. 남은 미지는 **런타임**이므로
+                #   여기서 한 줄 남긴다 — 다음 재현에서 즉시 갈린다:
+                #     · 이 줄이 안 뜨면  → 예측이 로봇까지 안 온다(전송·수신 문제)
+                #     · 뜨는데 안 움직이면 → 하류(자세 게이트·라이다)가 막는 것이다
+                #   에피소드당 한 번만 찍는다. 20Hz 로 매 tick 찍으면 로그가 묻힌다.
+                if getattr(det, 'is_predicted', False):
+                    if not self._coast_logged:
+                        self._coast_logged = True
+                        self._log(f'α-β 코스팅 시작 — 예측 bbox 로 추종 유지 '
+                                  f'(cx={det.cx:.0f} area={det.area:.0f} '
+                                  f'motion_ok={getattr(det, "motion_ok", True)} '
+                                  f'posture={getattr(det, "posture", None)})')
+                elif self._coast_logged:
+                    self._coast_logged = False
+                    self._log('α-β 코스팅 끝 — 실검출 복귀')
+                # "사라질 때 가운데였나" 를 PID 와 **같은 기준**으로 기록한다.
+                # 예측(coast) 프레임도 포함한다 — 코스팅은 마지막으로 본 위치에서
+                # 이어지는 것이라 그 사이 화면 위치가 판정의 근거로 유효하다.
+                self._last_centered = abs(
+                    self.cfg.IMAGE_WIDTH / 2.0 - det.cx) <= angle_deadzone(self.cfg)
+                # 자세 게이트는 ``사람에게 다가가는`` 추종 전용 안전 규칙이다.
+                # guide 는 nav2 가 목적지로 주행하고 이 루프는 뒷카메라 감시만 한다.
+                # 뒤따르는 사람의 자세로 nav2 를 멈추면 안 된다. 역할은 AI 파이프라인이
+                # 모르므로, 역할을 가진 이 경계에서만 게이트를 적용한다.
+                if (not self._is_guide()) and not getattr(det, 'motion_ok', True):
                     # 보이지만 가면 안 된다 — 누워 있거나, 로봇 코앞이거나, 자세를
                     # 재는 중이다. **miss 를 올리지 않는다**: 올리면 눈앞에 멀쩡히
                     # 보이는 대상을 두고 탐색 회전을 시작한다. 놓친 게 아니라
@@ -176,9 +290,23 @@ class ControlLoop:
                 # 여기서는 계속 정지 명령만 내며 등록을 기다린다.
                 if self.miss >= self.cfg.N_MISS_FRAMES and self._acquired:
                     self.switch.lost()
-                    self._search_restarts = 0
                     self._start_search()
         elif self.switch.state == 'SEARCHING':
+            if self._search_tree is None:
+                # 길잡이 대기 구간 — 아직 회전을 허가받지 못했다. 서서 기다린다.
+                #
+                # ⚠️ **여기서도 재획득을 봐야 한다.** 평소엔 회복 트리의
+                #    `CheckReacquired` 가 그 일을 하는데 대기 중에는 트리가 없다.
+                #    안 보면 사람이 다시 나타나도 `SEARCHING` 에 갇히고, 그 뒤 허가가
+                #    안 오면(= 다시 보여서 `GuideExec` 이 허가를 안 켠다) **영영 못
+                #    빠져나온다.** 이 세션은 그 뒤로 회복도 추종도 못 한다.
+                if self._filtered_detection() is not None:
+                    self.switch.reacquired()
+                    self.miss = 0
+                    self.tracker.reset()
+                    self._last_tick = None
+                self.publish(0.0, 0.0)
+                return
             status = tick_tree(self._search_tree)
             if status == py_trees.common.Status.SUCCESS:
                 self.switch.reacquired()
@@ -189,23 +317,5 @@ class ControlLoop:
                 self._last_tick = None
             elif status == py_trees.common.Status.FAILURE:
                 self.publish(0.0, 0.0)
-                if self._is_guide() and self._search_restarts < 1:
-                    # 안내는 여기서 끝내지 않는다. `ENDED` 에는 빠져나오는 길이
-                    # 없어서(switch._TRANSITIONS 의 restart 를 안내 경로에서 아무도
-                    # 안 부른다) 사람이 돌아와도 재획득 판정이 죽는다. 회복
-                    # 타임라인(≈32.8초)이 guide_lost_timeout_sec(45초)보다 짧아
-                    # 그 구간이 실제로 밟힌다.
-                    #
-                    # ⚠️ `switch.restart()` 를 쓰면 안 된다 — ENDED 에서만 합법이고
-                    #    TRACKING 으로 돌려보낸다. SEARCHING 을 유지한 채 탐색만
-                    #    새로 시작해야 `CheckReacquired` 가 계속 돈다.
-                    #
-                    # 종료 판정 권한은 `GuideExec` 의 guide_lost_timeout_sec 이 쥔다.
-                    # 타임라인은 통째로 반복한다 — 45초라 어차피 1.4바퀴다.
-                    #
-                    # 재시작은 1회로 캡한다 — 근거는 __init__ 의 _search_restarts 설명.
-                    self._search_restarts += 1
-                    self._start_search()
-                else:
-                    self.switch.search_failed()
+                self.switch.search_failed()
         # ENDED: idle — the follow session is over.

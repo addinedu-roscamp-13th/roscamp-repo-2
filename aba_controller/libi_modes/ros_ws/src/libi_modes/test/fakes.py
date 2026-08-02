@@ -58,7 +58,7 @@ PARAMS = {
     # 보이도록 딱 떨어지는 값을 쓴다 (0.1m / 10초 / 60초).
     "working": {"command_timeout_sec": 120, "arrive_tolerance_m": 0.1,
                 "arrive_resend_sec": 10, "arrive_timeout_sec": 60,
-                "guide_lost_grace_sec": 3, "guide_lost_timeout_sec": 45},
+                "guide_coast_sec": 1, "guide_wait_sec": 2},
     # 접근 자세 0.0 rad(화장실 쪽), 안정화 1초 — config/params.yaml 과 같은 값이다.
     # approach_yaw_rad 를 **안 준다** — 정점 yaw + 180° 유도 경로를 시험한다.
     "returning": {"dock_retry_max": 3, "settle_sec": 1.0,

@@ -5,7 +5,7 @@ from sensor_msgs.msg import LaserScan
 from rclpy.qos import qos_profile_sensor_data
 
 
-def to_degree_indexed(msg):
+def to_degree_indexed(msg, flip_180: bool = False):
     """LaserScan → 360칸 리스트. index i = 정면 기준 i도(반시계 +). 값 0.0 = 데이터 없음.
 
     `lidar_avoidance.apply_avoidance` 는 "index 0 이 정면, 한 칸이 1도"를 가정한다.
@@ -14,14 +14,27 @@ def to_degree_indexed(msg):
 
     변환은 각도 메타데이터(`angle_min`/`angle_increment`)가 실제로 존재하는 여기서 한 번만
     한다. 아래로 내려보내면 모든 소비자가 같은 실수를 반복할 자리가 생긴다.
+
+    ## ⚠️ [2026-08-02] `flip_180` — 라이다가 **거꾸로 장착**돼 있다
+
+    실측: 로봇 **뒤**를 손으로 막았는데 **앞으로 못 갔다.** 즉 드라이버가 내보내는
+    0° 가 로봇의 뒤를 가리킨다. 하드웨어 장착 방향이라 코드로만 맞출 수 있다.
+
+    참조 구현(`arte_libi_perception/follower_perception/scripts/lidar_avoid.py`)도
+    같은 이유로 `flip_180` 을 갖고 있다. 거기서는 섹터를 각각 180° 반대편과 맞바꾸는데,
+    여기서는 **각도에 180 을 더하는 것**으로 같은 일을 한 번에 한다 — 섹터를 나누기
+    **전**에 좌표계를 바로잡는 편이 나중에 아크를 바꿔도 안 어긋난다.
+
+    앞↔뒤와 좌↔우가 **동시에** 뒤집히는 것이 맞다. 180° 회전은 두 축을 같이 뒤집는다.
     """
     out = [0.0] * 360
     if not msg.ranges or msg.angle_increment == 0.0:
         return out
+    offset = 180 if flip_180 else 0
     for i, r in enumerate(msg.ranges):
         if not math.isfinite(r) or r <= 0.0:
             continue                      # inf/nan/0 = 측정 실패. 0.0(데이터 없음)으로 남긴다.
-        deg = int(round(math.degrees(msg.angle_min + i * msg.angle_increment))) % 360
+        deg = int(round(math.degrees(msg.angle_min + i * msg.angle_increment)) + offset) % 360
         # 한 칸에 여러 샘플이 겹치면 가까운 쪽을 남긴다 — 회피는 보수적인 쪽이 옳다.
         if out[deg] == 0.0 or r < out[deg]:
             out[deg] = r
@@ -59,12 +72,14 @@ class ScanProvider:
     "센서가 지금도 말하고 있나"에 답하는 값이다.
     """
 
-    def __init__(self, node, topic, max_age=0.0, now=time.monotonic):
+    def __init__(self, node, topic, max_age=0.0, now=time.monotonic, flip_180=False):
         self._msg = None
         self._cache = None
         self._at = None
         self._max_age = float(max_age)
         self._now = now
+        #: 라이다가 거꾸로 달려 있으면 True — `to_degree_indexed` 머리말 참고.
+        self._flip_180 = bool(flip_180)
         self._stale = False               # 경고를 상태 전이에서 한 번만 찍으려고
         get_logger = getattr(node, 'get_logger', None)
         self._log = get_logger() if get_logger is not None else None
@@ -98,5 +113,5 @@ class ScanProvider:
                         f'전방을 못 보므로 전진을 막습니다')
             return []
         if self._cache is None and self._msg is not None:
-            self._cache = to_degree_indexed(self._msg)
+            self._cache = to_degree_indexed(self._msg, self._flip_180)
         return self._cache if self._cache is not None else []

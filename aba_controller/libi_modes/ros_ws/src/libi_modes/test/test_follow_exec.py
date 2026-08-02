@@ -94,15 +94,15 @@ def test_follow_session_end_takes_the_robot_out_of_working(seed, read, tick):
 def test_follow_failure_also_leaves_working(seed, read, tick):
     """실패도 같다. 사람을 놓쳐 세션이 접혀도 WORKING 에 남으면 안 된다.
 
-    실패는 Selector 가 `AwaitingCommand` 로 떨어져 같은 tick 에 `RequestTransition` 까지
-    못 간다. 그래서 여기서는 예약값(NEXT_MODE)만 확인한다 — 길잡이의 요청자 이탈 시험과
-    같은 구조다.
+    실패를 그대로 올리면 Selector 가 `AwaitingCommand` 로 떨어져 같은 tick 에
+    `RequestTransition` 까지 못 간다. FollowExec 은 순찰 전이를 예약한 뒤 SUCCESS 로
+    끝내야 한다.
     """
     seed(**{Keys.CURRENT_MODE: "WORKING", Keys.ACTIVE_COMMAND: "follow_admin"})
     root = working.create(PARAMS, FakeDriver(), FakeDriver(),
                           FakeDriver(["failure"]), clock=lambda: 1.0, undock_gate=_gate())
     tick(root)
-    assert read(Keys.NEXT_MODE) == "PATROL", "세션이 접혔으면 WORKING 에 갇히면 안 된다"
+    assert read(Keys.CURRENT_MODE) == "PATROL", "세션이 접혔으면 WORKING 에 갇히면 안 된다"
 
 
 # ── structure ─────────────────────────────────────────────────────────────────
@@ -166,12 +166,25 @@ def unwired_logs(caplog):
 
     여기서 보려는 것은 "드라이버가 로그를 남기는가"지 ROS 의 로깅 배선이 아니다.
     그래서 root 를 거치지 않고 **그 로거에 직접** 붙는다.
+
+    ⚠️ [2026-08-02] **`propagate` 도 꺼야 한다 — 안 그러면 같은 레코드를 두 번 센다.**
+
+    위 사정은 ROS 워크스페이스를 **source 한** 환경 이야기다. 안 한 환경에서는
+    `propagate` 가 True 라, 여기서 직접 붙인 핸들러로 한 번 잡히고 **root 로 올라가
+    caplog 의 root 핸들러에 또 한 번** 잡힌다. 그래서 "한 번만 찍히나" 를 세는
+    시험이 환경에 따라 1 이 되기도 2 가 되기도 했다(실측: ROS 미소싱에서 2).
+
+    붙이는 동안만 끄고 원래 값으로 되돌린다 — 이 시험이 보려는 것은 드라이버가
+    로그를 몇 번 남기는가지, 로깅 배선이 아니다.
     """
     lg = logging.getLogger("libi_modes.common.working_actions")
+    prev_propagate = lg.propagate
+    lg.propagate = False
     lg.addHandler(caplog.handler)
     lg.setLevel(logging.ERROR)
     yield caplog
     lg.removeHandler(caplog.handler)
+    lg.propagate = prev_propagate
 
 
 def test_unwired_follow_is_logged(seed, tick, unwired_logs):
@@ -199,27 +212,45 @@ def test_unwired_follow_releases_the_command_slot(seed, read, tick):
     assert read(Keys.ACTIVE_COMMAND) is None
 
 
-def test_unwired_follow_ends_in_error_not_a_dead_node(seed, read, tick):
-    """The survivable path end to end: the command fails, dispatch falls through to
-    AwaitingCommand, and CommandTimeout carries the robot to ERROR — stopped and
-    diagnosable rather than a dead node.
-
-    Driven through working.create because that is where a clock can be injected;
-    tree.build_root does not thread one through, and with real monotonic time the
-    120 s timeout would never elapse inside a test.
-    """
-    now = {"t": 0.0}
+def test_unwired_follow_returns_to_patrol_not_a_dead_node(seed, read, tick):
+    """추종 실행기가 없어서 실패해도 WORKING 에 남겨 CommandTimeout 을 기다리지 않는다."""
     seed(**{Keys.CURRENT_MODE: "WORKING", Keys.ACTIVE_COMMAND: "follow_admin"})
     root = working.create(PARAMS, FakeDriver(), FakeDriver(), None,
-                          clock=lambda: now["t"], undock_gate=_gate())
+                          clock=lambda: 0.0, undock_gate=_gate())
 
-    assert tick(root) == Status.RUNNING          # follow failed, slot released
-    assert read(Keys.CURRENT_MODE) == "WORKING"
-
-    now["t"] = PARAMS["working"]["command_timeout_sec"] + 1.0
     assert tick(root) == Status.SUCCESS
-    assert read(Keys.CURRENT_MODE) == "ERROR"
+    assert read(Keys.CURRENT_MODE) == "PATROL"
 
 
 def test_unwired_driver_stop_is_a_noop():
     UnwiredDriver("follow_admin").stop()      # tearing down what never started is fine
+
+
+# ── 유지 시간(manual_hold_sec)이 종료 전이를 삼키던 회귀 (2026-08-02) ─────────
+# 실측 로그(Pi 02:25:45):
+#   [WARN] follow_admin 실패: 추종 실패 — 대상을 놓쳤습니다
+#   [WARN] 전이 요청이 적용되지 않았다: WORKING -> PATROL
+# 패널이 추종을 켤 때 state_io 가 HOLD_UNTIL=+300초를 찍는데, 추종이 그 안에 끝나면
+# RequestTransition 이 거부하고 WORKING 브랜치에서는 그 전이가 **유실**된다.
+
+def test_follow_end_beats_the_manual_hold(seed, read, tick):
+    """유지 시간이 남아 있어도 추종 종료 전이는 통과해야 한다."""
+    import time as _t
+    seed(**{Keys.CURRENT_MODE: "WORKING", Keys.ACTIVE_COMMAND: "follow_admin",
+            Keys.HOLD_UNTIL: _t.monotonic() + 300.0})     # 패널이 방금 눌렀다
+    root = working.create(PARAMS, FakeDriver(), FakeDriver(), None,
+                          clock=lambda: 0.0, undock_gate=_gate())
+    tick(root)
+    assert read(Keys.CURRENT_MODE) == "PATROL", \
+        "유지 시간이 추종 종료 전이를 삼켰다 — WORKING 에 갇힌다"
+
+
+def test_follow_end_marks_the_transition_as_commanded(seed, read, tick):
+    """유지 시간을 뚫는 근거는 `COMMANDED_MODE` 표시다 — 그게 실제로 세워지는지."""
+    seed(**{Keys.CURRENT_MODE: "WORKING", Keys.ACTIVE_COMMAND: "follow_admin"})
+    root = working.create(PARAMS, FakeDriver(), FakeDriver(), None,
+                          clock=lambda: 0.0, undock_gate=_gate())
+    tick(root)
+    # RequestTransition 이 적용하면서 지운다 — 적용됐다는 것이 곧 표시가 있었다는 뜻이다.
+    assert read(Keys.CURRENT_MODE) == "PATROL"
+    assert read(Keys.COMMANDED_MODE) is None

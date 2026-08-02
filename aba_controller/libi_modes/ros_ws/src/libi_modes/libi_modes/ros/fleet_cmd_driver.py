@@ -66,12 +66,21 @@ class FleetCmdDriver:
     def _now(self):
         return self._node.get_clock().now().nanoseconds / 1e9
 
-    def start(self):
+    def start(self, args=None):
+        """`args` 를 주면 `args_fn` 대신 그것을 싣는다.
+
+        ⚠️ 같은 액션인데 **상황에 따라 인자가 달라지는** 경우에만 쓴다. `args_fn` 은
+        노드가 만들 때 고정되므로 leaf 의 그때그때 상태(예: 회복 회전 허가 여부)를
+        담을 수 없다. 그렇다고 leaf 상태를 노드까지 끌어내리면 배선이 한 겹 늘고,
+        "누가 그 값을 쓰는지" 가 코드에서 안 보인다. 호출부에서 명시하는 쪽이 낫다.
+        (`GuideExec._allow_rotate` 가 유일한 사용처다.)
+        """
         self._seq += 1
         self._abandoned_id = None       # 새 명령을 내면 옛 포기 기록은 의미가 없다
         self._pending_id = f"{self._action}-{self._seq}-{int(self._now() * 1000)}"
         self._started_at = self._now()
-        self._publish(self._action, self._args_fn(), self._pending_id)
+        self._publish(self._action, self._args_fn() if args is None else args,
+                      self._pending_id)
 
     def poll(self):
         if self._pending_id is None:

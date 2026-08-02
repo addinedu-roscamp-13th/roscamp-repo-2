@@ -74,6 +74,17 @@ class FakeNode:
                                      error=lambda *_a, **_k: None)
 
 
+class RewindableLoop:
+    """`rotation_granted()` 가 실제로 불렸는지만 세는 최소 대역."""
+    def __init__(self):
+        self.state = 'SEARCHING'
+        self.search_tree = None
+        self.rewinds = 0
+
+    def rotation_granted(self):
+        self.rewinds += 1
+
+
 class FakeLoop:
     """`publish_snapshot` 이 보는 최소 표면 — 트리는 없고 상태·회복 트리만 있다.
 
@@ -112,8 +123,11 @@ class Clock:
 
 
 class Det:
-    def __init__(self, area=1234.0, is_owner=True, motion_ok=True):
+    # `is_predicted` 가 있어야 한다 — `requester_visible` 이 예측 bbox 를 거르는지
+    # 시험하려면 대역이 그 필드를 가져야 한다(2026-08-02).
+    def __init__(self, area=1234.0, is_owner=True, motion_ok=True, is_predicted=False):
         self.area, self.is_owner, self.motion_ok = area, is_owner, motion_ok
+        self.is_predicted = is_predicted
 
 
 @pytest.fixture
@@ -126,6 +140,8 @@ def rc():
                                  cam=lambda: node.pubs[config.CAMERA_SELECT_TOPIC].sent,
                                  vis=lambda: node.pubs[config.REQUESTER_VISIBLE_TOPIC].sent,
                                  area=lambda: node.pubs[config.REQUESTER_AREA_TOPIC].sent,
+                                 gfail=lambda: node.pubs[
+                                     config.GUIDE_SEARCH_FAILED_TOPIC].sent,
                                  result=lambda: node.pubs['fleet_cmd_result'].sent,
                                  snap=lambda: node.pubs[
                                      '/libi/follow_bt_snapshot'].sent)
@@ -154,6 +170,17 @@ def test_watch_uses_camera_from_args(rc):
     """등록 화면은 앞캠이다 — 이용자가 패널 앞에 서 있다."""
     rc.send(action='watch', id='w1', args={'camera': 'front'})
     assert rc.cam()[-1] == 'front'
+
+
+def test_panel_watch_cannot_replace_guide_watch_or_reset_recovery(rc):
+    """패널 lease는 안내의 GUIDE 세션보다 약하다."""
+    rc.send(action='guide_watch', id='guide-watch-1')
+    rc.send(action='watch', id='panel-1', args={'camera': 'back'})
+    assert rc.ctl._sessions.role == 'guide'
+    assert rc.ctl._sessions.session_id == 'guide-watch-1'
+    assert rc.session.started == 1, 'watch가 회복 제어 루프를 새로 만들었다'
+    reply = json.loads(rc.result()[-1])
+    assert reply['id'] == 'panel-1' and reply['ok'] is False
 
 
 def test_watch_replies_immediately(rc):
@@ -222,12 +249,88 @@ def test_visibility_published_for_guide(rc):
     assert rc.area()[-1] == 900.0
 
 
+def test_front_camera_detection_does_not_reacquire_a_guide(rc):
+    """회복 중 앞캠 사람은 '뒤로 이동' 안내용이며 nav2 재개 조건이 아니다."""
+    rc.ctl.bind_detection(lambda: Det(area=900.0))
+    rc.send(action='guide_watch', id='g1')
+    rc.ctl.request_camera('front')
+    rc.ctl._publish_requester()
+    assert rc.vis()[-1] is False
+    assert rc.area() == []
+
+
 def test_visibility_not_published_for_follow(rc):
     """추종은 제어 루프가 직접 검출을 본다 — 토픽으로 낼 이유가 없다."""
     rc.ctl.bind_detection(lambda: Det())
     rc.send(action='follow_admin', id='f1')
     rc.ctl._publish_requester()
     assert rc.vis() == []
+
+
+# ── 회전 허가 → 탐색 되감기 ────────────────────────────────────────────────
+#
+# ⚠️ 이게 없으면 길잡이 회복 한 라운드(32.8초) 중 앞의 20초가 **바퀴가 묶인 채**
+#    지나간다 — `GuideExec` 이 `guide_lost_grace_sec` 를 넘겨야 허가를 켜기 때문이다.
+
+def test_rotation_grant_rewinds_the_search():
+    node, clock = FakeNode(), Clock()
+    loop = RewindableLoop()
+    ctl = RemoteControl(node, FakeSession(loop=loop),
+                        sessions=SessionManager(lease_sec=60), now=clock)
+    send = lambda **kw: node.subs['fleet_cmd'](
+        types.SimpleNamespace(data=json.dumps(kw)))
+
+    send(action='guide_watch', id='g1')                       # 허가 없이 시작
+    assert loop.rewinds == 0
+    send(action='guide_watch', id='g2', args={'allow_rotate': True})
+    assert loop.rewinds == 1, "회전이 열렸는데 탐색을 안 되감았다"
+
+
+def test_repeated_grant_does_not_rewind_again():
+    """`guide_watch` 는 lease 갱신으로 10초마다 다시 온다. 값이 그대로인데 되감으면
+    탐색이 **영영 처음으로 돌아간다** — 정확히 예전에 막았던 그 버그다."""
+    node, clock = FakeNode(), Clock()
+    loop = RewindableLoop()
+    ctl = RemoteControl(node, FakeSession(loop=loop),
+                        sessions=SessionManager(lease_sec=60), now=clock)
+    send = lambda **kw: node.subs['fleet_cmd'](
+        types.SimpleNamespace(data=json.dumps(kw)))
+
+    send(action='guide_watch', id='g1')
+    send(action='guide_watch', id='g2', args={'allow_rotate': True})
+    send(action='guide_watch', id='g3', args={'allow_rotate': True})
+    send(action='guide_watch', id='g4', args={'allow_rotate': True})
+    assert loop.rewinds == 1, "갱신마다 되감으면 탐색이 영영 안 끝난다"
+
+
+# ── 회복 종료 신호 ──────────────────────────────────────────────────────────
+#
+# ⚠️ 이 통로가 없으면 `GuideExec` 은 회복이 끝난 것을 **영영 모른다.** 감시 세션은
+#    `_active_id` 를 안 세워서 `tick()` 아래쪽의 `/fleet_cmd_result` 경로에 안 걸린다.
+#    예전에는 그 자리를 `guide_lost_timeout_sec`(시계)가 대신했다.
+
+def test_guide_search_failure_is_reported(rc):
+    """⚠️ **`tick()` 을 통해서 본다.** 발행 함수를 직접 부르면 그 함수가 tick 배선에서
+    빠져도 초록이다 — 그러면 실기에서는 아무 신호도 안 나간다."""
+    rc.session.state = 'failure'          # 회복 트리가 다 훑고 포기했다
+    rc.send(action='guide_watch', id='g1')
+    rc.ctl.tick()
+    assert rc.gfail()[-1] is True, "회복이 끝났는데 아무도 안 알려준다"
+
+
+def test_guide_search_running_reports_false(rc):
+    """아직 도는 중이면 False 다 — 안 내면 받는 쪽이 stale 로 읽는다."""
+    rc.send(action='guide_watch', id='g1')
+    rc.ctl._publish_guide_search_failed()
+    assert rc.gfail()[-1] is False
+
+
+def test_guide_search_failure_not_reported_for_follow(rc):
+    """추종은 `_active_id` 로 `/fleet_cmd_result` 를 제대로 돌려준다 — 이 통로 대상이 아니다."""
+    rc.session.state = 'failure'
+    rc.send(action='follow_admin', id='f1')
+    rc.ctl._publish_guide_search_failed()
+    assert rc.gfail() == []
 
 
 def test_area_not_published_when_invisible(rc):
@@ -239,9 +342,31 @@ def test_area_not_published_when_invisible(rc):
     assert rc.area() == []
 
 
-def test_motion_blocked_counts_as_not_visible(rc):
-    """누워 있으면 '보이지만 가면 안 된다' — 길잡이는 멈춰야 한다."""
+def test_motion_blocked_still_counts_as_visible(rc):
+    """⚠️ [2026-08-02] **계약이 뒤집혔다 — 자세는 '보이나'와 무관하다.**
+
+    예전에는 `motion_ok=False`(누움·측면·기준측정)를 "안 보인다"로 쳤다. 그런데
+    `requester_visible` 은 **GuideExec 가 nav2 목표를 취소할지**를 정하는 신호다.
+    길잡이는 로봇이 앞서 가고 요청자가 뒤따르는 구조라, 뒷카메라가 옆모습을
+    잡았다는 이유로 안내를 통째로 중단하면 안 된다 — 사용자 확정 스펙:
+    "길잡이는 pose 상관없이 정면 사진을 찍어서 그 사람을 계속 인식해서 간다."
+
+    자세 게이트는 **추종**(로봇이 사람에게 다가감)의 안전 규칙이고, 그건
+    `control_loop` 이 역할을 보고 따로 적용한다. 여기는 "그 사람이 거기 있나"만 답한다.
+    """
     rc.ctl.bind_detection(lambda: Det(motion_ok=False))
+    rc.send(action='guide_watch', id='g1')
+    rc.ctl._publish_requester()
+    assert rc.vis()[-1] is True, "자세를 이유로 '안 보인다'고 했다 — 안내가 중단된다"
+
+
+def test_predicted_detection_still_counts_as_not_visible(rc):
+    """⚠️ 안전 방향은 그대로다. 예측 bbox 는 '실제로 따라온다'의 근거가 아니다.
+
+    코스팅은 추종의 연속성을 위한 장치다. 안내에서 유령을 보고 계속 전진하면
+    요청자를 두고 가 버린다.
+    """
+    rc.ctl.bind_detection(lambda: Det(is_predicted=True))
     rc.send(action='guide_watch', id='g1')
     rc.ctl._publish_requester()
     assert rc.vis()[-1] is False
@@ -374,3 +499,129 @@ def test_snapshot_not_published_for_watch(rc):
     rc.send(action='watch', id='w1')
     rc.ctl.tick()
     assert _tree_of(rc.snap()[-1]) is None
+
+
+# ── 길잡이 회복 회전 허가 (2026-08-02) ───────────────────────────────────────
+#
+# 길잡이 주행은 nav2 가 한다. 그래서 `FollowNode._publish_for_role` 이 감시 역할의
+# `/cmd_vel` 을 평소에 **삼킨다** — 두 주체가 같은 토픽을 밀면 중재자가 없다.
+#
+# 사용자 스펙(2026-08-02): "길잡이도 회복 때 추종처럼 회전한다." 그러려면 nav2 가
+# 정말 멈춘 뒤에만 바퀴를 넘겨야 하는데 두 프로세스라 그 사실을 공유할 길이 없었다.
+# `GuideExec` 이 `mission_stop` 을 낸 **다음에** `guide_watch{allow_rotate:true}` 로
+# 알린다. 여기서는 그 값이 실제로 들어와 유지되는지, 세션이 재시작되지 않는지를 본다.
+
+def test_guide_watch_defaults_to_no_rotation(rc):
+    """기본은 금지다 — 안 실어 보내면 바퀴는 nav2 것."""
+    rc.send(action='guide_watch', id='g1')
+    assert rc.ctl.rotate_allowed is False
+
+
+def test_allow_rotate_flag_is_taken(rc):
+    rc.send(action='guide_watch', id='g1', args={'camera': 'back', 'allow_rotate': True})
+    assert rc.ctl.rotate_allowed is True
+
+
+def test_toggling_rotation_does_not_restart_the_recovery_tree(rc):
+    """⚠️ 이게 핵심이다.
+
+    `FleetCmdDriver.start` 는 **매번 새 id** 를 만들고 `SessionManager.start` 는 id 가
+    다르면 새 Session 을 만든다. 그대로 두면 회전을 허가하는 재발행 한 번마다
+    제어 루프가 새로 지어져 **회복 트리가 처음부터 다시 돈다** — 켜자마자 0초로
+    되감기는 셈이다. 같은 역할의 감시 세션이 살아 있으면 인자만 갱신해야 한다.
+    """
+    rc.send(action='guide_watch', id='g1')
+    assert rc.session.started == 1
+
+    rc.send(action='guide_watch', id='g2', args={'camera': 'back', 'allow_rotate': True})
+    assert rc.ctl.rotate_allowed is True
+    assert rc.session.started == 1, "회전 허가가 제어 루프를 재시작시켰다"
+
+    rc.send(action='guide_watch', id='g3', args={'camera': 'back', 'allow_rotate': False})
+    assert rc.ctl.rotate_allowed is False
+    assert rc.session.started == 1, "회전 해제가 제어 루프를 재시작시켰다"
+
+
+def test_latest_guide_watch_id_can_stop_the_preserved_session(rc):
+    """인자 갱신은 루프를 보존하되 마지막 드라이버 id 로 닫혀야 한다."""
+    rc.send(action='guide_watch', id='g1')
+    rc.send(action='guide_watch', id='g2', args={'camera': 'back', 'allow_rotate': True})
+    assert rc.ctl._sessions.session_id == 'g2'
+    rc.send(action='follow_stop', id='stop-g2')
+    assert rc.session.stopped == 1
+
+
+def test_session_stop_revokes_rotation(rc):
+    """세션이 닫히면 허가도 없던 일이다.
+
+    안 지우면 다음 감시 세션이 **회전이 이미 허가된 채** 시작해, 출발 전에 바퀴가 돈다.
+    """
+    rc.send(action='guide_watch', id='g1', args={'camera': 'back', 'allow_rotate': True})
+    assert rc.ctl.rotate_allowed is True
+    rc.send(action='stop', id='g1')
+    assert rc.ctl.rotate_allowed is False
+
+
+def test_follow_session_is_unaffected_by_the_flag(rc):
+    """추종은 원래 바퀴를 쓰므로 이 플래그와 무관하다 — 회귀 방지."""
+    rc.send(action='follow_admin', id='f1', args={'allow_rotate': True})
+    assert rc.session.started == 1
+    assert rc.cam()[-1] == 'front'
+
+
+# ── 고아 GUIDE 세션이 패널을 영구히 잠그면 안 된다 (2026-08-02) ──────────────
+#
+# GUIDE 세션 중 패널의 `watch` 를 거절하는 보호(위 test_panel_watch_cannot_replace_...)는
+# 맞다. 그런데 GUIDE 세션은 **lease 면제**다(session.py `expired` — BT 가 열고 BT 가
+# 닫는다). 둘이 겹치면 `fsm_node` 가 죽는 순간 세션을 닫을 주체가 사라지고, 그 세션이
+# 영원히 남아 **패널이 길잡이 등록 화면을 다시는 못 연다.** 재부팅 말고 길이 없다.
+#
+# 그래서 GuideExec 이 WATCH_RENEW_SEC(15초)마다 guide_watch 를 재발행하고,
+# follow_node 는 GUIDE_ORPHAN_SEC(45초) 넘게 소식이 없으면 주인 없는 것으로 본다.
+
+def test_live_guide_still_blocks_the_panel(rc):
+    """갱신이 계속 오는 동안에는 패널이 못 뺏는다 — 보호가 살아 있어야 한다."""
+    rc.send(action='guide_watch', id='g1', args={'camera': 'back'})
+    assert rc.ctl._sessions.role == 'guide'
+    rc.clock.t += config.GUIDE_ORPHAN_SEC - 5      # 아직 고아 아님
+    rc.send(action='watch', id='panel-1', args={'camera': 'front'})
+    assert rc.ctl._sessions.role == 'guide', "살아 있는 안내를 패널이 뺏었다"
+
+
+def test_renewal_keeps_the_guide_alive_indefinitely(rc):
+    """GuideExec 의 주기적 재발행이 고아 판정을 계속 미룬다."""
+    rc.send(action='guide_watch', id='g1', args={'camera': 'back'})
+    for i in range(6):                              # 15초 간격으로 6번 = 90초
+        rc.clock.t += 15.0
+        rc.send(action='guide_watch', id=f'g-renew-{i}',
+                args={'camera': 'back', 'allow_rotate': False})
+    rc.clock.t += 5.0
+    rc.send(action='watch', id='panel-1', args={'camera': 'front'})
+    assert rc.ctl._sessions.role == 'guide', "갱신 중인데 고아로 잡혔다"
+
+
+def test_orphaned_guide_can_be_taken_over_by_the_panel(rc):
+    """⚠️ 이게 잠금 방지의 핵심.
+
+    BT 가 죽어 갱신이 끊기면, 그 세션은 아무도 못 닫는다(lease 면제).
+    그 상태로 거절만 하면 패널이 영영 등록을 못 연다.
+    """
+    rc.send(action='guide_watch', id='g1', args={'camera': 'back'})
+    assert rc.ctl._sessions.role == 'guide'
+
+    rc.clock.t += config.GUIDE_ORPHAN_SEC + 1       # BT 가 죽어 갱신이 끊겼다
+    rc.send(action='watch', id='panel-1', args={'camera': 'front'})
+    assert rc.ctl._sessions.role == 'watch', \
+        "고아 GUIDE 세션이 패널을 영구히 잠갔다 — 재부팅 말고 길이 없다"
+    assert rc.cam()[-1] == 'front'
+
+
+def test_renewal_does_not_restart_the_control_loop(rc):
+    """재발행이 제어 루프를 새로 지으면 **회복 트리가 15초마다 리셋된다** —
+    막으려던 바로 그 버그가 갱신 때문에 되살아난다."""
+    rc.send(action='guide_watch', id='g1', args={'camera': 'back'})
+    assert rc.session.started == 1
+    for i in range(4):
+        rc.clock.t += 15.0
+        rc.send(action='guide_watch', id=f'g-renew-{i}', args={'camera': 'back'})
+    assert rc.session.started == 1, "갱신이 제어 루프를 재시작시켰다"

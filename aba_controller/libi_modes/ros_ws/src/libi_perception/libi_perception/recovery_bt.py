@@ -39,12 +39,16 @@ class SearchContext:
 
     def __init__(self, get_detection, publish, cfg, now, lkd=1.0,
                  select_camera=None, peek_people=None, role="follow",
-                 initial_camera=None):
+                 initial_camera=None, peek=True):
         self.get_detection = get_detection
         self.publish = publish
         self.cfg = cfg
         self.now = now
         self.lkd = lkd
+        #: LKD peek(마지막 방향으로 90°)를 할지. 대상이 **화면 가운데에서** 사라졌으면
+        #: 호출자가 False 를 준다 — 어느 쪽으로 나갔다는 정보가 없어 추측이 되기 때문이다.
+        #: 근거는 `search_planner.peek_sec` 머리말.
+        self.peek = bool(peek)
         self.start = None
         #: 카메라를 바꿔 달라는 요청. 실제 발행은 follow_node 가 한다
         #: (camera_select 발행자는 하나뿐이라는 규칙).
@@ -182,10 +186,13 @@ class PeekPhase(CameraPhase):
                     return super().update()
                 self.ctx.align_latched = True
             else:
-                # 길잡이는 회전하지 않는다. 목적지 방향이 사람 방향과 겹치면
-                # 회전 → 경로 재계획 → 다시 앞캠 포착 → 재회전으로 무한 진동한다.
-                self.ctx.peek_reacquired = True
-                self.ctx.peek_camera_locked = self.camera
+                # 길잡이가 앞캠에서 사람을 본 것은 "다시 뒤로 이동해 달라"고
+                # 화면에 알릴 상태이지 재획득이 아니다. 성공으로 끝내면 카메라가
+                # 앞에 고정되어 뒷캠으로 돌아온 사람을 다시 볼 수 없고, 그 True 가
+                # GuideExec 에 전달되면 nav2 도 재개한다. 탐색 타임라인은 계속해서
+                # 다음(뒷캠 포함) phase 로 진행한다.
+                self.ctx.publish(0.0, 0.0)
+                return super().update()
             self.ctx.publish(0.0, 0.0)
             return Status.RUNNING
         return super().update()
@@ -284,7 +291,9 @@ def create_searching_tree(ctx):
     hold = cfg.SEARCH_HOLD_SEC
     w = cfg.ANGULAR_Z_SWEEP
     leg = sweep_leg_sec(cfg)            # 중앙 → 한쪽 끝
-    peek_turn = peek_sec(cfg, ctx.role)  # LKD 90° (추종 전용, 0 이면 구간이 빠진다)
+    # LKD 90° (추종 전용, 0 이면 구간이 빠진다). `ctx.peek` 는 '가운데에서
+    # 사라졌으면 끈다' — 근거는 `search_planner.peek_sec` 머리말.
+    peek_turn = peek_sec(cfg, ctx.role, getattr(ctx, 'peek', True))
     home, peek = ctx.home_camera, ctx.peek_camera
 
     def sweep(prefix, camera):

@@ -16,6 +16,8 @@ GuideExec 은 **한 번도 안 돈다** — 요청자를 놓쳐도 아무도 안
 ros_bridge.cancel_nav) 를 안 부르고 RUNNING 만 돌려주면 화면은 "기다리는 중"인데
 nav2 는 계속 달려서 로봇이 사람을 두고 가버린다.
 """
+import time
+
 import pytest
 from py_trees.common import Status
 
@@ -27,8 +29,9 @@ from .fakes import FakeDriver
 TOLERANCE = 0.1
 RESEND = 10.0
 TIMEOUT = 60.0
-GRACE = 3.0
-LOST = 45.0
+COAST = 1.0
+WAIT = 2.0
+RECOVER_AT = COAST + WAIT   # 회복 BT 에 바퀴를 넘기는 시각
 
 
 class _Clock:
@@ -46,7 +49,7 @@ def leaf(seed):
               **blackboard):
         clock = clock or _Clock()
         seed(**blackboard)
-        node = GuideExec(FakeDriver(), TOLERANCE, RESEND, TIMEOUT, GRACE, LOST,
+        node = GuideExec(FakeDriver(), TOLERANCE, RESEND, TIMEOUT, COAST, WAIT,
                          stop_driver=stop, watch_driver=watch,
                          far_area_min=far_area_min, near_area_max=near_area_max,
                          junctions=junctions, junction_hold_sec=junction_hold_sec,
@@ -74,6 +77,19 @@ def _gate():
     from libi_modes.common import undock
     return undock.create(FakeDriver(), distance_m=0.06, timeout_sec=8.0,
                          retry_max=3, now_fn=lambda: 0.0)
+
+# ── 포기는 **SUCCESS 로 닫는다** (2026-08-02 실기) ──────────────────────────
+#
+# 실측(Pi, 1785641373.92): 20.3초에 give_up 은 정확히 발동했는데 전이가 유실됐다.
+#     [WARN] 전이 요청이 적용되지 않았다: WORKING -> PATROL
+#            (패널 유지 시간 중이거나, 브랜치가 RequestTransition 에 닿지 못했다)
+# FAILURE 를 내면 dispatch Selector 가 `Running("AwaitingCommand")` 까지 흘러가
+# Parallel(SuccessOnOne)이 RUNNING 을 유지 → Sequence 가 `RequestTransition` 에
+# **영영 못 닿는다.** 그래서 이제 성공·실패 모두 SUCCESS 로 닫는다.
+# 여기서 SUCCESS 는 "잘 마쳤다" 가 아니라 **"이 leaf 의 일이 끝났다"** 다.
+#
+# 시험이 봐야 할 것은 반환값이 아니라 **WORKING 을 빠져나가는가**(NEXT_MODE=PATROL)다.
+
 
 def test_navigation_exec_does_not_claim_guide(seed):
     """`navigate` 담당은 `guide` 를 건드리지 않는다 — 건드리면 GuideExec 이 죽는다."""
@@ -165,8 +181,17 @@ def test_providers_classifies_guide_separately():
     assert d["active_command"]() == "guide"
     assert d["nav_target"]() == {"x": 1.0, "y": 2.0, "yaw": 0.0}
 
+    # fleet_node의 순회/배차 경로가 안내 중에 도착해도 guide 및 그 목적지를 뺏으면 안 된다.
+    # 이 방어가 없으면 GuideExec 이 다음 tick 에 감시를 닫고 NavigationExec 으로 강등된다.
+    p._on_cmd(_Msg(json.dumps({"action": "navigate", "args": {"x": 3.0, "y": 4.0}})))
+    assert p.as_dict()["active_command"]() == "guide"
+    assert p.as_dict()["nav_target"]() == {"x": 1.0, "y": 2.0, "yaw": 0.0}
+
+    # 비어 있을 때는 기존처럼 fleet_node 주행을 받아야 한다.
+    p._active_command = None
     p._on_cmd(_Msg(json.dumps({"action": "navigate", "args": {"x": 3.0, "y": 4.0}})))
     assert p.as_dict()["active_command"]() == "navigate"
+    assert p.as_dict()["nav_target"]() == {"x": 3.0, "y": 4.0, "yaw": 0.0}
 
 
 # ── 요청자를 보고 모는가 ────────────────────────────────────────────────────
@@ -186,19 +211,24 @@ def test_brief_occlusion_does_not_stop_the_robot(leaf):
     node = leaf(clock=clock, stop=stop,
                 **{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
                    Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: False,
-                   Keys.REQUESTER_SEEN_AT: 99.0})      # 1초 전에 보였다 (< GRACE)
+                   Keys.REQUESTER_SEEN_AT: 99.5})      # 0.5초 전 (< COAST)
     assert node.update() == Status.RUNNING
-    assert stop.start_count == 0                 # 아직 안 멈춘다
+    assert stop.start_count == 0                 # 코스팅 중 — 아직 안 멈춘다
 
 
-def test_lost_past_grace_actually_cancels_navigation(leaf):
-    """표시만 하고 안 멈추면 로봇은 사람을 두고 간다 — 실제 취소를 내야 한다."""
+def test_lost_past_coast_actually_cancels_navigation(leaf):
+    """코스팅이 끝나면 **바로** 멈춘다.
+
+    ⚠️ [2026-08-02] 예전에는 `lost_grace_sec`(20초)를 다 지나야 멈췄다 — 즉 사람을
+       놓친 채 20초를 더 갔다. 이제 코스팅(1.4초)만 지나면 nav2 를 끊고 서서
+       기다린다(사용자 스펙 "20초 정지 후에 회복 BT" 의 그 정지다).
+    """
     stop = FakeDriver()
     node = leaf(stop=stop,
                 **{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
                    Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: False,
-                   Keys.REQUESTER_SEEN_AT: 95.0})      # 5초 전 (> GRACE)
-    assert node.update() == Status.RUNNING       # 포기는 아니다 — 기다린다
+                   Keys.REQUESTER_SEEN_AT: 98.0})      # 2초 전 (> COAST, < 대기 끝)
+    assert node.update() == Status.RUNNING       # 포기는 아니다 — 서서 기다린다
     assert stop.start_count == 1
     node.update()
     assert stop.start_count == 1                 # 취소는 한 번만
@@ -221,12 +251,48 @@ def test_resumes_when_the_requester_comes_back(leaf, seed):
     assert node.driver.start_count == sent_before + 1   # 취소된 주행을 다시 냈다
 
 
-def test_gives_up_when_the_requester_never_comes_back(leaf, read):
+def test_gives_up_when_recovery_reports_it_searched_and_failed(leaf, read):
+    """회복 BT 가 **다 훑고도 못 찾았다**고 말하면 그때 끝낸다.
+
+    ⚠️ 예전에는 `guide_lost_timeout_sec`(시계)가 이 자리에 있었다. 시계는 회복
+    트리 타임라인과 계속 어긋났다 — 이제 회복이 스스로 말한다
+    (`follow_node._publish_guide_search_failed` → `/libi/guide_search_failed`).
+    """
     node = leaf(**{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
                    Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: False,
-                   Keys.REQUESTER_SEEN_AT: 50.0})      # 50초 전 (> LOST)
-    assert node.update() == Status.FAILURE
+                   Keys.REQUESTER_SEEN_AT: 99.0,        # 1초 전 — 유예 안쪽이다
+                   Keys.GUIDE_SEARCH_FAILED: True})
+    # 포기도 SUCCESS 로 닫는다(위 ── 주석). 봐야 할 것은 **끝났고 순찰을 예약했는가**.
+    assert node.update() == Status.SUCCESS
+    assert read(Keys.NEXT_MODE) == "PATROL", "포기했는데 순찰 예약이 없다"
     assert read(Keys.ACTIVE_COMMAND) is None            # 슬롯을 비워야 다음 명령을 받는다
+
+
+def test_lost_alone_never_gives_up_without_the_recovery_signal(leaf, read):
+    """**시계만으로는 절대 안 끝난다.** 회복 신호가 유일한 종결자다.
+
+    되돌림 감지용: `lost >= <어떤 시간>` 조건을 다시 넣으면 이 시험이 빨개진다.
+    """
+    node = leaf(**{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+                   Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: False,
+                   Keys.REQUESTER_SEEN_AT: 1.0,         # 99초 전 — 아무리 오래돼도
+                   Keys.GUIDE_SEARCH_FAILED: False})
+    assert node.update() == Status.RUNNING, "회복이 아직 도는데 안내를 끝냈다"
+    assert read(Keys.NEXT_MODE) is None
+
+
+def test_stale_recovery_signal_does_not_end_the_guide(leaf, read):
+    """발행이 끊겨 `None` 이면 **끝난 것으로 치지 않는다.**
+
+    `providers._fresh_guide_search_failed` 가 stale 을 None 으로 내린다. 그걸
+    True 로 읽으면 멀쩡한 안내가 링크 끊김만으로 끝난다.
+    """
+    node = leaf(**{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+                   Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: False,
+                   Keys.REQUESTER_SEEN_AT: 99.0,
+                   Keys.GUIDE_SEARCH_FAILED: None})
+    assert node.update() == Status.RUNNING
+    assert read(Keys.NEXT_MODE) is None
 
 
 def test_arrival_still_ends_the_guide(leaf, read):
@@ -262,12 +328,31 @@ def test_arrival_takes_the_robot_out_of_working(seed, read, tick):
     assert read(Keys.CURRENT_MODE) == "PATROL", "도착했으면 WORKING 을 빠져나가야 한다"
 
 
+def test_guide_completion_bypasses_the_panel_manual_hold(seed, read, tick):
+    """패널이 직전에 전이시켜도 안내 종료의 WORKING -> PATROL 은 유실되면 안 된다."""
+    seed(**{Keys.CURRENT_MODE: "WORKING", Keys.ACTIVE_COMMAND: "guide",
+            Keys.NAV_TARGET: _to(1.0, 1.0), Keys.ROBOT_POSE: _at(1.0, 1.0),
+            Keys.REQUESTER_VISIBLE: True, Keys.REQUESTER_SEEN_AT: 100.0,
+            Keys.HOLD_UNTIL: time.monotonic() + 300.0})
+    tick(_working())
+    assert read(Keys.CURRENT_MODE) == "PATROL", \
+        "manual_hold_sec 중에도 GuideExec 종료는 같은 tick 에 PATROL 이어야 한다"
+
+
 def test_losing_the_requester_for_good_also_exits_working(seed, read, tick):
     seed(**{Keys.CURRENT_MODE: "WORKING", Keys.ACTIVE_COMMAND: "guide",
             Keys.NAV_TARGET: _to(5.0, 5.0), Keys.ROBOT_POSE: _at(0.0, 0.0),
-            Keys.REQUESTER_VISIBLE: False, Keys.REQUESTER_SEEN_AT: 10.0})  # 90초 전
+            Keys.REQUESTER_VISIBLE: False, Keys.REQUESTER_SEEN_AT: 10.0,
+            # 회복 BT 가 다 훑고 포기했다 — 이게 안내를 끝내는 유일한 신호다.
+            Keys.GUIDE_SEARCH_FAILED: True})
     tick(_working())
-    assert read(Keys.NEXT_MODE) == "PATROL", "포기했으면 WORKING 에 갇히면 안 된다"
+    # ⚠️ [2026-08-02] 이제 **전이가 그 tick 에 실제로 적용된다.** 예전에는 GuideExec 이
+    #    FAILURE 를 내 Selector 가 `AwaitingCommand`(RUNNING) 까지 흘렀고, Parallel 이
+    #    RUNNING 이라 Sequence 가 `RequestTransition` 에 못 닿아 `NEXT_MODE` 만 남았다
+    #    (실기에서 로봇이 WORKING 에 갇힌 원인). SUCCESS 로 닫으면서 같은 tick 에
+    #    적용되므로, 확인할 것은 예약(NEXT_MODE)이 아니라 **결과(CURRENT_MODE)** 다.
+    assert read(Keys.CURRENT_MODE) == "PATROL", "포기했으면 WORKING 에 갇히면 안 된다"
+    assert read(Keys.NEXT_MODE) is None, "예약이 소비되지 않았다 — 전이가 안 적용됐다"
 
 
 def test_guide_command_reaches_guide_exec_not_navigation(seed, tick):
@@ -280,15 +365,18 @@ def test_guide_command_reaches_guide_exec_not_navigation(seed, tick):
     assert guide.started and not nav.started
 
 
-def test_no_watcher_means_drive_anyway(leaf):
-    """libi_perception 이 없는 로봇에서 길잡이가 통째로 죽으면 안 된다."""
+def test_no_watcher_fails_safe_after_grace(leaf):
+    """감시가 없으면 등록자가 확인되지 않았으므로 nav2 를 멈춘다."""
     stop = FakeDriver()
+    clock = _Clock()
     node = leaf(stop=stop,
+                clock=clock,
                 **{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
                    Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: None,
-                   Keys.REQUESTER_SEEN_AT: 0.0})
+                   Keys.REQUESTER_SEEN_AT: 0.0,
+                   Keys.COMMAND_RECEIVED_AT: 95.0})
     assert node.update() == Status.RUNNING
-    assert stop.start_count == 0
+    assert stop.start_count == 1
 
 
 # ── 감시 세션 (2026-07-27) ───────────────────────────────────────────────────
@@ -460,3 +548,203 @@ def test_junction_hold_off_when_no_navgraph(leaf):
                    Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: True})
     node.update()
     assert stop.started is False
+
+
+# ── 명령 메아리가 페일세이프를 무력화하던 것 (2026-08-02) ──────────────────────
+#
+# `providers._on_cmd` 는 `/fleet_cmd` 로 **무엇이 오든** 맨 앞에서
+# `_command_received_at = monotonic()` 을 찍는다(providers.py:207). 그런데 GuideExec
+# 자신이 같은 토픽으로 `goal`(재전송) · `guide_watch` · `mission_stop` 을 낸다.
+# 그 메아리가 도로 구독되어 기준 시각이 **매 tick 지금으로 갱신**되므로, 예전
+# `_lost_for()` 처럼 그 값을 기준으로 유예를 재면 요청자를 한 번도 못 본 안내에서
+# `lost` 가 영영 유예를 못 넘긴다 — 아무도 안 멈추고 로봇이 혼자 목적지로 간다.
+#
+# 위 `test_no_watcher_fails_safe_after_grace` 가 이걸 못 잡은 이유는 그 시험이
+# COMMAND_RECEIVED_AT 을 95.0 으로 **고정**하기 때문이다. 실기에서는 움직이는 과녁이다.
+
+def test_moving_command_stamp_cannot_unblock_an_unconfirmed_guide(leaf, seed, read):
+    """명령 접수 시각이 계속 갱신돼도, 확인 안 된 요청자로는 출발하지 않는다."""
+    stop = FakeDriver()
+    clock = _Clock()
+    node = leaf(stop=stop, clock=clock,
+                **{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+                   Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: None,
+                   Keys.REQUESTER_SEEN_AT: 0.0,
+                   Keys.COMMAND_RECEIVED_AT: clock.t})
+
+    # 로봇 자신의 명령 메아리를 흉내낸다 — 매 tick 기준 시각이 "지금" 으로 밀린다.
+    #
+    # ⚠️ [2026-08-02] 계약이 바뀌었다: 뒷캠으로 **한 번도 확인 못 한** 안내는
+    #    회복을 기다리지 않고 **대기가 끝나는 시점(`_recover_at`)에서 포기**한다
+    #    (사용자 스펙 "처음에 안내 시작하고 안 보이면 알아서 순찰 모드").
+    #    그래서 그 직전까지만 굴리고, 그 안에서 출발하지 않는 것을 본다.
+    ticks = int(RECOVER_AT) - 1
+    for _ in range(ticks):
+        clock.t += 1.0
+        seed(**{Keys.ACTIVE_COMMAND: "guide", Keys.COMMAND_RECEIVED_AT: clock.t})
+        assert node.update() == Status.RUNNING, "대기 안인데 포기했다"
+
+    # 대기 안에서 주행 명령은 한 번도 안 나갔고, 정지는 처음 한 번 나갔다.
+    assert node.driver.start_count == 0, "확인 안 된 요청자로 출발했다"
+    assert stop.start_count == 1
+
+    # 대기를 넘기면 **회복을 기다리지 않고** 바로 포기한다 → PATROL.
+    clock.t += 2.0
+    seed(**{Keys.ACTIVE_COMMAND: "guide", Keys.COMMAND_RECEIVED_AT: clock.t})
+    st = node.update()
+    assert st == Status.SUCCESS, \
+        "확인 못 한 안내가 대기를 넘겼는데 안 포기했다 — 이용자는 왜 안 가는지 모른다"
+    assert read(Keys.NEXT_MODE) == "PATROL", "포기했는데 순찰 예약이 없다"
+
+
+def test_unconfirmed_guide_still_gives_up_on_its_own_clock(leaf, seed, read):
+    """확인 전 포기(`_recover_at`)는 메아리에 밀리지 않는다 — 우리 시각으로 잰다."""
+    stop = FakeDriver()
+    clock = _Clock()
+    node = leaf(stop=stop, clock=clock,
+                **{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+                   Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: None,
+                   Keys.REQUESTER_SEEN_AT: 0.0,
+                   Keys.COMMAND_RECEIVED_AT: clock.t})
+    assert node.update() == Status.RUNNING          # 여기서 기준 시각이 찍힌다
+
+    clock.t += RECOVER_AT + 1.0
+    seed(**{Keys.ACTIVE_COMMAND: "guide", Keys.COMMAND_RECEIVED_AT: clock.t})   # 메아리
+    st = node.update()
+    assert st == Status.SUCCESS, "메아리 때문에 영영 안 포기한다"
+    assert read(Keys.NEXT_MODE) == "PATROL", "포기했는데 순찰 예약이 없다"
+
+
+def test_confirmed_then_lost_still_gets_the_grace(leaf, seed):
+    """한 번 확인된 뒤의 소실은 **평소대로** 유예를 받는다(회귀 방지).
+
+    `_never_confirmed` 가 과하게 걸리면 잠깐 가려질 때마다 로봇이 서 버린다.
+    """
+    stop = FakeDriver()
+    clock = _Clock()
+    node = leaf(stop=stop, clock=clock,
+                **{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+                   Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: True,
+                   Keys.REQUESTER_SEEN_AT: clock.t,
+                   Keys.COMMAND_RECEIVED_AT: clock.t})
+    assert node.update() == Status.RUNNING
+    assert node.driver.start_count == 1             # 보이니 출발했다
+
+    # 잠깐 가려진다 — 코스팅 안이라 아직 안 멈춘다.
+    clock.t += COAST - 0.5
+    seed(**{Keys.ACTIVE_COMMAND: "guide", Keys.REQUESTER_VISIBLE: False})
+    assert node.update() == Status.RUNNING
+    assert stop.start_count == 0, "코스팅 안인데 멈췄다"
+
+    # 코스팅을 넘기면 멈춘다.
+    clock.t += 1.0
+    assert node.update() == Status.RUNNING
+    assert stop.start_count == 1
+
+
+def test_wait_holds_the_wheels_until_it_is_over(leaf, seed):
+    """정지 → **대기** → 회복. 대기가 끝나기 전에는 회전을 안 넘긴다.
+
+    ⚠️ 넘기면 nav2 를 막 끊은 자리에서 로봇이 곧바로 돌기 시작한다. 사용자 스펙은
+       "박스가 사라지면 20초 정지 **후에** 회복 BT" 다.
+    """
+    stop, watch = FakeDriver(poll_sequence=("success",) * 20), _RotWatch()
+    clock = _Clock()
+    node = leaf(stop=stop, watch=watch, clock=clock,
+                **{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+                   Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: True,
+                   Keys.REQUESTER_SEEN_AT: clock.t})
+    node.update()                                    # 뒷캠 확인 완료, 출발
+
+    lost_at = clock.t
+    seed(**{Keys.ACTIVE_COMMAND: "guide", Keys.REQUESTER_VISIBLE: False,
+            Keys.NAV_TARGET: _to(5, 5), Keys.ROBOT_POSE: _at(0, 0),
+            Keys.REQUESTER_SEEN_AT: lost_at})
+
+    clock.t = lost_at + COAST + 0.1                  # 정지 구간
+    node.update()
+    assert stop.start_count == 1, "코스팅이 끝났는데 nav2 를 안 끊었다"
+    assert True not in watch.rotate_calls, "대기 중인데 회전을 허가했다"
+
+    clock.t = lost_at + RECOVER_AT - 0.1             # 대기 끝나기 직전
+    node.update()
+    assert True not in watch.rotate_calls, "대기가 아직 안 끝났는데 회전을 허가했다"
+
+    clock.t = lost_at + RECOVER_AT + 0.1             # 대기 끝
+    node.update()
+    assert True in watch.rotate_calls, "대기가 끝났는데 회복 회전을 안 넘겼다"
+
+
+# ── 확인 전에는 회복 회전을 절대 허가하지 않는다 (2026-08-02, 리뷰 지적) ──────
+#
+# `_lost_for()` 는 뒷캠 목격이 없으면 `_guard_since`(안내를 맡은 시각)부터 잰다.
+# 그래서 **출발 전에도** 10초만 지나면 `lost >= grace` 가 성립한다. 그 조건만 보고
+# 회전을 허가하면, 등록만 하고 로봇 앞에 서 있는 사람 앞에서 로봇이 돌기 시작한다.
+# 주석은 "확인 전엔 안 준다" 였는데 코드가 안 지키고 있었다.
+
+class _RotWatch(FakeDriver):
+    """`start(args)` 로 넘어온 회전 허가를 기록한다."""
+    def __init__(self):
+        super().__init__()
+        self.rotate_calls = []
+
+    def start(self, args=None):
+        super().start()
+        if args is not None:
+            self.rotate_calls.append(bool(args.get("allow_rotate")))
+
+
+def test_rotation_is_never_granted_before_the_back_cam_confirms(leaf, seed):
+    # ⚠️ 정지 ack 를 **성공**으로 만든다. 기본 FakeDriver 는 항상 "running" 이라
+    #    `_stop_settled()` 가 False 로 남고, 그러면 `_never_confirmed` 와 무관하게
+    #    회전이 안 열려 **시험이 아무것도 검증하지 못한다**(첫 판이 그랬다).
+    #    여기서 통과시켜야 남는 조건이 `_never_confirmed` 하나가 된다.
+    stop, watch = FakeDriver(poll_sequence=("success",) * 20), _RotWatch()
+    clock = _Clock()
+    node = leaf(stop=stop, watch=watch, clock=clock,
+                **{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+                   Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: None,
+                   Keys.REQUESTER_SEEN_AT: 0.0,
+                   Keys.COMMAND_RECEIVED_AT: clock.t})
+    node.update()                                   # 감시 시작, _guard_since 찍힘
+
+    # 사람이 아직 뒤로 안 왔다. 대기를 훌쩍 넘겨도 **회전은 안 된다.**
+    for _ in range(6):
+        clock.t += RECOVER_AT
+        seed(**{Keys.ACTIVE_COMMAND: "guide", Keys.REQUESTER_VISIBLE: None,
+                Keys.REQUESTER_SEEN_AT: 0.0, Keys.COMMAND_RECEIVED_AT: clock.t})
+        if node.update() != Status.RUNNING:
+            break
+
+    assert True not in watch.rotate_calls, \
+        "뒷캠 확인 전인데 회전을 허가했다 — 앞에 서 있는 사람 앞에서 로봇이 돈다"
+    assert node.driver.start_count == 0, "확인 전인데 출발했다"
+
+
+# ── ROS 로거를 여러 인자로 부르면 노드가 죽는다 (2026-08-02 실기) ─────────────
+#
+# `RcutilsLogger.warning()` 은 인자가 **하나뿐**이다. `("...%s", x)` 로 부르면
+#     TypeError: warning() takes 2 positional arguments but 3 were given
+# 이 나고 **fsm_node 가 통째로 죽는다.** 실측: 안내 중 노드가 죽어 관제에서
+# state 가 None 이 됐고, 로봇이 응답을 멈췄다. 파이썬 표준 logging 은 이 형태를
+# 받아들이므로 코드 리뷰로는 잘 안 걸린다 — 시험으로 붙든다.
+
+def test_ros_loggers_are_called_with_a_single_argument():
+    import ast
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1] / "libi_modes"
+    bad = []
+    for f in root.rglob("*.py"):
+        for n in ast.walk(ast.parse(f.read_text())):
+            if not isinstance(n, ast.Call) or not isinstance(n.func, ast.Attribute):
+                continue
+            if n.func.attr not in ("info", "warning", "warn", "error", "debug"):
+                continue
+            owner = ast.unparse(n.func.value)
+            if "_log" not in owner and "get_logger" not in owner:
+                continue
+            if len(n.args) > 1:
+                bad.append(f"{f.name}:{n.lineno} {ast.unparse(n)[:70]}")
+    assert not bad, (
+        "ROS 로거를 여러 인자로 불렀다 — 그 줄이 실행되는 순간 노드가 죽는다. "
+        "f-string 을 쓸 것:\n  " + "\n  ".join(bad))

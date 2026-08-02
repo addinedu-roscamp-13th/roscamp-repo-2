@@ -29,13 +29,19 @@
 """
 
 
-def peek_sec(cfg, role="follow") -> float:
+def peek_sec(cfg, role="follow", enabled=True) -> float:
     """LKD 90° peek 에 걸리는 시간. 길잡이는 0(안 돈다), 각도 0 이면 0(끔).
 
     `recovery_bt.create_searching_tree` 와 **같은 식**을 써야 한다 — 한쪽만 고치면
     아래 동등성 검증이 거짓말을 한다.
+
+    ⚠️ [2026-08-02] `enabled=False` 면 0 이다 — **대상이 화면 가운데에서 사라졌을 때**
+       호출자가 끈다. 가운데 소실은 "가려졌다"는 뜻이라 어느 쪽으로 나갔다는 정보가
+       없고, 그때 마지막 회전 방향(LKD)으로 90° 를 도는 것은 **근거 없는 추측**이다.
+       오히려 사람이 다시 나타났을 때 로봇이 엉뚱한 데를 보고 있게 된다.
+       사용자 지시(2026-08-02): "가운데에서 사라지면 peek 가 없어도 될 것 같다."
     """
-    if role != "follow":
+    if not enabled or role != "follow":
         return 0.0
     angle = getattr(cfg, "SEARCH_PEEK_ANGLE", 0.0)
     return (angle / cfg.ANGULAR_Z_SEARCH) if angle > 0 else 0.0

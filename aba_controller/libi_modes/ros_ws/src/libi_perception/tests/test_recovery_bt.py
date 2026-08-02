@@ -293,22 +293,22 @@ def test_align_survives_losing_sight_mid_turn():
     assert env.ctx.align_latched is True     # 여전히 정렬 중
 
 
-def test_guide_never_rotates_and_ends_search():
-    """길잡이가 돌면 목적지 방향과 사람 방향이 겹칠 때 무한 진동한다."""
+def test_guide_front_camera_person_keeps_searching_for_the_back_camera():
+    """앞캠 사람은 안내 재획득이 아니다 — 사람에게 다시 뒤로 가 달라고 해야 한다."""
     env = _peek_ctx(role="guide", people=1)
     status = _run_to(env, 11.5)
     assert env.ctx.align_latched is False
-    assert env.cams[-1] == "front"           # 찾은 쪽으로 고정
-    assert status == py_trees.common.Status.SUCCESS
+    assert "front" in env.cams
+    assert status == py_trees.common.Status.RUNNING
 
 
-def test_guide_peek_does_not_fall_back_to_home_camera():
-    """회귀 방지 — 성공 뒤에도 계속 굴려서 Scan1 로 안 떨어지는지 본다."""
+def test_guide_front_camera_person_does_not_end_the_search():
+    """앞캠 사람이 계속 보여도 뒷캠을 다시 보는 phase 가 살아 있어야 한다."""
     env = _peek_ctx(role="guide", people=1)
     _run_to(env, 11.5)
     _run_to(env, 20.0)
-    assert env.cams[-1] == "front"
-    assert env.root.status == py_trees.common.Status.SUCCESS
+    assert "back" in env.cams
+    assert env.root.status == py_trees.common.Status.RUNNING
 
 
 def test_peek_publishes_zero_velocity():

@@ -123,6 +123,15 @@ def test_motion_blocked_publishes_zero():
     assert pub.calls[-1] == (0.0, 0.0)
 
 
+def test_guide_bypasses_the_motion_gate():
+    """길잡이는 뒷카메라 자세로 nav2 감시/회복을 막지 않는다."""
+    pub = _Pub()
+    loop = ControlLoop(lambda: _blocked_det(), _clear_scan, pub, _cfg(),
+                       now=_Clock(), role="guide")
+    loop.tick()
+    assert pub.calls[-1][0] > 0
+
+
 def test_motion_blocked_stays_tracking():
     pub = _Pub()
     cfg = _cfg(N_MISS_FRAMES=3)
@@ -236,12 +245,22 @@ def _predicted_det():
 
 
 def test_guide_counts_a_predicted_detection_as_a_miss():
+    """⚠️ [2026-08-02] **유예(`GUIDE_COAST_SEC`)가 끝난 뒤부터** 놓침으로 친다.
+
+    예전엔 예측 bbox 를 첫 프레임부터 거부해 곧바로 놓침이었다. 지금은 안내도
+    추종과 같은 1.4초를 코스팅한다 — 그 안에서는 놓침이 아니다. 유예를 넘긴
+    뒤에는 예전과 똑같이 놓침으로 쌓여 SEARCHING 으로 간다.
+    """
     pub = _Pub()
+    clock = _Clock()
     dets = [_det()]                      # 먼저 한 번 잡아야 소실이 성립한다
     loop = ControlLoop(lambda: dets.pop(0) if dets else _predicted_det(),
-                       _clear_scan, pub, _cfg(N_MISS_FRAMES=2), now=_Clock(),
-                       role="guide")
+                       _clear_scan, pub, _cfg(N_MISS_FRAMES=2, GUIDE_COAST_SEC=1.4),
+                       now=clock, role="guide")
     loop.tick()                          # 실검출 → TRACKING
+    loop.tick()                          # 예측 — 유예 안이라 아직 놓침 아니다
+    assert loop.state == 'TRACKING', "유예 안인데 벌써 놓쳤다고 한다"
+    clock.t = 2.0                        # 유예(1.4s) 초과
     loop.tick(); loop.tick()             # 예측 2회 → 놓침 2회
     assert loop.state == 'SEARCHING'
 
@@ -263,10 +282,14 @@ def test_guide_recovery_does_not_reacquire_on_a_predicted_detection():
             return dets.pop(0)                    # 첫 tick: 실검출 → TRACKING
         return _predicted_det()                   # 이후 계속 예측만 나옴
 
+    clock = _Clock()
     loop = ControlLoop(get_detection, _clear_scan, pub,
-                       _cfg(N_MISS_FRAMES=2), now=_Clock(), role="guide")
+                       _cfg(N_MISS_FRAMES=2, GUIDE_COAST_SEC=1.4),
+                       now=clock, role="guide")
     loop.tick()                          # TRACKING (실검출)
-    loop.tick(); loop.tick()             # 예측 2회 → SEARCHING
+    loop.tick()                          # 예측 — 여기서 코스팅 유예가 시작된다(t=0)
+    clock.t = 2.0                        # 유예(1.4s)를 넘긴다
+    loop.tick(); loop.tick()             # 예측 2회 → 놓침 2회 → SEARCHING
     assert loop.state == 'SEARCHING'
     loop.tick()                          # 회복 중 예측 bbox 한 번 더
     assert loop.state == 'SEARCHING', (
@@ -299,13 +322,19 @@ def test_watch_still_tracks_a_predicted_detection():
     assert loop.state == 'TRACKING'
 
 
-# ── 안내 회복은 세션이 살아 있는 한 끝나지 않는다 ────────────────────────────
-# `ENDED` 에는 빠져나오는 길이 없다(switch._TRANSITIONS 에 restart 만 있고 안내
-# 경로에서 아무도 안 부른다). 거기 떨어지면 사람이 돌아와도 재획득 판정이 죽는다.
-# 회복 타임라인(≈32.8초)이 guide_lost_timeout_sec(45초)보다 짧아 실제로 밟힌다.
+# ── 길잡이: 코스팅 → 대기 → 회복 BT, 한 라운드 (사용자 스펙 2026-08-02) ──────
+#
+#   [0, coast)          α-β 로 계속 간다        ← GuideExec 이 nav2 를 안 끊는다
+#   [coast, +wait)      정지하고 기다린다        ← SEARCHING 이지만 **트리가 없다**
+#   [coast+wait, …)     회복 BT 한 라운드        ← rotation_granted() 가 시작한다
+#   소진                 ENDED → /libi/guide_search_failed → 안내 종료
+#
+# 대기 구간의 길이는 `GuideExec`(`guide_wait_sec`)이 쥔다. 이쪽은 "허가 전에는 탐색을
+# 시작하지 않는다"만 지킨다 — 트리를 미리 돌리면 바퀴가 묶인 채 시계만 흘러서 한
+# 라운드(32.8초)의 앞부분이 통째로 낭비된다(실측: 실제 회전 13초).
 
-def _search_exhausted(role):
-    """한 번 잡았다가 놓치고 탐색까지 소진시킨 루프를 돌려준다."""
+def _lost(role):
+    """한 번 잡았다가 놓쳐 SEARCHING 에 들어간 루프."""
     clock = _Clock()
     calls = {'n': 0}
 
@@ -318,44 +347,62 @@ def _search_exhausted(role):
     clock.t = 0.0
     loop.tick()                 # TRACKING
     loop.tick()                 # 놓침 -> SEARCHING
+    return loop, clock
+
+
+def _search_exhausted(role):
+    """탐색까지 소진시킨 루프. 길잡이는 허가를 받아야 탐색이 시작된다."""
+    loop, clock = _lost(role)
+    if role == "guide":
+        loop.rotation_granted()
     clock.t = 10_000.0
     loop.tick()                 # 탐색 소진
     return loop, clock
 
 
-def test_guide_restarts_the_search_instead_of_ending():
-    loop, _ = _search_exhausted("guide")
+def test_guide_waits_without_a_search_tree():
+    """대기 구간에는 **트리가 없다.** 돌리면 바퀴가 묶인 채 시계만 흐른다."""
+    loop, _ = _lost("guide")
     assert loop.state == 'SEARCHING'
+    assert loop.search_tree is None, "허가 전인데 탐색이 시작됐다"
 
 
-def test_guide_restart_resets_the_search_timeline():
-    """되감지 않으면 다음 tick 에 또 소진돼 사실상 아무것도 안 한다."""
-    loop, clock = _search_exhausted("guide")
-    clock.t = 10_001.0
+def test_guide_stands_still_while_waiting():
+    loop, clock = _lost("guide")
+    clock.t = 5.0
     loop.tick()
-    assert loop.state == 'SEARCHING'
+    n = len(loop.publish.calls)
+    loop.tick(); loop.tick()
+    assert all(c == (0.0, 0.0) for c in loop.publish.calls[n:]), "대기 중에 바퀴가 돌았다"
 
 
-def test_guide_can_still_reacquire_after_a_restart():
-    """이 변경의 요점 — 사람이 돌아오면 추종으로 복귀한다.
+def test_guide_search_starts_on_the_grant():
+    loop, clock = _lost("guide")
+    clock.t = 21.4              # 코스팅 1.4 + 대기 20
+    loop.rotation_granted()
+    assert loop.search_tree is not None
+    assert loop._search_ctx.start == 21.4, "탐색 시계가 허가 시점에서 시작해야 한다"
 
-    ⚠️ tick 이 **두 번** 필요하다(브리프 원안은 한 번이었으나 캠 계승 시험과
-    같은 근거로 고쳤다 — 아래 참고). 재시작 직후의 첫 tick 에서는
-    `CheckReacquired` 가 아직 이전 캠(front)에 머문 상태라 이 검출을 거부한다
-    (`test_guide_restart_carries_over_the_actual_camera` 가 잡는 바로 그 창).
-    그 tick **안에서** `HoldFront` 가 캠을 home(back)으로 되돌리지만, Selector
-    는 `CheckReacquired` → `SearchPhases` 순으로 매 tick 한 번씩만 훑으므로
-    갱신된 캠은 다음 tick 에야 보인다. 그래서 두 번째 tick 에서 캠(back)과
-    검출이 함께 맞아떨어져야 재획득한다.
+
+def test_guide_ends_when_the_search_is_exhausted():
+    """한 라운드를 다 훑으면 끝난다 — 그 `ENDED` 가 안내를 끝내는 신호다
+    (`follow_node._publish_guide_search_failed` → `GuideExec`).
+
+    되돌림 감지: 길잡이 전용 재시작을 다시 넣으면 SEARCHING 으로 남아 빨개진다.
     """
-    loop, clock = _search_exhausted("guide")
-    loop.get_detection = lambda: _det()
-    loop.tick()
-    assert loop.state == 'SEARCHING', (
-        "첫 tick 은 아직 이전 캠(front)에 머문 상태 — 여기서 바로 재획득되면"
-        " 캠 계승 전 상태를 재획득으로 오인하는 버그가 되돌아온 것이다")
-    loop.tick()
-    assert loop.state == 'TRACKING'
+    loop, _ = _search_exhausted("guide")
+    assert loop.state == 'ENDED'
+
+
+def test_follow_searches_immediately():
+    """추종은 바퀴가 처음부터 자기 것이라 기다릴 이유가 없다."""
+    loop, _ = _lost("follow")
+    assert loop.search_tree is not None
+
+
+def test_watch_searches_immediately():
+    loop, _ = _lost("watch")
+    assert loop.search_tree is not None
 
 
 def test_follow_still_ends_when_the_search_is_exhausted():
@@ -365,42 +412,37 @@ def test_follow_still_ends_when_the_search_is_exhausted():
 
 
 def test_watch_still_ends_when_the_search_is_exhausted():
-    """등록감시에는 45초 종결자가 없다 — 무한 반복시키면 영영 안 끝난다."""
+    """등록감시도 같다. 무한 반복시키면 캠이 영영 앞뒤로 튄다."""
     loop, _ = _search_exhausted("watch")
     assert loop.state == 'ENDED'
 
 
-def test_guide_restart_carries_over_the_actual_camera():
-    """재시작 **직후, 트리가 한 번도 안 돈 시점**의 캠 상태를 잰다.
-
-    `_search_exhausted()` 는 마지막 tick 안에서 소진과 재시작이 **같은 tick**에
-    다 일어난다(가이드는 FAILURE 를 받는 즉시 `_start_search()` 를 다시 부르므로).
-    그 순간, 새 컨텍스트가 "나는 이미 home(back)" 이라고 낙관적으로 가정하면,
-    다음 tick 에 `CheckReacquired` 가 **아직 실제로는 front 인** 캠에서 온
-    검출을 "정위치에서 봤다"로 오인할 수 있다(codex 2026-08-01 발견).
-
-    ⚠️ 여기서 tick 을 한 번 더 돌리면 `HoldFront` 페이즈가 자기 차례에 캠 전환을
-    직접 요청해 값이 `back` 으로 바뀐다 — 그건 **정상 동작**이고 이 시험이
-    잡으려는 창이 아니다. 그래서 재시작 **직후**, 추가 tick 없이 확인한다.
-    """
+def test_rotation_grant_is_a_noop_outside_searching():
+    """추종 중이나 끝난 뒤에 탐색을 세우면 **없던 회복이 생긴다.**"""
     loop, _ = _search_exhausted("guide")
-    # 소진된 회복의 마지막 구간(SweepBackHome)은 peek 캠(front)에서 끝난다.
-    # 새 컨텍스트가 그 사실을 물려받았어야 한다 — home_camera(back)라고
-    # 낙관적으로 가정했다면 여기서 'back' 이 나온다(고쳐지지 않았다는 뜻).
-    assert loop._search_ctx.camera_now() == 'front'
-
-
-def test_guide_recovery_gives_up_after_one_restart():
-    """docking 이 빌려 쓰는 guide_watch 세션(GuideExec 이 아니라 BackCamOn 이 연다)에는
-    45초 종결자가 없다. 무제한 재시작을 두면 그 세션에서 캠이 도킹 내내 앞뒤로 튄다
-    (2026-08-01 최종 브랜치 리뷰 발견 — 실제로 도킹을 막을 수 있는 버그였다).
-    재시작은 1회만 허용하고, 두 번째 소진에서는 ENDED 로 끝낸다.
-    """
-    loop, clock = _search_exhausted("guide")   # 1차 소진 -> 이미 재시작 1회 씀
-    assert loop.state == 'SEARCHING'
-    clock.t = 20_000.0                          # 재시작한 트리도 소진시킨다
-    loop.tick()
     assert loop.state == 'ENDED'
+    loop.rotation_granted()
+    assert loop.state == 'ENDED'
+    assert loop.search_tree is None
+
+
+def test_second_loss_carries_over_the_actual_camera():
+    """두 번째 소실의 탐색은 앞 탐색이 **실제로 남겨 둔 캠**을 물려받는다.
+
+    새 컨텍스트가 "나는 이미 home" 이라고 낙관하면, `CheckReacquired` 가 아직
+    반대 캠인 상태의 검출을 "정위치에서 봤다"로 오인한다(codex 2026-08-01 발견).
+    """
+    loop, clock = _lost("guide")
+    loop.rotation_granted()
+    clock.t = 40.0
+    loop.tick()                                  # 첫 탐색을 peek 캠에서 끝낸다
+    left_at = loop._search_ctx.camera_now()
+    loop.switch.restart()                        # 다시 잡았다 치고
+    loop.get_detection = lambda: None
+    loop.miss = 0
+    loop.tick(); loop.tick()                     # 다시 놓침 -> 대기
+    loop.rotation_granted()
+    assert loop._search_ctx.camera_now() == left_at
 
 
 # ── 측면은 전진만 막는다 (2026-08-01, 2026-07-26 설계로 복귀) ─────────────────
@@ -455,3 +497,101 @@ def test_side_does_not_count_as_miss_either():
         loop.tick()
     assert loop.miss == 0
     assert loop.state == 'TRACKING'
+
+
+# ── 가운데 소실이면 LKD peek 를 건너뛴다 (2026-08-02) ───────────────────────
+# 사용자 지시: "알파베타 필터가 가운데에서 사라지면 peek 가 없어도 될 것 같다."
+# 가운데 소실 = 어느 쪽으로 나간 게 아니라 **가려진 것**이라, 마지막 회전 방향으로
+# 90° 도는 것은 근거 없는 추측이다.
+
+def _peek_of(loop):
+    """지금 도는 회복 컨텍스트가 peek 를 켰는지."""
+    return loop._search_ctx.peek
+
+
+def test_center_loss_skips_the_lkd_peek():
+    cfg = _cfg(N_MISS_FRAMES=1, IMAGE_WIDTH=320, ANGLE_DEADZONE_FRAC=1.0 / 24.0)
+    d = _det(); d.cx = 160.0          # 정중앙
+    seen = [d]
+    loop = ControlLoop(lambda: seen.pop(0) if seen else None,
+                       _clear_scan, _Pub(), cfg, now=_Clock())
+    loop.tick()                       # 잡았다 — 가운데
+    loop.tick()                       # 놓쳤다 → 탐색 시작
+    assert loop.state == 'SEARCHING'
+    assert _peek_of(loop) is False, "가운데에서 사라졌는데 peek 를 켰다"
+
+
+def test_off_center_loss_keeps_the_lkd_peek():
+    """옆으로 사라졌으면 그쪽부터 보는 것이 맞다 — 기존 동작."""
+    cfg = _cfg(N_MISS_FRAMES=1, IMAGE_WIDTH=320, ANGLE_DEADZONE_FRAC=1.0 / 24.0)
+    d = _det(); d.cx = 20.0           # 왼쪽 끝
+    seen = [d]
+    loop = ControlLoop(lambda: seen.pop(0) if seen else None,
+                       _clear_scan, _Pub(), cfg, now=_Clock())
+    loop.tick()
+    loop.tick()
+    assert loop.state == 'SEARCHING'
+    assert _peek_of(loop) is True, "옆에서 사라졌는데 peek 를 껐다"
+
+
+def test_peek_flag_actually_removes_the_phase_from_the_tree():
+    """플래그가 트리에서 **정말** 그 구간을 없애는지 — 플래그만 세우고 끝나면 무의미하다."""
+    from libi_perception.search_planner import peek_sec
+    from libi_perception import config
+    assert peek_sec(config, "follow", True) > 0, "추종인데 peek 시간이 0 이다"
+    assert peek_sec(config, "follow", False) == 0.0, "꺼도 peek 시간이 남는다"
+
+
+# ── 안내(guide) 코스팅 유예 (2026-08-02) ────────────────────────────────────
+# 예전엔 안내에서 예측 bbox 를 통째로 거부했다(코스팅 0초). 안내는 로봇이 앞서고
+# 요청자가 뒤따르는 구조라 잠깐 가려지는 일이 추종보다 잦다.
+
+class _MoveClock:
+    def __init__(self): self.t = 0.0
+    def __call__(self): return self.t
+
+
+def _pred():
+    d = _det(); d.is_predicted = True; return d
+
+
+def test_guide_accepts_predicted_within_the_grace():
+    clock = _MoveClock()
+    cfg = _cfg(GUIDE_COAST_SEC=1.4)
+    loop = ControlLoop(_pred, _clear_scan, _Pub(), cfg, now=clock, role="guide")
+    assert loop._filtered_detection() is not None, "유예 시작인데 거부했다"
+    clock.t = 1.3
+    assert loop._filtered_detection() is not None, "유예(1.4s) 안인데 거부했다"
+
+
+def test_guide_drops_predicted_after_the_grace():
+    clock = _MoveClock()
+    cfg = _cfg(GUIDE_COAST_SEC=1.4)
+    loop = ControlLoop(_pred, _clear_scan, _Pub(), cfg, now=clock, role="guide")
+    loop._filtered_detection()
+    clock.t = 1.5
+    assert loop._filtered_detection() is None, "유예를 넘겼는데 아직 보인다고 한다"
+
+
+def test_a_real_detection_rewinds_the_guide_grace():
+    """진짜로 다시 보이면 유예가 되감겨야 한다 — 안 그러면 누적돼 조기에 끊긴다."""
+    clock = _MoveClock()
+    cfg = _cfg(GUIDE_COAST_SEC=1.4)
+    seq = [_pred(), _det(), _pred()]
+    loop = ControlLoop(lambda: seq[min(int(clock.t), len(seq) - 1)],
+                       _clear_scan, _Pub(), cfg, now=clock, role="guide")
+    loop._filtered_detection()            # t=0 예측 → 유예 시작
+    clock.t = 1.0
+    loop._filtered_detection()            # t=1 진짜 → 되감김
+    clock.t = 2.0
+    assert loop._filtered_detection() is not None, "되감기가 안 돼 조기에 끊겼다"
+
+
+def test_follow_role_is_untouched_by_the_guide_grace():
+    """추종은 예측을 항상 통과시킨다 — 코스팅이 제어의 연속성을 만든다."""
+    clock = _MoveClock()
+    loop = ControlLoop(_pred, _clear_scan, _Pub(), _cfg(GUIDE_COAST_SEC=1.4),
+                       now=clock, role="follow")
+    loop._filtered_detection()
+    clock.t = 99.0
+    assert loop._filtered_detection() is not None, "추종에서 예측이 걸러졌다"

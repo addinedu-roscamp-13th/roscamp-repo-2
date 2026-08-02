@@ -42,6 +42,12 @@ class Keys:
     # ⚠️ VISIBLE 만으로는 "보이지만 10m 뒤"를 못 가른다 — 보이기만 하면 계속 가버린다.
     #    안 보일 때 0 을 싣지 않는 것이 계약이다(0 을 실으면 소실과 원거리가 같아진다).
     REQUESTER_AREA = "requester_area"
+    # 길잡이 회복 BT 가 다 훑고도 요청자를 못 찾았다. `/libi/guide_search_failed`(Bool).
+    # ⚠️ **안내를 끝내는 신호다.** 예전에는 `guide_lost_timeout_sec` 시계가 그 일을 했는데,
+    #    회복 트리 타임라인과 그 숫자가 계속 어긋났다(트리를 고칠 때마다 손으로 맞춰야 했다).
+    #    이제 회복이 스스로 "끝났다"고 말한다 — 근거는 libi_perception config 의 그 토픽 주석.
+    #    감시가 안 돌거나 발행이 끊기면 None 이고, 그때는 끝난 것으로 치지 않는다.
+    GUIDE_SEARCH_FAILED = "guide_search_failed"
     COMMAND_RECEIVED_AT = "command_received_at"
     DOCK_RETRY_COUNT = "dock_retry_count"
     #: 이번 도킹에 대한 undock 을 이미 했나. **원샷 래치**다.

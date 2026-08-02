@@ -18,6 +18,7 @@ _KEY_BY_PROVIDER = {
     "requester_visible": Keys.REQUESTER_VISIBLE,
     "requester_seen_at": Keys.REQUESTER_SEEN_AT,
     "requester_area": Keys.REQUESTER_AREA,
+    "guide_search_failed": Keys.GUIDE_SEARCH_FAILED,
 }
 
 

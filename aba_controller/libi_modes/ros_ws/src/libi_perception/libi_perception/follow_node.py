@@ -110,28 +110,15 @@ def snapshot_dict(node):
     }
 
 
-#: 주행은 막지만 "따라오고 있지 않다" 는 뜻은 아닌 자세. 지금은 측면 하나뿐이다.
-_DRIVE_BLOCKED_BUT_PRESENT = ('Side',)
-
-
 def requester_visible(det):
-    """길잡이·감시 역할의 '요청자가 보이나'.
+    """길잡이·감시 역할의 '등록 요청자가 실제로 보이나'.
 
-    ⚠️ 주행 가부(`motion_ok`)를 **그대로 쓰면 안 되지만, 버려도 안 된다.**
+    이 신호는 자세·주행 가부와 독립이다. 길잡이는 로봇이 앞서 가고 요청자가
+    뒤따르는 구조라, 뒷카메라의 Side/Lying/Unknown/Calibrating 판정은 ``그 사람이
+    있는가``의 근거를 부정하지 않는다. 자세 게이트는 추종에서 사람에게 접근하지
+    않기 위한 규칙이며, 여기서 쓰면 GuideExec 가 nav2 목표를 취소해 버린다.
 
-    측면(`Side`)은 주행을 막지만(들이받으므로) 따라오는 중이 아니라는 뜻은
-    아니다 — 요청자가 서가를 보며 따라오는 것은 정상이고 흔하다. 그래서
-    **`Side` 만 도려낸다.**
-
-    나머지는 게이트 판단을 그대로 따른다. `Unknown` 을 무조건 visible 로 두면
-    안 되는 이유가 있다: 저 conf 로 누움이 `Unknown` 으로 나가는 경우가 실제로
-    있고(뒷캠 torso-4 통과율 54.7%), 지금은 `UNKNOWN_STOP_FRAMES=25` 뒤
-    `motion_ok=False` 가 되어 invisible 이 된다. 그 안전장치를 없애면 쓰러진
-    요청자를 길잡이가 영영 정상으로 읽는다.
-
-    자세 소스가 없는 배포(`posture=None`)에서는 `motion_ok` 가 True 라 예전과 같다.
-
-    ⚠️ **예측(`is_predicted`)은 자세보다 먼저 거른다.** 파이프라인은 검출이 끊겨도
+    ⚠️ **예측(`is_predicted`)은 거른다.** 파이프라인은 검출이 끊겨도
     `COAST_LIMIT`(30프레임 ≈ 2초) 동안 α-β 예측 위치를 계속 내보낸다. 그건 추종이
     문틀·서가에 잠깐 가려질 때 끊기지 않으려고 둔 장치이고, 추종은 지금도 그대로
     쓴다. 하지만 안내의 요점은 **그 사람이 실제로 따라오는지 확인하는 것**이라
@@ -142,9 +129,7 @@ def requester_visible(det):
         return False
     if getattr(det, 'is_predicted', False):
         return False
-    if getattr(det, 'posture', None) in _DRIVE_BLOCKED_BUT_PRESENT:
-        return True
-    return bool(getattr(det, 'motion_ok', True))
+    return True
 
 
 class RemoteControl:
@@ -191,12 +176,26 @@ class RemoteControl:
         self._now = now
         self._sessions = sessions or sess.SessionManager(config.SESSION_LEASE_SEC)
         self._active_id = None                 # 결과를 돌려줘야 하는 주행 세션 id
+        #: `guide_watch` 를 마지막으로 받은 시각. **BT 가 살아 있다는 유일한 증거**다
+        #: — `_guide_orphaned` 참고. None = 지금 GUIDE 세션이 아니다.
+        self._guide_seen_at = None
+        #: 길잡이 회복 회전 허가. `GuideExec` 이 `mission_stop` 을 낸 **뒤에**
+        #: `guide_watch{allow_rotate:true}` 로 켜 준다 — `_publish_for_role` 참고.
+        #: 기본 False = "바퀴는 nav2 것".
+        self._rotate_allowed = False
         self._result_pub = node.create_publisher(String, result_topic, 10)
         self._snap_pub = node.create_publisher(String, FOLLOW_SNAPSHOT_TOPIC, 10)
         self._cam_pub = node.create_publisher(String, config.CAMERA_SELECT_TOPIC,
                                               _latched_qos())
+        # 역할도 같은 결로 내보낸다(config.PERCEPTION_ROLE_TOPIC 머리말 — AI 서버가
+        # 길잡이에서 자세 추정을 끄는 근거다). 카메라와 **같은 주기·같은 발행자**로
+        # 묶어 둔다 — 따로 두면 한쪽만 갱신돼 역할과 카메라가 어긋난 순간이 생긴다.
+        self._role_pub = node.create_publisher(String, config.PERCEPTION_ROLE_TOPIC,
+                                               _latched_qos())
         self._vis_pub = node.create_publisher(Bool, config.REQUESTER_VISIBLE_TOPIC, 10)
         self._area_pub = node.create_publisher(Float32, config.REQUESTER_AREA_TOPIC, 10)
+        #: 회복 BT 가 포기했음을 안내 쪽에 알린다 — 근거는 config 의 그 토픽 주석.
+        self._guide_fail_pub = node.create_publisher(Bool, config.GUIDE_SEARCH_FAILED_TOPIC, 10)
         self._Bool, self._Float32, self._String = Bool, Float32, String
         self._last_cam_pub_at = 0.0
         self._get_detection = None             # 감시 역할일 때 쓰는 검출 조회
@@ -253,8 +252,38 @@ class RemoteControl:
             # 제어 루프가 그 자리에서 꺼진다.** 사람을 따라가던 로봇이 이유 없이 서는
             # 것은 조작하던 관리자에게 설명되지 않는다.
             # 거절 이유를 돌려주면 패널이 "관리자 추종 중" 이라고 말할 수 있다.
-            if role == sess.WATCH and self._sessions.driving:
-                self._reply(cmd_id, False, '관리자 추종 중이라 등록 화면을 열 수 없습니다')
+            if (role == sess.WATCH
+                    and (self._sessions.driving
+                         or (self._sessions.role == sess.GUIDE
+                             and not self._guide_orphaned(now)))):
+                self._reply(cmd_id, False, '주행 중이라 등록 화면을 열 수 없습니다')
+                return
+            # ⚠️ [2026-08-02] **같은 역할의 감시 세션이 이미 돌면 인자만 갱신한다.**
+            #
+            #   `GuideExec._allow_rotate` 가 회복 회전을 켜고 끌 때 `guide_watch` 를
+            #   다시 낸다. 그런데 `FleetCmdDriver.start` 는 **매번 새 id** 를 만들고,
+            #   `SessionManager.start` 는 id 가 다르면 새 Session 을 만든다. 그대로 두면
+            #   재발행 한 번마다 `_start_session_for` 가 제어 루프를 새로 짓고 —
+            #   **회복 트리가 처음부터 다시 돈다.** 회전을 허가하는 바로 그 순간에
+            #   탐색이 리셋되므로, 켜자마자 0초로 되감기는 셈이다.
+            #
+            #   주행 세션(추종)은 해당 없다 — 그쪽은 위에서 갈아타는 것이 맞다.
+            if (not self._sessions.driving) and self._sessions.role == role:
+                self._set_rotate_allowed(bool(args.get('allow_rotate', False)))
+                # 제어 루프는 그대로 둔 채, **새 명령 id** 로 lease 를 갱신한다.
+                #
+                # FleetCmdDriver 는 재발행마다 새 id 를 만들고, 나중에 stop 할 때도
+                # 바로 그 마지막 id 를 `stop-<id>` 로 보낸다. 여기서 옛 id 를 보존하면
+                # 회전 허가/해제 뒤 GuideExec._release_watch() 의 stop 이 세션을 못 찾아
+                # 감시 루프가 고아가 된다. SessionManager.start 는 세션 메타데이터만
+                # 바꾸므로 `_start_session()` 을 부르지 않는 한 제어 루프는 재생성되지 않는다.
+                cur = self._sessions.current
+                self._sessions.start(cmd_id, role, now,
+                                     camera=args.get('camera') or cur.camera)
+                self._guide_seen_at = now if role == sess.GUIDE else self._guide_seen_at
+                self._reply(cmd_id, True,
+                            f'{role} 감시 갱신 (회전 {"허가" if self._rotate_allowed else "금지"})')
+                self._publish_camera(force=True)
                 return
             # 이미 주행 세션이 돌고 있으면 **실제로 멈추고** 갈아탄다.
             #
@@ -266,7 +295,9 @@ class RemoteControl:
                 self._session.stop()
                 self._reply(self._active_id, False, '새 세션 요청으로 대체됨')
                 self._active_id = None
+            self._rotate_allowed = bool(args.get('allow_rotate', False))
             self._sessions.start(cmd_id, role, now, camera=args.get('camera'))
+            self._guide_seen_at = now if role == sess.GUIDE else None
             # 세션은 **역할과 무관하게** 켠다. 감시 역할도 회복 트리가 돌아야
             # 사람을 놓쳤을 때 반대 캠으로 바꿔 볼 수 있기 때문이다 —
             # 안 켜면 길잡이는 놓친 뒤 아무것도 안 하고 유예만 센다.
@@ -289,6 +320,10 @@ class RemoteControl:
                 # 이미 끝난 안내가 카메라 전환을 계속 요청한다.
                 self._session.stop()
                 self._active_id = None
+                # 세션이 닫히면 허가도 없던 일이다. 안 지우면 다음 감시 세션이
+                # **회전이 이미 허가된 채** 시작해 출발 전에 바퀴가 돈다.
+                self._rotate_allowed = False
+                self._guide_seen_at = None
                 self._publish_camera(force=True)
                 self._log.info(f'세션 종료 (id={target})')
             else:
@@ -356,6 +391,61 @@ class RemoteControl:
             return
         self._last_cam_pub_at = now
         self._cam_pub.publish(self._String(data=self._sessions.camera_for()))
+        self._role_pub.publish(self._String(data=self._sessions.role or 'none'))
+
+    def _guide_orphaned(self, now: float) -> bool:
+        """GUIDE 세션이 **주인을 잃었나.**
+
+        ⚠️ [2026-08-02] 이 판정이 없으면 **패널이 영구히 잠긴다.**
+
+          길잡이 감시를 패널의 `watch` 가 10초마다 덮어 회복 트리를 리셋하던 버그를
+          막으려고, GUIDE 세션이 있는 동안 `watch` 를 거절하게 했다. 그런데 GUIDE
+          세션은 **lease 면제**다(`session.py:80` — "BT 가 열고 BT 가 닫는다").
+
+          그 둘이 겹치면: `fsm_node` 가 중간에 죽으면 세션을 닫을 주체가 사라지고,
+          그 세션은 영원히 남아 **패널이 길잡이 등록 화면을 다시는 못 연다.**
+          재부팅 말고 길이 없다. 하나를 고치다 더 나쁜 것을 만드는 셈이다.
+
+          그래서 `GuideExec` 이 `WATCH_RENEW_SEC`(15초)마다 `guide_watch` 를 재발행해
+          살아 있음을 알린다. 그게 이 시간 넘게 안 오면 주인이 없는 것으로 보고
+          패널에 넘겨준다. lease 를 GUIDE 에 거는 것과 다르다 — **갱신 경로가 있는**
+          상태에서만 만료를 인정하므로, `session.expired` 주석이 경고한 "갱신 경로가
+          없어 정확히 lease_sec 만에 강제 종료" 가 일어나지 않는다.
+        """
+        if self._guide_seen_at is None:
+            return True                     # GUIDE 인데 받은 적이 없다 — 주인 불명
+        return (now - self._guide_seen_at) > config.GUIDE_ORPHAN_SEC
+
+    def _set_rotate_allowed(self, allow: bool) -> None:
+        """회전 허가를 세우고, **막 열렸으면 회복 탐색을 처음부터 다시 시작한다.**
+
+        ⚠️ 이게 없으면 길잡이 회복 한 라운드가 거의 통째로 낭비된다. 회복 트리는
+           소실 즉시 도는데 바퀴는 `GuideExec` 이 `guide_lost_grace_sec`(20초)를
+           넘겨야 넘겨주므로(`_publish_for_role`), 앞의 `HoldFront`·`HoldBack` 과
+           `SweepFront` 앞부분이 **카메라만 바뀌고 로봇은 안 도는 채로** 흘러간다.
+           허가가 열리는 순간 되감으면 그 라운드가 온전히 회전 탐색이 된다.
+
+        ⚠️ **False → True 로 바뀔 때만** 되감는다. `guide_watch` 는 lease 갱신으로
+           10초마다 다시 오므로, 값이 그대로인데 되감으면 탐색이 영영 처음으로
+           돌아간다 — 위 "같은 역할이면 인자만 갱신" 분기가 막으려던 그 버그다.
+        """
+        opened = allow and not self._rotate_allowed
+        self._rotate_allowed = allow
+        if not opened:
+            return
+        loop = getattr(self._session, '_loop', None)
+        grant = getattr(loop, 'rotation_granted', None)
+        if grant is not None:
+            grant()
+
+    @property
+    def rotate_allowed(self) -> bool:
+        """길잡이 회복 회전을 허가받았나. 노드의 `_publish_for_role` 이 읽는다.
+
+        ⚠️ 값을 **여기서만** 세운다. 세션 명령(`guide_watch`)이 들어오는 곳이 여기라,
+           허가와 그 근거(명령)가 같은 자리에 있어야 나중에 "누가 켰나"를 찾을 수 있다.
+        """
+        return self._rotate_allowed
 
     def _publish_requester(self):
         """감시 역할일 때만 요청자 가시성·크기를 낸다.
@@ -369,9 +459,29 @@ class RemoteControl:
             return
         det = self._get_detection()
         visible = requester_visible(det)
+        # 안내의 출발·재출발 조건은 **뒷캠** 검출뿐이다. 회복 BT 가 앞캠에서
+        # 사용자를 발견한 것은 "로봇 앞으로 왔다"는 신호이지 nav2 를 재개할 근거가
+        # 아니다. 이 값을 True 로 내보내면 GuideExec 이 즉시 goal 을 재발행한다.
+        if self._sessions.role == sess.GUIDE and self._sessions.camera_for() != 'back':
+            visible = False
         self._vis_pub.publish(self._Bool(data=visible))
         if visible:
             self._area_pub.publish(self._Float32(data=float(det.area)))
+
+    def _publish_guide_search_failed(self):
+        """길잡이 회복 BT 가 다 훑고도 못 찾았나.
+
+        ⚠️ **매 tick 낸다 — 한 번 쏘고 마는 래치가 아니다.** 받는 쪽(`providers`)이
+           가시성과 똑같이 신선도로 "지금" 을 판정하기 때문이다. 한 번만 쏘면 그
+           메시지를 놓친 순간 안내가 영영 안 끝난다 — 정확히 예전 구조로 되돌아간다.
+
+        주행 세션(추종)은 해당 없다. 그쪽은 `_active_id` 가 있어 `tick()` 아래쪽이
+        `/fleet_cmd_result` 로 제대로 결과를 돌려준다. 이 통로는 **결과를 돌려줄 곳이
+        없는 감시 세션**을 위한 것이다.
+        """
+        if self._sessions.role != sess.GUIDE:
+            return
+        self._guide_fail_pub.publish(self._Bool(data=self._session.poll() == 'failure'))
 
     def tick(self):
         """세션 tick 뒤에 부른다. 끝났으면 결과를 돌려준다."""
@@ -382,8 +492,11 @@ class RemoteControl:
             self._log.info('세션 lease 만료 — 닫습니다')
             self._session.stop()
             self._active_id = None
+            self._rotate_allowed = False
+            self._guide_seen_at = None
         self._publish_camera()
         self._publish_requester()
+        self._publish_guide_search_failed()
         self.publish_snapshot()
         if self._active_id is None:
             return
@@ -435,8 +548,11 @@ def main(args=None):
 
             # max_age: 이보다 오래된 스캔은 없는 것으로 본다 — 라이다가 멈춘 채로
             # 옛 그림을 보고 회피 판단을 하지 않도록. 0 이면 검사가 꺼진다(config 주석).
+            # flip_180: 라이다가 거꾸로 달려 있다 — 실측으로 뒤를 막았는데 앞이 안 갔다.
+            #           `scan_provider.to_degree_indexed` 머리말 참고.
             self._scan = ScanProvider(self, scan_topic,
-                                      max_age=config.SCAN_MAX_AGE_SEC)
+                                      max_age=config.SCAN_MAX_AGE_SEC,
+                                      flip_180=getattr(config, "LIDAR_FLIP_180", False))
             self._cmd = CmdPublisher(self, cmd_topic)
             self._receiver = DetectionReceiver(TcpDetectionSource(host, port))
             #: 지금 세션의 역할. `_make_loop` 과 `_publish_for_role` 이 읽는다.
@@ -475,15 +591,37 @@ def main(args=None):
             self.session.start()
 
         def _publish_for_role(self, lin, ang):
-            """감시 역할(guide/watch)에서는 속도를 **삼킨다.**
+            """감시 역할(guide/watch)에서는 속도를 **기본적으로 삼킨다.**
 
             회복 트리는 감시 세션에서도 돌아야 한다 — 사람을 놓쳤을 때 반대 캠으로
             바꿔 보는 일을 그 트리가 하기 때문이다. 하지만 길잡이 주행은 nav2 가
             하므로, 여기서 속도를 내면 **두 주체가 같은 `/cmd_vel` 을 민다.**
-            그래서 트리는 돌리되 바퀴는 안 돌린다(회전 구간은 그냥 기다림이 된다).
+            그래서 평소에는 트리는 돌리되 바퀴는 안 돌린다.
+
+            ## 예외 — 회복 회전 허가 (2026-08-02, 사용자 스펙)
+
+            "길잡이도 회복 때 추종처럼 회전한다." 그러려면 nav2 가 **정말 멈춘 뒤에만**
+            바퀴를 넘겨야 하는데, `libi_modes` 와 이 노드는 별개 프로세스라 그 사실을
+            공유할 길이 없었다. `GuideExec` 이 `mission_stop` 을 낸 **다음에**
+            `guide_watch{allow_rotate:true}` 를 보내 알린다(`GuideExec._allow_rotate`).
+
+            ⚠️ **전진은 끝까지 안 넘긴다 — 각속도만 넘긴다.** 회복 탐색은 제자리 회전
+               으로 훑는 것이고, 여기서 선속도까지 내보내면 nav2 가 취소된 사이 로봇이
+               경로 밖으로 걸어 나간다. 그러면 재개할 때 fleet_node 의 노드 예약과
+               실제 위치가 어긋난다(교통관제는 로봇이 예약한 정점에 있다고 믿는다).
+               회복 트리의 스윕은 각속도만 쓰므로 실질 손실이 없다.
             """
-            if getattr(self, '_session_role', sess.FOLLOW) in sess.DRIVING_ROLES:
+            role = getattr(self, '_session_role', sess.FOLLOW)
+            if role in sess.DRIVING_ROLES:
                 self._cmd.publish(lin, ang)
+            elif role == sess.GUIDE and getattr(self.remote, 'rotate_allowed', False):
+                # ⚠️ **역할을 명시적으로 본다.** 예전에는 `rotate_allowed` 만 봤는데,
+                #    그 값이 내려가는 것은 세션 교체·종료 경로에 **암묵적으로** 기대고
+                #    있었다. 패널이 고아 GUIDE 세션을 넘겨받는 경로(`_guide_orphaned`)가
+                #    생기면서 역할이 GUIDE→WATCH 로 바뀔 수 있는데, 그때 플래그가 한
+                #    tick 이라도 남으면 **아무도 안 보는 세션이 바퀴를 돌린다.**
+                #    조건을 여기서 못 박으면 그 부류가 원천적으로 안 생긴다.
+                self._cmd.publish(0.0, ang)
 
         def _make_loop(self):
             return ControlLoop(
@@ -499,6 +637,8 @@ def main(args=None):
                 peek_people=self._peek_people,
                 # 정위치 캠이 역할에서 나온다 — 추종은 앞, 길잡이·등록감시는 뒤.
                 role=getattr(self, '_session_role', sess.FOLLOW),
+                # 코스팅이 실제로 도는지 follow 창에 남긴다 (control_loop.tick 주석).
+                log=self.get_logger().info,
             )
 
         def _peek_people(self):
