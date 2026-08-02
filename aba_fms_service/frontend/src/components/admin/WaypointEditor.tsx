@@ -168,11 +168,23 @@ function clockLabel(at: number) {
 // ⚠️ [2026-08-02] 벽시계("· 19:23:21까지")를 **뺐다.** 한 줄에 상대시간과 절대시간이
 //    같이 있으니 정작 읽고 싶은 "몇 초 남았나" 가 묻혔다(사용자 지적). 벽시계는
 //    툴팁(`title`)으로 내렸다 — 로그와 시각을 맞출 때는 거기서 본다.
-function leftLabel(left: number, late: boolean) {
+// ⚠️ [2026-08-02] **재계획까지 남은 초를 카운트다운한다** (사용자 스펙).
+//
+//   예전에는 예약 시각을 기준으로 `T-3.0s` → `도착 중 +1.0s` → `지연 +4.0s` 로 표기가
+//   세 번 바뀌었다. 읽는 사람이 "그래서 언제 다시 짜는데" 를 머리로 계산해야 했다 —
+//   예약 시각에 관용(`drift_limit`)을 더해야 그 시점이 나오기 때문이다.
+//
+//   이제 **하나의 카운트다운**이다. 컷(= 예약 시각 + 관용)까지 남은 초가 줄어들다가
+//   0 이 되는 순간 재계획이 걸린다. 화면이 0 을 찍는 순간과 fleet_node 가 시간표를
+//   버리는 순간이 **같은 값**에서 나온다(둘 다 `/fms/plan` 의 `drift_limit`).
+//
+//   `left` = 예약 시각까지 남은 초(음수면 이미 지남), `tol` = 관용(초).
+function leftLabel(left: number, tol: number, late: boolean) {
   if (!Number.isFinite(left)) return "예약 없음";
-  if (left >= 0) return `T-${left.toFixed(1)}s`;
-  // 이미 지난 칸. 봐주는 폭(drift_limit) 안이면 아직 "지연" 이 아니다.
-  return late ? `지연 +${(-left).toFixed(1)}s` : `도착 중 +${(-left).toFixed(1)}s`;
+  const toCut = left + tol;              // 재계획까지 남은 초
+  if (toCut > 0) return `T-${toCut.toFixed(1)}s`;
+  // 0 을 지났다 = 이미 재계획이 걸렸거나 걸리는 중. 얼마나 넘겼는지 보여 준다.
+  return `지연 +${(-toCut).toFixed(1)}s`;
 }
 
 // 그 칸의 벽시계 마감 — 툴팁 문구. 값이 없으면 빈 문자열(툴팁 안 뜸).
@@ -710,7 +722,7 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
       // 지도 위에는 **상대시간만** 찍는다. 캔버스라 툴팁을 달 수 없어서 벽시계를 같이
       // 쓰면 라벨이 두 배로 길어지고, 정작 읽고 싶은 "몇 초 남았나" 가 묻힌다.
       // 벽시계가 필요하면 아래 예약 표에서 본다(거기엔 툴팁이 붙는다).
-      const label = leftLabel(left, overdue);
+      const label = leftLabel(left, tol, overdue);
       ctx.font = "bold 12px system-ui";
       ctx.lineJoin = "round";
       ctx.lineWidth = 3.5;
@@ -861,6 +873,10 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
   const planAge = planAgeSec(plan, nowSec, clockSkew.current);
   const planStale = planAge !== null && planAge > planStaleAfter(plan);
   planStaleRef.current = planStale;
+  //: 예약 시각을 넘긴 뒤 **재계획이 걸리기까지** 봐주는 폭(초). 카운트다운의 밑값이다.
+  //  출처는 fleet_node 가 발행하는 `drift_limit` 하나뿐이다 — 화면이 따로 상수를 들면
+  //  "화면이 0 을 찍는 순간" 과 "시간표를 버리는 순간" 이 갈린다.
+  const driftTolSec = (plan?.drift_limit ?? 0) * (plan?.tick_sec ?? 1);
   const resv = (() => {
     const verts = Object.entries(graph.vertices);
     const empty = {
@@ -1267,7 +1283,7 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
                           )}
                           title={dueTitle(h.at, h.late)}
                         >
-                          {leftLabel(h.left, h.late)}
+                          {leftLabel(h.left, driftTolSec, h.late)}
                         </span>
                       </span>
                     ))}
@@ -1323,7 +1339,7 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
                           )}
                           title={dueTitle(h.at, h.late)}
                         >
-                          {leftLabel(h.left, h.late)}
+                          {leftLabel(h.left, driftTolSec, h.late)}
                         </span>
                       </span>
                     ))}
@@ -1379,7 +1395,7 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
                               )}
                               title={dueTitle(h.at, h.late)}
                             >
-                              {leftLabel(h.left, h.late)}
+                              {leftLabel(h.left, driftTolSec, h.late)}
                             </span>
                           )}
                         </span>

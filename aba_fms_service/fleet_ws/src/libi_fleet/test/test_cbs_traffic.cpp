@@ -578,11 +578,25 @@ TEST(CbsTraffic, LatenessToleratedWhenDriftLimitSet)
 }
 
 // 기본값이 0 인가. 환경변수를 안 주면 이 정책이 그대로 적용돼야 한다.
-TEST(CbsTraffic, DefaultDriftLimitIsZero)
+// 사용자 스펙(2026-08-02): "지연시간이 넘어가면 바로 재계획. 화면은 거기까지 카운트다운".
+// 그 '지연시간' 이 `drift_limit × tick_sec` = **3초**다.
+//
+// ⚠️ 이 값은 **화면의 카운트다운과 같은 값**이다(`/fms/plan` 의 `drift_limit` →
+//    `WaypointEditor.tsx` 의 `tol`). 화면이 0 을 찍는 순간과 재계획이 걸리는 순간이
+//    같아야 하므로 여기서 못 박아 둔다. 한쪽만 바꾸면 화면이 거짓말을 시작한다.
+//
+// ⚠️ **0 으로 내리지 마라.** 틱이 1초라 0.1초 흔들림도 틱 경계를 넘는 순간 지연이 되어
+//    재계획이 폭주한다(실측: 2분에 16회). 하한은 1 이다.
+TEST(CbsTraffic, DefaultDriftLimitIsThreeTicks)
 {
+  // ⚠️ 앞 시험들이 `set_env`/`set_env_fast_model` 로 환경을 더럽혀 둔다.
+  //    **기본값**을 보는 시험이므로 둘 다 지우고 새로 만든다.
   unsetenv("LIBI_CBS_DRIFT_LIMIT");
+  unsetenv("LIBI_CBS_TICK_SEC");
   libi_fleet::CbsTraffic tr;
-  EXPECT_EQ(tr.drift_limit(), 0) << "지연 관용 기본값이 0 이 아니다";
+  EXPECT_EQ(tr.drift_limit(), 3) << "지연 관용 기본값이 3 이 아니다";
+  EXPECT_DOUBLE_EQ(tr.tick_seconds(), 1.0) << "틱이 1초가 아니면 '3초' 가 성립하지 않는다";
+  EXPECT_GE(tr.drift_limit(), 1) << "0 은 못 쓴다 — 틱 경계 반올림에 걸린다";
 }
 
 // ── 커밋 간선 예산 (`commit_deadline_tick`) ─────────────────────────────
