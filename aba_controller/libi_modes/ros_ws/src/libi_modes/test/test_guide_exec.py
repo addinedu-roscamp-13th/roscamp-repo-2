@@ -839,6 +839,108 @@ def test_rotation_is_never_granted_before_the_back_cam_confirms(leaf, seed):
     assert node.driver.start_count == 0, "확인 전인데 출발했다"
 
 
+# ── 정지가 성공으로 안 끝나면 **회전 대신 안내를 끝낸다** (2026-08-02) ────────
+#
+# 두 가지가 동시에 참이라 어느 한쪽만 고르면 안 된다.
+#
+#   ① `failure` 를 정지로 인정하면 안 된다. 재전달 방어에 걸린 `mission_stop` 은
+#      **실행되지 않은 채** 408 로 답하고(robot_agent `fleet_link.py` stale 분기),
+#      `poll()` 의 타임아웃 failure 는 오히려 "상대가 아직 돌고 있을 수 있다" 는
+#      뜻이라 `_abandoned_id` 를 남긴다(`fleet_cmd_driver.py`). 그 상태로 회전을
+#      넘기면 nav2 와 회복 트리가 같은 `/cmd_vel` 을 민다.
+#   ② 그렇다고 계속 기다리면 안내가 **WORKING 에 영영 갇힌다.** 길잡이의 회복
+#      트리는 회전 허가가 열려야 비로소 만들어지므로(`control_loop._start_search()`
+#      는 길잡이일 때 `_search_tree = None`), 허가가 안 열리면 `GiveUp` 도
+#      `guide_search_failed` 도 안 나온다. 패널도 WORKING 이탈만 보므로 안내
+#      화면에 남는다(`RobotController.finishGuideIfLeftWorking`).
+#
+# 답: 회전은 안 넘기고 **안내를 끝낸다**(PATROL 로 나간다).
+
+def test_stop_failure_ends_the_guide_instead_of_rotating(leaf, seed, read):
+    """정지가 실패로 끝났다 — 회전은 안 넘기고 WORKING 을 벗어난다.
+
+    `NEXT_MODE=PATROL` 까지 확인한다. 그게 실제 상태 전이이고, 패널이 홈으로
+    돌아가는 근거이기도 하다(`RobotController.finishGuideIfLeftWorking` 은
+    로봇이 WORKING 을 벗어난 것만 본다).
+    """
+    stop, watch = FakeDriver(poll_sequence=("failure",) * 20), _RotWatch()
+    clock = _Clock()
+    node = leaf(stop=stop, watch=watch, clock=clock, result_fn=_Results(),
+                **{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+                   Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: True,
+                   Keys.REQUESTER_SEEN_AT: clock.t,
+                   Keys.GUIDE_CMD_ID: "guide-9-999"})
+    node.update()                                    # 뒷캠 확인 완료, 출발
+
+    lost_at = clock.t
+    seed(**{Keys.ACTIVE_COMMAND: "guide", Keys.REQUESTER_VISIBLE: False,
+            Keys.NAV_TARGET: _to(5, 5), Keys.ROBOT_POSE: _at(0, 0),
+            Keys.REQUESTER_SEEN_AT: lost_at})
+
+    clock.t = lost_at + COAST + 0.1                  # 정지 구간 — 아직 대기 중
+    node.update()
+    assert True not in watch.rotate_calls, "대기 중인데 회전을 허가했다"
+    assert read(Keys.ACTIVE_COMMAND) == "guide", "대기 중인데 안내를 끝냈다"
+
+    clock.t = lost_at + RECOVER_AT + 0.1             # 대기 끝 — 정지 결과가 실패다
+    node.update()
+    assert True not in watch.rotate_calls, \
+        "정지를 못 믿는데 회전을 허가했다 — nav2 와 /cmd_vel 을 다툰다"
+    assert read(Keys.ACTIVE_COMMAND) is None, \
+        "정지가 실패로 끝났는데 안내를 안 끝냈다 — WORKING 에 갇힌다"
+    assert read(Keys.NEXT_MODE) == "PATROL", \
+        "안내를 끝냈는데 상태 전이를 예약 안 했다 — 로봇이 WORKING 에 남는다"
+    assert read(Keys.COMMANDED_MODE) == "PATROL", \
+        "패널 유지 시간(HOLD_UNTIL)에 막혀 전이가 유실된다 — `_release` 주석 참고"
+
+
+def test_stop_success_still_opens_the_rotation(leaf, seed, read):
+    """정상 경로는 그대로다 — 정지가 성공하면 회전을 넘기고 안내는 계속된다."""
+    stop, watch = FakeDriver(poll_sequence=("success",) * 20), _RotWatch()
+    clock = _Clock()
+    node = leaf(stop=stop, watch=watch, clock=clock,
+                **{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+                   Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: True,
+                   Keys.REQUESTER_SEEN_AT: clock.t})
+    node.update()
+
+    lost_at = clock.t
+    seed(**{Keys.ACTIVE_COMMAND: "guide", Keys.REQUESTER_VISIBLE: False,
+            Keys.NAV_TARGET: _to(5, 5), Keys.ROBOT_POSE: _at(0, 0),
+            Keys.REQUESTER_SEEN_AT: lost_at})
+    clock.t = lost_at + RECOVER_AT + 0.1
+    node.update()
+    assert True in watch.rotate_calls, "정지가 성공했는데 회복을 안 열었다"
+    assert read(Keys.ACTIVE_COMMAND) == "guide", "정상 회복인데 안내를 끝냈다"
+
+
+def test_rotation_stays_shut_while_the_stop_is_still_in_flight(leaf, seed, read):
+    """결과가 **아직 안 온** 동안에는 회전도 종료도 없다 — 그냥 기다린다.
+
+    그 창에서 회전을 넘기면 nav2 와 겹치고, 끝내 버리면 멀쩡한 안내가 죽는다.
+    되돌림 방지: `_stop_settled()` 를 무조건 True 로 만들면 첫 단언이 빨개지고,
+    `"running"` 까지 실패로 세면 둘째 단언이 빨개진다.
+    """
+    stop, watch = FakeDriver(), _RotWatch()          # 기본 FakeDriver = 계속 "running"
+    clock = _Clock()
+    node = leaf(stop=stop, watch=watch, clock=clock,
+                **{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+                   Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: True,
+                   Keys.REQUESTER_SEEN_AT: clock.t})
+    node.update()
+
+    lost_at = clock.t
+    seed(**{Keys.ACTIVE_COMMAND: "guide", Keys.REQUESTER_VISIBLE: False,
+            Keys.NAV_TARGET: _to(5, 5), Keys.ROBOT_POSE: _at(0, 0),
+            Keys.REQUESTER_SEEN_AT: lost_at})
+    clock.t = lost_at + RECOVER_AT + 0.1
+    node.update()
+    assert True not in watch.rotate_calls, \
+        "정지가 아직 날아다니는데 회전을 허가했다 — nav2 와 /cmd_vel 을 다툰다"
+    assert read(Keys.ACTIVE_COMMAND) == "guide", \
+        "정지 결과를 기다리는 중인데 안내를 끝냈다"
+
+
 # ── ROS 로거를 여러 인자로 부르면 노드가 죽는다 (2026-08-02 실기) ─────────────
 #
 # `RcutilsLogger.warning()` 은 인자가 **하나뿐**이다. `("...%s", x)` 로 부르면

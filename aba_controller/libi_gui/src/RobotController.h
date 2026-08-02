@@ -329,6 +329,23 @@ private:
     //: 이번 안내에서 WORKING 상태를 실제로 본 적이 있나. 안 봤으면 끝을 판정하지
     //: 않는다 — 근거는 `finishGuideIfLeftWorking` 의 ⚠️ 주석(전이 직후 경쟁).
     bool m_guideSawWorking = false;
+    //  ⚠️ [2026-08-02] **추종과 같은 폴백을 길잡이에도 둔다.**
+    //
+    //  `m_guideSawWorking` 하나만 보면, WORKING 메시지를 한 번이라도 놓쳤을 때
+    //  (브릿지 재연결·DDS 유실·패널이 늦게 붙음) 이 값이 영영 false 로 남아
+    //  `finishGuideIfLeftWorking` 이 **`resetGuidePhase()` 와 `setMode("home")` 을
+    //  둘 다 건너뛴다** — 로봇은 안내를 끝냈는데 패널만 안내 화면에 갇힌다.
+    //  추종은 `kFollowGraceMs` 로 이미 막고 있었고, 길잡이만 안 막혀 있었다.
+    //
+    //  유예가 추종(5초)보다 긴 이유: 길잡이는 승인이 **FMS 를 거쳐** 돌아온 뒤
+    //  로봇이 WORKING 으로 전이하므로 왕복이 한 단계 더 있다. 짧게 잡으면
+    //  "안내가 시작하자마자 화면만 홈으로 튕기는" 2026-08-02 회귀가 되살아난다.
+    QElapsedTimer m_guideSince;
+    //  상수가 아니라 멤버인 이유: `QElapsedTimer` 는 과거로 되돌릴 수 없어서, 상수로
+    //  두면 이 분기를 시험하려면 20초를 **실제로** 기다려야 한다. 그러면 아무도 안
+    //  쓰는 시험이 되고, 폴백 없는 분기가 조용히 썩는다(지금 고치는 게 정확히 그
+    //  부류다). 시험만 0 으로 줄인다 — 배포 경로에서는 아무도 안 건드린다.
+    qint64 m_guideGraceMs = 20000;
     //: 이번 등록의 학습 창에서 주인을 한 번이라도 봤나. 못 봤으면 등록을 되돌린다.
     bool m_regOwnerSeen = false;
     QString m_emotion = QStringLiteral("happy");

@@ -344,6 +344,9 @@ class GuideExec(NavigationExec):
         self._rotate_allowed = False
         #: `mission_stop` 의 **결과가 돌아왔나.** 회전 허가의 전제다 — `_stop_settled`.
         self._stop_acked = False
+        #: 정지가 **끝났는데 성공이 아니었나.** nav2 가 멈췄다고 못 믿는다는 뜻이라,
+        #: 회전을 넘기는 대신 안내를 끝낸다 — 근거는 `_stop_settled` 의 ⚠️ 주석.
+        self._stop_failed = False
         #: 감시 세션을 마지막으로 재발행한 시각. 살아 있다는 신호다 — 위 주석.
         self._watch_renewed_at = None
         #: 이번 소실에서 **어느 홉 id 로** 알렸나. 20Hz 로 같은 결과를 쏟으면 FMS 가
@@ -445,6 +448,7 @@ class GuideExec(NavigationExec):
         self._watch_since = None
         self._rotate_allowed = False
         self._stop_acked = False
+        self._stop_failed = False
 
     def _recover_at(self) -> float:
         """회복 BT 에 바퀴를 넘기는 시각(소실 기준 초). 코스팅 + 대기다."""
@@ -627,6 +631,16 @@ class GuideExec(NavigationExec):
             if (not self._never_confirmed()
                     and lost >= self._recover_at() and self._stop_settled()):
                 self._allow_rotate(True)
+            elif self._stop_failed:
+                # 정지가 끝났는데 성공이 아니다 — nav2 가 멈췄다고 못 믿는다.
+                # 여기서 회전을 넘기면 두 주체가 `/cmd_vel` 을 다툰다. 그렇다고
+                # 계속 기다리면 회복 트리가 아예 안 만들어져(`control_loop
+                # ._start_search`) 안내가 WORKING 에 영영 갇힌다. 그래서 **끝낸다** —
+                # `_give_up()` 이 goal 을 끊고 PATROL 로 보내며, 패널도 그때 돌아온다.
+                logging.getLogger(__name__).warning(
+                    "GuideExec: mission_stop 이 성공으로 안 끝났다 — nav2 정지를 못 믿어 "
+                    "회복 회전 대신 안내를 종료한다")
+                return self._give_up()
             # 목적지는 그대로 두고 기다린다. 다시 보이면 아래에서 goal 을 새로 낸다.
             return Status.RUNNING
 
@@ -696,17 +710,40 @@ class GuideExec(NavigationExec):
         그러니 그 결과를 기다릴 수 있다 — 새 핸드셰이크를 만들 필요가 없다.
 
         ⚠️ `poll()` 은 결과를 **꺼내 버리므로**(pop) 한 번만 성공을 돌려준다. 래치해 둔다.
-        ⚠️ 결과가 영영 안 오면 회전은 **영영 안 열린다.** 그것이 안전한 쪽이다 —
-           취소됐는지 모르는 채로 도는 것보다 안 도는 편이 낫다. 안 돌아도 `Hold` 와
+
+        ⚠️ **성공만 정지로 친다.** `failure` 를 정지로 인정하면 안 된다 — 그건 "취소를
+           안 했다" 는 답일 수 있다. 실측 근거 두 개:
+             · 재전달 방어에 걸린 `mission_stop` 은 **실행되지 않은 채** 408 로 답한다
+               (`robot_agent/app/core/fleet_link.py` 의 `stale command` 분기)
+             · `poll()` 의 타임아웃 failure 는 오히려 "상대가 아직 돌고 있을 가능성이
+               크다" 는 뜻이라 `_abandoned_id` 를 남긴다(`fleet_cmd_driver.py`)
+           둘 중 어느 쪽이든 nav2 가 계속 `/cmd_vel` 을 미는 채로 회복 회전을 넘기게 된다.
+
+        ⚠️ [2026-08-02] **그래도 영원히 기다리면 안 된다 — 그건 안내를 WORKING 에 가둔다.**
+
+           예전 주석은 "결과가 영영 안 와도 안 도는 편이 낫다. 안 돌아도 `Hold` 와
            카메라 전환은 그대로 돌고, 회복 트리가 다 훑으면 `guide_search_failed` 가
-           안내를 끝낸다.
+           안내를 끝낸다" 였다. **그 전제가 틀렸다.** `control_loop._start_search()` 는
+           길잡이일 때 트리를 **안 만든다** — `rotation_granted()`(= 이 허가) 가 열려야
+           비로소 만든다. 허가가 안 열리면 회복 트리가 **한 번도 안 돌고**, 그래서
+           `GiveUp` 도 `guide_search_failed` 도 영영 안 나온다. 안내는 WORKING 에
+           갇히고, 패널도 WORKING 이탈만 보므로 안내 화면에 남는다
+           (`libi_gui/src/RobotController.cpp::finishGuideIfLeftWorking`).
+
+           그래서 정지가 **끝났는데 성공이 아니면** `_stop_failed` 를 세운다. 그때 할
+           일은 회전이 아니라 **안내를 끝내는 것**이다 — `update()` 가 `_give_up()` 으로
+           보낸다. 바퀴를 안 넘기니 경합이 없고, WORKING 을 벗어나니 패널도 돌아온다.
         """
         if self._stop_acked:
             return True
         if self.stop_driver is None:
             return False
-        if self.stop_driver.poll() == "success":
+        result = self.stop_driver.poll()
+        if result == "success":
             self._stop_acked = True
+        elif result != "running":
+            # 취소를 못 믿는다. 회전은 안 넘기고 안내를 끝낸다 — 위 ⚠️ 참고.
+            self._stop_failed = True
         return self._stop_acked
 
     def _allow_rotate(self, allow: bool) -> None:
@@ -751,6 +788,7 @@ class GuideExec(NavigationExec):
         # 허가된 상태**로 시작해, 출발 전에 바퀴가 돌 수 있다.
         self._rotate_allowed = False
         self._stop_acked = False
+        self._stop_failed = False
         self._watch_renewed_at = None
         self._lost_reported_id = None
 
@@ -782,8 +820,9 @@ class GuideExec(NavigationExec):
             return                   # 취소는 한 번만 — 매 tick 보내면 실행 층이 막힌다
         self._halted = True
         self._sent_at = None
-        # 새 정지를 내는 참이다 — 옛 ack 는 이 정지의 것이 아니다.
+        # 새 정지를 내는 참이다 — 옛 ack(와 옛 실패)는 이 정지의 것이 아니다.
         self._stop_acked = False
+        self._stop_failed = False
         if self.stop_driver is None:
             logging.getLogger(__name__).error(
                 "GuideExec: 요청자를 놓쳤는데 정지 수단(stop_driver)이 없어 nav 를 취소하지 못했다 — "

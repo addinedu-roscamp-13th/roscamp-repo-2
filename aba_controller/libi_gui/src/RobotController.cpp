@@ -306,7 +306,23 @@ void RobotController::finishGuideIfLeftWorking(const QString &state) {
     //   화면은 홈으로 튕기고 로봇만 안내를 계속한다.
     //
     //   전이는 이미 성공했으므로 곧 WORKING 이 온다. 그때까지 기다린다.
-    if (!m_guideSawWorking) return;
+    //
+    // ⚠️ [2026-08-02] **다만 영원히 기다리면 안 된다 — 폴백을 같이 본다.**
+    //
+    //   WORKING 메시지를 한 번이라도 놓치면(브릿지 재연결·DDS 유실·패널이 늦게 붙음)
+    //   `m_guideSawWorking` 이 영영 false 로 남고, 그러면 아래 `resetGuidePhase()` 와
+    //   `setMode("home")` 이 **둘 다 건너뛰어져** 로봇은 안내를 끝냈는데 패널만
+    //   안내 화면에 갇힌다. 추종은 `kFollowGraceMs` 로 이미 막고 있던 부류다
+    //   (`attachRos` 의 `followGraceOver`). 길잡이만 안 막혀 있었다.
+    const bool guideGraceOver =
+        m_guideSince.isValid() && m_guideSince.hasExpired(m_guideGraceMs);
+    if (!m_guideSawWorking && !guideGraceOver) return;
+    // 이 문구는 **관리자 화면의 로그 목록**에만 뜬다(`AdminControlScreen.qml` 의
+    // `controller.logs`). 이용자 화면에는 안 나온다 — 그래도 사람이 읽는 줄이므로
+    // 내부 상태 이름(WORKING)이 아니라 무슨 일이 있었는지로 적는다.
+    if (!m_guideSawWorking)
+        log(QStringLiteral("안내 시작 신호를 못 받았습니다 — 20초가 지나 종료로 처리합니다 "
+                           "(로봇 상태: ") + state + QStringLiteral(")"));
     // ⚠️ [2026-08-02] **`completed` 는 "도착했다" 가 아니라 "끝났다" 다.**
     //
     //   로봇은 성공과 실패를 **구별해서 알려주지 않는다.** `GuideExec._release` 가
@@ -323,6 +339,7 @@ void RobotController::finishGuideIfLeftWorking(const QString &state) {
     // 안내 종료는 화면도 종료다. guide 화면을 남기면 완료 직후의 탭이
     // 전역 터치로 다시 ui_touch를 내 PATROL -> INTERACTING 을 만든다.
     m_guideSawWorking = false;
+    m_guideSince.invalidate();      // 유예 타이머도 같이 끈다 (헤더 m_guideGraceMs)
     m_guideEndedAt.start();
     // ⚠️ [2026-08-02] **화면을 나가기 전에 단계를 되감는다.**
     //
@@ -738,6 +755,7 @@ void RobotController::startGuide(const QString &destination) {
         m_watchLease.stop();
         m_watchSessionId.clear();
         m_guideSawWorking = false;      // 이번 안내에서 WORKING 을 아직 못 봤다
+        m_guideSince.start();           // 시간 기반 폴백의 기준점 (헤더 m_guideGraceMs)
         setGuidePhase(QStringLiteral("guiding"));
         // 출발하면 로봇이 앞장서고 이용자는 뒤에 남는다 — 감시 캠이 뒤로 넘어간다.
         // (실제 전환은 로봇의 follow_node 가 한다. 여기는 화면 라벨만 맞춘다.)
@@ -772,6 +790,8 @@ void RobotController::cancelGuide() {
     setGuidePhase(QStringLiteral("cancelled"));
     setTaskStatus(QStringLiteral("명령 대기"));
     m_guideTargetValid = false;
+    m_guideSawWorking = false;
+    m_guideSince.invalidate();      // 취소했으면 유예도 없던 일이다 (헤더 m_guideGraceMs)
     m_guideTimer.stop();
     log(QStringLiteral("길잡이 취소 (사용자)"));
     // ⚠️ [2026-08-02] **취소도 곧바로 되감는다.**

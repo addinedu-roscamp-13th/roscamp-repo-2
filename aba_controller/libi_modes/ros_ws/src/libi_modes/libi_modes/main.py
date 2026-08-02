@@ -80,6 +80,19 @@ BOOT_STATE = "IDLE"
 #       아무도 답하지 않아(0/1 반대면 둘이 답해) 주문이 조용히 멈춘다.
 ARM_VIA_BT = os.getenv("LIBI_ARM_VIA_BT", "0") == "1"
 
+#: 요청자를 놓쳤을 때 내는 `mission_stop` 의 응답 타임아웃(초).
+#
+# 기본값(120초)을 쓰면 **답이 안 올 때 안내가 2분을 통째로 멈춘다** —
+# `GuideExec._stop_settled()` 가 이 결과를 기다리는 동안 회복 회전이 안 열리고,
+# 회전이 안 열리면 회복 트리 자체가 안 만들어진다(`control_loop._start_search`).
+# 타임아웃이 나면 `GuideExec` 은 회전 대신 **안내를 끝낸다**(정지를 못 믿으므로).
+#
+# ⚠️ 너무 짧게 잡으면 멀쩡한 정지를 실패로 읽어 안내가 헛되이 끝난다. 실행 층의
+#    `mission_stop` 은 인라인이지만 `mission.stop_mission()` 이 살아 있는 미션
+#    스레드를 **최대 2초 join** 한다(robot_agent `app/core/mission.py`). 거기에
+#    DDS 왕복·콜백 지연 여유를 더해 8초로 둔다.
+GUIDE_STOP_TIMEOUT_SEC = 8.0
+
 
 class _CmdPublisher:
     """드라이버들이 공유하는 /fleet_cmd 발행자."""
@@ -222,7 +235,14 @@ class FsmNode(Node):
                                     args_fn=lambda: self._nav_args(home_location)).bind(cmd_pub),
             # 요청자를 놓쳤을 때 **실제로 멈추는** 수단. mission_stop → ros_bridge.cancel_nav().
             # 이게 없으면 GuideExec 은 "기다리는 중"만 표시하고 로봇은 계속 달린다.
-            "guide_stop": FleetCmdDriver(self, "mission_stop").bind(cmd_pub),
+            #
+            # ⚠️ 응답 타임아웃을 기본(120초)에서 줄인다. `GuideExec._stop_settled()` 가
+            #    이 결과를 기다리는 동안 회복 회전이 안 열리고, 회전이 안 열리면
+            #    회복 트리 자체가 안 만들어진다(`control_loop._start_search`) —
+            #    즉 답이 안 오면 그만큼 안내가 통째로 멈춘다. `mission_stop` 은 실행
+            #    층이 큐를 우회해 인라인 처리하므로 몇 초 안에 안 오면 안 오는 것이다.
+            "guide_stop": FleetCmdDriver(self, "mission_stop",
+                                         timeout_sec=GUIDE_STOP_TIMEOUT_SEC).bind(cmd_pub),
             # 요청자를 놓쳤다고 **FMS 에 알리는** 통로. 그 홉을 실패로 닫아야 FMS 가
             # 예약을 풀고 로봇을 붙잡는다 — `GuideExec._report_lost` 주석.
             "guide_result": self._publish_cmd_result,
