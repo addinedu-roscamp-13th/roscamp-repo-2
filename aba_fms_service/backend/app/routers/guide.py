@@ -113,9 +113,12 @@ def _submit_guide_task(robot_id: str, waypoint: str) -> str:
     실패를 예외로 안 올리는 이유: 호출부가 폴백(직접 `guide` 발행)으로 이어가야 하므로
     "왜 실패했나" 보다 "됐나 안 됐나" 만 알면 된다. 사유는 로그에 남는다.
     """
-    from app.fleet_dispatch_bridge import resolve_vertex
-
+    # ⚠️ [2026-08-02] **import 도 try 안에 둔다.** 밖에 두면 순환 임포트나 모듈 적재
+    #    실패가 이 함수 밖으로 튀어 나가고, `panel_bridge.handle()` 의 포괄 except 가
+    #    그걸 받아 패널에만 사유를 돌려준다 — 서버 로그에는 아무 흔적도 안 남는다.
+    #    "왜 예약이 안 붙나" 를 로그로 못 쫓게 만드는 자리가 정확히 여기였다.
     try:
+        from app.fleet_dispatch_bridge import resolve_vertex
         goal_idx = resolve_vertex(waypoint)
     except Exception as e:      # noqa: BLE001 — 정점 이름이 그래프에 없다
         log.warning("[guide] %s 정점 인덱스를 못 찾았다: %s (%s)", robot_id, waypoint, e)
@@ -144,17 +147,24 @@ async def request_guide(req: GuideRequest):
     거절 사유를 문장으로 돌려준다 — 패널은 그걸 그대로 띄운다. 실패를 조용히
     성공처럼 돌려주면 화면만 "안내 중"이고 로봇은 가만히 있는 상태가 된다.
     """
+    # ⚠️ 진입을 반드시 남긴다. 아래 거절 분기들은 사유를 **패널에만** 돌려주고 로그를
+    #    안 남겨서, 서버 로그만 보면 "요청이 온 적 없음" 과 구별되지 않았다.
+    log.info("[guide] 요청 수신 robot=%s waypoint=%s", req.robot_id, req.waypoint)
     target = _vertex(req.waypoint)
     if target is None:
+        log.warning("[guide] %s 정점을 내비 그래프에서 못 찾았다: %s", req.robot_id, req.waypoint)
         return {"granted": False, "reason": f"'{req.waypoint}' 정점을 내비 그래프에서 찾을 수 없습니다."}
 
     snap = fsm_link.snapshot(req.robot_id)
     if snap is None:
+        log.warning("[guide] %s 알 수 없는 로봇", req.robot_id)
         return {"granted": False, "reason": f"알 수 없는 로봇입니다: {req.robot_id}"}
     if snap.get("stale"):
+        log.warning("[guide] %s 상태가 묵었다 (브릿지 끊김?)", req.robot_id)
         return {"granted": False, "reason": "로봇 상태가 오래됐습니다 (브릿지 끊김?)."}
     state = snap.get("current_state")
     if state not in ACCEPTING_STATES:
+        log.warning("[guide] %s 지금 상태로는 안내 불가: %s", req.robot_id, state)
         return {"granted": False, "reason": f"지금은 안내를 시작할 수 없습니다 (로봇 상태: {state})."}
 
     # 동시에 두 사람이 요청하면 둘 다 이 snapshot 검사를 통과할 수 있다. 락을 두지 않는

@@ -30,10 +30,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 from typing import Any, Callable
 
 from fastapi.encoders import jsonable_encoder
+
+log = logging.getLogger(__name__)
 
 #: 로봇 쪽 토픽 이름. 브릿지가 서버 도메인에서 `/{key}/...` 로 개명한다.
 REQUEST_TOPIC = "panel_request"
@@ -69,14 +72,25 @@ def handle(payload: dict) -> dict:
 
     ops = _ops()
     if op not in ops:
+        log.warning("[panel] 알 수 없는 요청 op=%s id=%s", op, req_id)
         return {"id": req_id, "ok": False, "reason": f"알 수 없는 요청입니다: {op}"}
 
     model_cls, fn = ops[op]
+    # ⚠️ [2026-08-02] **이 통로를 지나간 요청은 서버 로그에 흔적이 남아야 한다.**
+    #
+    #   패널이 HTTP 대신 이 토픽 쌍을 쓰면 uvicorn 액세스 로그가 안 남는다. 그런데
+    #   아래 `except` 가 예외를 **로그 없이** 삼켜 패널에만 돌려주므로, 서버 로그만
+    #   보는 사람에게는 **요청이 온 적조차 없는 것처럼 보인다.**
+    #   실측 2026-08-02: 길잡이가 분명히 돌았는데 `[guide]` 로그가 한 줄도 없어서
+    #   "요청이 이 백엔드에 안 온다" 와 "와서 조용히 실패한다" 를 가릴 수 없었다.
+    log.info("[panel] %s id=%s", op, req_id)
     try:
         args = {k: v for k, v in payload.items() if k not in ("id", "op")}
         # 핸들러는 `asyncio.to_thread` 로만 블로킹을 다룬다 — 새 루프에서 돌려도 된다.
         body = asyncio.run(fn(model_cls(**args)))
     except Exception as e:  # noqa: BLE001 — 어떤 실패든 사유를 실어 돌려보낸다
+        # 스택까지 남긴다. 사유 문자열만으로는 어느 줄에서 터졌는지 못 찾는다.
+        log.exception("[panel] %s 처리 실패 id=%s", op, req_id)
         return {"id": req_id, "ok": False, "reason": f"{type(e).__name__}: {e}"}
 
     out = jsonable_encoder(body)
