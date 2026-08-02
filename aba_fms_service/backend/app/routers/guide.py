@@ -125,7 +125,12 @@ def _submit_guide_task(robot_id: str, waypoint: str) -> str:
         requester=f"guide:{robot_id}",
     )
     if not res.get("accepted"):
-        log.warning("[guide] %s fleet 태스크 거부: %s", robot_id, res.get("reason"))
+        # ⚠️ **여기서 폴백으로 빠지면 안내가 교통관제 밖에서 돈다.** 노드 예약도 간선
+        #    잠금도 없고, 관제 지도에 경로·예약이 **아무것도 안 그려진다** — 화면만 보면
+        #    "예약이 왜 안 보이지" 인데 원인은 이 한 줄이다. 사유를 반드시 남긴다.
+        log.warning(
+            "[guide] %s fleet 태스크 거부: %s → **교통관제 없이** 안내한다"
+            "(관제 화면에 경로·예약이 안 보인다)", robot_id, res.get("reason"))
         return ""
     task_id = str(res.get("task_id") or "")
     log.info("[guide] %s fleet 태스크 등록 %s → v%d(%s)", robot_id, task_id, goal_idx, waypoint)

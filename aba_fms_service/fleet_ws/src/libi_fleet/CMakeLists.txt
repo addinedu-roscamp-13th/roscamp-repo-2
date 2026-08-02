@@ -77,7 +77,10 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(test_patrol_cycle libi_fleet_core)
   target_compile_definitions(test_patrol_cycle PRIVATE
-    TEST_NAVGRAPH_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../../maps/library/new_map.navgraph.yaml")
+    TEST_NAVGRAPH_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../../maps/library/new_map.navgraph.yaml"
+    # 진입 구간 시험용. new_map 은 정점 8개가 전부 순회 루프 위에 있어 "루프 밖에서
+    # 붙는" 상황 자체가 만들어지지 않는다 — 실제 지도(arte2)라야 그 경로가 생긴다.
+    TEST_ARTE2_NAVGRAPH_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../../maps/library/arte2.navgraph.yaml")
 
   # 순회 랩 꼬리 이어붙이기 — 순회 로봇이 둘 이상일 때만 터지던 중복 버그를 잡는다.
   ament_add_gtest(test_patrol_splice test/test_patrol_splice.cpp)

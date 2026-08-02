@@ -97,4 +97,59 @@ std::size_t patrol_tail_index(const std::vector<int> & path, std::size_t idx, in
   return idx + 2;
 }
 
+std::vector<int> patrol_path_from(const Navgraph & g, int snap,
+                                  const std::vector<int> & route, int avoid_first)
+{
+  const std::size_t n = route.size();
+  if (n == 0 || snap < 0 || snap >= g.size()) { return {}; }
+
+  // ── 진입점 고르기 ─────────────────────────────────────────────────────────
+  // 각 순회 정점까지 Dijkstra 를 돌려 **경로비용**이 최소인 것을 고른다.
+  // 도달불가 후보(빈 경로)는 건너뛴다 — path_cost({}) == 0 이라 그냥 두면 최소로 오인한다.
+  std::size_t k = 0;
+  double bd = 1e18;
+  std::vector<int> approach;              // snap → route[k] 의 실제 정점열(양끝 포함)
+  for (std::size_t i = 0; i < n; ++i) {
+    if (route[i] == snap) {               // 이미 순회 정점 위 — 더 가까울 수 없다
+      bd = 0.0; k = i; approach = {snap};
+      break;
+    }
+    const auto p = g.dijkstra(snap, route[i]);
+    if (p.empty()) { continue; }
+    const double dd = g.path_cost(p);
+    if (dd < bd) { bd = dd; k = i; approach = p; }
+  }
+  if (bd > 1e17) {
+    // 전부 도달불가(비정상 그래프) → 직선거리 폴백. 이 경우엔 이을 정점열이 없으므로
+    // 예전처럼 한 홉으로 둔다. 그래프가 끊긴 상황이라 어차피 주행이 성립하지 않는다.
+    for (std::size_t i = 0; i < n; ++i) {
+      const Vertex & v = g.vertex(route[i]);
+      const double dd = std::hypot(g.vertex(snap).x - v.x, g.vertex(snap).y - v.y);
+      if (dd < bd) { bd = dd; k = i; }
+    }
+    approach = (route[k] == snap) ? std::vector<int>{snap} : std::vector<int>{snap, route[k]};
+  }
+
+  // 진입점의 다음 홉이 피해야 할 정점이면 한 칸 앞에서 시작한다(방향은 유지).
+  // 진입점이 바뀌었으니 **진입 구간도 다시 구한다** — 안 구하면 옛 진입점으로 가는
+  // 정점열이 새 진입점 앞에 붙어 경로가 끊긴다.
+  if (avoid_first >= 0 && route[(k + 1) % n] == avoid_first) {
+    k = (k + 1) % n;
+    if (route[k] == snap) {
+      approach = {snap};
+    } else {
+      const auto p = g.dijkstra(snap, route[k]);
+      approach = p.empty() ? std::vector<int>{snap, route[k]} : p;
+    }
+  }
+
+  std::vector<int> path;
+  // 진입 구간(마지막 = 진입점은 빼고 — 바로 아래 랩이 그 정점부터 시작한다).
+  // 로봇이 이미 진입점 위면 approach == {snap} 이라 아무것도 안 붙고, 랩이 곧장 시작한다.
+  for (std::size_t i = 0; i + 1 < approach.size(); ++i) { path.push_back(approach[i]); }
+  for (std::size_t i = 0; i < n; ++i) { path.push_back(route[(k + i) % n]); }
+  path.push_back(route[k]);   // 루프 닫기(마지막 == 처음)
+  return path;
+}
+
 }  // namespace libi_fleet

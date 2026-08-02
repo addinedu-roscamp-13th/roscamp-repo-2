@@ -152,26 +152,33 @@ type EdgeHold = {
 
 type ResvView = "node" | "edge" | "robot";
 
-// 예약 시각을 **벽시계로** 찍는다.
-//
-// ⚠️ 남은 시간(T-3.2s)만으로는 "언제까지 가기로 했는지" 를 알 수 없다. 화면을 보는
-//    사람은 로그·영상과 시각을 맞춰야 하는데, 상대시간은 본 순간에만 유효하다.
-//    `at` 은 `plan.epoch_wall + arrive*tick_sec`(fleet_node publish_plan) — 이미
-//    벽시계다. 초까지만 쓴다(틱이 1초라 밀리초는 의미가 없다).
+// 예약 시각의 **벽시계 표기**. 이제 화면에 바로 찍지 않고 툴팁으로만 쓴다 —
+// 로그·영상과 시각을 맞춰야 할 때가 있어 값 자체는 남긴다(아래 leftLabel 머리말).
+// `at` 은 `plan.epoch_wall + arrive*tick_sec`(fleet_node publish_plan) — 이미 벽시계다.
+// 초까지만 쓴다(틱이 1초라 밀리초는 의미가 없다).
 function clockLabel(at: number) {
   const d = new Date(at * 1000);
   const p = (n: number) => String(n).padStart(2, "0");
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
-// 남은 시간 한 줄. drift_limit 안쪽은 정상 주행이라 "지연" 으로 쓰지 않는다.
-// `at`(예약 시각, unix 초)을 주면 벽시계 마감을 같이 적는다.
-function leftLabel(left: number, late: boolean, at?: number) {
-  const when = at != null && Number.isFinite(at) ? ` · ${clockLabel(at)}` : "";
-  if (left >= 0) return `T-${left.toFixed(1)}s${when}`;
-  return late
-    ? `지연 +${(-left).toFixed(1)}s${when ? ` · ${clockLabel(at as number)}까지였다` : ""}`
-    : `도착 중${when ? ` · ${clockLabel(at as number)}까지` : ""}`;
+// 예약 시각 대비 **얼마나 남았나/지났나** 한 줄. drift_limit 안쪽은 정상 주행이라
+// "지연" 으로 쓰지 않는다.
+//
+// ⚠️ [2026-08-02] 벽시계("· 19:23:21까지")를 **뺐다.** 한 줄에 상대시간과 절대시간이
+//    같이 있으니 정작 읽고 싶은 "몇 초 남았나" 가 묻혔다(사용자 지적). 벽시계는
+//    툴팁(`title`)으로 내렸다 — 로그와 시각을 맞출 때는 거기서 본다.
+function leftLabel(left: number, late: boolean) {
+  if (!Number.isFinite(left)) return "예약 없음";
+  if (left >= 0) return `T-${left.toFixed(1)}s`;
+  // 이미 지난 칸. 봐주는 폭(drift_limit) 안이면 아직 "지연" 이 아니다.
+  return late ? `지연 +${(-left).toFixed(1)}s` : `도착 중 +${(-left).toFixed(1)}s`;
+}
+
+// 그 칸의 벽시계 마감 — 툴팁 문구. 값이 없으면 빈 문자열(툴팁 안 뜸).
+function dueTitle(at: number | undefined, late: boolean) {
+  if (at == null || !Number.isFinite(at)) return "";
+  return late ? `${clockLabel(at)} 까지였다` : `${clockLabel(at)} 까지`;
 }
 
 // ⚠️ [2026-08-02] **묵은 계획을 현재처럼 그리지 않는다.**
@@ -647,9 +654,10 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
     //   사람이 가릴 수 없게 된다(사용자 지적 2026-08-02).
     //
     //   지우는 대신 배지가 이유를 말한다 — "묵은 계획 · N분 전".
-    //   occupancy(누가 어느 노드를 잡고 있나)와 **로봇 마커는 계속 그린다** —
-    //   그건 현재 사실이다. 그래서 이 검사는 아래 콜백 **안**에 있다. 바깥에서
-    //   early return 하면 뒤따르는 로봇 마커까지 통째로 사라진다.
+    //   **로봇 마커는 계속 그린다** — 그건 현재 사실이다. 그래서 이 검사는 아래 콜백
+    //   **안**에 있다. 바깥에서 early return 하면 뒤따르는 로봇 마커까지 통째로 사라진다.
+    //   (노드 점유 occupancy 는 이 지도에 안 그린다 — 스냅샷에 오기는 하지만 여기서
+    //    읽지 않는다. 보려면 배차 화면의 「점유 노드」 칼럼.)
     Object.entries(routes).forEach(([rname, pts]) => {
       if (planStaleRef.current) return;
       // 안 켜진 로봇의 경로는 안 그린다 — `liveRobots` 주석 참고.
@@ -699,9 +707,10 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
       //    없는 문제를 만들어 낸다.
       const tol = (plan?.drift_limit ?? 0) * (plan?.tick_sec ?? 1);
       const overdue = left < -tol;
-      // 지도 위에도 **벽시계 마감**을 같이 찍는다 — "순회경로-5 도착 중" 만으로는
-      // 언제까지 가기로 했는지가 안 보인다(leftLabel 머리말).
-      const label = leftLabel(left, overdue, t);
+      // 지도 위에는 **상대시간만** 찍는다. 캔버스라 툴팁을 달 수 없어서 벽시계를 같이
+      // 쓰면 라벨이 두 배로 길어지고, 정작 읽고 싶은 "몇 초 남았나" 가 묻힌다.
+      // 벽시계가 필요하면 아래 예약 표에서 본다(거기엔 툴팁이 붙는다).
+      const label = leftLabel(left, overdue);
       ctx.font = "bold 12px system-ui";
       ctx.lineJoin = "round";
       ctx.lineWidth = 3.5;
@@ -859,6 +868,7 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
       byEdge: [] as { from: string; to: string; holds: EdgeHold[] }[],
       byRobot: [] as { robot: string; hex: string; stops: Hold[] }[],
       count: 0,
+      resvCount: 0,
       edgeCount: 0,
     };
     // 묵은 계획에서는 예약 시각표를 만들지 않는다 — 아래 표의 "지연" 이 전부
@@ -961,7 +971,12 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
             : a.node.localeCompare(b.node);
         }),
       byEdge, byRobot,
+      // ⚠️ **두 수를 구분한다.** `count` 는 "표에 깔 줄이 있나" 를 가르는 값이라
+      //    `routes`(남은 경로 전체) 기준이고, 예약이 없는 칸도 센다.
+      //    배지에 그 값을 쓰면 "노드 12" 라고 적히는데 실제 예약은 2칸인 일이 생긴다 —
+      //    순회는 일부러 다음 한 정점까지만 계획하기 때문이다. 배지는 `resvCount` 를 쓴다.
       count: byRobot.reduce((n, r) => n + r.stops.length, 0),
+      resvCount: [...nodeMap.values()].reduce((n, h) => n + h.length, 0),
       edgeCount: holdsOnEdge.length,
     };
   })();
@@ -1175,9 +1190,16 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
                 예약된 것만
               </label>
             )}
-            <div className="font-mono text-[11px] text-slate-500">
+            <div
+              className="font-mono text-[11px] text-slate-500"
+              title={
+                "노드: 시간표에 실제로 예약된 정점 수(/fms/plan 의 arrive_tick).\n" +
+                "간선: **이 화면이 계산한 값**이다. 플래너는 간선 제약을 쓰지만(cbs_planner.cpp 의 edge 제약) " +
+                "/fms/plan 에 싣지 않아서, 연속한 두 정점의 예약 시각을 이어 붙여 되짚은 것이다."
+              }
+            >
               {plan
-                ? `계획 #${plan.seq} · 노드 ${resv.count} · 간선 ${resv.edgeCount} · 틱 ${plan.tick_sec}s`
+                ? `계획 #${plan.seq} · 노드 ${resv.resvCount} · 간선 ${resv.edgeCount} · 틱 ${plan.tick_sec}s`
                 : "계획 없음 · 반응형(노드예약)으로 운행 중"}
             </div>
             {planStale && (
@@ -1188,7 +1210,9 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
                   "재계획 대상에서 빼므로(state_stale), 마지막 계획을 그대로 들고 있습니다.\n\n" +
                   "그 계획의 경로선과 '지연' 값은 계획 당시 기준이라 지금과 어긋납니다 " +
                   "(실측: 로봇 위치와 경로 시작점이 1.3m 차이). 그래서 그리지 않습니다.\n\n" +
-                  "노드 점유(occupancy)와 로봇 마커는 현재 사실이라 그대로 보여줍니다.\n" +
+                  "로봇 마커는 현재 사실이라 그대로 보여줍니다. " +
+                  "노드 점유(occupancy)는 이 지도에 그리지 않습니다 — 배차 화면의 " +
+                  "「점유 노드」 칼럼에서 보세요.\n" +
                   "확인: fleet_node 창의 '로봇 상태 끊김' 경고 · pgrep -af robot_state_adapter"
                 }
               >
@@ -1241,8 +1265,9 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
                             "font-mono text-[11.5px] tabular-nums",
                             h.late ? "text-rose-400" : "text-slate-200",
                           )}
+                          title={dueTitle(h.at, h.late)}
                         >
-                          {leftLabel(h.left, h.late, h.at)}
+                          {leftLabel(h.left, h.late)}
                         </span>
                       </span>
                     ))}
@@ -1283,16 +1308,22 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
                           aria-hidden
                         />
                         <span className="text-[11.5px] text-slate-400">{h.robot}</span>
-                        <span className="font-mono text-[11px] tabular-nums text-slate-500">
-                          {clockOf(h.at)}~{clockOf(h.until)}
+                        {/* 간선을 붙잡고 있는 **길이**. 벽시계 구간(19:23:21~19:23:26)은
+                            툴팁으로 내렸다 — 표에서 읽고 싶은 건 "얼마나 잡고 있나" 다. */}
+                        <span
+                          className="font-mono text-[11px] tabular-nums text-slate-500"
+                          title={`${clockOf(h.at)} ~ ${clockOf(h.until)}`}
+                        >
+                          {(h.until - h.at).toFixed(1)}s간
                         </span>
                         <span
                           className={cn(
                             "font-mono text-[11.5px] tabular-nums",
                             h.late ? "text-rose-400" : "text-slate-200",
                           )}
+                          title={dueTitle(h.at, h.late)}
                         >
-                          {leftLabel(h.left, h.late, h.at)}
+                          {leftLabel(h.left, h.late)}
                         </span>
                       </span>
                     ))}
@@ -1346,8 +1377,9 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
                                 "ml-2 font-mono text-[11px] tabular-nums",
                                 h.late ? "text-rose-400" : "text-slate-300",
                               )}
+                              title={dueTitle(h.at, h.late)}
                             >
-                              {leftLabel(h.left, h.late, h.at)}
+                              {leftLabel(h.left, h.late)}
                             </span>
                           )}
                         </span>

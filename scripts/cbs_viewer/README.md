@@ -57,8 +57,11 @@ ros2 service call /fms/set_plugins libi_fleet_msgs/srv/SetPlugins \
 | `LIBI_CBS_DRIFT_LIMIT` | 10 | 이만큼 밀리면 시간표를 버리고 반응형으로 |
 
 예약 시각 허용 오차는 **양쪽 대칭 ±10초**다(`SLACK` = 이른 쪽, `DRIFT_LIMIT` = 늦은 쪽).
-`fleet_node` 의 `plan_deadline_slack`(재계획 트리거)도 같은 10초다 — 셋 중 하나만 바꾸면
-"교통 계층은 통과시키는데 fleet_node 는 마감 초과로 재계획" 같은 어긋남이 생긴다.
+
+`fleet_node` 의 재계획 트리거와 관제 화면의 "지연" 판정은 **둘 다 `DRIFT_LIMIT` 에서
+유도한다**(`drift_limit × tick_sec`). 예전에는 `plan_deadline_slack` ROS 파라미터로 같은
+값을 한 벌 더 들고 있었고, 손으로 맞춰야 해서 "교통 계층은 통과시키는데 fleet_node 는
+마감 초과로 재계획" 이 실제로 났다. 지금은 여기 하나만 바꾸면 셋이 같이 따라간다.
 
 ## 한계 (알고 쓰는 것)
 

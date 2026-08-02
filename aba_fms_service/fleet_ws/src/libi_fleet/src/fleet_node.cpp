@@ -175,16 +175,6 @@ public:
     resend_ticks_ = declare_parameter<int>("resend_ticks", 7);   // ≈1초
 
     // ── 시간 계획(CBS) 재계획 정책 ─────────────────────────────────────────
-    // 계획 도착 시각을 이만큼 넘기면 그 시간표는 이미 틀렸다고 본다. 장애물 회피·감속으로
-    // 몇 초 밀리는 것은 정상이라 0 으로 두면 재계획만 반복한다.
-    //
-    // ⚠️ **CbsTraffic 의 지연 문턱(drift_limit_, 기본 10틱)과 같은 값으로 둔다.**
-    //    예전엔 3.0 이라, 교통 계층은 아직 "계획대로 가는 중" 으로 보고 통과를 열어 주는
-    //    +3~10초 구간에서 fleet_node 만 혼자 "마감 초과" 로 재계획을 걸었다. 실측 2026-08-02:
-    //    순회 경로가 5~10초마다 새로 짜였다. 재계획은 `t.path` 를 통째로 다시 쓰므로
-    //    (apply_plan 의 `t.path = np`) 그 빈도가 곧 랩이 흔들리는 빈도다.
-    //    두 문턱을 맞추면 "예약 창(±10초)을 실제로 깬 뒤에야 다시 짠다" 가 된다.
-    plan_deadline_slack_ = declare_parameter<double>("plan_deadline_slack", 10.0);
     // 재계획 최소 간격(틱). 매 틱 CBS 를 돌리면 관제가 그것만 하게 된다.
     replan_cooldown_ticks_ = declare_parameter<int>("replan_cooldown_ticks", 20);
 
@@ -691,7 +681,12 @@ private:
       snap.robots.push_back(pr);
       planned.push_back(&t);
     }
-    if (snap.robots.empty()) { return; }
+    if (snap.robots.empty()) {
+      // 계획할 로봇이 하나도 없다(전부 목표에 도착했거나 목표가 겹쳐 밀려났다).
+      // 조용히 나가면 래치된 옛 시간표가 화면에 그대로 남는다 — `clear_plan_once` 머리말.
+      clear_plan_once("계획할 로봇 없음");
+      return;
+    }
 
     // ── [2026-08-01] 탐색은 **콜백 밖에서** 한다 ─────────────────────────────
     //
@@ -870,7 +865,29 @@ private:
       }
       m.robots.push_back(std::move(rp));
     }
+    last_plan_empty_ = routes.empty();
     plan_pub_->publish(m);
+  }
+
+  // ── 계획이 없어졌다는 것도 **알려야 한다** ──────────────────────────────────
+  //
+  // `/fms/plan` 은 transient_local(래치)이라 마지막 값이 영원히 살아 있다. 그래서
+  // 계획할 것이 사라졌을 때 아무것도 안 내면, 화면은 **이미 지난 시간표를 현재처럼**
+  // 들고 카운트다운한다. 실측 2026-08-02: 로봇을 전부 내린 뒤 04:11 에 짠 계획을
+  // 09:15 에 보고 "지연 +18198.6s" 를 찍었다. 숫자가 틀린 게 아니라 재료가 5시간
+  // 묵은 것인데, 화면에는 그 말이 없어 "예약이 깨졌나" 로 읽힌다.
+  //
+  // 실패 경로(`apply_routes` 의 "시간표를 세우지 못했습니다")는 이미 빈 계획을 낸다.
+  // 여기서 메우는 것은 **조용히 빠져나가던 두 자리**다 — 활성 task 가 없을 때와
+  // 계획 대상 로봇이 하나도 없을 때.
+  //
+  // ⚠️ 이미 비운 뒤에는 다시 내지 않는다. 이 함수는 150 ms 타이머에서도 불린다.
+  void clear_plan_once(const char * why)
+  {
+    if (last_plan_empty_) { return; }
+    if (!traffic_ || !traffic_->plans_routes()) { return; }   // 반응형 교통은 계획 자체가 없다
+    RCLCPP_INFO(get_logger(), "[traffic] 시간표 비움 — %s", why);
+    publish_plan({}, now_sec(), traffic_->tick_seconds(), why);
   }
 
   // 계획이 밀려서 반응형으로 강등된 뒤, 다시 계획으로 되돌아온다.
@@ -955,6 +972,21 @@ private:
     return out;
   }
 
+  // 마감을 이만큼 넘겨야 "그 시간표는 틀렸다" 로 본다(초). 장애물 회피·감속으로 몇 초
+  // 밀리는 것은 정상이라, 0 이면 재계획만 반복한다.
+  //
+  // ⚠️ **주인은 교통 플러그인이다 — 여기서 따로 파라미터를 두지 않는다.**
+  //    예전에는 `plan_deadline_slack` ROS 파라미터로 같은 값을 한 벌 더 들고 있었고,
+  //    주석이 "CbsTraffic 의 drift_limit 과 같은 값으로 두라" 고 사람에게 부탁했다.
+  //    손으로 맞춰야 하는 값은 언젠가 어긋난다 — 어긋나면 교통 계층은 "계획대로 가는 중"
+  //    으로 보고 통과를 열어 주는 구간에서 fleet_node 만 혼자 마감 초과로 재계획을 걸어,
+  //    순회 경로가 5~10초마다 새로 짜인다(실측 2026-08-02). 유도하면 그 자리가 사라진다.
+  //    ⚠️ 화면도 같은 값을 쓴다 — `/fms/plan` 의 `drift_limit` 이 이 값의 출처다.
+  double plan_deadline_slack() const
+  {
+    return traffic_ ? traffic_->drift_limit() * traffic_->tick_seconds() : 0.0;
+  }
+
   // 계획 도착 시각을 넘겼나. 넘겼으면 그 시간표는 이미 남의 통과를 잘못 열어 주고 있다.
   //
   // ⚠️ 로봇이 늦는 것 자체는 막을 수 없다(장애물 회피·감속·리로컬라이제이션). 막을 수 있는 건
@@ -964,7 +996,8 @@ private:
   {
     if (t.plan_arrive.empty() || t.idx >= t.plan_arrive.size()) { return; }
     if (t.plan_arrive[t.idx] < 0) { return; }   // 마감 없음(재계획 시점에 이미 이동 중이던 칸)
-    const double due = t.plan_epoch + t.plan_arrive[t.idx] * t.plan_tick_sec + plan_deadline_slack_;
+    const double slack = plan_deadline_slack();
+    const double due = t.plan_epoch + t.plan_arrive[t.idx] * t.plan_tick_sec + slack;
     if (now_sec() <= due) { return; }
     if (!replan_requested_) {
       std::string dbg;
@@ -975,7 +1008,7 @@ private:
       RCLCPP_WARN(get_logger(),
                   "[%s] %s ⏱ v%d 계획 도착(%d틱) 초과 %.1fs → 재계획 요청 [idx=%zu %s]",
                   t.id.c_str(), t.robot.c_str(), t.path[t.idx], t.plan_arrive[t.idx],
-                  now_sec() - due + plan_deadline_slack_, t.idx, dbg.c_str());
+                  now_sec() - due + slack, t.idx, dbg.c_str());
     }
     // 어느 **간선**이 마감을 못 지켰나 — 다음 재계획이 그 길을 비싸게 보게 한다.
     // 매 틱 부르므로 마감 하나당 한 번만 센다(`missed_idx` 로 중복을 막는다).
@@ -1320,6 +1353,9 @@ private:
       }
       ++it;
     }
+    // 활성 task 가 하나도 없으면 지킬 시간표도 없다. 래치 토픽이라 여기서 비워 주지
+    // 않으면 화면이 마지막 계획을 몇 시간이고 현재처럼 띄운다 — `clear_plan_once` 머리말.
+    if (tasks_.empty()) { clear_plan_once("활성 작업 없음"); }
     publish_occupancy();
     publish_routes();
     publish_goals();
@@ -1352,10 +1388,14 @@ private:
   {
     libi_fleet_msgs::msg::FleetGoals m;
     for (const auto & t : tasks_) {
-      if (t.patrol) { continue; }              // 순회는 최종 목적지 없음
       if (t.path.empty()) { continue; }
       m.robots.push_back(t.robot);
-      m.goals.push_back(t.path.back());
+      // ⚠️ 순회를 **건너뛰지 않는다.** 랩에는 끝이 없지만 "지금 어디로 가는 중" 은 늘 있고,
+      //    순회에 붙는 동안 그 값이 곧 **진입점**이다. 예전에는 통째로 건너뛰어서 관제 표의
+      //    「목표」 칼럼이 순회 로봇에 늘 `—` 였다 — 진입점을 어디로 잡았는지 화면 어디에도
+      //    안 나오고 fleet_node 로그에만 남았다. 배차 task 는 예전대로 최종 목적지다.
+      m.goals.push_back(t.patrol ? t.path[std::min(t.idx, t.path.size() - 1)]
+                                 : t.path.back());
     }
     goal_pub_->publish(m);
   }
@@ -1594,46 +1634,15 @@ private:
   }
 
   // 현재 위치에서 CCW 방향으로 한 바퀴 랩 경로 생성.
-  // 진입점 = 로봇에서 **그래프거리(벽 고려, Dijkstra)** 최근접 순회 정점(직선거리 아님).
-  // avoid_first>=0 이면 진입점의 다음 홉이 그 노드일 때 한 칸 앞에서 시작(방향은 유지).
+  //
+  // 알맹이는 `patrol_cycle.cpp` 의 `patrol_path_from` 이다 — 그래프와 정점 인덱스만
+  // 있으면 되는 순수 계산이라, 노드 밖으로 빼서 시험할 수 있게 했다. 시험이 지키는 것은
+  // **연속한 두 정점이 언제나 navgraph 간선**이라는 것이다. 그게 깨지면 교통관제가
+  // 예약하지 않은 정점을 로봇이 지나간다(그 함수 머리말 참고).
   std::vector<int> make_patrol_path(const RobotInfo & r, int avoid_first,
                                     const std::vector<int> & route) const
   {
-    const size_t n = route.size();
-    if (n == 0) { return {}; }
-    // 진입점: 로봇을 최근접 그래프 노드로 스냅 → 각 순회 정점까지 Dijkstra 경로비용 최소.
-    // 도달불가 후보(빈 경로)는 건너뛴다(path_cost({})==0 을 최소로 오인 방지).
-    const int snap = graph_.nearest(r.x, r.y);
-    size_t k = 0; double bd = 1e18;
-    for (size_t i = 0; i < n; ++i) {
-      double dd;
-      if (route[i] == snap) {
-        dd = 0.0;                                    // 진입점이 곧 최근접 노드
-      } else {
-        const auto p = graph_.dijkstra(snap, route[i]);
-        if (p.empty()) { continue; }                 // 도달불가 → skip
-        dd = graph_.path_cost(p);
-      }
-      if (dd < bd) { bd = dd; k = i; }
-    }
-    if (bd > 1e17) {                                 // 전부 도달불가(비정상 그래프) → 직선거리 폴백
-      for (size_t i = 0; i < n; ++i) {
-        const Vertex & v = graph_.vertex(route[i]);
-        const double dd = std::hypot(r.x - v.x, r.y - v.y);
-        if (dd < bd) { bd = dd; k = i; }
-      }
-    }
-    if (avoid_first >= 0 && route[(k + 1) % n] == avoid_first) { k = (k + 1) % n; }
-    std::vector<int> path;
-    // 로봇이 진입점(route[k]) 위에 있지 않으면 현재 노드를 맨 앞에 둔다 — 그래야 진입점이
-    // **첫 목표**가 된다. 안 그러면 t.idx=1(start_patrol)이 path[0]=진입점을 건너뛰고
-    // path[1]로 보내 진입점이 한 칸 밀린다. 일반 task 는 path[0]=로봇 시작노드(L338)라
-    // 이 문제가 없다 — 여기서도 같은 규칙으로 맞춘다. 이미 진입점 위면(snap==route[k])
-    // 붙이지 않아 즉시 다음 노드로 진행(랩 재생성 케이스가 그렇다).
-    if (snap != route[k]) { path.push_back(snap); }
-    for (size_t i = 0; i < n; ++i) { path.push_back(route[(k + i) % n]); }
-    path.push_back(route[k]);   // 루프 닫기(마지막==처음)
-    return path;
+    return patrol_path_from(graph_, graph_.nearest(r.x, r.y), route, avoid_first);
   }
 
   // 로봇을 주간 순회 루프에 태워 무한 순회 시작.
@@ -1649,11 +1658,18 @@ private:
     t.start_seq = ++task_seq_;
     traffic_->request_move(r.name, path[0], path[0], compute_priority(r.name, t));   // 진입점 점유
     tasks_.push_back(t);
+    // ⚠️ **세대는 `replan_all_routes` 보다 먼저 올린다.** 순서가 뒤바뀌면 스냅샷을 세대 G 로
+    //    잡아 놓고 곧바로 G+1 로 올려 버려서, 워커가 돌려준 시간표를 `apply_planner_result`
+    //    가 "계산 중에 상태가 바뀌었다" 며 **매번** 버린다. 실측 2026-08-02(sim): 순회를
+    //    시작해도 `/fms/plan` 이 한 번도 안 나가고, 30초 뒤 지연 강등으로 재계획이 돌고
+    //    나서야 seq 1 이 처음 나왔다. 그동안 관제 화면에는 **합류 구간 예약이 통째로
+    //    안 보인다** — 실제로는 예약이 걸려 있는데 화면만 비어 있는 상태다.
+    //    `on_submit` 은 원래 이 순서(먼저 올리고 나중에 계획)라 배차에서는 안 드러났다.
+    ++state_gen_;
     // ⚠️ **순회도 시간표를 받아야 한다.** 예전에는 여기서 replan 을 안 불러, 편대가
     //    전부 순회 중이면 CBS 가 한 번도 안 돌았다(실측: 3대 순회 60초에 재계획 0회).
     //    그 상태는 이름만 CBS 고 실제로는 반응형이다.
     replan_all_routes();
-    ++state_gen_;
     publish_task_state(tid, "PATROL", r.name);
     RCLCPP_INFO(get_logger(), "[%s] %s 순회 시작 (시작 v%d, %zu nodes)",
                 tid.c_str(), r.name.c_str(), path[0], path.size());
@@ -1672,8 +1688,8 @@ private:
     t.start_seq = ++task_seq_;
     traffic_->request_move(r.name, path[0], path[0], compute_priority(r.name, t));   // 진입점 점유
     tasks_.push_back(t);
+    ++state_gen_;          // 세대 먼저 — 순서가 뒤바뀌면 시간표가 버려진다(start_patrol 주석)
     replan_all_routes();   // 주간 순회와 같은 이유 — start_patrol 주석 참고
-    ++state_gen_;
     publish_task_state(tid, "SECURITY_PATROL", r.name);
     RCLCPP_INFO(get_logger(), "[%s] %s 보안순회 시작 (시작 v%d, %zu nodes)",
                 tid.c_str(), r.name.c_str(), path[0], path.size());
@@ -1813,7 +1829,6 @@ private:
   std::string navgraph_file_;
   std::string fleet_name_;
   int stuck_ticks_{0};   // 0 = 무진행 감지 비활성
-  double plan_deadline_slack_{10.0};  // 계획 도착 시각을 이만큼 넘기면 재계획(초). CbsTraffic::drift_limit 과 같게
   // 간선별 (연속 마감 실패 횟수, 마지막 실패 시각). note_deadline_miss/kept 가 관리한다.
   std::map<std::pair<int, int>, std::pair<int, double>> edge_miss_;
   int replan_cooldown_ticks_{20};     // 재계획 최소 간격(틱)
@@ -1845,6 +1860,10 @@ private:
   rclcpp::Publisher<libi_fleet_msgs::msg::FleetOccupancy>::SharedPtr occ_pub_;
   rclcpp::Publisher<libi_fleet_msgs::msg::FleetPlan>::SharedPtr plan_pub_;
   int plan_seq_{0};
+  //: 마지막으로 낸 시간표가 비어 있었나. 래치 토픽이라 "비었다" 도 한 번은 내야 하고,
+  //  이미 냈으면 또 낼 필요가 없다(`clear_plan_once`). 시작 시점은 아무것도 안 낸
+  //  상태이므로 true — 첫 계획이 나가기 전에 빈 계획을 내지 않는다.
+  bool last_plan_empty_{true};
   rclcpp::Publisher<libi_fleet_msgs::msg::FleetRoutes>::SharedPtr route_pub_;
   rclcpp::Subscription<libi_fleet_msgs::msg::RobotHold>::SharedPtr hold_sub_;
 
