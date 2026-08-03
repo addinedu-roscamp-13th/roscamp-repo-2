@@ -105,3 +105,79 @@ def test_sector_points_sorted_across_the_0_360_wrap():
     assert len(pts) > 0
     angles = np.arctan2(pts[:, 1], pts[:, 0])
     assert np.all(np.diff(angles) >= -1e-9)
+
+
+def test_fit_wall_finds_distance_and_yaw():
+    cfg = LidarDockConfig()
+    pts = detect.sector_points(make_scan(wall_m=0.30, yaw=0.0),
+                               ANGLE_MIN, ANGLE_INC, RANGE_MIN, RANGE_MAX, cfg)
+    wall = detect.fit_wall(pts, cfg)
+    assert wall is not None
+    assert wall.offset == pytest.approx(0.30, abs=0.005)
+    assert wall.yaw == pytest.approx(0.0, abs=0.02)
+
+
+def test_fit_wall_measures_a_tilted_wall():
+    cfg = LidarDockConfig()
+    pts = detect.sector_points(make_scan(wall_m=0.30, yaw=0.20),
+                               ANGLE_MIN, ANGLE_INC, RANGE_MIN, RANGE_MAX, cfg)
+    wall = detect.fit_wall(pts, cfg)
+    assert wall is not None
+    assert wall.yaw == pytest.approx(0.20, abs=0.03)
+
+
+def test_fit_wall_is_not_dragged_by_the_notch():
+    """노치 점들은 구조적 이상점이다. 단순 최소제곱이면 직선이 그쪽으로 끌려가
+    **yaw 가 틀린 채로 로봇이 비스듬히 들어간다** — 조용히 틀리는 부류다."""
+    cfg = LidarDockConfig()
+    pts = detect.sector_points(make_scan(wall_m=0.30, y_off=0.10, notch_d=0.025),
+                               ANGLE_MIN, ANGLE_INC, RANGE_MIN, RANGE_MAX, cfg)
+    wall = detect.fit_wall(pts, cfg)
+    assert wall is not None
+    assert wall.yaw == pytest.approx(0.0, abs=0.02)
+    assert wall.offset == pytest.approx(0.30, abs=0.005)
+
+
+def test_fit_wall_is_not_dragged_by_the_notch_at_close_range():
+    """위 시험(`wall_m=0.30`)은 노치를 plain refit(TLS, RANSAC 없이)으로 돌려도
+    170 점 중 12 점뿐이라 여유 있게 통과해 버린다 — brief 의 Step 5 되돌리기가
+    이 시험으로는 실제로 빨개지지 않는다(실측 확인함). 도킹 막바지는 벽에 훨씬
+    가깝다(`cfg.stop_m=0.065`, `cfg.v_far_dist_m=0.30`) — `wall_m=0.15`(같은
+    섹터각에서 벽까지 거리가 절반이면 점군의 y 폭도 절반이라 노치가 차지하는
+    비중이 커진다)에 config 유효범위 안(`notch_depth_max_m=0.040`)의 노치를
+    두면 plain refit 이 실제로 끌려간다(실측: yaw −0.027rad, offset +6.6mm 오차,
+    둘 다 아래 허용오차를 벗어난다) — 이 시험이 RANSAC 이 필요하다는 것의
+    진짜 증거다."""
+    cfg = LidarDockConfig()
+    pts = detect.sector_points(make_scan(wall_m=0.15, y_off=0.05, notch_d=0.040),
+                               ANGLE_MIN, ANGLE_INC, RANGE_MIN, RANGE_MAX, cfg)
+    wall = detect.fit_wall(pts, cfg)
+    assert wall is not None
+    assert wall.yaw == pytest.approx(0.0, abs=0.02)
+    assert wall.offset == pytest.approx(0.15, abs=0.005)
+
+
+def test_fit_wall_rejects_a_scan_with_no_wall():
+    """점들이 직선을 이루지 않으면(사람 다리 등) 벽이 아니다.
+    노치를 벽 직선 위에서만 찾으므로, 이 기각이 곧 오검출 1차 방어다."""
+    cfg = LidarDockConfig()
+    rng = np.random.default_rng(1)
+    pts = np.stack([rng.uniform(0.2, 1.0, 200), rng.uniform(-0.5, 0.5, 200)], axis=1)
+    assert detect.fit_wall(pts, cfg) is None
+
+
+def test_fit_wall_rejects_too_few_points():
+    cfg = LidarDockConfig(min_points=20)
+    pts = np.array([[0.3, 0.0], [0.3, 0.01], [0.3, 0.02]])
+    assert detect.fit_wall(pts, cfg) is None
+
+
+def test_fit_wall_is_deterministic():
+    """RANSAC 이 난수를 쓰지만 같은 입력에 같은 답이 나와야 한다 — 안 그러면
+    현장에서 '가끔 안 붙는다'가 재현 불가능해진다."""
+    cfg = LidarDockConfig()
+    pts = detect.sector_points(make_scan(), ANGLE_MIN, ANGLE_INC,
+                               RANGE_MIN, RANGE_MAX, cfg)
+    a = detect.fit_wall(pts, cfg)
+    b = detect.fit_wall(pts, cfg)
+    assert a.yaw == b.yaw and a.offset == b.offset

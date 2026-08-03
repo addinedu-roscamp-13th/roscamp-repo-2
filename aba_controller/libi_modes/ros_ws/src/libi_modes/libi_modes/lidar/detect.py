@@ -53,3 +53,81 @@ def sector_points(ranges, angle_min, angle_increment, range_min, range_max,
     order = np.argsort(a, kind="stable")
     a, r = a[order], r[order]
     return np.stack([r * np.cos(a), r * np.sin(a)], axis=1)
+
+
+@dataclass(frozen=True)
+class Wall:
+    """도크 벽에 맞춘 직선.
+
+    `normal` 은 **원점에서 벽 쪽**을 향하는 단위벡터다. 방향을 고정하지 않으면
+    `yaw` 부호가 스캔마다 뒤집혀 조향이 반대로 걸린다.
+    """
+    normal: np.ndarray
+    offset: float
+    yaw: float
+    rms: float
+    inliers: np.ndarray
+
+
+def _refit(pts: np.ndarray) -> tuple[np.ndarray, float, float]:
+    """전최소제곱(PCA)으로 재피팅 → `(normal, offset, rms)`.
+
+    최소제곱이 아니라 전최소제곱을 쓰는 이유: 보통의 y-on-x 최소제곱은 벽이 수직에
+    가까워지면 발산한다. 도크 벽은 로봇 정면에 서므로 정확히 그 경우다.
+    """
+    mean = pts.mean(axis=0)
+    centred = pts - mean
+    # 공분산의 최소 고윳값에 대응하는 고유벡터가 법선이다.
+    _, _, vt = np.linalg.svd(centred, full_matrices=False)
+    normal = vt[-1]
+    offset = float(normal @ mean)
+    if offset < 0:                       # 원점에서 벽 쪽을 향하게 고정한다
+        normal, offset = -normal, -offset
+    rms = float(np.sqrt(np.mean((centred @ normal) ** 2)))
+    return normal, offset, rms
+
+
+def fit_wall(pts: np.ndarray, cfg: LidarDockConfig, rng=None) -> Wall | None:
+    """RANSAC 으로 벽 직선을 찾고 inlier 로 재피팅한다. 못 믿으면 `None`.
+
+    ## 왜 단순 최소제곱이 아닌가
+
+    노치에 해당하는 점들이 **구조적으로** 이상점이다. 단순 최소제곱은 그쪽으로
+    끌려가 벽이 기울어진 것처럼 나오고, 그러면 yaw 가 틀린 채로 로봇이 비스듬히
+    들어간다. 예외도 로그도 없이 조용히 틀린다.
+
+    ## 왜 난수 씨앗을 고정하나
+
+    같은 스캔에 매번 같은 답이 나와야 한다. 안 그러면 현장에서 "가끔 안 붙는다"가
+    재현 불가능해지고, 그때부터는 검출을 의심할 수도 믿을 수도 없게 된다.
+    """
+    n = len(pts)
+    if n < cfg.min_points:
+        return None
+    rng = np.random.default_rng(0) if rng is None else rng
+    tol = float(cfg.ransac_inlier_m)
+
+    best_mask, best_count = None, 0
+    for _ in range(int(cfg.ransac_iters)):
+        i, j = rng.choice(n, size=2, replace=False)
+        d = pts[j] - pts[i]
+        norm = math.hypot(d[0], d[1])
+        if norm < 1e-6:
+            continue
+        nvec = np.array([-d[1] / norm, d[0] / norm])
+        mask = np.abs((pts - pts[i]) @ nvec) <= tol
+        count = int(mask.sum())
+        if count > best_count:
+            best_mask, best_count = mask, count
+
+    if best_mask is None or best_count < max(2, int(cfg.ransac_min_inlier_ratio * n)):
+        return None
+
+    normal, offset, rms = _refit(pts[best_mask])
+    if rms > cfg.wall_rms_max_m:
+        return None
+    yaw = math.atan2(float(normal[1]), float(normal[0]))
+    if abs(yaw) > cfg.wall_yaw_max_rad:
+        # 이만큼 비뚤어졌으면 도크 벽을 본 게 아닐 확률이 높다.
+        return None
+    return Wall(normal=normal, offset=offset, yaw=yaw, rms=rms, inliers=best_mask)
