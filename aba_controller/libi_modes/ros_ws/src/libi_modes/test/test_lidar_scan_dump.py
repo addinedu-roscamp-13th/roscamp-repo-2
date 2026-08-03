@@ -45,6 +45,20 @@ def test_zero_degree_is_included():
     assert any(abs(deg) < 1.0 for deg, _ in rows)
 
 
+def test_rows_sorted_across_the_0_360_wrap():
+    """실기 RPLIDAR 는 angle_min≈0 에 거의 풀서클이라, 후방(0도 중심) 섹터가
+    360도/0도 감기 경계를 넘나든다. 위 시험들은 angle_min=-pi 라 이 경계를 안 건드려
+    sort() 를 못 잡는다 — 이 시험이 그 구멍을 메운다.
+    """
+    n = 500
+    rows = scan_dump.rows_from_scan(
+        _ranges(n), angle_min=0.0, angle_increment=2 * math.pi / n,
+        sector_half_deg=60.0)
+    degs = [deg for deg, _ in rows]
+    assert degs, "섹터 안 광선이 하나도 안 나왔다"
+    assert degs == sorted(degs)
+
+
 def test_unmeasurable_rays_are_kept_as_zero_not_dropped():
     """못 잰 광선을 빼 버리면 덤프에서 '노치가 반사를 안 준다'를 못 본다."""
     n = 500
