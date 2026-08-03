@@ -18,6 +18,11 @@ YOLO·로봇 검출 송출·추종 제어의 심장이다. 여기서 예외가 �
 """
 from __future__ import annotations
 
+import os
+import queue
+import shutil
+import subprocess
+import threading
 import uuid
 from dataclasses import dataclass
 from collections import deque
@@ -214,3 +219,105 @@ class SecurityRecorder:
             return fn(*args)
         except Exception:                                       # noqa: BLE001
             return None
+
+
+def resolve_ffmpeg():
+    """`SECURITY_FFMPEG` → `PATH` 순. 없으면 `None`.
+
+    실측 2026-08-03: 이 머신의 ffmpeg 은 `/home/ane/.local/bin/ffmpeg`(사용자 홈
+    static 빌드)라 pm2/systemd PATH 에 안 잡힐 수 있다. 그래서 환경변수를 먼저 본다.
+    """
+    env = os.environ.get("SECURITY_FFMPEG")
+    if env:
+        return env
+    return shutil.which("ffmpeg")
+
+
+class FfmpegClipWriter:
+    """JPEG 를 그대로 파이프로 흘려 H.264 mp4 를 만든다.
+
+    ## 왜 별도 스레드인가 — 녹화가 제어를 죽이면 안 된다
+
+    `stdin.write()` 는 파이프 버퍼(리눅스 64KB)가 차면 **블록한다.** 그 자리가
+    `perception_server` 메인 스레드라, 막히면 YOLO·검출 송출·추종이 통째로 멈춘다
+    (밤에 사람 쫓던 로봇이 그 자리에 선다). 그래서 **유한 큐 + writer 스레드**로
+    떼어내고, **큐가 차면 프레임을 버린다.** 녹화 품질 < 제어 안전.
+
+    ## 왜 재인코딩이 없나
+
+    `perception_server` 가 뷰어용으로 이미 JPEG 을 만든다. `-f image2pipe` 로 그
+    바이트를 그대로 먹인다.
+    """
+
+    def __init__(self, media_dir, *, fps=17, ffmpeg_path=None, queue_max=60):
+        self._dir = media_dir
+        self._fps = int(fps)
+        self._bin = ffmpeg_path if ffmpeg_path is not None else resolve_ffmpeg()
+        self._q = queue.Queue(maxsize=queue_max)
+        self._proc = None
+        self._thread = None
+        self._path = None
+        self.dropped = 0
+
+    def open_clip(self, name):
+        if self._bin is None:
+            return
+        os.makedirs(self._dir, exist_ok=True)
+        self._path = os.path.join(str(self._dir), name)
+        self._proc = subprocess.Popen(
+            [self._bin, "-hide_banner", "-loglevel", "error",
+             "-f", "image2pipe", "-vcodec", "mjpeg",
+             "-framerate", str(self._fps), "-i", "-",
+             "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+             "-movflags", "+faststart", "-y", self._path],
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL)
+        self._thread = threading.Thread(target=self._pump, daemon=True)
+        self._thread.start()
+
+    def write(self, jpeg):
+        """**절대 블록하지 않는다.** 큐가 차면 버리고 센다."""
+        if self._proc is None:
+            return
+        try:
+            self._q.put_nowait(jpeg)
+        except queue.Full:
+            self.dropped += 1
+
+    def close_clip(self):
+        if self._proc is None:
+            return False
+        # ⚠️ `put(None)` 은 큐가 차 있으면 **블록한다** — 여기도 메인 스레드다.
+        #    자리가 없으면 오래된 프레임을 버려서라도 자리를 만든다.
+        while True:
+            try:
+                self._q.put_nowait(None)
+                break
+            except queue.Full:
+                try:
+                    self._q.get_nowait()
+                    self.dropped += 1
+                except queue.Empty:
+                    break
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+        proc, self._proc, self._thread = self._proc, None, None
+        try:
+            if proc.stdin:
+                proc.stdin.close()
+            proc.wait(timeout=5)
+        except Exception:                       # noqa: BLE001
+            proc.kill()                         # 좀비를 남기지 않는다
+            return False
+        return proc.returncode == 0 and os.path.exists(self._path)
+
+    def _pump(self):
+        while True:
+            item = self._q.get()
+            if item is None:
+                return
+            try:
+                self._proc.stdin.write(item)
+            except (BrokenPipeError, ValueError, AttributeError, OSError):
+                # 디스크가 찼거나 ffmpeg 이 죽었다 — 이 클립만 실패로 끝난다.
+                return
