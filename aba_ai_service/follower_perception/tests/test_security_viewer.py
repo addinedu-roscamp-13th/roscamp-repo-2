@@ -51,3 +51,18 @@ def test_접속이_실패해도_루프가_안_끝난다():
     stop = threading.Event()
     run("127.0.0.1", 5027, connect_fn=connect, stop_evt=stop, retry_sec=0)
     assert len(attempts) >= 3
+
+
+def test_OSError가_아닌_예외도_삼키고_재시도한다():
+    """connect_fn 버그(예: ValueError)로 밤새 프로세스가 죽으면 안 된다."""
+    attempts = []
+    def connect(host, port):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise ValueError("커스텀 connect_fn 버그")
+        stop.set()
+        return FakeSock([b"x"])
+
+    stop = threading.Event()
+    run("127.0.0.1", 5027, connect_fn=connect, stop_evt=stop, retry_sec=0)
+    assert len(attempts) >= 2

@@ -49,7 +49,7 @@ def run(host, port, *, connect_fn=None, stop_evt=None, retry_sec=1.0):
             sock = connect_fn(host, port)
             print(f"[secview] 붙었습니다 {host}:{port}", flush=True)
             drain(sock, stop_evt)
-        except OSError as e:
+        except Exception as e:                                  # noqa: BLE001
             print(f"[secview] 접속 실패({e}) — {retry_sec}초 뒤 재시도", flush=True)
         finally:
             if sock is not None:
