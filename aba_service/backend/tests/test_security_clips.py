@@ -99,6 +99,22 @@ def test_zone_이_비면_FMS_스냅샷에서_채운다(client, admin_auth, fms, 
     assert events[0]["zone"] == "과학-인문학서가"
 
 
+def test_zone_조회는_1초_타임아웃을_명시해서_부른다(client, admin_auth, fms, monkeypatch):
+    """요구사항 20: 기본 `TIMEOUT_SEC`(8초, 재로그인 재시도 포함 최대 ~24초)를 그대로 쓰면
+    AI 서비스의 `OpsSink.report()`(3초 타임아웃)가 먼저 끊겨 event_id 를 못 받고, 뒤이은
+    attach_clip 이 조용히 스킵된다 — 위치 조회는 반드시 1초로 잘려야 한다."""
+    from app.routers import ops_extra
+    seen: dict = {}
+
+    def fake(*a, **k):
+        seen.update(k)
+        return True, {"robots": [{"name": "pinky-3", "node": "과학-인문학서가"}]}
+
+    monkeypatch.setattr(ops_extra.fms_client, "fleet_snapshot", fake)
+    client.post("/api/admin/ops/security/events", json={"source": "pinky-3", "note": "x"})
+    assert seen.get("timeout") == 1
+
+
 def test_FMS_가_죽어도_이벤트는_저장된다(client, admin_auth, fms, monkeypatch):
     """알림이 먼저다. 위치 조회 실패가 보고를 막으면 안 된다."""
     from app.routers import ops_extra
