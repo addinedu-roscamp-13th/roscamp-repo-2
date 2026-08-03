@@ -45,7 +45,7 @@ else:
           file=sys.stderr)
 matplotlib.rcParams["axes.unicode_minus"] = False
 
-_LIBI_MODES_SRC = (Path(__file__).resolve().parents[2]
+_LIBI_MODES_SRC = (Path(__file__).resolve().parents[3]
                     / "aba_controller/libi_modes/ros_ws/src/libi_modes")
 sys.path.insert(0, str(_LIBI_MODES_SRC))
 
@@ -189,8 +189,9 @@ def main() -> None:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("scans", nargs="*", help="scan CSV 파일(들) — 여러 장이면 순서대로 애니메이션. "
                     "--robot 을 쓰면 생략한다")
-    ap.add_argument("-o", "--out", default="dock_scan.png",
-                    help="출력 파일. 확장자가 .gif 면 애니메이션, 아니면 첫 장만 정지 이미지")
+    ap.add_argument("-o", "--out", required=True,
+                    help="[필수] 출력 파일. 확장자가 .gif 면 애니메이션, 아니면 첫 장만 정지 이미지 "
+                    "— 기본값을 안 둔다: 안 주면 실행이 안 된다(전 결과 덮어쓰기 방지)")
     ap.add_argument("--robot", choices=sorted(ROBOT_DEFAULTS), default=None,
                     help="CSV 대신 이 로봇에서 실시간으로 캡처한다(예: pinky-3)")
     ap.add_argument("--count", type=int, default=5, help="--robot 캡처 장수")
