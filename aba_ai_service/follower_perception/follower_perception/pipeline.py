@@ -172,11 +172,64 @@ class FollowerPerception:
         # nearest to center; larger area breaks ties
         return min(viable, key=lambda c: (abs(c.cx - cx0), -c.area))
 
+    def _pick_nearest(self, cands, frame):
+        """화면에서 가장 크게 보이는 후보. 카메라에서 크다 = 가깝다.
+
+        `_pick_central`(가운데)과 **갈라 둔다.** 야간 보안의 침입 트리거는
+        `_front_person_size`(화면 최대 크기)로 걸리므로, 등록도 같은 기준이어야
+        **트리거한 사람과 등록한 사람이 같아진다.** 가운데로 고르면 화면 가장자리에
+        가까이 선 침입자가 트리거를 걸고 정중앙의 먼 행인이 등록되는 일이 생긴다.
+
+        `REGISTRATION_MIN_AREA_RATIO` 필터는 `_pick_central` 과 똑같이 적용한다 —
+        너무 작은 검출로 등록하면 ReID 템플릿이 쓸모없어지는 것은 양쪽 다 같다.
+        """
+        if not cands:
+            return None
+        h, w = frame.shape[:2]
+        frame_area = float(w * h)
+        viable = [c for c in cands
+                  if c.area / frame_area >= REGISTRATION_MIN_AREA_RATIO]
+        if not viable:
+            return None
+        return max(viable, key=lambda c: c.area)
+
     def register_from_image(self, image_bgr):
         """Register the central person from a SINGLE image (bypasses the
         3-frame stability requirement). Returns the chosen TrackedBox or None."""
         cands = self.detector.detect(image_bgr)
         target = self._pick_central(cands, image_bgr)
+        if target is None:
+            return None
+        roi = TargetMatcher._crop(image_bgr, target.bbox)
+        if roi is None:
+            return None
+        self.matcher.register(roi)
+        self.smoother.reset()
+        self._last_owner = None
+        self._miss = 0
+        self._reg_id = None
+        self._reg_streak = 0
+        self._last_crop = roi
+        self._last_bbox = list(target.bbox)
+        self._on_registered()
+        return target
+
+    def register_nearest(self, image_bgr, cands=None):
+        """화면에서 가장 크게 보이는 사람을 owner 로 등록한다 — 야간 보안 전용.
+
+        `register_from_image`(화면 가운데)와 **뽑는 후보만 다르고 나머지는 같다.**
+        갈라 둔 이유는 `_pick_nearest` 머리말 참고. 관리자 추종은 "사람이 화면
+        가운데 서서 등록 버튼을 누른다"가 맞는 전제라 그쪽은 건드리지 않는다.
+
+        ⚠️ `cands` 를 주면 **검출을 다시 안 돌린다.** 호출부(`perception_server` 프레임
+        루프)는 이미 `perception.run(frame)` 으로 YOLO 를 한 번 돌렸고
+        `perception.last_cands` 에 결과를 들고 있다. 안 넘기면 트리거가 걸린 그 프레임에서
+        **YOLO 가 두 번 돌아** 메인 루프가 수십 ms 더 멈춘다 — 그 자리가 추종 제어의
+        심장이다. 안 주면 예전처럼 직접 검출한다(단독 호출 호환).
+        """
+        if cands is None:
+            cands = self.detector.detect(image_bgr)
+        target = self._pick_nearest(cands, image_bgr)
         if target is None:
             return None
         roi = TargetMatcher._crop(image_bgr, target.bbox)
