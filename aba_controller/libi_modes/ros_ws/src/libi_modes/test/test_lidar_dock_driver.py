@@ -189,6 +189,46 @@ def test_detect_near_is_never_called_while_acquiring(monkeypatch):
     assert near_calls == [], "ACQUIRE 에서 detect_near 를 부르면 안 된다"
 
 
+def test_search_phase_detects_with_the_widened_cfg_not_the_narrow_one(monkeypatch):
+    """SEARCH 국면에서는 좁은 기본 창(±60도)이 아니라 넓힌 탐색 창으로 `detect()`
+    를 불러야 한다 — 사전 회전이 크게 어긋나도 벽을 찾을 수 있어야 한다(실측
+    2026-08-03, 벽 yaw -40.7도로 넘어온 사례)."""
+    node, drv, _ = _driver(sector_half_deg=60.0, search_half_deg=175.0)
+    drv.start()
+    drv._machine.phase = "SEARCH"
+    msg = SimpleNamespace(ranges=[1.0] * 10, angle_min=0.0, angle_increment=0.01,
+                          range_min=0.05, range_max=2.0)
+    node.sub_cb(msg)
+
+    seen_cfgs = []
+    monkeypatch.setattr(lidar_dock_driver, "detect",
+                        lambda *a, **k: seen_cfgs.append(a[-1]) or None)
+
+    node.timer_cb()
+
+    assert seen_cfgs, "detect 가 호출돼야 한다"
+    assert seen_cfgs[0].sector_half_deg == 175.0, "SEARCH 는 넓힌 cfg 로 검출해야 한다"
+
+
+def test_acquire_phase_still_detects_with_the_narrow_cfg(monkeypatch):
+    """SEARCH 를 벗어나면 다시 좁은 기본 창을 써야 한다 — 안 그러면 노치 아닌
+    다른 벽·물체를 오검출로 잡을 여지가 넓힌 창만큼 커진다."""
+    node, drv, _ = _driver(sector_half_deg=60.0, search_half_deg=175.0)
+    drv.start()
+    drv._machine.phase = "ACQUIRE"
+    msg = SimpleNamespace(ranges=[1.0] * 10, angle_min=0.0, angle_increment=0.01,
+                          range_min=0.05, range_max=2.0)
+    node.sub_cb(msg)
+
+    seen_cfgs = []
+    monkeypatch.setattr(lidar_dock_driver, "detect",
+                        lambda *a, **k: seen_cfgs.append(a[-1]) or None)
+
+    node.timer_cb()
+
+    assert seen_cfgs and seen_cfgs[0].sector_half_deg == 60.0
+
+
 def test_scan_gone_stale_after_being_live_is_treated_as_stale(monkeypatch):
     """스캔이 한 번 들어온 뒤(즉 `_msg_at` 이 `None` 이 아닌 채로) 뚝 끊기는 경우 —
     센서 고장·드라이버 죽음이 이거다. `_msg_at is None` 만 보면 이 경우를 놓치고

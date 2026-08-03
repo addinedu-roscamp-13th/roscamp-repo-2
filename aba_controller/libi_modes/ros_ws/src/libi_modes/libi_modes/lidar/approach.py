@@ -1,19 +1,30 @@
 """라이다 도킹 국면 상태기계 — 센서도 통신도 모른다.
 
-    SETTLE ──▶ ACQUIRE ──▶ ALIGN ──▶ APPROACH ──▶ FINAL ──▶ DONE
-                  │           └──────────┴──────────┘
-                  └────────────────── ABORT ◀────── 이탈·타임아웃·과주행
+    SETTLE ──▶ SEARCH ──▶ ACQUIRE ──▶ ALIGN ──▶ APPROACH ──▶ FINAL ──▶ DONE
+                  │           │           └──────────┴──────────┘
+                  └───────────┴────────────────── ABORT ◀────── 이탈·타임아웃·과주행
 
-## 탐색(SEARCH) 국면이 없다
+## SEARCH 국면 — 사전 회전을 안 믿는다
 
-기존 ArUco 도킹은 마커가 화각(±30°)을 벗어나면 좌우 7걸음을 훑었다. 라이다는 360도를
-보므로 **못 찾는 이유가 시야가 아니다.** 확정에 실패하면 회전하지 않고 실패로 뺀다.
+## [2026-08-03] 이전에는 "탐색 국면이 없다"였다 — 실측으로 뒤집혔다
 
-## 제자리 회전을 하지 않는다
+기존 설계 근거: "라이다는 360도를 보므로 못 찾는 이유가 시야가 아니다. 확정 실패하면
+회전하지 않고 실패로 뺀다." 이 가정은 **접근 전 회전(FaceApproachYaw)이 정확하다**는
+것을 전제한다. 그런데 실측(pinky-3)에서 그 회전이 목표각에 못 미친 채 다음 단계로
+넘어온 사례가 나왔다(벽 yaw -40.7도, ACQUIRE 의 허용치 35도 초과 — `notch_not_found`
+로 반복 실패). nav2 자체 회전 정밀도에 기대는 대신, 라이다가 스스로 훨씬 넓은 창
+(`search_half_deg`)으로 벽+노치를 찾고 그 방향으로 제자리 회전해 정렬한 뒤에야
+ACQUIRE 로 넘어간다. `search_align_tol_rad` 안에 들어오면 그 즉시 ACQUIRE 로
+넘기므로, 이후 흐름(확정→정렬→접근→최종)은 이전과 완전히 같다.
+
+## 제자리 회전을 하지 않는다 (SEARCH 제외)
 
 각속도 데드밴드가 두 개다 — 정지 중 제자리 회전은 0.16 rad/s 아래로 안 돌고, 주행 중
-조향은 0.08 로도 먹는다(정지마찰이 이미 깨져 있어서다). 그래서 항상 후진하면서
-조향하고, 펄스가 쉬는 구간에는 조향도 0 을 낸다 — 안 도는 명령을 내는 것은 잡음이다.
+조향은 0.08 로도 먹는다(정지마찰이 이미 깨져 있어서다). ACQUIRE 이후로는 항상
+후진하면서 조향하고, 펄스가 쉬는 구간에는 조향도 0 을 낸다 — 안 도는 명령을 내는
+것은 잡음이다. **SEARCH 만 예외다** — 아직 후진을 시작 못 했으니(방향을 모른다)
+정지 상태에서 도는 수밖에 없고, 그래서 `search_rot_rad_s` 는 회전 데드밴드
+(`ROTATE_DEADBAND_RAD_S`) 위로 강제된다(`config.py:clamped`).
 
 ## 감속을 속도가 아니라 듀티로 한다
 
@@ -23,6 +34,7 @@
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from libi_modes.lidar.config import LidarDockConfig
@@ -138,21 +150,39 @@ class LidarApproach:
         if now_s - self._t0 >= c.timeout_s:
             return self._stop("ABORT", "timeout")
 
+        # ⚠️ **FINAL 이 아니면 NEAR 관측을 받지 않는다.** NEAR 에는 직선 피팅이라는
+        #    오검출 방어가 없어 노치 없는 벽을 노치로 읽는다(실측 100%). 도킹이
+        #    오검출로 **시작**되지 않게 하는 구조적 방어(SETTLE·SEARCH·ACQUIRE)일
+        #    뿐 아니라, ALIGN·APPROACH 에서도 NEAR 의 `y` 는 못 믿는다 — 노치
+        #    가장자리가 창 밖으로 잘려 좌우 오차가 커진다(실측: 2cm→12mm, 3cm→21mm).
+        #    그 값이 FINAL 진입 문턱(`y_max_enter_final_m`, ≤15mm)을 오염시키면 안
+        #    된다. NEAR 는 FAR 가 확정하고 추적해 온 뒤 FINAL 에서의 인수인계일
+        #    때만 유효하다. **SEARCH 가 이 줄보다 먼저 있으면 안 된다** — NEAR 의
+        #    `yaw=0.0` 을 "정렬 끝났다"로 오인해 오검출로 ACQUIRE 에 넘어간다.
+        if obs is not None and obs.near and self.phase != "FINAL":
+            obs = None
+
         # ── SETTLE — nav2 잔여 속도가 죽기를 기다린다 ──────────────────────
         if self.phase == "SETTLE":
             if now_s - self._t0 < c.settle_sec:
                 return Cmd(0.0, 0.0, "SETTLE", False, "settling")
+            self._enter("SEARCH", now_s)
+
+        # ── SEARCH — 넓은 창으로 벽을 찾아 그 방향으로 제자리 정렬한다 ──────
+        #   `obs` 는 이 tick 의 원본 관측이다(드라이버가 SEARCH 국면일 때 넓힌
+        #   cfg 로 이미 검출해 넘겨준다 — lidar_dock_driver.py 참고). 여기서는
+        #   필터를 거치지 않는다: 회전 중에는 y·yaw 가 빠르게 바뀌는 게 정상이라,
+        #   ACQUIRE 이후의 EMA·튐게이트를 그대로 쓰면 정상 프레임이 전부 걸러진다.
+        if self.phase == "SEARCH":
+            if now_s - self._phase_t0 >= c.search_timeout_s:
+                return self._stop("ABORT", "search_timeout")
+            if obs is None:
+                return Cmd(0.0, c.search_rot_rad_s, "SEARCH", False, "searching")
+            if abs(obs.yaw) > c.search_align_tol_rad:
+                ang = math.copysign(c.search_rot_rad_s, c.steer_sign * obs.yaw)
+                return Cmd(0.0, ang, "SEARCH", False, "aligning")
             self._enter("ACQUIRE", now_s)
 
-        # ⚠️ **FINAL 이 아니면 NEAR 관측을 받지 않는다.** NEAR 에는 직선 피팅이라는
-        #    오검출 방어가 없어 노치 없는 벽을 노치로 읽는다(실측 100%). 도킹이
-        #    오검출로 **시작**되지 않게 하는 구조적 방어(SETTLE·ACQUIRE)일 뿐 아니라,
-        #    ALIGN·APPROACH 에서도 NEAR 의 `y` 는 못 믿는다 — 노치 가장자리가 창
-        #    밖으로 잘려 좌우 오차가 커진다(실측: 2cm→12mm, 3cm→21mm). 그 값이 FINAL
-        #    진입 문턱(`y_max_enter_final_m`, ≤15mm)을 오염시키면 안 된다. NEAR 는
-        #    FAR 가 확정하고 추적해 온 뒤 FINAL 에서의 인수인계일 때만 유효하다.
-        if obs is not None and obs.near and self.phase != "FINAL":
-            obs = None
         filtered = self._filter(obs, now_s) if obs is not None else None
 
         # ── ACQUIRE — 정지 상태에서 확정. 회전하지 않는다 ──────────────────

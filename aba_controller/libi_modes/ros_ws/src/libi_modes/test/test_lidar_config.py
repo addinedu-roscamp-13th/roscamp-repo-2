@@ -13,6 +13,15 @@ def test_defaults_are_physically_sane():
     assert c.v_far_mps > c.v_near_mps
     assert c.pulse_dist_m < c.v_far_dist_m
     assert c.notch_depth_min_m < 0.025 < c.notch_depth_max_m
+    # SEARCH 가 ACQUIRE 로 넘긴 바로 다음 tick 에 좁은 창의 detect() 도 곧장
+    # 성공해야 한다 — 안 그러면 넘기자마자 다시 실패로 튕긴다.
+    assert c.search_align_tol_rad < c.wall_yaw_max_rad
+
+
+def test_clamped_raises_search_rotation_up_to_the_rotation_deadband():
+    """정지 상태 제자리 회전은 0.16 rad/s 아래로 안 돈다(approach.py SEARCH 참고)."""
+    c = LidarDockConfig(search_rot_rad_s=0.01).clamped()
+    assert c.search_rot_rad_s == 0.16
 
 
 def test_clamped_raises_speed_up_to_the_motor_deadband():

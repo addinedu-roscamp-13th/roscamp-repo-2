@@ -25,6 +25,7 @@ FSM 잠금(160)에는 지고 새어 나온 nav2 목표(50)에는 이긴다. 그�
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 
 from libi_modes.lidar.approach import LidarApproach
 from libi_modes.lidar.config import LidarDockConfig
@@ -69,6 +70,10 @@ class LidarDockDriver:
 
         self._Twist = Twist
         self._cfg = cfg
+        # SEARCH 국면 전용 — 사전 회전이 부정확해도 벽을 찾도록 창을 넓힌다
+        # (config.py 의 "탐색" 섹션 참고). 매 tick 새로 만들지 않고 한 번만 만든다.
+        self._search_cfg = replace(cfg, sector_half_deg=cfg.search_half_deg,
+                                   wall_yaw_max_rad=cfg.search_wall_yaw_max_rad)
         self._now = now
         self._log = node.get_logger()
         self._pub = node.create_publisher(Twist, cmd_topic, 10)
@@ -158,8 +163,11 @@ class LidarDockDriver:
         #    (0.5s)·모터 워치독(0.5s)까지 계속 밀린다. 0.05m/s 면 2.5cm 다.
         msg = self._msg
         try:
+            # SEARCH 국면에서는 넓힌 cfg 로 찾는다 — 사전 회전이 부정확해도
+            # 벽을 봐야 한다(config.py "탐색" 섹션, 2026-08-03 실측).
+            detect_cfg = self._search_cfg if self._machine.phase == "SEARCH" else self._cfg
             obs = detect(msg.ranges, msg.angle_min, msg.angle_increment,
-                         msg.range_min, msg.range_max, self._cfg)
+                         msg.range_min, msg.range_max, detect_cfg)
             # FAR 가 실패하고 이미 FINAL 이면 NEAR 로 인수인계한다.
             # ⚠️ **FINAL 뿐이다 — APPROACH 는 아니다.** NEAR 의 `y` 는 근거리에서
             #    노치 가장자리가 창 밖으로 잘려 오차가 커진다(실측: 좌우 2cm→12mm,

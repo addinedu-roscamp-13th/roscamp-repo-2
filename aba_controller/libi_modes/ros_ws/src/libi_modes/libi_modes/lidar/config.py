@@ -28,6 +28,11 @@ MOTOR_DEADBAND_MPS = 0.05
 #: 도달 정밀도의 하한이 여기서 나온다 — 센서가 아니라 모터가 정한다.
 MIN_STEP_S = 0.10
 
+#: 실측 회전 데드밴드(rad/s). 정지 상태 제자리 회전은 이 아래로 안 돈다
+#: (approach.py 의 SEARCH 국면 머리말 참고). 주행 중 조향(`ang_max_rad_s`)과는
+#: 다른 값이다 — 그쪽은 이미 정지마찰이 깨진 채로 도니 더 작아도 먹는다.
+ROTATE_DEADBAND_RAD_S = 0.16
+
 
 @dataclass(frozen=True)
 class LidarDockConfig:
@@ -54,6 +59,21 @@ class LidarDockConfig:
     notch_depth_max_m: float = 0.040
     notch_width_min_m: float = 0.03
     notch_width_max_m: float = 0.10
+    # ── 탐색 (SEARCH, 임의 자세에서 벽·노치 찾기) ─────────────────────────
+    #   ★ 현장 실측 (2026-08-03, pinky-3) — 접근 전 회전(FaceApproachYaw)이 목표각
+    #     못 미친 채 다음 단계로 넘어온 사례가 있었다(실측 벽 yaw -40.7도, 아래
+    #     `wall_yaw_max_rad` 35도 초과). nav2 자체 회전 정밀도에 기대지 않고, 라이다
+    #     스스로 훨씬 넓은 창으로 벽+노치를 찾아 그 방향으로 정렬한 뒤 ACQUIRE 로
+    #     넘어간다 — `sector_points`/`fit_wall` 은 그대로 두고 이 국면에서만 `sector_half_deg`·
+    #     `wall_yaw_max_rad` 대신 이 값들로 바꿔 부른다(`_refit` 의 offset>=0 부호 고정이
+    #     180도 모호성을 없애므로 거의 전 방향을 봐도 방향 판정이 흔들리지 않는다).
+    search_half_deg: float = 175.0
+    search_wall_yaw_max_rad: float = 3.2
+    #: 이 안으로 들어오면 ACQUIRE 로 넘긴다. `wall_yaw_max_rad`(0.61)보다 빡빡해야
+    #: 넘어간 바로 다음 tick 에 좁은 창의 `detect()` 도 곧장 성공한다.
+    search_align_tol_rad: float = 0.4
+    search_rot_rad_s: float = 0.25
+    search_timeout_s: float = 30.0
     # ── NEAR 모드 (벽이 min range 아래로 사라진 뒤) ───────────────────────
     near_half_deg: float = 35.0
     near_gap_m: float = 0.02
@@ -132,6 +152,7 @@ class LidarDockConfig:
             min_points=max(4, int(self.min_points)),
             ransac_iters=max(1, int(self.ransac_iters)),
             ang_max_rad_s=abs(float(self.ang_max_rad_s)),
+            search_rot_rad_s=max(abs(float(self.search_rot_rad_s)), ROTATE_DEADBAND_RAD_S),
             steer_sign=math.copysign(1.0, float(self.steer_sign) or 1.0),
             # 최종 국면에는 벽이 min range 아래로 사라져 yaw 를 못 잰다.
             # 값을 적어 놔도 죽은 센서값을 믿는 것이라 0 으로 강제한다.

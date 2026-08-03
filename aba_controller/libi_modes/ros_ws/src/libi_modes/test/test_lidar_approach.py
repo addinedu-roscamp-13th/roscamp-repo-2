@@ -6,6 +6,8 @@
   · 벽이 사라진 뒤에도 yaw 를 계속 믿으면 죽은 값으로 조향한다
   · 펄스가 수렴하지 않으면 목표를 지나쳐 계속 민다
 """
+import math
+
 import pytest
 
 from libi_modes.lidar.approach import Cmd, LidarApproach
@@ -81,18 +83,68 @@ def test_acquire_needs_consecutive_confirmations():
 
 
 def test_acquire_aborts_without_rotating_when_nothing_is_found():
-    """라이다는 360도를 본다. 못 찾는 이유가 시야가 아니므로 스윕하지 않는다.
+    """SEARCH 가 이미 대략적 정렬을 끝내고 넘겨준 자리가 ACQUIRE 다 — 여기서부터는
+    다시 돌거나 훑지 않는다. 확정에 실패하면 회전 없이 그냥 실패로 뺀다.
+
+    (SEARCH 자체가 못 찾으면 도는 것과는 다른 자리다 — 그건
+    `test_search_rotates_in_place_when_nothing_found_yet` 가 잠근다. 여기서는
+    `phase` 를 직접 "ACQUIRE" 로 놓아 SEARCH 를 건너뛰고 ACQUIRE 만 시험한다.)
 
     `t0` 은 `cfg.settle_sec` 에 여유를 더해 잡는다 — 고정값(예: 2.0)을 쓰면
-    `settle_sec` 기본값이 바뀔 때(1.0 → 3.0) `settled()` 가 이미 SETTLE 을 지나
-    ACQUIRE 로 넘어간 시각보다 이 `t0` 가 더 과거가 되어, 20 프레임을 다 먹여도
-    `acquire_timeout_s` 문턱을 못 넘겨 이 시험이 거짓으로 통과(또는 실패)한다.
+    `settle_sec` 기본값이 바뀔 때 `_phase_t0` 보다 이 `t0` 가 더 과거가 되어,
+    20 프레임을 다 먹여도 `acquire_timeout_s` 문턱을 못 넘겨 이 시험이 거짓으로
+    통과(또는 실패)한다.
     """
     cfg = LidarDockConfig(acquire_timeout_s=1.0)
     m = settled(cfg)
+    m.phase = "ACQUIRE"
+    m._phase_t0 = cfg.settle_sec + 2.0
     cmd = run(m, [None] * 20, t0=cfg.settle_sec + 2.0)
     assert cmd.phase == "ABORT"
     assert cmd.done is True
+    assert cmd.linear == 0.0 and cmd.angular == 0.0
+
+
+def test_search_rotates_in_place_when_nothing_found_yet():
+    """접근 전 회전이 부정확해도 라이다 스스로 벽을 찾아 정렬한다(2026-08-03 실측:
+    벽 yaw -40.7도로 넘어온 사례). 못 찾는 동안은 제자리 회전 — 후진은 안 한다."""
+    m = settled(LidarDockConfig())
+    cmd = m.step(None, 5.0)
+    assert cmd.phase == "SEARCH"
+    assert cmd.linear == 0.0
+    assert cmd.angular != 0.0
+
+
+def test_search_aborts_on_timeout_when_nothing_found():
+    """`t` 는 전체 타임아웃(`timeout_s`, 기본 90초)보다는 짧게, `search_timeout_s`
+    보다는 한참 지나게 잡는다 — 안 그러면 전체 타임아웃이 먼저 걸려 `reason` 이
+    "timeout" 으로 나와 이 시험이 실제로는 다른 것을 잰다."""
+    cfg = LidarDockConfig(search_timeout_s=1.0)
+    m = settled(cfg)
+    cmd = m.step(None, cfg.settle_sec + 5.0)
+    assert cmd.phase == "ABORT" and cmd.reason == "search_timeout"
+    assert cmd.linear == 0.0 and cmd.angular == 0.0
+
+
+def test_search_ignores_near_observations():
+    """NEAR 에는 직선 피팅이라는 오검출 방어가 없다 — SEARCH 의 정렬 판정에도
+    쓰면 안 된다(실측 벽 yaw 0.0 오인 위험). ACQUIRE 와 같은 방어를 SEARCH 도 진다."""
+    m = settled(LidarDockConfig())
+    cmd = m.step(near_obs(), 5.0)
+    assert cmd.phase == "SEARCH"
+
+
+def test_search_turns_toward_the_wall_and_hands_off_to_acquire_once_aligned():
+    cfg = LidarDockConfig(search_align_tol_rad=0.4, steer_sign=1.0)
+    m = settled(cfg)
+    # 크게 어긋난 상태 — 아직 정렬 전이라 그 방향으로 계속 돈다
+    cmd = m.step(obs(yaw=-0.9), 5.0)
+    assert cmd.phase == "SEARCH"
+    assert cmd.angular == pytest.approx(
+        math.copysign(cfg.search_rot_rad_s, cfg.steer_sign * -0.9))
+    # 허용 오차 안으로 들어왔다 — ACQUIRE 로 넘긴다
+    cmd = m.step(obs(yaw=0.1), 5.1)
+    assert cmd.phase == "ACQUIRE"
     assert cmd.linear == 0.0 and cmd.angular == 0.0
 
 
@@ -104,6 +156,8 @@ def test_near_observations_never_confirm_or_advance_out_of_acquire():
     cfg = LidarDockConfig(acquire_timeout_s=1.0, confirm_frames=3)
     m = settled(cfg)
     t = 2.0
+    m.phase = "ACQUIRE"          # SEARCH 를 건너뛴다 — 여기선 ACQUIRE 만 시험한다
+    m._phase_t0 = t
     last = None
     for _ in range(30):        # confirm_frames(3) 를 훌쩍 넘긴다
         last = m.step(near_obs(), t)
