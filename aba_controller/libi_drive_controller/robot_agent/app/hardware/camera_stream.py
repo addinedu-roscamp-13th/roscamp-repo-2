@@ -17,6 +17,22 @@ except ImportError:
     _PICAMERA2_AVAILABLE = False
     Output = object  # type: ignore
 
+# 캡처 해상도. ArUco 검출은 '마커가 몇 픽셀이냐'에 직접 걸리므로 여기서 한 번만 정한다.
+#
+# ★ 해상도를 올린다고 마커가 커지는 게 아니다 — ov5647 은 요청 해상도에 따라 센서 모드가
+#   바뀌고, 모드마다 화각이 다르다. 2026-08-03 실측:
+#       480x360 요청 → 크롭된 좁은 화각 모드,  같은 마커가 22px
+#       960x720 요청 → 전체 화각 모드,        같은 마커가 20px  ← 각해상도가 오히려 하락
+#   즉 넓은 화각 모드로 넘어가면 픽셀을 2배 써도 마커는 작아진다. 검출률도 개선되지 않았다
+#   (960x720 에서 20프레임 중 1회).
+#
+#   960x720 / 640x480 을 실제로 올려 검출률을 재봤지만 개선이 없었다(각각 20프레임 중
+#   1회, 0회). 다만 그 측정은 로봇-마커 거리가 통제되지 않은 상태였으므로 '해상도가
+#   무의미하다'는 결론까지는 아니다 — 거리를 고정한 재측정이 필요하다.
+#   그때까지는 캘리브레이션(camera_calib.npz)이 실제로 맞춰진 480x360 을 유지한다.
+#   이 값을 바꾸려면 parkp._load_calib 의 _CALIB_REF_WH 전제(화각 동일)를 먼저 확인할 것.
+CAPTURE_W, CAPTURE_H = 480, 360
+
 # 프레임이 이 시간(초) 이상 갱신되지 않으면 캡처가 멈춘 것으로 보고 재시작한다.
 _STALL_TIMEOUT = 8.0
 # 분석(밝기/움직임/윤곽) 갱신 주기(초). 매 프레임 JPEG 디코드를 피하기 위한 스로틀.
@@ -286,7 +302,8 @@ class CameraManager:
         from app.config import settings
         bin_ = shutil.which("rpicam-vid") or shutil.which("libcamera-vid")
         mode = getattr(settings, "camera_flip", "none").lower()
-        args = [bin_, "-t", "0", "--codec", "mjpeg", "--width", "480", "--height", "360",
+        args = [bin_, "-t", "0", "--codec", "mjpeg",
+                "--width", str(CAPTURE_W), "--height", str(CAPTURE_H),
                 "--framerate", "15", "--nopreview", "-q", "80", "-o", "-"]
         if mode in ("horizontal", "both"):
             args.append("--hflip")
@@ -335,7 +352,7 @@ class CameraManager:
         try:
             cam = Picamera2()
             config = cam.create_video_configuration(
-                main={"size": (480, 360)},   # 640x480 → 부하/전송량 축소(프레임 굶음 완화)
+                main={"size": (CAPTURE_W, CAPTURE_H)},  # rpicam 경로와 동일 해상도로 맞춘다
                 controls={"FrameRate": 15},  # ISP/DMA 부담 축소 — 30fps 는 주기적 스톨 유발
                 buffer_count=4,
                 transform=self._build_transform(),
