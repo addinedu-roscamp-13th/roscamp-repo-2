@@ -89,7 +89,7 @@ class LidarDockConfig:
     k_yaw_final: float = 0.0                # 벽이 없다. 0 이 아닌 값은 의미가 없다
     ang_max_rad_s: float = 0.08
     # ── 시간 ──────────────────────────────────────────────────────────────
-    settle_sec: float = 1.0
+    settle_sec: float = 3.0
     acquire_timeout_s: float = 3.0
     timeout_s: float = 90.0
     scan_timeout_s: float = 0.5

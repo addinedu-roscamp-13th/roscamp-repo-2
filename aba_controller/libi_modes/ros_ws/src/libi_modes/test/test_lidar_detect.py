@@ -261,6 +261,20 @@ def test_detect_distance_is_projected_not_raw_range():
     assert offset.d == pytest.approx(centred.d, abs=0.004)
 
 
+@pytest.mark.parametrize("tilt_deg", [0, 11, 17, 23])
+def test_detect_notch_position_is_stable_under_wall_tilt(tilt_deg):
+    """핵심 수정의 회귀 시험 — **벽 정렬 좌표계**로 `d`·`y` 를 재는지 검증한다.
+
+    지금까지 모든 `detect()` 시험이 `yaw=0.0` 을 썼다. 그 각도에서는 벽 정렬 좌표계와
+    라이다 원시 좌표계가 수치로 동일해서, 이 수정(`detect.py` 의 `wvec` 투영)이 되돌려도
+    (라이다 프레임 x·y 를 직접 썼어도) 시험이 전혀 빨개지지 않았다. 라이다 y 를 썼다면
+    `y` 가 `d·sin(기울기)` 만큼 어긋난다 — 실측 17° 에서 93mm."""
+    obs = _detect(wall_m=0.30, y_off=0.0, yaw=math.radians(tilt_deg))
+    assert obs is not None
+    assert obs.y == pytest.approx(0.0, abs=0.003)
+    assert obs.d == pytest.approx(0.325, abs=0.005)
+
+
 def _near_scan(d=0.06, y_off=0.0, width=0.05):
     """`detect_near` 전용 합성 스캔 — `make_scan` 은 안 맞다.
 

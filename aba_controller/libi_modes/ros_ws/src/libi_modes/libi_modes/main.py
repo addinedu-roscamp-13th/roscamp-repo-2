@@ -293,8 +293,9 @@ class FsmNode(Node):
         #              (2026-07-31 실기 성공). 이 저장소에는 구현이 없다
         #      lidar : 이 저장소의 `LidarDockDriver` 가 /scan 을 보고 직접 몬다
         #
-        # ⚠️ `aruco` 로 되돌릴 때 `returning.nudge_distance_m` 도 0.03 으로 같이
-        #    되돌려야 한다. 라이다는 마지막까지 보므로 ⑤가 0 이다.
+        # ⚠️ `nudge_distance_m` 은 ArUco 용 값이다. **손대지 않는다.** 라이다일 때
+        #    0 은 여기 코드(아래 `nudge_distance`)가 강제한다. 되돌리기는
+        #    `dock_sensor` 파라미터 하나뿐이다.
         dock_sensor = str(self.declare_parameter(
             "dock_sensor", str(ret.get("dock_sensor", "aruco"))).value).lower()
         if dock_sensor == "lidar":

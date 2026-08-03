@@ -146,10 +146,14 @@ class LidarDockDriver:
         try:
             obs = detect(msg.ranges, msg.angle_min, msg.angle_increment,
                          msg.range_min, msg.range_max, self._cfg)
-            # FAR 가 실패하고 이미 근접 국면이면 NEAR 로 인수인계한다.
-            # ⚠️ ACQUIRE 에서는 절대 NEAR 를 부르지 않는다 — 상태기계가 다시 한 번
-            #    막지만(near 관측 무시), 여기서도 안 부르는 것이 명시적이다.
-            if obs is None and self._machine.phase in ("APPROACH", "FINAL"):
+            # FAR 가 실패하고 이미 FINAL 이면 NEAR 로 인수인계한다.
+            # ⚠️ **FINAL 뿐이다 — APPROACH 는 아니다.** NEAR 의 `y` 는 근거리에서
+            #    노치 가장자리가 창 밖으로 잘려 오차가 커진다(실측: 좌우 2cm→12mm,
+            #    3cm→21mm). APPROACH 에서 받아들이면 그 값이 FINAL 진입 정렬 문턱
+            #    (`y_max_enter_final_m`, ≤15mm)을 오염시킨다. ACQUIRE·ALIGN·APPROACH
+            #    에서는 절대 NEAR 를 부르지 않는다 — 상태기계가 다시 한 번 막지만
+            #    (near 관측 무시), 여기서도 안 부르는 것이 명시적이다.
+            if obs is None and self._machine.phase == "FINAL":
                 obs = detect_near(msg.ranges, msg.angle_min, msg.angle_increment,
                                   msg.range_min, msg.range_max, self._cfg)
             cmd = self._machine.step(obs, now)

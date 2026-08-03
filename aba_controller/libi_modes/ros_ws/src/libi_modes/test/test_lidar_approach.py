@@ -18,6 +18,11 @@ def obs(d=0.40, y=0.0, yaw=0.0, depth=0.025, wall_m=None):
                     wall_m=(d - depth) if wall_m is None else wall_m)
 
 
+def near_obs(d=0.06, y=0.0):
+    """NEAR 검출기가 낸 관측 — yaw·depth·wall_m 은 못 잰다(`near=True` 일 때 nan)."""
+    return NotchObs(d=d, y=y, yaw=0.0, depth=float("nan"), wall_m=float("nan"), near=True)
+
+
 def run(machine, frames, t0=0.0, dt=0.1):
     """`frames` 를 순서대로 먹인다. 마지막 Cmd 를 돌려준다."""
     cmd = None
@@ -76,13 +81,38 @@ def test_acquire_needs_consecutive_confirmations():
 
 
 def test_acquire_aborts_without_rotating_when_nothing_is_found():
-    """라이다는 360도를 본다. 못 찾는 이유가 시야가 아니므로 스윕하지 않는다."""
+    """라이다는 360도를 본다. 못 찾는 이유가 시야가 아니므로 스윕하지 않는다.
+
+    `t0` 은 `cfg.settle_sec` 에 여유를 더해 잡는다 — 고정값(예: 2.0)을 쓰면
+    `settle_sec` 기본값이 바뀔 때(1.0 → 3.0) `settled()` 가 이미 SETTLE 을 지나
+    ACQUIRE 로 넘어간 시각보다 이 `t0` 가 더 과거가 되어, 20 프레임을 다 먹여도
+    `acquire_timeout_s` 문턱을 못 넘겨 이 시험이 거짓으로 통과(또는 실패)한다.
+    """
     cfg = LidarDockConfig(acquire_timeout_s=1.0)
     m = settled(cfg)
-    cmd = run(m, [None] * 20, t0=2.0)
+    cmd = run(m, [None] * 20, t0=cfg.settle_sec + 2.0)
     assert cmd.phase == "ABORT"
     assert cmd.done is True
     assert cmd.linear == 0.0 and cmd.angular == 0.0
+
+
+def test_near_observations_never_confirm_or_advance_out_of_acquire():
+    """NEAR 에는 오검출 방어(직선 피팅)가 없다 — 실측 노치 없는 벽에서도 100% '검출'한다.
+    ACQUIRE 가 NEAR 로 확정되면 오검출로 도킹이 **시작**된다. `confirm_frames` 를
+    훌쩍 넘겨 NEAR 를 먹여도 ACQUIRE 를 벗어나면 안 되고, 결국 확정 실패로 ABORT 해야
+    한다 — ALIGN·APPROACH·FINAL 어느 쪽으로도 넘어가지 않는다."""
+    cfg = LidarDockConfig(acquire_timeout_s=1.0, confirm_frames=3)
+    m = settled(cfg)
+    t = 2.0
+    last = None
+    for _ in range(30):        # confirm_frames(3) 를 훌쩍 넘긴다
+        last = m.step(near_obs(), t)
+        assert last.phase in ("ACQUIRE", "ABORT"), (
+            f"NEAR 관측으로 ACQUIRE 를 벗어났다: {last.phase}")
+        if last.phase == "ABORT":
+            break
+        t += 0.1
+    assert last.phase == "ABORT" and last.done is True
 
 
 def test_never_commands_forward_motion():

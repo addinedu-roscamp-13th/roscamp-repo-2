@@ -156,6 +156,27 @@ def test_tick_exception_stops_the_robot_instead_of_leaving_the_last_command(monk
     assert all(v == (0.0, 0.0) for v in node.pub.sent)
 
 
+def test_detect_near_is_never_called_while_acquiring(monkeypatch):
+    """ACQUIRE 는 NEAR 관측을 받으면 안 된다(직선 피팅이라는 오검출 방어가 없다) —
+    그러니 이 국면에서는 `detect_near` 를 아예 부르지도 않아야 한다. 상태기계 쪽
+    가드(`test_lidar_approach.py`)와는 별개로 드라이버 쪽 가드도 이 시험으로 고정한다."""
+    node, drv, _ = _driver()
+    drv.start()
+    drv._machine.phase = "ACQUIRE"          # SETTLE 을 건너뛰고 바로 확인 국면으로
+    msg = SimpleNamespace(ranges=[1.0] * 10, angle_min=0.0, angle_increment=0.01,
+                          range_min=0.05, range_max=2.0)
+    node.sub_cb(msg)
+
+    monkeypatch.setattr(lidar_dock_driver, "detect", lambda *a, **k: None)
+    near_calls = []
+    monkeypatch.setattr(lidar_dock_driver, "detect_near",
+                        lambda *a, **k: near_calls.append(1))
+
+    node.timer_cb()
+
+    assert near_calls == [], "ACQUIRE 에서 detect_near 를 부르면 안 된다"
+
+
 def test_scan_gone_stale_after_being_live_is_treated_as_stale(monkeypatch):
     """스캔이 한 번 들어온 뒤(즉 `_msg_at` 이 `None` 이 아닌 채로) 뚝 끊기는 경우 —
     센서 고장·드라이버 죽음이 이거다. `_msg_at is None` 만 보면 이 경우를 놓치고

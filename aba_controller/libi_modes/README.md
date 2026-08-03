@@ -733,17 +733,26 @@ goal 은 살아 있다. 예전엔 바로 뒤 `GoToParking` 이 새 goal 로 **�
 
 ④를 센서 중립(`DockApproach`)으로 바꾸고 `returning.dock_sensor` 로 고른다.
 
-| 값 | 누가 수행하나 | ⑤ `nudge_distance_m` |
+`nudge_distance_m` 은 params.yaml 에 값이 하나뿐이고(ArUco 용 `0.03`, 절대 손대지 않는다),
+아래 ⑤ 열은 그 값을 `dock_sensor` 가 **런타임에 어떻게 쓰는지**를 보여줄 뿐이다 — YAML 에서
+따로 고르는 설정이 아니다.
+
+| 값 | 누가 수행하나 | ⑤ 실효 후진 거리 (런타임 파생) |
 |---|---|---|
-| `aruco` | `robot_agent` 의 `marker_dock` (다른 저장소) | `0.03` |
-| `lidar` | 이 저장소 `libi_modes/lidar/` + `ros/lidar_dock_driver.py` | **`0.0`** |
+| `aruco` | `robot_agent` 의 `marker_dock` (다른 저장소) | `nudge_distance_m` 그대로 = `0.03` |
+| `lidar` | 이 저장소 `libi_modes/lidar/` + `ros/lidar_dock_driver.py` | `main.py` 가 **`0.0`** 으로 강제 |
 
 라이다는 마지막까지 노치를 보므로 눈 감고 미는 구간이 없다 — 그래서 ⑤가 0 이다.
 **노드를 지우지 않고 무해화**하므로 BT 트리 모양이 그대로고 관제 화면이 안 바뀐다.
 `BackCamOn` 도 라이다 경로에서는 `NoopDriver` 를 받아 아무 일도 하지 않는다(뒷캠이
 필요 없는데 켜 두면 `camera_sender` 가 1.9Hz → 15fps 로 올려 Pi CPU 를 태운다).
 
-⚠️ `aruco` 로 되돌릴 때 `nudge_distance_m` 도 **`0.03` 으로 같이** 되돌린다.
+⚠️ **되돌리기는 `dock_sensor` 파라미터 하나뿐이다.** `nudge_distance_m` 은 건드리지 않는다 —
+`aruco` 로 되돌려도 그 값은 이미 `0.03` 그대로 params.yaml 에 있고, 라이다일 때 `0.0` 으로
+바뀌는 것은 `main.py` 코드가 매번 유도하는 것이지 YAML 값이 아니기 때문이다. 여기서
+`nudge_distance_m` 을 손으로 고치면(예: 되돌리며 "같이 0.03 으로" 편집) 다음에 다시
+`lidar` 로 바꿀 때 그 편집이 조용히 남아 있는 상태가 된다 — 정확히 이 설계가 없애려던
+그 실패다.
 
 설계·근거: `docs/superpowers/specs/2026-08-03-lidar-notch-docking-design.md`
 

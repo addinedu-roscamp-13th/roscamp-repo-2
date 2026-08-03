@@ -144,11 +144,14 @@ class LidarApproach:
                 return Cmd(0.0, 0.0, "SETTLE", False, "settling")
             self._enter("ACQUIRE", now_s)
 
-        # ⚠️ **ACQUIRE 는 NEAR 관측을 받지 않는다.** NEAR 에는 직선 피팅이라는 오검출
-        #    방어가 없어 노치 없는 벽을 노치로 읽는다(실측 100%). 도킹이 오검출로
-        #    **시작**되지 않게 하는 구조적 방어다 — NEAR 는 FAR 가 확정하고 추적해 온
-        #    뒤의 인수인계일 때만 유효하다.
-        if obs is not None and obs.near and self.phase in ("SETTLE", "ACQUIRE"):
+        # ⚠️ **FINAL 이 아니면 NEAR 관측을 받지 않는다.** NEAR 에는 직선 피팅이라는
+        #    오검출 방어가 없어 노치 없는 벽을 노치로 읽는다(실측 100%). 도킹이
+        #    오검출로 **시작**되지 않게 하는 구조적 방어(SETTLE·ACQUIRE)일 뿐 아니라,
+        #    ALIGN·APPROACH 에서도 NEAR 의 `y` 는 못 믿는다 — 노치 가장자리가 창
+        #    밖으로 잘려 좌우 오차가 커진다(실측: 2cm→12mm, 3cm→21mm). 그 값이 FINAL
+        #    진입 문턱(`y_max_enter_final_m`, ≤15mm)을 오염시키면 안 된다. NEAR 는
+        #    FAR 가 확정하고 추적해 온 뒤 FINAL 에서의 인수인계일 때만 유효하다.
+        if obs is not None and obs.near and self.phase != "FINAL":
             obs = None
         filtered = self._filter(obs, now_s) if obs is not None else None
 

@@ -209,7 +209,8 @@ libi_modes:
       k_yaw_final: 0.0
       ang_max_rad_s: 0.08
       # ── 시간 ──
-      settle_sec: 1.0
+      #   설계 시뮬레이션이 가정한 3초 — nav2 잔여 감속이 완전히 죽을 시간을 준다.
+      settle_sec: 3.0
       acquire_timeout_s: 3.0
       timeout_s: 90.0
       scan_timeout_s: 0.5
