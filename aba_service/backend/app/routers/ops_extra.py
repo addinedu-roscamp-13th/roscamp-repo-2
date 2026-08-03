@@ -6,10 +6,15 @@ FMS orchestrator 는 **진행 중인 큐**만 들고 있고, 끝난 작업을 �
 `/sync` 를 부르면 FMS 의 현재 종료 작업들을 가져와 없는 것만 적재한다(멱등).
 """
 
+import os
+import re
+import time as _time
 from datetime import datetime, time, timedelta, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -302,6 +307,30 @@ class IntrusionReport(BaseModel):
     clip_path: str | None = None
 
 
+class ClipPatch(BaseModel):
+    clip_path: str
+
+
+#: `<video src>` 가 읽을 파일명 — uuid4 + `.mp4` 만 허용한다.
+#: 느슨하게 두면 `../../etc/passwd` 같은 경로 탈출이 그대로 통한다.
+#: `\A`/`\Z` 를 쓴다 — `^`/`$` 는 문자열 끝의 `\n` 하나를 허용해 검증이 새는 지점이 된다.
+_CLIP_NAME = re.compile(r"\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.mp4\Z")
+
+#: attach_clip 이 받아들이는 clip_path 의 유일한 형태 — 우리 자신이 서빙하는
+#: /security/clips/{uuid}.mp4 상대경로뿐이다.
+_CLIP_PATH_PREFIX = "/api/admin/ops/security/clips/"
+
+#: 클립 저장 위치. AI 서버(같은 노트북)가 여기에 쓰고 이 라우터가 서빙한다.
+SECURITY_MEDIA_DIR = Path(
+    os.environ.get("SECURITY_MEDIA_DIR",
+                   Path(__file__).resolve().parents[2] / "media" / "security"))
+
+#: AI 서버가 마지막으로 모드를 읽은 시각(monotonic). 화면의 「감지 켜짐」 뱃지 근거다.
+#: DB 에 안 넣는다 — 프로세스가 살아 있는 동안만 의미가 있는 값이다.
+_ai_seen_at: float = 0.0
+AI_ALIVE_SEC = 30.0
+
+
 def _get_mode(db: Session) -> str:
     row = db.get(OpsSetting, SECURITY_KEY)
     return row.value if row else "day"
@@ -427,6 +456,7 @@ def security(db: Session = Depends(get_db), _: AdminUser = Depends(get_current_a
         "mode": _get_mode(db),
         "night_start": _get_setting(db, NIGHT_START_KEY),
         "night_end": _get_setting(db, NIGHT_END_KEY),
+        "ai_alive": (_time.monotonic() - _ai_seen_at) < AI_ALIVE_SEC,
         "events": [
             {
                 "id": e.id,
@@ -488,6 +518,27 @@ def set_schedule(
     return {"night_start": body.night_start, "night_end": body.night_end}
 
 
+def _zone_from_fleet(source: str | None) -> str | None:
+    """AI 서버는 로봇이 어느 정점에 있는지 모른다 — 여기서 채운다.
+
+    `_drive_fleet` 이 이미 쓰는 같은 스냅샷을 본다. **조회가 실패해도 저장을 막지
+    않는다** — 알림이 먼저다. 이름이 안 맞으면 위치만 비고 나머지는 정상이다
+    (로봇 이름 표기 불일치는 이 레포의 알려진 함정 — fleet_link.py `_fsm_entry`).
+    """
+    if not source:
+        return None
+    try:
+        ok, snap = fms_client.fleet_snapshot()
+    except Exception:                                           # noqa: BLE001
+        return None
+    if not ok:
+        return None
+    for r in (snap or {}).get("robots", []):
+        if r.get("name") == source:
+            return r.get("node") or r.get("zone") or None
+    return None
+
+
 @router.post("/security/events", status_code=status.HTTP_201_CREATED)
 def report_intrusion(body: IntrusionReport, db: Session = Depends(get_db)):
     """침입 보고 — **로봇/AI 서비스가 부른다.** 사서 인증을 요구하지 않는다.
@@ -495,13 +546,65 @@ def report_intrusion(body: IntrusionReport, db: Session = Depends(get_db)):
     감지 주체는 사람이 아니라 기계이므로 관리자 토큰을 들고 있을 수 없다. 대신 기록만
     남기고 아무 권한도 주지 않는다(읽기는 사서 인증 필요).
     """
+    zone = body.zone or _zone_from_fleet(body.source)
     e = IntrusionEvent(
-        source=body.source, zone=body.zone, note=body.note, clip_path=body.clip_path
+        source=body.source, zone=zone, note=body.note, clip_path=body.clip_path
     )
     db.add(e)
     db.commit()
     db.refresh(e)
     return {"id": e.id, "detected_at": e.detected_at}
+
+
+@router.get("/security/mode")
+def security_mode(db: Session = Depends(get_db)):
+    """운영 모드만 돌려준다 — **AI 서버가 폴링한다. 인증을 요구하지 않는다.**
+
+    기계가 부르므로 관리자 토큰을 들고 있을 수 없다 — `report_intrusion` 과 같은 논리다.
+    모드 문자열 하나뿐이라 노출되는 정보도 없다.
+    """
+    global _ai_seen_at
+    _ai_seen_at = _time.monotonic()
+    return {"mode": _get_mode(db)}
+
+
+@router.patch("/security/events/{event_id}/clip")
+def attach_clip(event_id: int, body: ClipPatch, db: Session = Depends(get_db)):
+    """클립이 완성된 뒤 경로만 붙인다 — **무인증**(감지 측이 부른다).
+
+    왜 이벤트 생성과 나눴나: 클립은 30초 넘게 걸린다. 완성 후 한 번에 보내면 알림이
+    그만큼 늦어 알림 구실을 못 한다. 반대로 경로를 미리 박으면 `<video>` 가 404 를
+    물고 마운트되어 **같은 src 로는 재마운트되지 않아 영영 깨진 채 남는다.**
+
+    무인증 엔드포인트가 clip_path 를 검증 없이 저장하면 임의의 호출자가 기존
+    이벤트의 clip_path 를 외부 URL로 바꿔치기할 수 있다 — _CLIP_PATH_PREFIX 로
+    우리 자신이 서빙하는 경로 형태만 허용해 막는다.
+    """
+    if not body.clip_path.startswith(_CLIP_PATH_PREFIX) or not _CLIP_NAME.match(
+        body.clip_path[len(_CLIP_PATH_PREFIX):]
+    ):
+        raise HTTPException(status_code=400, detail="잘못된 clip_path 형식입니다")
+    e = db.get(IntrusionEvent, event_id)
+    if e is None:
+        raise HTTPException(status_code=404, detail="이벤트를 찾을 수 없습니다")
+    e.clip_path = body.clip_path
+    db.commit()
+    return {"ok": True}
+
+
+@router.get("/security/clips/{name}")
+def security_clip(name: str):
+    """클립 파일 서빙 — **무인증**. `<video src>` 는 인증 헤더를 못 싣는다.
+
+    파일명이 uuid4 라 추측이 불가능하고, 형식을 엄격히 검증해 경로 탈출을 막는다.
+    `FileResponse` 는 Range 요청을 지원하므로 재생기의 탐색(seek)이 동작한다.
+    """
+    if not _CLIP_NAME.match(name):
+        raise HTTPException(status_code=400, detail="잘못된 파일명")
+    path = SECURITY_MEDIA_DIR / name
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="영상을 찾을 수 없습니다")
+    return FileResponse(path, media_type="video/mp4")
 
 
 @router.delete("/security/events/{event_id}")
