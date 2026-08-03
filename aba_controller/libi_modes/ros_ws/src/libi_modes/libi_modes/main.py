@@ -30,6 +30,7 @@ from ament_index_python.packages import get_package_share_directory
 from py_trees.common import Access
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
 from libi_modes import blackboard as bb
@@ -106,6 +107,18 @@ class _CmdPublisher:
         self._pub.publish(msg)
 
 
+def _latched_camera_qos():
+    """`/libi/camera_select` 발행자는 반드시 TRANSIENT_LOCAL 이어야 한다.
+
+    구독자가 TRANSIENT_LOCAL 인데 발행자가 기본(VOLATILE)이면 ROS2 는 **연결 자체를
+    안 시켜준다.** `libi_perception/follow_node.py` 의 `_latched_qos()` 와 똑같은
+    이유로 똑같은 QoS 를 쓴다 — 패키지가 달라 상수를 공유할 수 없으니 값만 맞춘다.
+    """
+    return QoSProfile(depth=1,
+                      reliability=ReliabilityPolicy.RELIABLE,
+                      durability=DurabilityPolicy.TRANSIENT_LOCAL)
+
+
 class FsmNode(Node):
     def __init__(self):
         super().__init__("libi_modes")
@@ -178,6 +191,10 @@ class FsmNode(Node):
         self._apply_battery_auto(params)
 
         cmd_pub = _CmdPublisher(self, cmd_topic)
+        # 야간 순찰 앞캠 유지용 직접 발행자 — `CameraSelectRenew` 가 문다(drivers["camera_select"]).
+        # `/fleet_cmd` 를 안 거치는 이유·QoS 근거는 `_latched_camera_qos()` 주석 참고.
+        self._camera_select_pub = self.create_publisher(
+            String, "/libi/camera_select", _latched_camera_qos())
         # 팔 완료를 FMS 에 올리는 통로. 팔을 중계할 때만 만든다 — 안 쓰는 발행자를
         # 띄우면 "누가 답하는가"가 코드만 봐선 흐려진다(위 ARM_VIA_BT 주석).
         self._result_pub = _CmdPublisher(self, result_topic) if ARM_VIA_BT else None
@@ -263,6 +280,10 @@ class FsmNode(Node):
             #    "추종 실패"로 관제에 뜬다.
             "follow": FleetCmdDriver(self, "follow_admin", timeout_sec=3600.0,
                                      stop_action="follow_stop").bind(cmd_pub),
+            # 야간 순찰 중 앞캠을 켜 둔다 — `security_patrol` 브랜치의 `CameraSelectRenew`
+            # 가 매 renew_sec 마다 문다. `/fleet_cmd` 왕복 없이 `/libi/camera_select`
+            # 를 직접 발행한다(`_publish_camera_select` 참고).
+            "camera_select": self._publish_camera_select,
         }
         # 복귀 5단계가 쓰는 것들.
         #   ⚠️ 팔 홈복귀(return_arm)는 뺐다 — 이 로봇에 팔이 없다(사용자 결정 2026-07-27).
@@ -498,6 +519,15 @@ class FsmNode(Node):
                                        "status": 200 if ok else 500,
                                        "data": None, "msg": str(msg or "")})
         self.get_logger().info(f"명령 결과 보고 cmd={cmd_id} ok={ok} {msg}")
+
+    def _publish_camera_select(self, value: str) -> None:
+        """`/libi/camera_select` 로 카메라 선택을 직접 발행한다.
+
+        `camera_select` 발행자는 `follow_node` 하나라는 규칙의 기존 예외다(`CameraSelectRenew`
+        독스트링, `common/intruder_chase.py`) — 야간엔 `follow_node` 가 안 떠 있어도
+        (추종이 아직 안 열렸어도) 앞캠을 켜 둬야 하므로 여기서 직접 문다.
+        """
+        self._camera_select_pub.publish(String(data=str(value)))
 
     def _publish_arm_result(self, ok: bool, msg: str) -> None:
         """팔 동작이 끝났다고 `/fleet_cmd_result` 로 올린다 — **완료를 아는 쪽이 답한다.**
