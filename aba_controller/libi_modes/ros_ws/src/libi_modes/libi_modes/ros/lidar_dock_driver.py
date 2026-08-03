@@ -78,6 +78,7 @@ class LidarDockDriver:
 
         self._msg = None            # 콜백은 참조만 잡는다 (머리말 참고)
         self._msg_at = None
+        self._started_at = None
         self._active = False
         self._result = "running"
         self._machine: LidarApproach | None = None
@@ -109,6 +110,13 @@ class LidarDockDriver:
         #    프레임으로 즉시 ACQUIRE 를 시작한다 — 그 사이 로봇은 움직였다.
         self._msg = None
         self._msg_at = None
+        # ⚠️ [2026-08-03 실기] 위에서 `_msg_at` 을 지우자마자 첫 tick 이 오면
+        #    "스캔이 없다"가 즉시 참이 돼 콜백이 단 한 번도 못 온 채로 scan_timeout
+        #    이 난다 — 실측: 재시작 직후 3연속 26~52ms 만에 실패. 콜백은 10Hz 로
+        #    계속 도는데, tick 위상이 콜백보다 먼저 오면 지는 경합이었다.
+        #    `_started_at` 을 따로 둬서 "시작 직후 scan_timeout_s 동안은 아직
+        #    한 번도 안 왔어도 봐준다"를 명시적으로 만든다.
+        self._started_at = self._now()
         self._machine = LidarApproach(self._cfg)
         self._active = True
         self._result = "running"
@@ -135,7 +143,13 @@ class LidarDockDriver:
             return                          # 안 도는 동안은 침묵 — 입력 없음으로 친다
         now = self._now()
 
-        if self._msg_at is None or now - self._msg_at > self._cfg.scan_timeout_s:
+        if self._msg_at is None:
+            # 시작 직후 그레이스 구간 — 콜백이 아직 한 번도 안 왔어도 곧바로
+            # 실패시키지 않는다. 그레이스가 지났는데도 안 왔으면 진짜 문제다.
+            if now - self._started_at > self._cfg.scan_timeout_s:
+                self._finish("failure", "scan_timeout")
+            return
+        if now - self._msg_at > self._cfg.scan_timeout_s:
             self._finish("failure", "scan_timeout")
             return
 

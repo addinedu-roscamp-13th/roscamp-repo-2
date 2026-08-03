@@ -89,6 +89,18 @@ def test_missing_scan_fails_and_publishes_zero():
     assert all(v == (0.0, 0.0) for v in node.pub.sent)
 
 
+def test_first_tick_right_after_start_does_not_fail_before_grace_period():
+    """실측(2026-08-03, pinky-3): 재시작 직후 3연속 26~52ms 만에 scan_timeout —
+    `start()` 가 `_msg_at` 을 지운 직후 콜백보다 먼저 tick 이 오는 경합이었다.
+    그레이스 구간(< scan_timeout_s) 안에서는 콜백이 아직 안 왔어도 실패시키지 않는다."""
+    node, drv, clock = _driver(scan_timeout_s=0.5)
+    drv.start()
+    clock["t"] = 0.05
+    node.timer_cb()
+    assert drv.poll() == "running"
+    assert node.pub.sent == [], "그레이스 구간엔 아무것도 발행하지 않는다 — 입력 없음"
+
+
 def test_stop_publishes_zero_several_times():
     """발행만 멈추면 워치독이 세울 때까지 굴러간다 — 이동량보다 큰 거리다."""
     node, drv, _ = _driver()
