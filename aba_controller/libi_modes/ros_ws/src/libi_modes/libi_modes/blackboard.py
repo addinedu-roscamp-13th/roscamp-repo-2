@@ -99,6 +99,9 @@ class Keys:
     # ⚠️ **한 tick 만 산다.** main.py `_tick()` 이 tick 끝에 무조건 지운다. 남겨 두면
     #    낡은 표시가 우연히 같은 목표를 노린 자율 전이까지 유지 시간을 뚫게 만든다.
     COMMANDED_MODE = "commanded_mode"
+    #: 주행 중 앞캠에 잡힌 **가장 큰 사람**의 크기(sqrt(area) px @320). None = 감지 안 됨.
+    #: `IntruderChase`(common/intruder_chase.py, task-7-brief.md)가 침입 트리거 판정에 쓴다.
+    FRONT_PERSON_SIZE = "front_person_size"
 
 
 #: 등록 누락 경고를 키마다 한 번만 낸다 (tick 마다 도배하지 않게).
