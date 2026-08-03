@@ -5,11 +5,12 @@
 #   ./libi_laptop.sh --robot pinky-3 --domain-id 119
 #   ./libi_laptop.sh --robot pinky-1 --domain-id 117 --no-gui   # 패널 없이 추종만
 #   ./libi_laptop.sh --robot pinky-3 --domain-id 119 --window   # 패널을 이 PC 에 창으로
-#   ./libi_laptop.sh --robot pinky-3 --domain-id 119 --no-secview   # 관리자 추종 패널 데모용
+#   ./libi_laptop.sh --robot pinky-3 --domain-id 119 --no-secview   # 야간 더미 뷰어 끄기
 #
-# ⚠️ 야간 감시 더미 뷰어(`--secview`)는 [2026-08-04] **기본으로 켜짐**으로 바뀌었다.
-#    인지 서버는 뷰어를 한 번에 하나만 받으므로, 이게 켜져 있으면 **패널의 추종 화면이
-#    검게 나온다.** 관리자 추종을 시연/테스트할 때는 반드시 `--no-secview` 를 붙인다.
+# ⚠️ 야간 감시 더미 뷰어는 [2026-08-04] **기본으로 켜짐**이다. 인지 서버는 뷰어를 한
+#    번에 하나만 받지만, 이 뷰어는 관제 mode 를 보고 **낮이면 스스로 접속을 비워** 패널의
+#    추종 화면을 막지 않는다(security_viewer.py 의 --ops-url/mode_check). 그래도 안
+#    켜고 싶으면 --no-secview.
 #
 # `--window` 는 VNC 대신이다 — **둘 다는 안 된다**(Qt 플랫폼 플러그인이 하나뿐).
 # 창을 켜면 :590x VNC 는 안 열리므로, 태블릿에서도 봐야 하면 붙이지 마라.
@@ -57,9 +58,9 @@ WITH_GUI=true
 #  Qt 플랫폼 플러그인은 한 번에 하나라 **둘 다는 안 된다** — 창을 켜면 VNC :590x 는 안 열린다.
 WITH_WINDOW=false
 #: 야간 감시 더미 뷰어(security_viewer.py)를 같이 띄운다. [2026-08-04] 기본을 켬으로
-#  바꿨다 — 매번 --secview 를 잊어서 야간모드가 켜져도 녹화/추종이 조용히 비활성인 채로
-#  넘어가는 사고가 있었다. 대신 패널 추종 화면(주간 데모)을 쓸 때는 --no-secview 로 끈다
-#  (뷰어가 인지 서버 자리를 하나만 받아 겹치면 패널이 검게 나온다).
+#  바꿨다 — 매번 --secview 를 잊는 사고가 있었는데, 이제 뷰어가 --ops-url 로 관제
+#  mode 를 보고 day 면 스스로 접속을 비우므로(security_viewer.py 의 mode_check) 낮에
+#  패널을 막지 않는다. 그래도 안 끄고 싶으면 --no-secview.
 WITH_SECVIEW=true
 #: AI 서버에 그대로 넘길 추가 인자. `--pose` 같은 스위치용이다.
 AI_EXTRA=""
@@ -182,14 +183,17 @@ fi
 
 if [ "$WITH_SECVIEW" = true ]; then
   echo "[libi_laptop] ── 야간 감시 더미 뷰어 (뷰어 :$VIEWER_PORT)"
-  echo "[libi_laptop]    ⚠️ 이게 붙어 있는 동안 패널 추종 화면은 검게 나옵니다"
+  echo "[libi_laptop]    낮에는 --ops-url 로 관제 mode 를 보고 스스로 자리를 비웁니다"
   # 셸 루프로 감싼다 — 프로세스가 죽어도 되살아난다. 파이썬 안의 재접속 루프는
   # 프로세스가 살아 있을 때만 돌기 때문이다.
+  # --ops-url: day 모드면 접속을 안 하거나 스스로 끊어 패널에 자리를 내준다
+  # (security_viewer.py 의 mode_check — [2026-08-04] 상호배타 완화).
   tmux new-window -t "$SESSION" -n secview \
     bash -c "cd '$REPO_ROOT/aba_ai_service/follower_perception' && \
              while true; do \
                '$REPO_ROOT/.venv/bin/python' scripts/security_viewer.py \
-                 --host '$LAPTOP_IP' --port '$VIEWER_PORT'; \
+                 --host '$LAPTOP_IP' --port '$VIEWER_PORT' \
+                 --ops-url 'http://$LAPTOP_IP:8000'; \
                sleep 1; \
              done; exec bash"
 fi
