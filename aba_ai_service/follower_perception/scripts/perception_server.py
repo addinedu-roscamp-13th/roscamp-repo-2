@@ -312,12 +312,17 @@ EOF = object()
 
 def serve_loop(conn, frames, perception, *, poll_cmd=None, jpeg_quality=80,
                cmd_sink=None, policy=None, lidar_source=None, detection_sink=None,
-               camera_source=None, role_source=None):
+               camera_source=None, role_source=None, recorder=None):
     last_t = time.monotonic()
     for frame in frames:
         # None = 심장박동(영상이 아직 안 옴). 소켓만 확인하고 넘어간다 — 이게 없으면
         # 프레임이 안 오는 동안 뷰어가 끊긴 것을 영영 못 알아챈다(udp_video.frames 주석).
         if frame is None:
+            # 영상이 안 오는 동안에도 녹화 시계는 돌아야 한다 — 안 그러면 카메라가
+            # 꺼졌을 때(주간 전환·정지·로봇 끊김) 파일이 영영 안 닫히고 clip_path 도
+            # 안 붙는다(security_recorder.feed 머리말).
+            if recorder is not None:
+                recorder.feed(None, 0.0)
             if poll_cmd is not None and poll_cmd(conn) is EOF:
                 return
             continue
@@ -363,6 +368,14 @@ def serve_loop(conn, frames, perception, *, poll_cmd=None, jpeg_quality=80,
         ok, buf = cv2.imencode(".jpg", vis,
                                [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
         if ok:
+            # 뷰어 전송보다 **먼저** 넘긴다 — 패널이 끊겨도 녹화는 이어져야 한다.
+            # 오버레이가 그려진 프레임을 쓴다(보안 클립으로는 검출이 보이는 쪽이 낫다).
+            if recorder is not None:
+                # "front person size" = 이 프레임에서 가장 크게(=가깝게) 보인 사람의
+                # sqrt(area) — cmd_preview.py 의 거리 계산과 같은 척도다. cands 는
+                # 등록 여부와 무관하게 매 프레임 잡히므로 침입 트리거로 쓴다.
+                front_size = max((c.area for c in cands), default=0.0) ** 0.5
+                recorder.feed(buf.tobytes(), front_size, frame=frame, cands=cands)
             try:
                 send_frame(conn, buf.tobytes())
                 send_frame(conn, _pose_payload(det, cmd, _pose_or_none(perception), fps, perception.matcher))
@@ -629,6 +642,58 @@ def _run_local_show(frames, perception, cmd_sink=None, policy=None, detection_si
     cv2.destroyAllWindows()
 
 
+def build_security(args, perception):
+    """`--security` 를 줬을 때만 `(recorder, shutdown)` 를 만든다. 안 줬으면 `None`.
+
+    ⚠️ **모듈 import 자체가 이 함수 안에 있다.** 플래그가 없으면 `security_recorder`
+    를 읽지도 않아 예전 경로와 **완전히 같다**(회귀 방어 — 체크리스트 42).
+    """
+    if not getattr(args, "security", False):
+        return None
+
+    import atexit
+    import signal
+    from scripts.security_recorder import (FfmpegClipWriter, ModePoller,
+                                           OpsSink, SecurityRecorder,
+                                           resolve_ffmpeg)
+
+    # `_PKG` 는 `<repo>/aba_ai_service/follower_perception` 이다(이 파일 :20).
+    # dirname 두 번이 레포 루트. **세 번이면 레포 밖으로 나간다.**
+    # 관제(`ops_extra.SECURITY_MEDIA_DIR`)가 같은 디렉토리를 서빙한다 — 같은 노트북이다.
+    _REPO = os.path.dirname(os.path.dirname(_PKG))
+    media = args.security_media or os.path.join(
+        _REPO, "aba_service", "backend", "media", "security")
+    if resolve_ffmpeg() is None:
+        print("[security] ⚠️ ffmpeg 을 못 찾았습니다 — 녹화만 비활성합니다"
+              " (SECURITY_FFMPEG 로 경로를 줄 수 있습니다). "
+              "이벤트·모달·추종은 그대로 동작합니다", flush=True)
+
+    writer = FfmpegClipWriter(media)
+    sink = OpsSink(args.security_ops, args.security_robot, writer)
+    recorder = SecurityRecorder(
+        robot_name=args.security_robot, media_dir=media, sink=sink,
+        register_fn=perception.register_nearest,   # (frame, cands) 를 받는다
+        reset_fn=perception.reset)
+    poller = ModePoller(args.security_ops, recorder.arm)
+    poller.start()
+
+    # ⚠️ 종료 경로를 반드시 건다 — 없으면 Ctrl-C 로 내릴 때 mp4 가 finalize 되지
+    #    않아(`moov` atom 미기록) 브라우저가 못 열고, clip_path PATCH 도 안 나간다.
+    #    시연 마무리에 「주간」을 누르면 마지막 클립이 항상 이 상태가 된다.
+    def _shutdown(*_a):
+        poller.stop()
+        recorder.close()
+        sink.shutdown()
+
+    atexit.register(_shutdown)
+    signal.signal(signal.SIGTERM, lambda *_a: (_shutdown(), sys.exit(0)))
+    print(f"[security] 야간 보안 감지 켜짐 — 로봇={args.security_robot} "
+          f"관제={args.security_ops} 저장={media}", flush=True)
+    print("[security] ⚠️ 뷰어 연결이 있어야 돕니다. 패널 추종 화면을 열거나 "
+          "security_viewer.py 를 띄우세요", flush=True)
+    return recorder, _shutdown
+
+
 def main():
     ap = argparse.ArgumentParser(description="Perception socket server (B안)")
     src = ap.add_mutually_exclusive_group()
@@ -682,6 +747,11 @@ def main():
                          "로봇이 다가가지 않는다(대신 프레임 예산을 더 쓴다).")
     ap.add_argument("--pose-every-n", dest="pose_every_n", type=int, default=None,
                     help="자세 추론 주기(프레임). 프레임 예산을 넘기면 3 정도로 올린다.")
+    ap.add_argument("--security", action="store_true",
+                    help="야간 보안 감지·녹화를 켠다. **안 주면 예전과 완전히 같은 경로다**")
+    ap.add_argument("--security-robot", default="pinky-3")
+    ap.add_argument("--security-ops", default="http://127.0.0.1:8000")
+    ap.add_argument("--security-media", default=None)
     args = ap.parse_args()
     if args.pose_every_n is None:
         from follower_perception.constants import POSE_EVERY_N_FRAMES
@@ -722,6 +792,9 @@ def main():
 
     frames = new_frames()
     perception = _build_perception(args)
+
+    _sec = build_security(args, perception)
+    recorder = _sec[0] if _sec else None
 
     cmd_sink = None
     if args.drive_host:
@@ -797,7 +870,7 @@ def main():
             serve_loop(conn, frames, perception, poll_cmd=make_socket_poller(),
                        cmd_sink=cmd_sink, policy=policy, lidar_source=lidar_source,
                        detection_sink=detection_sink, camera_source=camera_source,
-                       role_source=role_source)
+                       role_source=role_source, recorder=recorder)
         finally:
             conn.close()
             print("[..] viewer disconnected; waiting again")
