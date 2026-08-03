@@ -1,0 +1,216 @@
+"""야간 보안 — 침입 판정·클립 녹화·관제 보고.
+
+## 이 모듈이 하는 일
+
+`perception_server` 의 프레임 루프가 `feed()` 를 부르면, 그 안에서
+"사람이 연속 N초 보였나 → 클립을 열고 관제에 알린다 → 안 보인 지 M초 → 닫는다"
+를 판정한다. 호출자는 결과를 안 본다.
+
+## 절대 예외를 올리지 않는다
+
+`feed()` 가 도는 자리는 `perception_server` 의 **메인 스레드**이고, 그 루프가
+YOLO·로봇 검출 송출·추종 제어의 심장이다. 여기서 예외가 새면 **밤에 사람을 쫓던
+로봇이 그 자리에 선다.** 그래서 모든 외부 호출을 삼킨다.
+
+## 시계·저장·보고를 전부 주입받는다
+
+실물(ffmpeg·HTTP·카메라) 없이 타임라인 전체를 시험할 수 있다.
+"""
+from __future__ import annotations
+
+import uuid
+from dataclasses import dataclass
+from collections import deque
+
+#: 화면에 뜨는 문구. 데모 시드(`seed_demo_data.py`)와 같은 문장이라 목록이 일관된다.
+NOTE = "야간 순찰 중 인기척 감지"
+
+
+@dataclass
+class SecurityParams:
+    """숫자는 전부 근거가 있다 — 설계문서 §10 참고.
+
+    ⚠️ `trigger_sec` 은 로봇 BT 의 `intruder_sustain`(1.5)보다 **짧아야 한다.**
+       그래야 등록이 추종보다 먼저 일어난다(설계문서 §18.2). 두 값은 프로세스가
+       달라 서로 신호를 안 주고받고, **순서만으로** 맞춘다.
+    """
+    trigger_size: float = 100.0   # sqrt(area) @320. ⚠️ 리허설 실측으로 확정할 잠정값
+    trigger_sec: float = 1.0      # 연속 지속 = 침입 확정. 로봇(1.5)보다 짧아야 한다
+    preroll_sec: float = 3.0      # 링버퍼. 없으면 "들어오는 순간"이 클립에 안 담긴다
+    postroll_sec: float = 20.0    # 마지막 목격 이후. 목격할 때마다 갱신(슬라이딩)
+    max_clip_sec: float = 120.0   # 파일 길이 상한
+    cooldown_sec: float = 30.0    # 클립 종료 후 새 이벤트 억제
+    fps: int = 17                 # 링버퍼 길이 계산용
+
+
+class SecurityRecorder:
+    def __init__(self, *, robot_name, media_dir, sink=None, register_fn=None,
+                 reset_fn=None, now_fn=None, params=None):
+        import time as _time
+        self.p = params or SecurityParams()
+        self._robot = robot_name
+        self._dir = media_dir
+        self._sink = sink
+        self._register_fn = register_fn
+        self._reset_fn = reset_fn
+        self._now = now_fn or _time.monotonic
+        self._armed = False
+        self._want_armed = False     # 폴링 워커가 쓰고 메인 스레드가 읽는 유일한 값
+        self._ring = deque(maxlen=max(1, int(self.p.preroll_sec * self.p.fps)))
+        self._seen_since = None      # 연속 검출이 시작된 시각
+        self._recording = False
+        self._clip_start = None
+        self._last_seen = None
+        self._clip_name = None
+        self._cooldown_until = 0.0
+        #: 상한으로 강제 종료한 뒤, 대상이 사라지는 것을 계속 지켜보는 상태.
+        #: 이게 없으면 등록이 **영영 안 풀린다** — `_tick` 의 그 분기 주석 참고.
+        self._pending_release = False
+
+    # ── 외부에서 부르는 것 ────────────────────────────────────────────────
+
+    def arm(self, on: bool) -> None:
+        """야간 모드 on/off — **플래그만 세운다.**
+
+        ⚠️ 이 메서드는 `ModePoller` **워커 스레드**에서 불린다. 여기서 상태기계
+        (`_ring`·`_recording`·타이머·`_stop()`)를 직접 만지면 메인 프레임 루프와
+        동시에 건드리는 것이 되어 경합이 난다. 실제 전이는 `feed()` 가 도는
+        **단일 스레드**에서만 한다(`_tick` 첫머리).
+
+        `bool` 대입은 GIL 로 원자적이라 락이 필요 없다.
+        """
+        self._want_armed = bool(on)
+
+    def feed(self, jpeg, front_person_size, frame=None, cands=None) -> None:
+        """프레임 하나. `jpeg=None` 은 **심장박동**(영상이 안 오는 동안 시계만 돌린다).
+
+        심장박동이 없으면 카메라가 꺼졌을 때 상태기계가 tick 을 못 받아
+        **파일이 영영 안 닫히고 `clip_path` 도 안 붙는다.**
+        """
+        try:
+            self._tick(jpeg, float(front_person_size or 0.0), frame, cands)
+        except Exception:                                       # noqa: BLE001
+            # 여기서 새면 perception_server 메인 루프가 죽는다 — 머리말 참고.
+            pass
+
+    def close(self) -> None:
+        """프로세스 종료 경로. `atexit`/`SIGTERM` 에서 부른다 — 안 부르면 미완성 mp4 가
+        남고 `clip_path` PATCH 도 안 나간다."""
+        try:
+            if self._recording:
+                self._stop(self._now(), release=True)
+        except Exception:                                       # noqa: BLE001
+            pass
+
+    # ── 내부 ─────────────────────────────────────────────────────────────
+
+    def _tick(self, jpeg, size, frame, cands=None):
+        now = self._now()
+
+        # 모드 전이는 **여기서만** 한다 — 워커 스레드가 아니라 이 단일 스레드에서.
+        if self._want_armed != self._armed:
+            if not self._want_armed:
+                # 「주간」 전환 — 진행 중 클립을 즉시 닫는다. 안 그러면 미완성 mp4 가
+                # 남아 영영 재생이 안 된다(파일 핸들도 안 닫힌다).
+                if self._recording:
+                    self._stop(now, release=True)
+                self._ring.clear()
+                self._seen_since = None
+                self._pending_release = False
+            self._armed = self._want_armed
+
+        if not self._armed:
+            return
+        if jpeg is not None:
+            self._ring.append(jpeg)
+
+        seen = size >= self.p.trigger_size
+
+        # 상한으로 강제 종료한 뒤 — 파일은 닫혔지만 등록은 아직 살아 있다.
+        # 대상이 사라지는 것을 계속 지켜봐야 한다. 안 지켜보면 `reset_fn` 이 **영영 안
+        # 불려** 다음 밤의 침입자가 어제 갤러리에 매칭된다.
+        if self._pending_release:
+            if seen:
+                self._last_seen = now
+            elif now - self._last_seen >= self.p.postroll_sec:
+                self._release_registration()
+                self._pending_release = False
+
+        if self._recording:
+            if jpeg is not None:
+                self._call(self._sink.write, jpeg)
+            if seen:
+                self._last_seen = now
+            if now - self._clip_start >= self.p.max_clip_sec:
+                # 사람은 아직 보인다 — 파일만 닫고 **등록은 유지한다.**
+                # 여기서 지우면 로봇이 한창 쫓는 중에 대상이 증발한다.
+                # 대신 `_pending_release` 로 넘겨 소실을 계속 지켜본다.
+                self._stop(now, release=not seen)
+                if seen:
+                    self._pending_release = True
+                return
+            if now - self._last_seen >= self.p.postroll_sec:
+                # 정의상 "이만큼 아무도 안 보였다" — 로봇도 이미 포기했다. 안전하다.
+                self._stop(now, release=True)
+            return
+
+        if not seen:
+            self._seen_since = None
+            return
+        if self._seen_since is None:
+            self._seen_since = now
+            return
+        # ponytail: 1e-9 관용도 — `clock.t += 0.1` 을 10번 누적하면 부동소수점
+        # 오차로 1.0 에 미세하게 못 미쳐(0.9999999999999999) 정확히 trigger_sec
+        # 프레임 수만큼만 보낸 시험에서 트리거가 영영 안 붙는다. 실사용(진짜
+        # time.monotonic())에서는 프레임이 계속 오므로 안 드러났을 문제.
+        if now - self._seen_since < self.p.trigger_sec - 1e-9:
+            return
+        if now < self._cooldown_until:
+            return
+        self._start(now, frame, cands)
+
+    def _start(self, now, frame, cands=None):
+        self._clip_name = f"{uuid.uuid4()}.mp4"
+        self._call(self._sink.open_clip, self._clip_name)
+        for buf in self._ring:                 # 프리롤을 먼저 흘려넣는다
+            self._call(self._sink.write, buf)
+        if self._register_fn is not None and frame is not None:
+            # 이미 뽑아 둔 후보를 그대로 넘긴다 — 트리거 프레임에서 YOLO 가 두 번
+            # 돌면 메인 루프가 그만큼 멈춘다(register_nearest 머리말).
+            self._call(self._register_fn, frame, cands)
+        # `clip_name` 이 키다 — 응답을 기다리지 않는다(머리말의 동기 HTTP 금지).
+        self._call(self._sink.report, self._clip_name, NOTE)
+        self._recording = True
+        self._pending_release = False
+        self._clip_start = now
+        self._last_seen = now
+
+    def _stop(self, now, *, release):
+        ok = self._call(self._sink.close_clip)
+        if ok and self._clip_name is not None:
+            self._call(self._sink.attach_clip, self._clip_name,
+                       f"/api/admin/ops/security/clips/{self._clip_name}")
+        if release:
+            self._release_registration()
+        self._recording = False
+        self._clip_name = None
+        self._seen_since = None
+        self._cooldown_until = now + self.p.cooldown_sec
+
+    def _release_registration(self):
+        """ReID 등록을 푼다. **여기 한 곳에서만** 부른다 — 정상 만료(`_stop`)와
+        상한 종료 뒤 소실(`_pending_release`) 두 경로가 같은 자리로 모여야
+        두 번 불리거나 한 번도 안 불리는 일이 없다."""
+        if self._reset_fn is not None:
+            self._call(self._reset_fn)
+
+    @staticmethod
+    def _call(fn, *args):
+        """어떤 sink 예외도 상태기계를 멈추지 못하게 한다."""
+        if fn is None:
+            return None
+        try:
+            return fn(*args)
+        except Exception:                                       # noqa: BLE001
+            return None
