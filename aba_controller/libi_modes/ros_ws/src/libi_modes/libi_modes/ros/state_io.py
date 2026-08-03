@@ -417,7 +417,11 @@ class StateIO:
 #: tick 을 집어가고 `FollowExec` 은 **한 번도 안 돌아 INVALID** 로 남는다.
 #: 고정해 두면 화면에 **꺼진 노드 밑에서 무언가 돌고 있는** 그림이 나온다 — 코드는
 #: 멀쩡한데 화면만 거짓이 되는, 이 파일이 막으려는 바로 그 상황이다.
-_GRAFT_POINTS = ("FollowExec", "GuideExec")
+#:
+#: 야간 침입 추종도 같은 자리다 — 이걸 안 넣으면 `_GRAFT_FALLBACK`("FollowExec")로
+#: 떨어지는데 SECURITY_PATROL 브랜치엔 그 잎이 없어 **추종 하위 트리가 관제 화면에서
+#: 통째로 사라진다.** 코드는 멀쩡한데 화면만 거짓이 되는 종류다.
+_GRAFT_POINTS = ("FollowExec", "GuideExec", "IntruderChase")
 #: RUNNING 인 후보가 없을 때(추종·길잡이 둘 다 안 도는데 스냅샷은 온 경우) 붙일 자리.
 _GRAFT_FALLBACK = "FollowExec"
 

@@ -79,6 +79,15 @@ def test_unwired_drivers_are_caught_by_the_same_test():
 # leaf 가 **tick 조차 안 됐다** — 카메라도 안 켜지고 사람도 못 봤다.
 # 되돌림 확인: registry.py 에서 `camera_driver=`/`person_stop_driver=` 전달을 빼거나
 # 브랜치의 guard 를 지우면 아래가 빨개진다.
+#
+# ⚠️ SECURITY_PATROL(야간)은 여기서 **뺐다** — night-patrol 병합 이후로는
+# `PersonBlockGuard` 대신 `IntruderChase`(추종)가 그 자리를 대신하기 때문에
+# (`branches/security_patrol.py` 의 `PatrolOrChase` Selector), 아래 네 가지 검증
+# 전부(가드 존재·command gate·block 보고·arrive timer pause) SECURITY_PATROL 에는
+# 더 이상 적용되지 않는다 — 지우지 않고, 같은 의도를 잇는 시험으로 옮겼다:
+# `test_security_patrol_wiring.py::test_사람에_의한_정지는_야간에_없다`(가드 부재
+# 확인) 와 `test_registry_security_patrol_drivers.py`(camera_driver·follow_driver
+# 실제 전달 확인)가 SECURITY_PATROL 쪽 검증을 대신한다.
 
 def _patrol_guards(mode, drivers=None):
     root = registry.build_branches(_params(), drivers or _wired_drivers())[mode]
@@ -92,27 +101,18 @@ def test_patrol_branch_has_the_guard():
     assert guards[0].camera_driver is not None, "카메라를 안 켜면 볼 프레임이 없다"
 
 
-def test_security_patrol_branch_has_the_guard():
-    guards = _patrol_guards("SECURITY_PATROL")
-    assert len(guards) == 1, "야간 순회에 PersonBlockGuard 가 안 붙었다"
-    assert guards[0].camera_driver is not None
-
-
 def test_patrol_guard_has_no_command_gate():
     """순회 중 `ACTIVE_COMMAND` 는 None 이다 — navigate 게이트를 두면 영영 안 돈다."""
-    for mode in ("PATROL", "SECURITY_PATROL"):
-        assert _patrol_guards(mode)[0].require_command is None, mode
+    assert _patrol_guards("PATROL")[0].require_command is None
 
 
 def test_patrol_guard_reports_blocks_too():
     """순회 홉도 `on_path_request` 가 내려보내는 같은 `navigate{node,...}` 라
     `committed_node` 가 홉마다 갱신된다 — 막히면 알려야 CBS 가 경로를 다시 짠다.
     안 꽂으면 순회 중엔 아무리 오래 막혀도 재탐색이 안 일어난다."""
-    for mode in ("PATROL", "SECURITY_PATROL"):
-        assert _patrol_guards(mode)[0].block_fn is not None, mode
+    assert _patrol_guards("PATROL")[0].block_fn is not None
 
 
 def test_patrol_guard_pauses_the_arrive_timer():
     """정지해 있는 시간이 도착 타임아웃을 먹으면 순회가 '주행 실패'로 끊긴다."""
-    for mode in ("PATROL", "SECURITY_PATROL"):
-        assert _patrol_guards(mode)[0].nav_leaf is not None, mode
+    assert _patrol_guards("PATROL")[0].nav_leaf is not None

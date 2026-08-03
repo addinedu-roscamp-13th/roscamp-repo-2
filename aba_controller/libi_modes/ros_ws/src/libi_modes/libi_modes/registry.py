@@ -143,10 +143,13 @@ def build_branches(params: dict, drivers: dict) -> dict:
         # 오래 막히면 배달과 **똑같이** 정점 차단을 알려 CBS 가 경로를 다시 짠다.
         # 순회 홉도 `on_path_request` 가 내려보내는 같은 `navigate{node,...}` 라
         # `committed_node` 가 홉마다 갱신된다(patrol.py 의 같은 자리 주석).
+        # 야간엔 PersonBlockGuard 를 안 세운다(PatrolOrChase 가 대신한다) — block_fn
+        # 은 그래서 안 넘긴다. person_stop_driver 는 여전히 쓴다: IntruderChase 가
+        # 추종을 열기 전 nav2 목표를 비우는 데 재사용한다(security_patrol.py 독스트링).
         "SECURITY_PATROL": security_patrol.create(params, drivers["security_patrol"],
                                                  undock_gate=_undock(params, drivers),
                                                  person_stop_driver=drivers.get("person_stop"),
-                                                 block_fn=drivers.get("person_block"),
+                                                 follow_driver=drivers.get("follow"),
                                                  camera_driver=drivers.get("camera_select")),
         "PATROL": patrol.create(params, drivers["patrol"],
                                 undock_gate=_undock(params, drivers),

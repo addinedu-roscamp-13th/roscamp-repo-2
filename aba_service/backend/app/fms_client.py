@@ -29,7 +29,11 @@ _lock = threading.Lock()
 
 
 def _request(
-    path: str, method: str = "GET", body: dict | None = None, token: str | None = None
+    path: str,
+    method: str = "GET",
+    body: dict | None = None,
+    token: str | None = None,
+    timeout: int = TIMEOUT_SEC,
 ) -> tuple[int, str]:
     """(status_code, body_text). 네트워크 실패는 (0, 사유)."""
     req = urllib.request.Request(
@@ -42,7 +46,7 @@ def _request(
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT_SEC) as res:
+        with urllib.request.urlopen(req, timeout=timeout) as res:
             return res.status, res.read().decode("utf-8")
     except urllib.error.HTTPError as e:
         try:
@@ -57,11 +61,12 @@ def _request(
 FMS_LOGIN_PATH = "/api/auth/login"
 
 
-def _login() -> tuple[bool, str]:
+def _login(timeout: int = TIMEOUT_SEC) -> tuple[bool, str]:
     status, text = _request(
         FMS_LOGIN_PATH,
         "POST",
         {"username": FMS_USER, "password": FMS_PASSWORD},
+        timeout=timeout,
     )
     if status == 0:
         return False, f"FMS 연결 실패: {text}"
@@ -73,7 +78,9 @@ def _login() -> tuple[bool, str]:
         return False, "FMS 로그인 응답 형식 오류"
 
 
-def _authed(path: str, method: str, body: dict | None) -> tuple[bool, str]:
+def _authed(
+    path: str, method: str, body: dict | None, timeout: int = TIMEOUT_SEC
+) -> tuple[bool, str]:
     """토큰을 붙여 호출하고, 401 이면 **한 번만** 재로그인 후 재시도한다.
 
     재시도를 1회로 제한하는 이유: 주문 생성은 멱등하지 않다. 무한 재시도하면 같은 주문이
@@ -82,21 +89,21 @@ def _authed(path: str, method: str, body: dict | None) -> tuple[bool, str]:
     global _token
     with _lock:
         if _token is None:
-            ok, value = _login()
+            ok, value = _login(timeout=timeout)
             if not ok:
                 return False, value
             _token = value
         token = _token
 
-    status, text = _request(path, method, body, token)
+    status, text = _request(path, method, body, token, timeout=timeout)
     if status == 401:
         with _lock:
-            ok, value = _login()
+            ok, value = _login(timeout=timeout)
             if not ok:
                 return False, value
             _token = value
             token = _token
-        status, text = _request(path, method, body, token)
+        status, text = _request(path, method, body, token, timeout=timeout)
 
     if status == 0:
         return False, f"FMS 연결 실패: {text}"
@@ -220,9 +227,14 @@ def assign_order(task_id: str, robot: str) -> tuple[bool, str]:
     return ok, text
 
 
-def fleet_snapshot() -> tuple[bool, dict]:
-    """로봇 관측 스냅샷(위치·상태·배터리·교통). 실패하면 `(False, {})`."""
-    ok, text = _authed("/api/fleet/snapshot", "GET", None)
+def fleet_snapshot(*, timeout: int = TIMEOUT_SEC) -> tuple[bool, dict]:
+    """로봇 관측 스냅샷(위치·상태·배터리·교통). 실패하면 `(False, {})`.
+
+    `timeout` 은 기본 `TIMEOUT_SEC`(8초, 재로그인 재시도 포함 최대 ~24초) — 대부분의
+    호출부는 그대로 쓰면 된다. "알림 먼저" 설계인 호출부(`ops_extra._zone_from_fleet`)만
+    짧은 값을 명시로 넘긴다.
+    """
+    ok, text = _authed("/api/fleet/snapshot", "GET", None, timeout=timeout)
     if not ok:
         return False, {}
     try:

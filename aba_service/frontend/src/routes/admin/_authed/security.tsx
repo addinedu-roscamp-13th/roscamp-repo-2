@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { AdminShell } from "@/components/admin/AdminShell";
@@ -23,6 +23,7 @@ interface SecurityState {
   mode: string;
   night_start: string | null;
   night_end: string | null;
+  ai_alive: boolean;
   events: {
     id: number;
     detected_at: string;
@@ -33,6 +34,9 @@ interface SecurityState {
     acknowledged: boolean;
   }[];
 }
+
+/** 이벤트 한 건. `SecurityState` 안의 익명 타입을 꺼내 쓴다 — 정의를 두 벌 두지 않는다. */
+type SecurityEvent = SecurityState["events"][number];
 
 const fmtTime = (iso: string) => iso.slice(0, 16).replace("T", " ");
 
@@ -47,11 +51,28 @@ function SecurityPage() {
   const [nightStart, setNightStart] = useState("");
   const [nightEnd, setNightEnd] = useState("");
   const [savingSchedule, setSavingSchedule] = useState(false);
+  // 이미 본 침입 id. 첫 응답은 **씨딩만** 하고 모달을 안 띄운다 —
+  // 안 그러면 화면을 열 때마다 리허설에서 쌓인 옛 이벤트가 줄줄이 뜬다.
+  const seenIds = useRef<Set<number>>(new Set());
+  const seeded = useRef(false);
+  const [alertQueue, setAlertQueue] = useState<SecurityEvent[]>([]);
 
   const load = useCallback(async () => {
     try {
       const s = await opsApi<SecurityState>("/api/admin/ops/security");
       setState(s);
+      const events: SecurityEvent[] = s.events ?? [];
+      if (!seeded.current) {
+        // 첫 응답 — 전부 "이미 본 것"으로 표시만 한다.
+        events.forEach((e) => seenIds.current.add(e.id));
+        seeded.current = true;
+      } else {
+        const fresh = events
+          .filter((e) => !seenIds.current.has(e.id) && !e.acknowledged)
+          .sort((a, b) => a.id - b.id); // 오래된 것부터 하나씩
+        fresh.forEach((e) => seenIds.current.add(e.id));
+        if (fresh.length) setAlertQueue((q) => [...q, ...fresh]);
+      }
       setScheduleSeeded((seeded) => {
         if (!seeded) {
           setNightStart(s.night_start ?? "");
@@ -196,6 +217,15 @@ function SecurityPage() {
               >
                 현재: {night ? "야간 보안 가동" : "주간 정상 운영"}
               </span>
+              <span
+                className={`rounded px-2 py-1 text-xs font-bold ${
+                  state?.ai_alive
+                    ? "bg-emerald-500/15 text-emerald-700"
+                    : "bg-rose-500/15 text-rose-700"
+                }`}
+              >
+                {state?.ai_alive ? "🟢 감지 켜짐" : "🔴 AI 서버 없음"}
+              </span>
             </div>
 
             {/* 자동 전환 시각 — 설정하면 그 시각에 위 모드를 자동으로 바꾼다 */}
@@ -332,6 +362,49 @@ function SecurityPage() {
           applyMode("night");
         }}
       />
+
+      {/* 침입 경고 — 사람이 판정하는 지점이다. 로봇으로 나가는 지시는 없다(경고음 미구현). */}
+      {alertQueue.length > 0 && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="w-[420px] rounded-lg border-2 border-rose-500 bg-background p-5 shadow-xl">
+            <h2 className="mb-1 text-lg font-bold text-rose-600">
+              🚨 침입 감지
+            </h2>
+            <p className="text-sm font-semibold">
+              {alertQueue[0].source}
+              {alertQueue[0].zone
+                ? ` · ${alertQueue[0].zone}`
+                : " · (위치 미상)"}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {new Date(alertQueue[0].detected_at).toLocaleString()}
+            </p>
+            {alertQueue[0].note ? (
+              <p className="mt-2 text-sm">{alertQueue[0].note}</p>
+            ) : null}
+            <p className="mt-2 rounded bg-muted px-2 py-1 text-[11px] text-muted-foreground">
+              영상은 녹화가 끝나면 아래 목록에서 재생됩니다
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                className="rounded border px-3 py-1.5 text-sm"
+                onClick={() => setAlertQueue((q) => q.slice(1))}
+              >
+                닫기
+              </button>
+              <button
+                className="rounded bg-primary px-3 py-1.5 text-sm font-semibold text-primary-foreground"
+                onClick={async () => {
+                  await ack(alertQueue[0].id);
+                  setAlertQueue((q) => q.slice(1));
+                }}
+              >
+                확인 처리
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </AdminShell>
   );
 }

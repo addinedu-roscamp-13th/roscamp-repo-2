@@ -100,6 +100,7 @@ class Keys:
     #    낡은 표시가 우연히 같은 목표를 노린 자율 전이까지 유지 시간을 뚫게 만든다.
     COMMANDED_MODE = "commanded_mode"
     #: 주행 중 앞캠에 잡힌 **가장 큰 사람**의 크기(sqrt(area) px @320). None = 감지 안 됨.
+    #: `PersonBlockGuard`(주간)와 `IntruderChase`(야간, common/intruder_chase.py) 둘 다 쓴다.
     FRONT_PERSON_SIZE = "front_person_size"
     #: 로봇이 실제로 직진 중인가(odom twist 기준). 차단 뒤 감지 재무장 조건이다.
     MOVING_STRAIGHT = "moving_straight"

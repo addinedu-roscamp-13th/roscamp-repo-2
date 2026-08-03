@@ -262,7 +262,8 @@ class FsmNode(Node):
         # (최초 구현에서 이 실수를 했다 — FMS 에 영영 안 닿았을 것이다).
         # 로봇발 보고 전용으로 이미 뚫린 `/libi/node_block` 을 쓴다 — 아래 별도 발행자.
         self._node_block_pub = _CmdPublisher(self, "/libi/node_block")
-        # navigate 중 앞캠을 직접 요청한다(Task 17) — `PersonBlockGuard.camera_driver`.
+        # navigate 중 앞캠을 직접 요청한다(Task 17, 주간 PersonBlockGuard) — 야간엔
+        # `CameraSelectRenew` 가 같은 발행자를 문다(drivers["camera_select"]).
         # `_CmdPublisher` 를 안 쓴다 — 그건 depth=10 짜리 일반 QoS 라 이 토픽의 latched
         # 구독자와 안 맞는다(위 `_CAMERA_SELECT_QOS` 주석).
         self._camera_select_pub = self.create_publisher(
@@ -621,22 +622,6 @@ class FsmNode(Node):
         self.get_logger().info(
             f"사람 차단 보고: node={node} ttl={self._person_block_ttl_sec}s")
 
-    def _publish_camera_select(self, value: str) -> None:
-        """`PersonBlockGuard.camera_driver(value)` — `/libi/camera_select` 를 직접 요청한다.
-
-        `follow_node`(libi_perception)의 세션을 열지 않는다 — 세션은 하나만 살 수 있어,
-        열면 길잡이의 뒷캠 세션을 덮어써 안내가 깨진다. 대신 이 토픽에 바로 쓴다.
-
-        ⚠️ [알려진 한계] `follow_node.tick()` 은 세션이 없어도 idle 값을
-        `CAMERA_SELECT_HZ`(2Hz)로 계속 재발행한다(`follow_node.py` `_publish_camera`).
-        즉 navigate 중에는 이 발행과 그쪽의 idle 값이 **같은 토픽에서 경합한다** — 두
-        발행자 다 latched(TRANSIENT_LOCAL)라 늦게 붙는 구독자는 매치된 각 발행자의
-        마지막 값을 받고, 그 뒤로는 나중에 도착하는 메시지가 이긴다. `follow_node` 를
-        고쳐 idle 땐 이 토픽에 안 쓰게 하는 것이 근본 해결이지만 그건 다른 서비스
-        (libi_perception) 영역이라 여기서 손대지 않는다 — 보고서에 남겨 둔다.
-        """
-        self._camera_select_pub.publish(String(data=str(value)))
-
     def _publish_cmd_result(self, cmd_id: str, ok: bool, msg: str) -> None:
         """`/fleet_cmd_result` 로 임의의 명령 결과를 올린다.
 
@@ -655,6 +640,24 @@ class FsmNode(Node):
                                        "status": 200 if ok else 500,
                                        "data": None, "msg": str(msg or "")})
         self.get_logger().info(f"명령 결과 보고 cmd={cmd_id} ok={ok} {msg}")
+
+    def _publish_camera_select(self, value: str) -> None:
+        """`/libi/camera_select` 를 직접 요청한다 — `PersonBlockGuard.camera_driver`
+        (주간)와 `CameraSelectRenew`(야간, `common/intruder_chase.py`) 둘 다 문다.
+
+        `follow_node`(libi_perception)의 세션을 열지 않는다 — 세션은 하나만 살 수 있어,
+        열면 길잡이의 뒷캠 세션을 덮어써 안내가 깨진다. 대신 이 토픽에 바로 쓴다.
+        `camera_select` 발행자는 `follow_node` 하나라는 규칙의 기존 예외다.
+
+        ⚠️ [알려진 한계] `follow_node.tick()` 은 세션이 없어도 idle 값을
+        `CAMERA_SELECT_HZ`(2Hz)로 계속 재발행한다(`follow_node.py` `_publish_camera`).
+        즉 navigate 중에는 이 발행과 그쪽의 idle 값이 **같은 토픽에서 경합한다** — 두
+        발행자 다 latched(TRANSIENT_LOCAL)라 늦게 붙는 구독자는 매치된 각 발행자의
+        마지막 값을 받고, 그 뒤로는 나중에 도착하는 메시지가 이긴다. `follow_node` 를
+        고쳐 idle 땐 이 토픽에 안 쓰게 하는 것이 근본 해결이지만 그건 다른 서비스
+        (libi_perception) 영역이라 여기서 손대지 않는다 — 보고서에 남겨 둔다.
+        """
+        self._camera_select_pub.publish(String(data=str(value)))
 
     def _publish_arm_result(self, ok: bool, msg: str) -> None:
         """팔 동작이 끝났다고 `/fleet_cmd_result` 로 올린다 — **완료를 아는 쪽이 답한다.**

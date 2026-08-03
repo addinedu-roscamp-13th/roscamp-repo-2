@@ -107,6 +107,28 @@ import type { BtNodeFlag } from "@/components/admin/BtGraphView";
  *
  * 셋 다 배선은 정상이다. 아래 플래그에는 `PersonBlockGuard` 하나만 올린다 — 배선
  * 문제가 아니라 **판정이 원래 좌우를 안 보는** 알려진 한계라서다.
+ *
+ * ## 2026-08-03 — 야간 침입 추종 배선. 플래그 없음
+ *
+ * `SECURITY_PATROL` 에 `IntruderChase`·`CameraSelectRenew` 가 새로 붙고, 그 위에
+ * `Selector("PatrolOrChase")` 가 얹혔다(`libi_modes/branches/security_patrol.py:83-100`).
+ * 셋 다 이 병합 트리에서 배선·도달 가능성을 코드로 확인했다 — `registry.py:132` 가
+ * `security_patrol.create()` 를 호출하고, `IntruderChase` 는 `follow_driver`/
+ * `nav_stop_driver` 를 실제로 받아 추종 세션을 열고 닫으며(`intruder_chase.py:137-140`),
+ * `CameraSelectRenew` 는 매 tick `camera_driver` 를 재발행한다(`intruder_chase.py:221-223`).
+ * "정상 동작하는 노드는 여기 적지 않는다" 원칙 그대로, **셋 다 키를 추가하지 않는다.**
+ *
+ * (원래 작업 지시서는 `IntruderChase: {}` 처럼 빈 객체를 키 값으로 넣는 예시를 들었지만,
+ * 이 파일의 `BtNodeFlag` 는 `"unwired" | "partial" | "unreachable"` 문자열 유니언이라
+ * (`BtGraphView.tsx:74`) 애초에 `{}` 를 대입할 수 없다 — 값 없는 항목을 추가하는 대신
+ * 위 원칙대로 항목 자체를 넣지 않는 쪽을 택했다.)
+ *
+ * ⚠️ `SECURITY_PATROL` 은 `PersonBlockGuard` 를 안 세운다 — 위 `PatrolOrChase` 가
+ * 그 자리를 대신한다. 바로 위 절의 `PersonBlockGuard: "partial"` 항목은 **다른
+ * 브랜치**(`WorkingBranch`, 주간 배달)의 것이다 — 이 파일에 그 키가 있다고 해서
+ * `SECURITY_PATROL` 에도 PersonBlockGuard 가 있다는 뜻이 아니다. `security_patrol.py`
+ * 는 그 클래스를 아예 import 하지 않는다(merge 전에는 이 파일 자체에 `PersonBlockGuard`
+ * 키가 없었다 — `person_block.py` 가 레포 역사에 없었기 때문. `git log --all` 로 확인).
  */
 export const BT_NODE_FLAGS: Record<string, BtNodeFlag> = {
   // ── 서가 정밀 도킹 리프 셋 (2026-08-03 신설) ─────────────────────────────

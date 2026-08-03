@@ -221,3 +221,23 @@ libi_modes:
     # 15분 야간 루프 — Topics2BB/외부 스케줄러가 security_patrol_request 를 넣어주는 주기.
     # 이 패키지가 타이머 자체를 소유하지 않는다 (IdleBranch 에 타이머 leaf 없음).
     idle_interval_sec: 900
+    # 야간 순찰 침입 추종. 숫자는 전부 근거가 있다 —
+    # docs/superpowers/specs/2026-08-03-night-patrol-security-design.md §9·§10
+    # sqrt(area) @320. ⚠️ 잠정값 — 리허설에서 사람을 여러 거리에 세우고 실측해 확정한다.
+    intruder_size: 100.0
+    # ⚠️ AI 서버 TRIGGER_SEC(1.0)보다 **길어야 한다.** 두 프로세스는 신호를 주고받지
+    #    않고 같은 숫자를 각자 본다 — 이 차이가 "등록이 추종보다 먼저"를 보장하는
+    #    유일한 장치다. 같으면 owner 없이 세션이 열려 곧바로 실패한다.
+    intruder_sustain: 1.5
+    # ⚠️ 유도값: SEARCH_PEEK_ANGLE(1.5708) / ANGULAR_Z_SEARCH(0.35) + 0.5 = 5.0
+    #    (libi_perception/config.py:341,360). **9.49 이상으로 올리면** 인지 쪽 탐색이
+    #    훑기·180° 회전까지 진입해 로봇이 밤에 제자리에서 빙빙 돈다.
+    intruder_lose_sec: 5.0
+    # 안전 상한. 넘으면 무조건 순찰 복귀한다.
+    max_chase_sec: 60.0
+    # follow_stop 발행 후 nav 목표를 다시 내기까지. 이 유예가 없으면 /cmd_vel
+    # 발행자가 잠깐 둘이 된다(FleetCmdDriver.stop 은 결과를 안 기다린다).
+    release_grace_sec: 1.0
+    # 세션이 failure 로 끝났을 때만 건다. 정상 소실에는 안 건다.
+    # ⚠️ 0 이면 owner 가 없을 때 트리거→실패→재트리거가 무한 반복해 순찰이 마비된다.
+    failure_backoff_sec: 10.0

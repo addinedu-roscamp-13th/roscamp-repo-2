@@ -242,3 +242,92 @@ def test_predicted_bbox_stays_a_real_box_under_occlusion():
     w = d.bbox[2] - d.bbox[0]
     h = d.bbox[3] - d.bbox[1]
     assert w > 1.0 and h > 1.0, f"예측 박스가 사라졌다: {w:.2f} x {h:.2f}"
+
+
+def test_register_nearest_는_화면_가운데가_아니라_가장_큰_후보를_고른다():
+    """`register_from_image`(가운데)와 갈라진 이유 자체를 고정한다.
+
+    가운데에 작은 사람, 가장자리에 큰 사람이 있을 때 둘이 **다른** 후보를 골라야 한다.
+    """
+    import numpy as np
+    from follower_perception.pipeline import FollowerPerception
+
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+
+    class _Box:
+        def __init__(self, cx, area):
+            self.cx, self.cy, self.area = cx, 120, area
+            half = int(area ** 0.5) // 2
+            self.bbox = (max(0, cx - half), 120 - half, min(319, cx + half), 120 + half)
+            self.track_id, self.confidence, self.is_predicted = 1, 0.9, False
+
+    small_center = _Box(cx=160, area=900)     # 화면 정중앙, 작다(멀다)
+    big_edge = _Box(cx=40, area=19600)        # 왼쪽 끝, 크다(가깝다)
+
+    class _Detector:
+        def detect(self, _frame):
+            return [small_center, big_edge]
+
+    perception = FollowerPerception.__new__(FollowerPerception)
+    perception.detector = _Detector()
+
+    assert perception._pick_central([small_center, big_edge], frame) is small_center
+    picked = perception._pick_nearest([small_center, big_edge], frame)
+    assert picked is big_edge
+
+
+def test_register_nearest_는_너무_작은_후보를_거른다():
+    """`REGISTRATION_MIN_AREA_RATIO` 필터를 `_pick_central` 과 똑같이 적용한다."""
+    import numpy as np
+    from follower_perception.pipeline import FollowerPerception
+
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+
+    class _Tiny:
+        cx, cy, area = 160, 120, 100          # 320*240 의 0.13% — 1% 미만
+        bbox = (155, 115, 165, 125)
+        track_id, confidence, is_predicted = 1, 0.9, False
+
+    perception = FollowerPerception.__new__(FollowerPerception)
+    assert perception._pick_nearest([_Tiny()], frame) is None
+
+
+def test_register_nearest_가_matcher_에_큰_후보의_crop_을_넘긴다():
+    """등록 경로 전체(crop → matcher.register → 상태 초기화)가 도는지."""
+    import numpy as np
+    from follower_perception.pipeline import FollowerPerception
+
+    frame = np.full((240, 320, 3), 128, dtype=np.uint8)
+
+    class _Box:
+        def __init__(self, cx, area):
+            self.cx, self.cy, self.area = cx, 120, area
+            half = int(area ** 0.5) // 2
+            self.bbox = (max(0, cx - half), 120 - half, min(319, cx + half), 120 + half)
+            self.track_id, self.confidence, self.is_predicted = 1, 0.9, False
+
+    big = _Box(cx=40, area=19600)
+
+    class _Detector:
+        def detect(self, _f):
+            return [_Box(cx=160, area=900), big]
+
+    class _Matcher:
+        def __init__(self):
+            self.registered_with = None
+        def register(self, roi):
+            self.registered_with = roi
+
+    class _Smoother:
+        def reset(self):
+            pass
+
+    p = FollowerPerception.__new__(FollowerPerception)
+    p.detector, p.matcher, p.smoother = _Detector(), _Matcher(), _Smoother()
+    p._on_registered = lambda: None
+
+    got = p.register_nearest(frame)
+
+    assert got is big
+    assert p.matcher.registered_with is not None       # crop 이 넘어갔다
+    assert p._last_bbox == list(big.bbox)
