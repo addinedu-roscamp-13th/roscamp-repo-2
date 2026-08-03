@@ -524,11 +524,15 @@ def _zone_from_fleet(source: str | None) -> str | None:
     `_drive_fleet` 이 이미 쓰는 같은 스냅샷을 본다. **조회가 실패해도 저장을 막지
     않는다** — 알림이 먼저다. 이름이 안 맞으면 위치만 비고 나머지는 정상이다
     (로봇 이름 표기 불일치는 이 레포의 알려진 함정 — fleet_link.py `_fsm_entry`).
+
+    `timeout=1` — 기본 `TIMEOUT_SEC`(8초, 재로그인 재시도 포함 최대 ~24초)를 쓰면 AI
+    서비스의 `OpsSink.report()`(3초 타임아웃)가 먼저 끊겨 `event_id` 를 못 받고, 뒤이은
+    `attach_clip` 이 조용히 스킵된다. 위치 조회는 알림을 지연시키면 안 된다.
     """
     if not source:
         return None
     try:
-        ok, snap = fms_client.fleet_snapshot()
+        ok, snap = fms_client.fleet_snapshot(timeout=1)
     except Exception:                                           # noqa: BLE001
         return None
     if not ok:
