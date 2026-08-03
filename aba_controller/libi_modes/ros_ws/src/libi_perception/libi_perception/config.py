@@ -410,6 +410,11 @@ CAMERA_SELECT_TOPIC = '/libi/camera_select'
 PERCEPTION_ROLE_TOPIC = '/libi/perception_role'
 REQUESTER_VISIBLE_TOPIC = '/libi/requester_visible'
 REQUESTER_AREA_TOPIC = '/libi/requester_area'
+# 화면 안 **가장 큰 사람**(owner 매칭과 무관, 통행인도 포함) 의 sqrt(area) px.
+# 주행 중 사람 차단 판정(`libi_modes` 의 `PersonBlockGuard`)이 구독한다.
+# 검출이 없으면 0.0 을 낸다 — "모른다"를 안 내는 게 아니라 0 을 낸다(구독자가
+# 없음으로 해석). `Detection.front_person_size` 머리말 참고.
+FRONT_PERSON_SIZE_TOPIC = '/libi/front_person_size'
 # ⚠️ [2026-08-02] **회복 BT 가 포기했다는 것을 안내 쪽에 알리는 통로.**
 #
 #   예전에는 `GuideExec` 이 `guide_lost_timeout_sec`(시계)로 안내를 끝냈다. 회복

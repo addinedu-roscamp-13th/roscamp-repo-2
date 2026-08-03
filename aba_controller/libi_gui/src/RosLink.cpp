@@ -23,6 +23,8 @@ struct RosLink::Impl {
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr panelResSub;
     rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr poseSub;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odomSub;
+    rclcpp::Subscription<std_msgs::msg::String>::SharedPtr replanReasonSub;
+    rclcpp::Subscription<std_msgs::msg::String>::SharedPtr shelfDockStatusSub;
 
     // 상관 상태는 **패널 쪽에** 있다 — FMS 는 받은 id 를 되돌려 주기만 한다.
     // 둘 다 UI 스레드에서만 건드린다(수신은 시그널로 넘어온 뒤에 처리).
@@ -49,6 +51,11 @@ RosLink::RosLink(QObject *parent) : QObject(parent), d_(new Impl) {
                 o.value("error_code").toString(),
                 o.value("battery_percent").toDouble(-1.0),
                 o.value("is_docked").toBool(false));
+            emit personBlockedReceived(o.value("person_blocked").toBool(false));
+            emit frontPersonSizeReceived(o.value("front_person_size").toDouble(0.0));
+            emit personBlockInReceived(o.value("person_block_in").toDouble(-1.0));
+            emit personBlockReported(o.value("person_block_seq").toInt(0),
+                                     o.value("person_block_node").toInt(-1));
         });
     // ⚠️ `/amcl_pose` 는 **TRANSIENT_LOCAL** 로 발행된다. 기본 QoS(VOLATILE)로 구독하면
     // QoS 불일치로 **아무것도 안 온다** — 증상이 "지도에 로봇이 영영 안 뜬다" 로 나타나
@@ -74,6 +81,34 @@ RosLink::RosLink(QObject *parent) : QObject(parent), d_(new Impl) {
         "odom", 10,
         [this](nav_msgs::msg::Odometry::SharedPtr msg) {
             emit odomReceived(msg->twist.twist.linear.x, msg->twist.twist.angular.z);
+        });
+
+    // ── 재계획 사유 (FMS → 로봇, 2026-08-03) ─────────────────────────────────
+    // ⚠️ **TRANSIENT_LOCAL 로 구독한다.** 발행 쪽(fleet_link `_replan_reason_pubs`)이
+    //    래치라, 기본 QoS(VOLATILE)로 받으면 **QoS 불일치로 아무것도 안 온다** —
+    //    `/amcl_pose` 에서 이미 한 번 겪은 함정이다(위 주석).
+    {
+      rclcpp::QoS qos(rclcpp::KeepLast(1));
+      qos.transient_local().reliable();
+      d_->replanReasonSub = d_->node->create_subscription<std_msgs::msg::String>(
+        "replan_reason", qos,
+        [this](std_msgs::msg::String::SharedPtr msg) {
+          const auto o = QJsonDocument::fromJson(
+            QByteArray::fromStdString(msg->data)).object();
+          // ⚠️ 깨진 JSON 을 `{seq:0, reason:""}` 으로 조용히 받아들이면 **기준 seq 가
+          //    0 으로 리셋된다** — 그 뒤 진짜 사건이 "이미 본 것" 으로 무시된다.
+          //    두 필드가 다 있어야 사건으로 친다(codex 검토 P2).
+          if (!o.contains("seq") || !o.contains("reason")) { return; }
+          emit replanReasonReceived(o.value("seq").toInt(0),
+                                    o.value("reason").toString());
+        });
+    }
+
+    // 정밀 도킹 상태 — robot_agent가 제어 주기와 분리해 0.5초마다 요약을 낸다.
+    d_->shelfDockStatusSub = d_->node->create_subscription<std_msgs::msg::String>(
+        "shelf_dock_status", 20,
+        [this](std_msgs::msg::String::SharedPtr msg) {
+            emit shelfDockStatusReceived(QString::fromStdString(msg->data));
         });
 
     // ── 패널 요청 통로 (FMS app/panel_bridge.py) ──────────────────────────────

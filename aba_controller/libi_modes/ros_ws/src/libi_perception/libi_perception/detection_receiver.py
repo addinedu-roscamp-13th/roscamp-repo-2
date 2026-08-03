@@ -31,10 +31,19 @@ class DetectionReceiver:
         self._ttl = ttl_sec
         self._now = now
         self._stamp = None
+        #: 화면에서 가장 큰 사람의 크기 — **owner 유무와 무관한 별도 슬롯.**
+        #: owner 없는 프레임도 `{"front_person_size": ...}` 만 실려 온다
+        #: (`detection_sink.detection_to_dict` [2026-08-03]) — `_latest` 가 None 이어도
+        #: 이 값은 살아야 `PersonBlockGuard` 가 주행 중(등록 대상 없음)에도 사람을 본다.
+        #: `_stamp` 를 같이 쓴다 — payload 가 dict 든 null 이든 매 poll 마다 함께
+        #: 갱신되므로(update() 참고) 별도 타임스탬프를 둘 이유가 없다.
+        self._size = 0.0
 
     def update(self):
         for payload in self._source.poll():
             self._latest = detection_from_dict(payload)
+            self._size = float(payload.get('front_person_size', 0.0) or 0.0) \
+                if payload is not None else 0.0
             self._stamp = self._now()
 
     def latest(self):
@@ -44,3 +53,14 @@ class DetectionReceiver:
             self._latest = None       # 소스가 끊겼다 — 유령을 쫓지 않는다
             return None
         return self._latest
+
+    def front_person_size(self):
+        """가장 큰 사람 크기. `latest()` 와 **같은 TTL 규칙**을 쓴다 — 소스가
+        끊기면 0.0 을 낸다(모르는 것을 안다고 하지 않는다, `latest()` 머리말과 같은 이유).
+
+        ⚠️ `latest()` 가 None 이어도(owner 가 없어도) 값이 산다 — 그게 이 메서드의
+        존재 이유다.
+        """
+        if self._stamp is None or (self._now() - self._stamp) > self._ttl:
+            return 0.0
+        return self._size

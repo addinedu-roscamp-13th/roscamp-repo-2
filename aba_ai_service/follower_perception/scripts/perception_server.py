@@ -9,6 +9,7 @@ Run from the follower_perception/ package root:
 """
 import argparse
 import json
+import math
 import os
 import select
 import socket
@@ -175,7 +176,11 @@ def draw_overlay(frame, det, *, cands=None, pick=None, cmd=None, status_extra=""
         col = (0, 255, 255) if is_pick else (170, 170, 170)   # pick=yellow
         cv2.rectangle(vis, (x1, y1), (x2, y2), col, thick if is_pick else 1)
         if is_pick:
-            cv2.putText(vis, "register target",
+            # 라벨은 그냥 "people" 이다. 예전엔 "register target" 이었는데, 이 오버레이는
+            # 길잡이 등록 화면 말고 **주행·순회 앞캠 모니터**에서도 그대로 보인다 —
+            # 거기선 등록할 일이 없어서 글자가 거짓말이 된다.
+            # 어느 후보가 등록 대상인지는 **노란색**이 계속 알려 준다(회색 = 그 외).
+            cv2.putText(vis, "people",
                         (max(0, x1), max(int(34 * k), y1 - pad)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5 * k, col, thick)
     # owner box on top (after registration)
@@ -244,6 +249,18 @@ def _num(v):
     except (TypeError, ValueError):
         return None
     return f if np.isfinite(f) else None
+
+
+def _front_person_size(cands):
+    """화면에서 **가장 큰 사람**의 크기: sqrt(area) px, 320 원본 기준.
+
+    `cands` 는 owner 로 좁히기 **전** 목록이어야 한다(`FollowerPerception.last_cands`
+    == `Detector.detect()` 가 돌려주는 class=0 전부) — 등록 대상 매칭과 무관한
+    값이라 통행인도 잡혀야 한다. 박스가 없으면 0.0.
+    """
+    if not cands:
+        return 0.0
+    return math.sqrt(max(c.area for c in cands))
 
 
 def _pose_payload(det, cmd, pose, fps, matcher=None):
@@ -335,12 +352,15 @@ def serve_loop(conn, frames, perception, *, poll_cmd=None, jpeg_quality=80,
             perception.reset()
         perception.run(frame)
         det = perception.get_latest()
+        # 화면 전체에서 가장 큰 사람 — owner 매칭과 무관하다(_front_person_size 참고).
+        # `perception.last_cands` 는 owner 로 좁히기 **전** 목록이다.
+        front_size = _front_person_size(perception.last_cands)
         # 로봇의 libi_perception 으로 주인 검출을 직접 보낸다(선택). 이 채널이 없으면
         # 로봇 쪽 제어 루프는 더미 스텁만 받는다 — 회복 BT 가 진짜 검출을 한 번도
         # 못 본다는 뜻이다. 안 보이는 프레임은 null 을 보내는 것이 계약이다.
         # 프레임을 같이 넘겨 해상도를 실어 보낸다(detection_sink.detection_to_dict).
         if detection_sink is not None:
-            detection_sink(det, frame)
+            detection_sink(det, frame, front_person_size=front_size)
         cands = perception.last_cands
         # before registration, highlight which candidate the 등록 button would pick
         pick = None if perception.matcher.is_registered \
@@ -584,8 +604,8 @@ def _make_detection_sink(host, port):
     sink = RobotDetectionSink(host, port)
     print(f"[ok] 로봇 검출 채널 → {host}:{port}")
 
-    def send(det, frame=None):
-        sink.send(detection_to_dict(det, frame))
+    def send(det, frame=None, front_person_size=None):
+        sink.send(detection_to_dict(det, frame, front_person_size=front_person_size))
 
     return send
 
@@ -600,8 +620,9 @@ def _run_local_show(frames, perception, cmd_sink=None, policy=None, detection_si
         _sync_role(perception, role_source)
         perception.run(frame)
         det = perception.get_latest()
+        front_size = _front_person_size(perception.last_cands)
         if detection_sink is not None:
-            detection_sink(det, frame)
+            detection_sink(det, frame, front_person_size=front_size)
         cands = perception.last_cands
         pick = None if perception.matcher.is_registered \
             else perception._pick_central(cands, frame)

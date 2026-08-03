@@ -63,6 +63,15 @@ class RobotController : public QObject {
     Q_PROPERTY(double odomAngVel READ odomAngVel NOTIFY odomChanged)
     Q_PROPERTY(bool patrolActive READ patrolActive NOTIFY patrolActiveChanged)
     Q_PROPERTY(bool following READ following NOTIFY followingChanged)   // 관리자 추종 중
+    // 주행 중 앞을 막는 사람 때문에 서 있는가 (/libi/fsm_state 의 person_blocked).
+    // 비상정지·에러·명령 대기 같은 다른 정지는 여기 안 들어온다.
+    Q_PROPERTY(bool personBlocked READ personBlocked NOTIFY personBlockedChanged)
+    // 앞캠에 보이는 가장 큰 사람의 크기(sqrt(area) px @320). 0 = 안 보임.
+    // 임계값(person_stop_size)을 실기에서 맞추려면 지금 몇 px 인지가 보여야 한다.
+    Q_PROPERTY(double frontPersonSize READ frontPersonSize NOTIFY frontPersonSizeChanged)
+    // 사람 때문에 경로 재탐색이 걸리기까지 남은 초. 음수 = 세고 있지 않음.
+    // 관제 화면에서 재계획이 **사람 때문인지 지연 때문인지** 구분하려고 띄운다.
+    Q_PROPERTY(double personBlockIn READ personBlockIn NOTIFY personBlockInChanged)
     Q_PROPERTY(QString emotion READ emotion WRITE setEmotion NOTIFY emotionChanged)
     Q_PROPERTY(QString taskStatus READ taskStatus NOTIFY taskStatusChanged)   // SR-14 작업 알림 문구
 
@@ -107,6 +116,9 @@ public:
     QString waypointOf(const QString &displayName) const;
     bool patrolActive() const { return m_patrol; }
     bool following() const { return m_following; }
+    bool personBlocked() const { return m_personBlocked; }
+    double frontPersonSize() const { return m_frontPersonSize; }
+    double personBlockIn() const { return m_personBlockIn; }
     QString emotion() const { return m_emotion; }
     QString taskStatus() const { return m_taskStatus; }
     QString guidePhase() const { return m_guidePhase; }
@@ -125,6 +137,7 @@ public:
     Q_INVOKABLE void setMode(const QString &m);
     Q_INVOKABLE bool login(const QString &pin);      // 관리자 로그인 (목 PIN: 1234)
     Q_INVOKABLE void logout();
+    Q_INVOKABLE void clearLogs();                    // 최근 기록 비우기 (화면 전용, 로봇과 무관)
 
     Q_INVOKABLE void emergencyStop();                // SR-20: 즉시 정지 + 모든 명령 무시
     Q_INVOKABLE void clearEmergencyStop();           // 관리자만 해제 가능
@@ -222,6 +235,9 @@ signals:
     void poseChanged();
     void odomChanged();
     void patrolActiveChanged();
+    void personBlockedChanged();
+    void frontPersonSizeChanged();
+    void personBlockInChanged();
     void followingChanged();
     //: 관리자가 「해제」를 누른 것이 **아니라**, 로봇이 스스로 추종을 끝냈다.
     //  (사람을 못 찾아 회복이 포기했거나, 관제가 상태를 바꿨거나, 에러)
@@ -281,6 +297,16 @@ private:
     bool m_estop = false;
     int m_battery = 78;
     bool m_charging = false;
+    bool m_personBlocked = false;
+    double m_frontPersonSize = 0.0;
+    double m_personBlockIn = -1.0;
+    // 마지막으로 본 사람-차단 보고 번호. -1 = 아직 fsm_state 를 못 받았다.
+    // 첫 수신 때는 기록을 남기지 않는다 — 로봇이 이미 여러 번 보고한 뒤에 패널을 켜면
+    // 옛 사건이 "방금 일어난 일" 로 찍힌다.
+    int m_personBlockSeq = -1;
+    // 마지막으로 본 FMS 재계획 seq. -1 = 아직 못 받았다. 첫 수신은 기준만 잡는다 —
+    // `/replan_reason` 은 래치라 패널이 늦게 떠도 마지막 값이 배달된다.
+    int m_replanSeq = -1;
     QString m_robotState = QStringLiteral("순찰");
     RosLink *m_ros = nullptr;
     int m_interactingRemaining = 0;

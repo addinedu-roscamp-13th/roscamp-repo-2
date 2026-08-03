@@ -91,8 +91,12 @@ if(LIBI_GUI_TESTS)
     # 패널 요청 통로(RosLink::panelRequest) — id 상관과 타임아웃만 본다. RobotController 는
     # 안 넣는다: 여기서 보려는 건 통로 자체지 화면 로직이 아니다.
     add_executable(test_panel_link tests/test_panel_link.cpp src/RosLink.cpp src/RosLink.h)
+    # nav_msgs — RosLink.cpp 가 odom(nav_msgs/Odometry)을 구독한다. 없으면 이 타깃만
+    # `nav_msgs/msg/odometry.hpp: No such file` 로 죽는다(같은 파일을 쓰는
+    # test_guide_completion_ui 는 링크하고 있어 멀쩡하다).
     target_link_libraries(test_panel_link PRIVATE
-        Qt5::Core rclcpp::rclcpp std_msgs::std_msgs geometry_msgs::geometry_msgs)
+        Qt5::Core rclcpp::rclcpp std_msgs::std_msgs geometry_msgs::geometry_msgs
+        nav_msgs::nav_msgs)
 
     # Gui — QImage 디코딩에 필요 (QCoreApplication 으로 돌지만 이미지 타입은 QtGui 소속)
     add_executable(test_perception_client

@@ -239,6 +239,65 @@ def test_camera_not_republished_faster_than_period(rc):
     assert len(rc.cam()) == n0
 
 
+# ── [2026-08-03] 유휴 중 카메라 침묵 ──────────────────────────────────────────
+#
+# `navigate` 다리(세션 없음)에는 미션 BT 의 `PersonBlockGuard` 가 **직접**
+# `camera_select` 에 `front` 를 발행한다. `RemoteControl.tick()` 은 세션 유무와
+# 무관하게 매 tick `_publish_camera()` 를 부르므로, 예전처럼 유휴 중에도 계속
+# `none` 을 재발행하면 두 발행자가 같은 토픽을 밀어 마지막 도착이 이기는 경합이
+# 된다 — 앞캠이 깜빡이고 검출이 끊긴다. 세션이 있는 동안의 주기 재발행(위 두 시험)
+# 은 그대로다.
+
+def test_camera_is_published_while_a_session_lives(rc):
+    """세션 중에는 지금까지와 동일하게 주기 발행된다 — 동작 변경 없음."""
+    rc.send(action='follow_admin', id='f1')
+    n0 = len(rc.cam())
+    rc.clock.t += 10.0
+    rc.ctl.tick()
+    assert len(rc.cam()) == n0 + 1
+    assert rc.cam()[-1] == 'front'
+
+
+def test_camera_is_released_once_when_the_session_ends(rc):
+    """세션이 끝나면 `none` 이 **한 번만** 나가고, 그 뒤 tick 은 더 안 늘린다."""
+    rc.send(action='follow_admin', id='f1')
+    rc.send(action='stop', id='stop-f1')
+    n_at_stop = len(rc.cam())
+    assert rc.cam()[-1] == 'none', "끝나는 순간 none 을 놓아줘야 한다"
+
+    # 그 뒤로 여러 tick 이 지나도 카메라 발행이 더는 늘지 않는다 — 침묵.
+    for _ in range(5):
+        rc.clock.t += 10.0
+        rc.ctl.tick()
+    assert len(rc.cam()) == n_at_stop, "세션 종료 뒤에도 계속 발행하면 BT 와 경합한다"
+
+
+def test_camera_is_silent_while_idle(rc):
+    """세션을 아예 연 적이 없으면 tick 을 아무리 돌려도 발행이 0 번이어야 한다.
+
+    BT(`PersonBlockGuard`)가 이 토픽의 유일한 주인이 되는 경로다. follow_node 가
+    유휴 중에도 `none` 을 계속 밀면, BT 가 낸 `front` 와 마지막 도착 경쟁을 벌인다.
+    """
+    for _ in range(5):
+        rc.clock.t += 1.0
+        rc.ctl.tick()
+    assert rc.cam() == []
+
+
+def test_a_new_session_takes_the_camera_back(rc):
+    """침묵 상태에서도 새 세션이 열리면 다시 발행된다 — 영구 잠금이 아니다."""
+    rc.send(action='follow_admin', id='f1')
+    rc.send(action='stop', id='stop-f1')
+    for _ in range(3):                       # 침묵 확인
+        rc.clock.t += 1.0
+        rc.ctl.tick()
+    n_idle = len(rc.cam())
+
+    rc.send(action='guide_watch', id='g1')
+    assert len(rc.cam()) == n_idle + 1
+    assert rc.cam()[-1] == 'back'
+
+
 # ── 요청자 가시성 ────────────────────────────────────────────────────────────
 
 def test_visibility_published_for_guide(rc):

@@ -30,6 +30,7 @@ from ament_index_python.packages import get_package_share_directory
 from py_trees.common import Access
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
 from libi_modes import blackboard as bb
@@ -93,6 +94,13 @@ ARM_VIA_BT = os.getenv("LIBI_ARM_VIA_BT", "0") == "1"
 #    DDS 왕복·콜백 지연 여유를 더해 8초로 둔다.
 GUIDE_STOP_TIMEOUT_SEC = 8.0
 
+#: `/libi/camera_select` 구독자(`camera_sender.py`)는 depth=1·RELIABLE·TRANSIENT_LOCAL
+#: 로 구독한다 — 발행자가 VOLATILE 이면 ROS2 QoS 호환 규칙상 **연결 자체가 안 된다**
+#: (`follow_node.py` 의 `_latched_qos()` 와 같은 이유·같은 값. 그쪽을 그대로 import 할
+#: 수는 없다 — 다른 서비스(`aba_ai_service`)·다른 패키지(`libi_perception`)다).
+_CAMERA_SELECT_QOS = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                                durability=DurabilityPolicy.TRANSIENT_LOCAL)
+
 
 class _CmdPublisher:
     """드라이버들이 공유하는 /fleet_cmd 발행자."""
@@ -104,6 +112,76 @@ class _CmdPublisher:
         msg = String()
         msg.data = json.dumps(payload, ensure_ascii=False)
         self._pub.publish(msg)
+
+
+class ExecResultWaiter:
+    """`shelf_dock`/`backup` 처럼 **robot_agent 가 실행하는 명령**의 결과만 기다린다.
+
+    ⚠️ [2026-08-03, codex P0] **재발행하면 물리 동작이 두 번 돈다.**
+
+    이 두 액션은 `navigate`(BT 명령 이름) → `goal`(실행 액션 이름) 처럼 이름이
+    갈라지지 않는다 — FMS 도 robot_agent 도 **똑같이 "shelf_dock"/"backup"** 을 쓴다.
+    그래서 `robot_agent/app/core/fleet_link.py` 의 `BT_LAYER_ACTIONS`(accept-only 집합)
+    에 이 둘이 **없고**, `_dispatch()` 는 그 이름의 메시지가 오면 **누가 보냈든** 바로
+    `shelf_dock.run_shelf_dock()`/`backup_runner.run_backup()` 을 돌린다(둘 다 워커
+    큐를 거치는 블로킹 호출). FMS 가 보낸 원래 명령이 이미 그 실행을 큐에 넣은
+    뒤, 여기서 `FleetCmdDriver` 로 같은 액션을 **다시** 내면 큐에 또 하나가 쌓여
+    첫 도킹/후퇴가 끝나자마자 **같은 동작이 한 번 더** 돈다(직렬 재실행 — 팔의
+    `perform_action` 과 다른 함정이다. 그쪽은 robot_agent 쪽이 스텁이라 재실행할
+    실물이 없다).
+
+    그래서 이 드라이버는 **아무것도 발행하지 않는다.** `providers._on_cmd` 가 이미
+    보관해 둔 원래 명령의 id(`exec_cmd_id`)로 온 `/fleet_cmd_result` 만 기다린다 —
+    robot_agent 가 실행을 끝내면 `should_publish_result()` 가 그 id 로 결과를 낸다
+    (`fleet_link.py` 의 `run_and_reply`/`publish_result`).
+    """
+
+    def __init__(self, node, cmd_pub, id_fn):
+        self._log = node.get_logger()
+        self._cmd_pub = cmd_pub
+        self._id_fn = id_fn
+        self._watching_id = None
+        self._result = None      # (ok, msg) | None
+        self._seq = 0
+
+    def start(self, args=None):
+        self._watching_id = self._id_fn() or None
+        self._result = None
+        if self._watching_id is None:
+            self._log.warning(
+                "실행 명령의 id 를 몰라 결과를 기다릴 수 없다 — 실패 처리한다")
+
+    def poll(self):
+        if self._watching_id is None:
+            return "failure"
+        if self._result is None:
+            return "running"
+        ok, msg = self._result
+        if not ok:
+            self._log.warning(f"실행 명령 {self._watching_id} 실패: {msg}")
+        return "success" if ok else "failure"
+
+    def stop(self):
+        """진행 중인 실행을 취소한다.
+
+        같은 액션을 다시 내지 않는다(그러면 또 한 번 실행된다) — 대신 이미 있는
+        범용 `stop` 을 낸다. `fleet_link.py` 의 인라인 취소 분기가 `stop`/`mission_stop`
+        등 **어떤 정지 계열 액션이 와도** `shelf_dock.request_cancel()`/
+        `backup_runner.request_cancel()` 을 부른다 — "정지는 중복돼도 안전" 규칙
+        그대로다.
+        """
+        if self._watching_id is None:
+            return
+        self._seq += 1
+        self._cmd_pub.publish_json(
+            {"id": f"stop-exec-{self._seq}", "action": "stop", "args": {}})
+        self._watching_id = None
+        self._result = None
+
+    def on_result(self, payload):
+        cmd_id = payload.get("id")
+        if cmd_id and self._watching_id and str(cmd_id) == self._watching_id:
+            self._result = (bool(payload.get("ok")), str(payload.get("msg", "")))
 
 
 class FsmNode(Node):
@@ -178,6 +256,21 @@ class FsmNode(Node):
         self._apply_battery_auto(params)
 
         cmd_pub = _CmdPublisher(self, cmd_topic)
+        # ⚠️ [정정 2026-08-03] `PersonBlockGuard.block_fn` 은 **`/fleet_cmd` 를 못 쓴다.**
+        # `domain_bridge_pinky*.yaml` 의 `{KEY}/fleet_cmd` 항목이 `reversed: True` —
+        # 즉 `/fleet_cmd` 는 서버→로봇 단방향이라 로봇이 여기 발행해도 브릿지를 못 건넌다
+        # (최초 구현에서 이 실수를 했다 — FMS 에 영영 안 닿았을 것이다).
+        # 로봇발 보고 전용으로 이미 뚫린 `/libi/node_block` 을 쓴다 — 아래 별도 발행자.
+        self._node_block_pub = _CmdPublisher(self, "/libi/node_block")
+        # navigate 중 앞캠을 직접 요청한다(Task 17) — `PersonBlockGuard.camera_driver`.
+        # `_CmdPublisher` 를 안 쓴다 — 그건 depth=10 짜리 일반 QoS 라 이 토픽의 latched
+        # 구독자와 안 맞는다(위 `_CAMERA_SELECT_QOS` 주석).
+        self._camera_select_pub = self.create_publisher(
+            String, "/libi/camera_select", _CAMERA_SELECT_QOS)
+        # 앞을 막은 사람을 알릴 때의 TTL(초). `PersonBlockGuard.block_fn(node)` 가 이 값을
+        # 쓴다 — params.yaml `working.person_block_ttl_sec`.
+        self._person_block_ttl_sec = float(
+            params.get("working", {}).get("person_block_ttl_sec", 60.0))
         # 팔 완료를 FMS 에 올리는 통로. 팔을 중계할 때만 만든다 — 안 쓰는 발행자를
         # 띄우면 "누가 답하는가"가 코드만 봐선 흐려진다(위 ARM_VIA_BT 주석).
         self._result_pub = _CmdPublisher(self, result_topic) if ARM_VIA_BT else None
@@ -187,7 +280,10 @@ class FsmNode(Node):
             # 감시하던 쪽이 죽었을 때 마지막 True 가 영원히 남아 로봇이 사람 없이
             # 계속 몰고 가는 것을 막는다.
             requester_ttl_sec=float(
-                params.get("working", {}).get("requester_ttl_sec", 2.0)))
+                params.get("working", {}).get("requester_ttl_sec", 2.0)),
+            # [codex P1] 검출이 끊기면 마지막 값이 영원히 남지 않게 — 신선도 TTL.
+            front_person_size_ttl_sec=float(
+                params.get("working", {}).get("front_person_size_ttl_sec", 2.0)))
 
         # 액션별 드라이버. 전부 같은 /fleet_cmd 통로를 쓰고 결과는 id 로 갈린다.
         self._drivers = {
@@ -264,6 +360,26 @@ class FsmNode(Node):
             "follow": FleetCmdDriver(self, "follow_admin", timeout_sec=3600.0,
                                      stop_action="follow_stop").bind(cmd_pub),
         }
+        # 앞을 막은 사람 때문에 멈출 때 쓰는 정지 수단 — **guide_stop 과 같은 것**을
+        # 그대로 재사용한다(같은 mission_stop → ros_bridge.cancel_nav() 경로라 새로
+        # 만들 이유가 없다). 안 꽂으면 PersonBlockGuard 는 로그만 남기고 로봇이 계속
+        # 달린다(codex 지적 P0).
+        self._drivers["person_stop"] = self._drivers["guide_stop"]
+        # 앞을 막은 사람을 FMS 에 알리는 통로 — `/libi/node_block` 을 발행한다(브릿지가
+        # `/{robot_key}/node_block` 으로 올린다). FMS 의 fleet_link 가 이걸
+        # `on_person_blocked` 로 받는다.
+        self._drivers["person_block"] = self._publish_node_block
+        # navigate 중 앞캠을 켜 두는 통로 — `/libi/camera_select` 에 직접 요청한다
+        # (follow_node 의 세션을 열지 않는다 — 열면 길잡이 뒷캠 세션을 덮어쓴다).
+        self._drivers["camera_select"] = self._publish_camera_select
+        # 서가 정밀 도킹·차단 뒤 복귀 — robot_agent 가 **FMS 의 원래 명령으로 이미
+        # 실행한다.** `FleetCmdDriver` 로 같은 액션을 재발행하면 안 된다 — 재발행하면
+        # robot_agent 가 같은 물리 동작을 두 번 돈다(codex P0, `ExecResultWaiter`
+        # 머리말 참고). 원래 명령의 id(`exec_cmd_id`)로 온 결과만 기다린다.
+        self._drivers["shelf_dock"] = ExecResultWaiter(
+            self, cmd_pub, id_fn=lambda: self._read("exec_cmd_id"))
+        self._drivers["backup"] = ExecResultWaiter(
+            self, cmd_pub, id_fn=lambda: self._read("exec_cmd_id"))
         # 복귀 5단계가 쓰는 것들.
         #   ⚠️ 팔 홈복귀(return_arm)는 뺐다 — 이 로봇에 팔이 없다(사용자 결정 2026-07-27).
         #      ArmHomeDriver 클래스는 남겨 둔다. 팔 로봇이 붙는 날 되살릴 자리다.
@@ -363,6 +479,13 @@ class FsmNode(Node):
         # 삼켜 조용히 None 이 되고**, 드라이버는 "goal 로 옮길 수 없다"로 매번 실패한다.
         self._bb.register_key(key=Keys.ARM_ARGS, access=Access.READ)
         self._bb.register_key(key=Keys.ARM_CMD_ID, access=Access.READ)
+        # shelf_dock/backup 드라이버의 args_fn 이 같은 이유로 읽는다. blackboard.py 의
+        # Keys 에는 없다(이번 작업 범위 밖) — providers.as_dict()/topics2bb.py 와 맞춘
+        # 문자열 키 "exec_args" 를 그대로 쓴다.
+        self._bb.register_key(key="exec_args", access=Access.READ)
+        # `ExecResultWaiter.id_fn` 이 같은 이유로 읽는다 — 재발행 대신 원래 명령의
+        # id 로 온 결과만 기다린다(codex P0).
+        self._bb.register_key(key="exec_cmd_id", access=Access.READ)
         # [2026-07-30] `return_rotate`(YawGoalDriver)가 **이 클라이언트로** pose 를 읽는다
         # (아래 `pose_fn`). 등록이 빠져 있어서 복귀 ②단계가 처음 실제로 도는 순간
         # `AttributeError: client 'fsm_node' does not have read/write access to
@@ -479,6 +602,40 @@ class FsmNode(Node):
         self.get_logger().warning(
             "[디버그] 배터리 자동 전이 OFF — 저전력 복귀·자동 순회 시작이 뜨지 않는다. "
             "복귀는 관제 UI 에서 직접 명령할 것.")
+
+    def _publish_node_block(self, node: int) -> None:
+        """`PersonBlockGuard.block_fn(node)` — 앞을 막은 사람 때문에 정점을 잠깐 막는다.
+
+        `/libi/node_block` 에 **가공 없는 JSON** `{node, ttl_sec, reason}` 을 낸다 —
+        `/fleet_cmd` 의 `{action, args}` 봉투를 쓰지 않는다. 도메인 브릿지가
+        `libi/node_block → /{robot_key}/node_block` 으로 올리고, FMS 의
+        `fleet_link.node_block_from_json` 이 바로 이 세 필드를 읽는다
+        (`aba_fms_service/backend/app/fleet_link.py:276-291`).
+
+        여기서 답을 기다리지 않는다 — 다른 드라이버들처럼 발행하고 바로 리턴한다
+        (블로킹하면 tick 이 굳는다).
+        """
+        self._node_block_pub.publish_json({
+            "node": int(node), "ttl_sec": self._person_block_ttl_sec, "reason": "person",
+        })
+        self.get_logger().info(
+            f"사람 차단 보고: node={node} ttl={self._person_block_ttl_sec}s")
+
+    def _publish_camera_select(self, value: str) -> None:
+        """`PersonBlockGuard.camera_driver(value)` — `/libi/camera_select` 를 직접 요청한다.
+
+        `follow_node`(libi_perception)의 세션을 열지 않는다 — 세션은 하나만 살 수 있어,
+        열면 길잡이의 뒷캠 세션을 덮어써 안내가 깨진다. 대신 이 토픽에 바로 쓴다.
+
+        ⚠️ [알려진 한계] `follow_node.tick()` 은 세션이 없어도 idle 값을
+        `CAMERA_SELECT_HZ`(2Hz)로 계속 재발행한다(`follow_node.py` `_publish_camera`).
+        즉 navigate 중에는 이 발행과 그쪽의 idle 값이 **같은 토픽에서 경합한다** — 두
+        발행자 다 latched(TRANSIENT_LOCAL)라 늦게 붙는 구독자는 매치된 각 발행자의
+        마지막 값을 받고, 그 뒤로는 나중에 도착하는 메시지가 이긴다. `follow_node` 를
+        고쳐 idle 땐 이 토픽에 안 쓰게 하는 것이 근본 해결이지만 그건 다른 서비스
+        (libi_perception) 영역이라 여기서 손대지 않는다 — 보고서에 남겨 둔다.
+        """
+        self._camera_select_pub.publish(String(data=str(value)))
 
     def _publish_cmd_result(self, cmd_id: str, ok: bool, msg: str) -> None:
         """`/fleet_cmd_result` 로 임의의 명령 결과를 올린다.

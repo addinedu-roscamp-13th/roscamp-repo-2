@@ -87,6 +87,18 @@ def allowed_targets(current: str) -> set:
     return out
 
 
+def _round_or(v, fallback: float) -> float:
+    """`None`(= 값 없음)을 JSON 이 쓸 수 있는 숫자로 바꾼다.
+
+    `null` 을 그대로 내면 받는 쪽마다 다르게 읽는다(0 으로 보거나 예외로 보거나).
+    "없음" 을 **범위 밖 한 값**으로 고정한다 — `arrive_tick` 이 `-1` 을 같은 뜻으로
+    쓰는 것과 같은 규칙이다.
+    """
+    if v is None:
+        return fallback
+    return round(float(v), 1)
+
+
 def validate(current: str, target: str, force: bool, error_code: str) -> tuple:
     """(accepted, reason).
 
@@ -207,7 +219,9 @@ class StateIO:
         for key in (Keys.CURRENT_MODE, Keys.ERROR_CODE, Keys.HOLD_UNTIL, Keys.NEXT_MODE):
             self._bb.register_key(key=key, access=Access.WRITE)
         for key in (Keys.BATTERY_PERCENT, Keys.IS_DOCKED, Keys.INTERACTING_REMAINING,
-                    Keys.DOCK_DECLARED):
+                    Keys.DOCK_DECLARED, Keys.PERSON_BLOCKED,
+                    Keys.FRONT_PERSON_SIZE, Keys.PERSON_BLOCK_IN,
+                    Keys.PERSON_BLOCK_SEQ, Keys.PERSON_BLOCK_NODE):
             self._bb.register_key(key=key, access=Access.READ)
         #: BT 가 선언한 도킹 여부를 밖으로 낸다 (`Keys.DOCK_DECLARED` 주석 참고).
         #  latched 다 — 늦게 뜬 구독자(providers·sim_battery·FMS)도 마지막 값을 받는다.
@@ -353,6 +367,22 @@ class StateIO:
             "battery_percent": battery,
             "is_docked": docked,
             "remaining_sec": round(float(remaining or 0.0), 1),
+            # 사람이 앞을 막아 서 있는가(PersonBlockGuard). 다른 이유의 정지는 안 들어온다.
+            # 아직 한 번도 안 쓰였으면 False — 패널이 모르는 값을 "정지"로 그리면 안 된다.
+            "person_blocked": bool(self._read(Keys.PERSON_BLOCKED, False)),
+            # 지금 앞캠에 보이는 가장 큰 사람의 크기(sqrt(area) px @320). 0 = 안 보임.
+            # 임계값(person_stop_size)을 실기에서 맞추려면 **지금 몇 px 인지**가 화면에
+            # 보여야 한다 — 안 보이면 감으로 숫자를 고치게 된다.
+            "front_person_size": round(float(self._read(Keys.FRONT_PERSON_SIZE, 0.0) or 0.0), 1),
+            # 사람 때문에 정점 차단을 알리기까지 남은 초. -1 = 세고 있지 않음.
+            # 관제에서 재계획이 **사람 때문인지 지연 때문인지** 구분이 안 돼 넣었다.
+            # 판정에 쓰는 값 그 자체다 — 화면이 따로 계산하지 않는다.
+            "person_block_in": _round_or(self._read(Keys.PERSON_BLOCK_IN), -1.0),
+            # 사람 차단을 **알린 횟수**와 그 정점. 화면은 횟수가 늘어난 순간에만 기록을
+            # 남긴다 — `person_blocked`(레벨)로 남기면 임계 근처 깜빡임이 로그를 채운다.
+            # 이 두 값이 있어야 관제 기록에서 "이 재계획은 사람 때문" 을 가릴 수 있다.
+            "person_block_seq": int(self._read(Keys.PERSON_BLOCK_SEQ, 0) or 0),
+            "person_block_node": int(self._read(Keys.PERSON_BLOCK_NODE, -1) or -1),
         }, ensure_ascii=False)
         self._state_pub.publish(state)
 

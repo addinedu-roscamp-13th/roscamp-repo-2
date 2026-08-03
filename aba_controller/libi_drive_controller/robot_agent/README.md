@@ -369,6 +369,27 @@ sudo journalctl -u robot_agent.service -f   # 실시간 로그
 | POST | `/driving/motor/move` | 좌우 모터 전력 속도율 직접 지정 주행 |
 | POST | `/driving/motor/stop` | 모터 직접 정지 |
 
+### 서가 도킹·복귀 액션 (`/fleet_cmd`, ROS2 — Driving PC, 2026-08-03 신설)
+
+HTTP 라우트가 아니라 `app/core/fleet_link.py` 가 `/fleet_cmd` 토픽으로 받는 `action` 이다
+(중앙서버 ↔ robot_agent ROS2 fleet link, `dock`/`aruco_dock` 과 같은 계층).
+
+| action | 처리 함수 | 설명 |
+|---|---|---|
+| `shelf_dock` | `app/core/shelf_dock.py` `run_shelf_dock()` | 서가 정밀 도킹. 회전 → 표식 검출 → `/map` 레이캐스트 → 개루프 이동을 블로킹으로 끝까지 돈다 |
+| `backup` | `app/core/backup_runner.py` `run_backup()` | 몸을 돌려 온 만큼 전진해 원래 자리로 복귀. 사람 차단 후퇴와 서가 도킹 뒤 복귀가 공유한다 |
+
+### ⚠️ 서가 도킹의 거리 소스 — 안 맞으면 라이다로 바꾼다
+
+거리는 지도 레이캐스트로 구한다(설계 D4·D14). 레이의 **출발점이 amcl 추정 pose** 라
+그 오차가 1:1 로 접근 거리 오차가 된다. 이 지도(`arte2`)는 평행한 통로가 많아 스캔만으로
+통로를 따라 미끄러진 자세가 제자리와 거의 같아 보이고, 실제로 크게 어긋난 이력이 있다
+(`libi_drive_controller/scripts/set_initial_pose.py` 머리말).
+
+실기에서 접근 오차가 목표(1cm)를 넘으면 **거리 소스를 `/scan` 으로 바꾼다.** 방향은
+그대로 카메라 bearing 을 쓰고, 그 각도의 range 를 거리로 삼으면 amcl 과 무관해진다.
+바꿀 자리는 `app/core/shelf_dock.py` 의 `first_occupied(...)` 호출 한 곳이다.
+
 ---
 
 ## 5. 분석 보고서

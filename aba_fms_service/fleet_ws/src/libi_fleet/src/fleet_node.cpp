@@ -2,6 +2,7 @@
 #include <mutex>
 #include <thread>
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <map>
@@ -24,6 +25,7 @@
 #include "libi_fleet_msgs/msg/fleet_plan.hpp"
 #include "libi_fleet_msgs/msg/fleet_routes.hpp"
 #include "libi_fleet_msgs/msg/robot_hold.hpp"
+#include "libi_fleet_msgs/msg/node_block.hpp"
 #include <std_srvs/srv/trigger.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <rmf_fleet_msgs/msg/robot_state.hpp>
@@ -334,6 +336,110 @@ public:
     hold_sub_ = create_subscription<libi_fleet_msgs::msg::RobotHold>(
       "/fms/robot_hold", rclcpp::QoS(10).reliable(),
       [this](const libi_fleet_msgs::msg::RobotHold::SharedPtr m) { on_robot_hold(m); }, sub_opt);
+
+    // ── 정점 차단 (2026-08-03) ────────────────────────────────────────────
+    // 사람이 막았거나 도킹이 잡아 둔 정점. 유효시간이 지나면 스스로 푼다
+    // (RobotHold 와 같은 이유 — 푸는 쪽이 죽어도 길이 영영 막히면 안 된다).
+    // (node, owner) 로 나눠 잡는다 — 사람 차단과 서가 잠금이 같은 정점을 같이
+    // 잡을 수 있고, 한쪽의 해제가 남의 차단까지 지우면 안 된다.
+    node_block_sub_ = create_subscription<libi_fleet_msgs::msg::NodeBlock>(
+      "/fms/node_block", rclcpp::QoS(10).reliable(),
+      [this](const libi_fleet_msgs::msg::NodeBlock::SharedPtr m) {
+        std::lock_guard<std::recursive_mutex> lk(state_mu_);
+        const auto key = std::make_pair(m->node, m->owner);
+        double ttl = static_cast<double>(m->ttl_sec);
+        if (ttl > 600.0) { ttl = 600.0; }
+        if (ttl <= 0.0) {
+          blocked_until_.erase(key);
+          blocked_reason_.erase(key);
+          RCLCPP_INFO(get_logger(), "[block] 정점 %d 해제 owner=%s (%s)",
+                      m->node, m->owner.c_str(), m->robot.c_str());
+        } else {
+          blocked_until_[key] = now_sec() + ttl;
+          blocked_reason_[key] = m->reason;
+          RCLCPP_WARN(get_logger(), "[block] 정점 %d 차단 %.0fs 사유=%s owner=%s 로봇=%s",
+                      m->node, ttl, m->reason.c_str(), m->owner.c_str(), m->robot.c_str());
+          // ── 커밋 노드가 막혔다 → **떠나온 정점으로 되돌린다** (2026-08-03) ──
+          //
+          //   보고한 로봇은 막힌 정점 B 에 **못 닿은 채** A–B 레인에 서 있다. 예전에는
+          //   여기서 FMS 가 로봇에게 `backup` 을 직접 쏴서 A 로 물렸는데, 그 이동은
+          //   **예약 체계 밖**이었다 — 예약을 확인하지도 잡지도 않고 움직이니 A 에
+          //   다른 로봇이 들어와 정면으로 만날 수 있었다(codex 3차 P0).
+          //
+          //   대신 여기서 **예약을 원자적으로 갈아탄다**:
+          //     ① `request_move(A, A)` 로 A 를 점유 claim 한다(`from==to` 는 claim,
+          //        `cbs_traffic.hpp:290`). 남이 쥐고 있으면 GRANT 가 안 나온다.
+          //     ② 성공했을 때만 B 를 놓고 `moving=false` 로 내린다.
+          //   실패하면 **아무것도 안 바꾼다** — B 를 쥔 채 기다린다. 그 편이
+          //   "아무 노드도 안 쥔 채 레인에 서 있는" 상태보다 안전하다.
+          //
+          //   `moving=false` 가 되면 그 뒤는 전부 기존 기계장치가 맡는다:
+          //     · `plan_start_for` 가 A 를 출발점으로 준다(계획·예약·실제가 일치)
+          //     · `!t.moving` 분기가 A 에서 다음 홉을 정상 `request_move` 로 요청한다
+          //     · B 는 `is_node_blocked` 게이트에 걸려 WAIT → 타임드 우회
+          //     · `send_path` 가 **로봇의 실제 좌표**에서 경로를 내므로 nav2 가
+          //       지금 자리에서 알아서 몬다 — 따로 후진 명령을 쏠 이유가 없다
+          // ⚠️ 이름은 **정규화해서** 비교한다 — 근거는 `norm_robot` 머리말(실기 P0).
+          const std::string want = norm_robot_name(m->robot);
+          bool known = false;
+          for (const auto & t : tasks_) {
+            if (norm_robot_name(t.robot) == want) { known = true; break; }
+          }
+          if (!known && !tasks_.empty()) {
+            std::string names;
+            for (const auto & t : tasks_) { names += " " + t.robot; }
+            RCLCPP_WARN(get_logger(),
+                        "[block] 차단 보고 로봇 '%s' 와 이름이 맞는 작업이 없다 "
+                        "(작업 중:%s) — 후퇴·재전송 중단이 안 걸립니다",
+                        m->robot.c_str(), names.c_str());
+          }
+          for (auto & t : tasks_) {
+            if (norm_robot_name(t.robot) != want || !t.moving) { continue; }
+            if (t.idx < 1 || t.idx >= t.path.size()) { continue; }
+            if (t.path[t.idx] != m->node) { continue; }
+            const int back_to = t.path[t.idx - 1];
+
+            // ⚠️ [2026-08-03] **`moving` 은 claim 성공 여부와 무관하게 내린다.**
+            //
+            //   이게 실제 레버다. `moving` 이 true 인 동안 타이머가 **1초마다 B행 목표를
+            //   다시 쏜다**(`resend_ticks_`, :1534). 로봇이 사람을 보고 스스로 멈춰도
+            //   그 재전송이 계속 밀어붙인다 — 사람 쪽으로.
+            //
+            //   codex 4차 P0: "예약만 A로 바뀌고 실제 로봇은 A–B 레인/기존 B행 명령에
+            //   남는다". 처음엔 claim 성공일 때만 내렸는데, **실패 경로에서 바로 그
+            //   재전송이 살아 있었다.** 내리면 `!t.moving` 분기로 가고, 거기서 B 는
+            //   `is_node_blocked` 게이트에 걸려 WAIT 이므로 **B 로는 아무것도 안 나간다.**
+            //   대신 `wait_ticks` 가 쌓여 타임드 우회가 돌고, 우회가 잡히면 그때
+            //   `send_path` 가 **로봇의 실제 좌표에서** 새 경로를 낸다.
+            t.moving = false;
+            t.wait_logged = false;
+            t.wait_ticks = 0;
+
+            // 예약 교체는 claim 이 성공할 때만. 실패하면 B 를 쥔 채 남는다 —
+            // 그 점유가 이 레인의 정면 진입을 막는 유일한 장치다(codex 3차 "P0 방어 성공").
+            if (traffic_->request_move(t.robot, back_to, back_to,
+                                       compute_priority(t.robot, t)) != MoveDecision::GRANT) {
+              RCLCPP_WARN(get_logger(),
+                          "[%s] %s v%d 차단 — 되돌아갈 v%d 를 남이 쥐고 있다. "
+                          "B 예약 유지·목표 재전송 중단하고 대기",
+                          t.id.c_str(), t.robot.c_str(), m->node, back_to);
+              continue;
+            }
+            traffic_->release_node(t.robot, m->node);
+            RCLCPP_INFO(get_logger(), "[%s] %s v%d 차단 → v%d 로 되돌림(예약 교체 완료)",
+                        t.id.c_str(), t.robot.c_str(), m->node, back_to);
+          }
+        }
+        // ⚠️ **세대를 올린다.** 안 올리면 이 차단을 **모른 채 이미 계산이 끝난** 옛
+        //    결과가 같은 세대로 통과해 그대로 적용된다 — 차단 정점을 지나는 경로가
+        //    잠깐 발행될 수 있다(codex 검토 P1). `apply_planner_result` 의 세대 검사가
+        //    그걸 걸러 주는 장치인데, 세대를 안 올리면 그 장치가 안 돈다.
+        ++state_gen_;
+        // 사유를 계획에 실어 보낸다 — 화면이 "사람 때문" 을 바로 읽는다.
+        replan_all_routes(ttl <= 0.0
+                            ? std::string("정점 차단 해제")
+                            : std::string("정점 차단(") + m->reason + ")");
+      }, sub_opt);
     goal_pub_ = create_publisher<libi_fleet_msgs::msg::FleetGoals>(
       "/fms/goals", rclcpp::QoS(1).reliable());
 
@@ -631,7 +737,10 @@ private:
   //   최단 경로로 갈아치우면 순회 의미가 깨진다(patrol_goal/route_for 가 그 순서를 전제).
   //   순회 로봇은 CbsTraffic 의 물리 점유 안전망이 막아 준다 — 안전하지만 계획은 그만큼
   //   보수적이다. 유한 horizon(다음 한 바퀴)만 계획에 넣는 방식으로 승급할 수 있다.
-  void replan_all_routes()
+  // `why` — 이번 재계획을 **왜** 하는가. `/fms/plan.reason` 으로 그대로 나가고,
+  // FMS 백엔드가 그걸 로봇·패널로 중계한다(관제에서 사람/지연을 가리기 위해서다,
+  // 2026-08-03 사용자 요구). 비워 두면 예전과 같이 사유 없는 계획이다.
+  void replan_all_routes(const std::string & why = "")
   {
     if (!traffic_ || !traffic_->plans_routes() || tasks_.empty()) { return; }
 
@@ -643,6 +752,13 @@ private:
         snap.blocked.push_back(graph_.nearest(kv.second.x, kv.second.y));
       }
     }
+    // 사람·도킹이 막아 둔 정점도 같이 피한다. 기존 "못 움직이는 로봇" 과 같은 취급이다.
+    for (int n : active_blocks()) {
+      // CBS의 blocked 목록은 로봇별 예외를 표현하지 못한다. 서가 도킹을
+      // 배정받은 로봇 자신의 최종 정점은 목록에서 빼고, 실제 진입은 아래의
+      // robot-aware 게이트가 다른 로봇을 계속 막는다.
+      if (!is_owned_shelf_dock_goal(n)) { snap.blocked.push_back(n); }
+    }
     snap.slow_edges = slow_edges_now();
 
     std::vector<ActiveTask *> planned;
@@ -651,11 +767,25 @@ private:
       if (t.path.size() < 2 || t.idx < 1 || t.idx >= t.path.size()) { continue; }
       PlanRequest pr;
       pr.robot = t.robot;
-      pr.start = t.moving ? t.path[t.idx] : t.path[t.idx - 1];   // 커밋 구간 존중
-      // 이동 중이면 **어느 간선을 타고 있는지**도 같이 알린다. 플러그인이 자기 시간
-      // 모델로 그 간선의 예산을 계산해 `commit_deadline_tick` 으로 돌려준다 —
-      // 그 값이 있어야 커밋 노드에 마감을 걸 수 있다(`apply_planner_result` 참고).
-      pr.committed_from = t.moving ? t.path[t.idx - 1] : -1;
+      // ⚠️ [2026-08-03] **차단된 커밋 노드에서 계획을 시작하지 않는다.**
+      //
+      //   사람이 막은 정점은 곧 로봇이 향하던 `t.path[t.idx]` 다. 그런데 `t.moving` 은
+      //   차단 때 아무도 안 내리므로, 예전에는 그 노드를 `pr.start` 로 줬다 — CBS 가
+      //   **"로봇이 이미 거기 도착했다"** 고 가정하고 그 너머에서 새 경로를 짠 것이다.
+      //   실제로는 사람 앞에서 못 닿고 서 있어서, 그 계획의 첫 홉이 **사람 너머**에서
+      //   시작한다. 로봇에 내려보내면 nav2 가 사람을 뚫으려다 실패한다
+      //   (실기 2026-08-03: `Failed to create plan with tolerance of: 0.100000`).
+      //
+      //   실제로 로봇이 있는 곳 — 떠나온 직전 정점 — 에서 짠다. 사람 차단 뒤 FMS 가
+      //   보내는 `backup` 도 정확히 그 정점으로 물린다(`_send_backup_from_block`),
+      //   그래서 계획과 실제 위치가 같은 곳을 가리킨다.
+      //
+      //   판정은 순수 함수로 뺐다(`fleet_task.hpp`) — 여기서는 잡을 수 없어 시험이 없던
+      //   자리다. `test_plan_start.cpp` 가 되돌림까지 붙들고 있다.
+      //   `committed_from` 은 "지금 타고 있는 간선" 이라, 커밋 노드가 막혔으면 그 간선을
+      //   끝내지 못하므로 예산도 주지 않는다(-1).
+      if (!plan_start_for(t.path, t.idx, t.moving, snap.blocked,
+                          pr.start, pr.committed_from)) { continue; }
       // ── [2026-08-01] 순회도 계획에 넣는다 ────────────────────────────────
       //
       // 예전에는 `if (t.patrol) continue;` 로 통째로 뺐다. 그러면 CBS 는 **순회 로봇이
@@ -668,7 +798,29 @@ private:
       // 재계획에서 갱신된다. (codex 와 A/B/C 를 견줘 이 방식을 골랐다.)
       pr.goal = t.patrol ? t.path[std::min(t.idx + 1, t.path.size() - 1)] : t.path.back();
       pr.priority = compute_priority(t.robot, t);
-      if (pr.start == pr.goal) { continue; }   // 이미 목표 — 계획할 것이 없다
+      if (pr.start == pr.goal) {
+        // ⚠️ [2026-08-03] **조용히 넘기지 않는다.** 이 로봇은 이번 라운드 계획에서
+        //    빠지는데, 다른 로봇이 하나라도 있으면 "재계획 성공" 로그가 그대로 찍혀
+        //    이 로봇의 시간표도 새로 짜인 것처럼 보인다. 실제로는 옛 `plan_epoch`·
+        //    `plan_arrive` 가 그대로 남아, 화면 카운트다운이 계속 흘러가고
+        //    `check_plan_deadline` 은 갱신되지 않은 마감을 본다(codex 지적 P1).
+        //
+        //    ⚠️ [2026-08-03 수정] 처음엔 여기서 `plan_arrive` 를 **비웠다.** 그러면
+        //       `check_plan_deadline` 이 첫 줄에서 나가 **마감 감시가 통째로 꺼진다** —
+        //       "0이 되면 무조건 재계획" 이라는 요구를 정면으로 깬다(codex 검토 P1).
+        //       아직 이동 중인 커밋 간선의 마감까지 같이 사라졌다.
+        //       그래서 **버리지 않고 남긴다.** 낡았지만 그 마감이 지나면 재계획이
+        //       걸리고, 그게 바로 우리가 원하는 동작이다. 대신 조용히 넘기지 않게
+        //       **로그는 남긴다** — 이 로봇만 이번 라운드에서 빠졌다는 사실이 보여야 한다.
+        t.plan_excluded = true;
+        if (!t.plan_arrive.empty() && !t.excluded_logged) {
+          t.excluded_logged = true;
+          RCLCPP_INFO(get_logger(),
+                      "[%s] %s 계획에서 제외(출발==목표 v%d) — 시간표는 옛것 그대로다",
+                      t.id.c_str(), t.robot.c_str(), pr.goal);
+        }
+        continue;
+      }
 
       // ⚠️ **목표가 겹치면 계획이 통째로 실패한다.** 계획은 목표 도착 후 그 정점에 영원히
       //    앉아 있다고 보므로(kNeverEnds) 두 로봇의 목표가 같으면 해가 아예 없다.
@@ -717,7 +869,7 @@ private:
     // 그래서 스냅샷 조립(싼 일)만 여기서 하고 탐색은 워커에 넘긴다. 결과는 타이머가
     // 집어 간다. CbsTraffic 은 원래 탐색을 자기 잠금 밖에서 하도록 설계돼 있어
     // (GateStaysResponsiveDuringReplan 이 그걸 붙들고 있다) 다른 스레드에서 불러도 된다.
-    if (!hand_to_planner(std::move(snap))) { return; }
+    if (!hand_to_planner(std::move(snap), why)) { return; }
   }
 
   // 워커가 계산해 둔 시간표가 있으면 적용한다. 타이머가 매 틱 부른다.
@@ -729,24 +881,32 @@ private:
   {
     std::vector<PlannedRoute> routes;
     PlanSnapshot snap;
+    std::string why;
     {
       std::lock_guard<std::mutex> lk(planner_mu_);
       if (!result_ready_) { return; }
       const uint64_t gen = result_gen_;
       routes = std::move(result_routes_);
       snap = std::move(result_snap_);
+      why = result_reason_;
       result_ready_ = false;
       if (gen != state_gen_) {
         RCLCPP_DEBUG(get_logger(),
                      "[traffic] 낡은 시간표 폐기(세대 %lu≠%lu) — 계산 중에 상태가 바뀌었다",
                      gen, state_gen_);
-        return;   // 계산 중에 상태가 바뀌었다. 다음 요청이 곧 온다.
+        // ⚠️ [2026-08-03] **여기서 다시 요청을 건다.** 예전 주석은 "다음 요청이 곧 온다"
+        //    고 했지만 보장이 없다 — `replan_requested_` 는 이 계산을 띄울 때 이미
+        //    소비됐고(`service_replan_requests`), 살아 있는 task 가 **또** 마감을
+        //    넘겨야만 다시 선다. 그 사이 시간표는 옛 값 그대로다(codex 지적 P1).
+        request_replan("계획 재계산(세대 불일치)");
+        return;   // 계산 중에 상태가 바뀌었다 — 위에서 다시 요청해 뒀다.
       }
     }
-    apply_routes(routes, snap);
+    apply_routes(routes, snap, why);
   }
 
-  void apply_routes(const std::vector<PlannedRoute> & routes, const PlanSnapshot & snap)
+  void apply_routes(const std::vector<PlannedRoute> & routes, const PlanSnapshot & snap,
+                    const std::string & why = "")
   {
     if (routes.size() != snap.robots.size()) {
       // ⚠️ 조용히 넘어가면 안 된다. 계획이 안 서면 시스템은 반응형으로 도는데, 관제 화면에는
@@ -847,6 +1007,8 @@ private:
       t.path = np;
       t.plan_arrive = na;
       t.plan_epoch = epoch;
+      t.excluded_logged = false;   // 계획이 실제로 갱신됐다 — 제외 로그를 다시 낼 수 있다
+      t.plan_excluded = false;     // 이번엔 계획에 들어왔다 — 마감 감시를 되살린다
       t.plan_tick_sec = tick_sec;
       t.idx = 1;
       t.reroutes = 0;
@@ -854,7 +1016,8 @@ private:
                   t.id.c_str(), t.robot.c_str(), t.path.size(),
                   routes[i].arrive_tick.empty() ? -1 : routes[i].arrive_tick.back());
     }
-    publish_plan(routes, epoch, tick_sec);
+    // 사유를 같이 낸다 — 관제가 '이 재계획이 왜 났나' 를 화면에서 가른다.
+    publish_plan(routes, epoch, tick_sec, why);
   }
 
   // 시간표를 밖으로 낸다(시각화·기록용). 재계획할 때마다 한 번.
@@ -941,11 +1104,18 @@ private:
     replan_cooldown_ = replan_cooldown_ticks_ * (1 << shift);
     replan_streak_++;
 
+    // 누가 걸었나에 따라 사유가 다르다. 플러그인이 강등한 것(`needs_replan`)이면 그
+    // 사유를, 우리가 건 것이면 `request_replan` 이 남긴 사유를 쓴다. 둘을 섞으면
+    // 끈적한 옛 강등 사유가 우리 요청에 붙는다(codex 3차 P1).
+    const bool by_plugin = traffic_->needs_replan();
+    std::string why = by_plugin ? traffic_->last_demote_reason() : requested_why_;
+    if (why.empty()) { why = by_plugin ? "계획 강등" : "재계획 요청"; }
+    requested_why_.clear();
     RCLCPP_INFO(get_logger(), "[traffic] 시간표 무효 → 재계획 (사유: %s, 다음 간격 %d틱)",
-                traffic_->last_demote_reason().empty() ? "도착 마감 초과" : traffic_->last_demote_reason().c_str(),
-                replan_cooldown_);
+                why.c_str(), replan_cooldown_);
     replan_requested_ = false;
-    replan_all_routes();
+    // 로그에만 남기던 사유를 계획에도 싣는다 — 관제가 그걸로 사람/지연을 가린다.
+    replan_all_routes(why);
   }
 
   static double now_sec()
@@ -1019,33 +1189,82 @@ private:
     return traffic_ ? traffic_->drift_limit() * traffic_->tick_seconds() : 0.0;
   }
 
+  // 재계획을 요청한다. **사유를 같이 남긴다.**
+  //
+  // ⚠️ [2026-08-03] 예전에는 `replan_requested_ = true` 만 세우고, 사유는
+  //    `traffic_->last_demote_reason()` 에서 꺼내 썼다. 그 값은 **끈적하다** —
+  //    마지막 강등 사유가 계속 남는다. 우리(fleet_node)가 건 재계획에 **직전 강등의
+  //    사유가 그대로 붙어** 화면에 거짓 원인이 뜬다(codex 3차 P1). 관제에서 사람/지연을
+  //    가리려고 사유를 내보내는 것이니, 그게 틀리면 통로 자체가 무의미하다.
+  //
+  //    먼저 온 요청의 사유를 유지한다 — 한 틱에 여럿이 걸리면 처음 것이 원인에 가깝다.
+  void request_replan(const char * why)
+  {
+    if (!replan_requested_) { requested_why_ = why ? why : ""; }
+    replan_requested_ = true;
+  }
+
   // 계획 도착 시각을 넘겼나. 넘겼으면 그 시간표는 이미 남의 통과를 잘못 열어 주고 있다.
   //
   // ⚠️ 로봇이 늦는 것 자체는 막을 수 없다(장애물 회피·감속·리로컬라이제이션). 막을 수 있는 건
   //    **늦은 걸 모르는 것**이다. 계획은 "이 정점을 이 시각에 비운다"를 전제로 남에게 통과를
   //    열어 줬으므로, 그 전제가 깨진 순간 다시 짜야 한다.
+  // ⚠️ [2026-08-03] **커밋 칸 하나가 아니라 `t.idx` 이후 전 칸을 본다.**
+  //
+  //   예전에는 `t.idx` 한 칸만 검사했다. 그런데 관제의 **예약 표**는 `FleetPlan` 의
+  //   `arrive_tick` 이 `>= 0` 인 **모든 칸**에 카운트다운을 찍는다
+  //   (`WaypointEditor.tsx:908-921`). 그래서 로봇이 아직 안 닿은 **먼 칸**이 0을 지나
+  //   `지연 +16.3s` 로 빨갛게 떠 있는데 아무도 재계획을 안 거는 상태가 생겼다
+  //   (실기 2026-08-03: `순회경로-4 +6.3s` 와 `순회경로-5 +16.3s` 가 동시에 초과).
+  //
+  //   계획의 약속("이 정점을 이 시각에 비운다")은 **모든 칸에** 걸려 있다. 먼 칸이
+  //   밀렸다는 것은 그 시간표가 이미 남에게 틀린 통과 허가를 주고 있다는 뜻이라,
+  //   그 칸도 재계획 사유다. 화면이 세는 것과 실제 감시 대상을 같게 만든다 —
+  //   **프론트에서 계산을 새로 만들지 않고** FMS 가 낸 마감만 쓴다.
+  //
+  //   ⚠️ 그래도 **벌점은 커밋 간선에만** 준다(아래). 미래 칸이 트리거였다고 아직
+  //      지나지도 않은 간선을 "느린 길"로 학습시키면 다음 CBS 경로가 왜곡된다
+  //      (codex 지적, `slow_edges_now()` 가 그 표를 읽는다).
+  //   ⚠️ 지도 캔버스 라벨은 **다음 홉 하나**뿐이라(`WaypointEditor.tsx:714`) 예전에도
+  //      맞았다. 어긋난 것은 예약 표 쪽이다.
   void check_plan_deadline(ActiveTask & t)
   {
-    if (t.plan_arrive.empty() || t.idx >= t.plan_arrive.size()) { return; }
-    if (t.plan_arrive[t.idx] < 0) { return; }   // 마감 없음(재계획 시점에 이미 이동 중이던 칸)
+    if (t.plan_arrive.empty()) { return; }
+    // ⚠️ 이번 계획에서 **제외된** task 는 마감으로 재계획을 요청하지 않는다.
+    //    `start == goal` 이라 짤 것이 없는데 요청하면 → 또 제외 → 또 요청으로
+    //    150ms 루프가 된다(codex 3차 P1, `ActiveTask::plan_excluded` 머리말).
+    //    다른 로봇의 마감은 그대로 본다 — "0이면 재계획" 보장은 유지된다.
+    if (t.plan_excluded) { return; }
     const double slack = plan_deadline_slack();
-    const double due = t.plan_epoch + t.plan_arrive[t.idx] * t.plan_tick_sec + slack;
-    if (now_sec() <= due) { return; }
+    const double now = now_sec();
+
+    // 판정은 순수 함수로 뺐다(`fleet_task.hpp`) — 여기서는 잡을 수 없어 시험이 없던
+    // 자리다. `test_plan_deadline_scan.cpp` 가 되돌림까지 붙들고 있다.
+    const size_t last = std::min(t.plan_arrive.size(), t.path.size());
+    const size_t hit = first_overdue_cell(t.path, t.plan_arrive, t.idx,
+                                          t.plan_epoch, t.plan_tick_sec, slack, now);
+    if (hit >= last) { return; }
+    const double due_hit = t.plan_epoch + t.plan_arrive[hit] * t.plan_tick_sec + slack;
+
     if (!replan_requested_) {
       std::string dbg;
       for (size_t i = 0; i < t.plan_arrive.size(); ++i) {
-        dbg += (i ? "," : "") + std::string(i == t.idx ? "*" : "") +
+        dbg += (i ? "," : "") + std::string(i == t.idx ? "*" : (i == hit ? "!" : "")) +
                std::to_string(t.path[i]) + "@" + std::to_string(t.plan_arrive[i]);
       }
       RCLCPP_WARN(get_logger(),
-                  "[%s] %s ⏱ v%d 계획 도착(%d틱) 초과 %.1fs → 재계획 요청 [idx=%zu %s]",
-                  t.id.c_str(), t.robot.c_str(), t.path[t.idx], t.plan_arrive[t.idx],
-                  now_sec() - due + slack, t.idx, dbg.c_str());
+                  "[%s] %s ⏱ v%d 계획 도착(%d틱) 초과 %.1fs → 재계획 요청 [idx=%zu hit=%zu %s]",
+                  t.id.c_str(), t.robot.c_str(), t.path[hit], t.plan_arrive[hit],
+                  now - due_hit + slack, t.idx, hit, dbg.c_str());
     }
     // 어느 **간선**이 마감을 못 지켰나 — 다음 재계획이 그 길을 비싸게 보게 한다.
     // 매 틱 부르므로 **한 번 지나는 동안 한 번만** 센다. 중복 방지를 인덱스가 아니라
     // 간선으로 하는 이유는 `ActiveTask::missed_from` 주석 참고(재계획이 인덱스를 되감는다).
-    if (t.idx >= 1) {
+    //
+    // ⚠️ **`hit == t.idx` 일 때만** 센다 — 지금 실제로 타고 있는 간선이 늦은 경우다.
+    //    미래 칸이 트리거였는데 그 칸의 직전 간선에 벌점을 주면, 로봇이 지나지도 않은
+    //    길을 "느리다"고 학습해 다음 경로가 엉뚱하게 돌아간다(codex 지적 P1).
+    if (hit == t.idx && t.idx >= 1) {
       const int mf = t.path[t.idx - 1];
       const int mt = t.path[t.idx];
       if (mf != t.missed_from || mt != t.missed_to) {
@@ -1054,7 +1273,7 @@ private:
         note_deadline_miss(mf, mt);
       }
     }
-    replan_requested_ = true;
+    request_replan("도착 마감 초과");
   }
 
   // 이 로봇의 위치 정보가 낡았나. `/robot_state` 를 마지막으로 받은 지
@@ -1094,6 +1313,39 @@ private:
     // 워커가 계산해 둔 시간표를 먼저 집어 간다 — 이번 틱의 이동 판단이 새 계획을 쓰도록.
     apply_planner_result();
     service_replan_requests();
+
+    // ── 정점 차단 TTL 만료 sweep (2026-08-03) ────────────────────────────
+    // active_blocks() 는 replan_all_routes() 안에서만 불렸다 — 그래서 차단이 유효시간으로
+    // 저절로 풀려도 **아무도 재계획을 요청하지 않아** 다른 사건(새 차단 보고 등)이 재계획을
+    // 돌릴 때까지 그 길은 계속 막힌 것으로 취급됐다. 이 타이머(150ms, 이미 돌고 있다)에서
+    // 만료를 걷어내고, **실제로 뭔가 풀렸을 때만** check_plan_deadline 과 같은 방식으로
+    // replan_requested_ 를 세운다 — service_replan_requests() 가 다음 틱에 쿨다운을 지켜
+    // 가며 대신 재계획한다(매 틱 전체 재계획을 도는 낭비를 피한다). 만료 로그는
+    // active_blocks() 안에 이미 있으므로 여기서 또 찍지 않는다.
+    if (!blocked_until_.empty()) {
+      const size_t before = blocked_until_.size();
+      active_blocks();
+      if (blocked_until_.size() != before) {
+      request_replan("정점 차단 해제");
+      // ── 차단이 풀렸다 → **되돌리기를 못 했던 로봇을 다시 시도한다** ────────
+      //
+      //   차단 순간 `request_move(A, A)` claim 이 실패하면(A 를 남이 쥐고 있었다)
+      //   그 로봇은 막힌 B 를 쥔 채 남는다. 그건 의도된 안전 상태지만, 차단이 풀린
+      //   뒤에도 그대로면 **못 가는 자리를 계속 쥔 채 아무도 안 풀어 준다** —
+      //   도착·순회중단·stuck·ghost 정리는 전부 **새 path 기준**이라 옛 B 를 못 본다
+      //   (codex 3차 P1: "진행 불능 가능").
+      //
+      //   여기서는 예약을 풀지 않는다 — 그건 다시 "아무것도 안 쥔 채 레인에" 를
+      //   만든다. 대신 `moving` 을 그대로 두고 재계획만 걸어, B 가 다시 갈 수 있는
+      //   정점이 됐으니 평소 경로로 진행하게 한다. 실제로 B 에 도착하면 그때
+      //   기존 도착 처리가 예약을 정상적으로 넘긴다.
+      for (auto & t : tasks_) {
+        if (!t.moving || t.idx < 1 || t.idx >= t.path.size()) { continue; }
+        if (is_node_blocked(t.path[t.idx])) { continue; }   // 아직 막혀 있다
+        t.wait_logged = false;   // 다시 시도한다 — 다음 WAIT 는 새로 로그를 남긴다
+      }
+    }
+    }
 
     // ── 로봇 인식 상태 경고 ────────────────────────────────────────────────
     // robots_ 는 /robot_state 로만 채워지고(on_robot_state) **어디서도 제거되지 않는다.**
@@ -1163,6 +1415,37 @@ private:
       else if (m == "SECURITY_PATROL" && security_patrol_route_.size() >= 2) { start_security_patrol(r); }
     }
 
+    // ── 그냥 서 있는 로봇도 자기 자리를 쥔다 ────────────────────────────────
+    //
+    // [2026-08-03] 예약 체계 전체가 "모든 로봇이 자기가 선 정점을 쥐고 있다" 를 전제해
+    // 왔는데, **그걸 보장하는 곳이 없었다**(codex 판정 P0). claim 은 배차·순회·정지
+    // 때만 했고(`:699` `:2026` `:2056` `:2142`) 그 반환값마저 버린다. 그래서 대기 중인
+    // 로봇이 서 있는 정점은 장부상 비어 있었고, **다른 로봇이 그리로 배차되면 그대로
+    // 밀고 들어간다.** 계획 쪽도 `is_immobile` 인 로봇만 장애물로 넣는다(`:735-739`).
+    //
+    // 매 틱 자기 자리를 다시 claim 하고, 옛 자리는 놓는다(로봇이 손으로 밀려 옮겨질 수도
+    // 있다). 실패하면(남이 쥔 자리) 아무것도 안 한다 — 이미 겹쳐 있는 상태이므로
+    // 여기서 뺏어 봐야 장부만 흔들린다.
+    //
+    // ⚠️ task 가 있는 로봇은 건드리지 않는다. 그쪽 예약은 task 흐름(출발·도착·정리)이
+    //    관리하고, 여기서 겹쳐 잡으면 도착 해제와 싸운다.
+    // ⚠️ 소식이 끊긴 로봇은 잡지 않는다 — 어디 있는지 모르는 로봇으로 길을 막게 된다.
+    for (auto & kv : robots_) {
+      const std::string & name = kv.first;
+      if (state_stale(name)) { continue; }
+      bool has = false;
+      for (const auto & t : tasks_) { if (t.robot == name) { has = true; break; } }
+      if (has) { continue; }
+      const int v = graph_.nearest(kv.second.x, kv.second.y);
+      if (v < 0) { continue; }
+      if (traffic_->request_move(name, v, v, kStopPrio) != MoveDecision::GRANT) { continue; }
+      for (const auto & no : traffic_->occupancy()) {   // 옛 자리 정리(한 대는 한 자리)
+        if (no.second == name && no.first != v) { traffic_->release(name, no.first); }
+      }
+    }
+
+    // task 가 이번 틱에 지워졌는지 센다 — 아래 `/fms/plan` 갱신 판정용.
+    const std::size_t tasks_before = tasks_.size();
     for (auto it = tasks_.begin(); it != tasks_.end();) {
       ActiveTask & t = *it;
       RobotInfo & r = robots_[t.robot];
@@ -1257,7 +1540,19 @@ private:
       }
 
       if (t.moving && d < reach) {
-        // 도착: 예약한 목표 노드는 그대로 소유(다음 출발 때 release). 엣지 예약은 없음.
+        // 도착: 목표 노드는 그대로 쥔 채, **떠나온 정점을 여기서 놓는다.**
+        //
+        // 이 한 줄이 간선(레인) 예약이다 — 출발부터 도착까지 두 끝점을 다 쥐고 있었으므로
+        // 그 사이 아무도 그 레인에 들어오지 못한다. 예전에는 GRANT 순간에 놓아서
+        // 레인이 무방비였다(`reservation_deadlock.hpp` 머리말 참고).
+        //
+        // ⚠️ 선행통과(prefetch)에서도 안전하다. 여기 오는 시점이면 로봇은 목표 정점
+        //    반경 안이라 떠나온 정점에서 충분히 멀다 — 그때 놓는 것이 정확하다.
+        //    (예전 코드는 로봇이 아직 출발 정점 **위에 있을 때** 놓았다.)
+        // ⚠️ 같은 정점이면(경로에 중복 정점) 놓지 않는다 — 서 있는 자리를 잃는다.
+        if (t.idx >= 1 && t.path[t.idx - 1] != t.path[t.idx]) {
+          traffic_->release_node(t.robot, t.path[t.idx - 1]);
+        }
         RCLCPP_INFO(get_logger(), "[%s] %s %s v%d", t.id.c_str(), t.robot.c_str(),
                     final_node ? "도착" : (reach > arrive_radius_ ? "선행통과" : "통과"),
                     t.path[t.idx]);
@@ -1288,12 +1583,13 @@ private:
         t.reroutes = 0;   // 노드 도달 = 진전 → 우회 카운터 리셋
         replan_streak_ = 0;   // 진전 → 재계획 backoff 도 원복
         t.wait_ticks = 0;   // 노드 도달 = 진전 → 타임드 우회 카운터 리셋
+        t.plan_excluded = false;   // 진전이 있었다 — 마감 감시를 다시 켠다
         // ⚠️ **순회가 계획 구간 끝에 닿으면 그 자리에서 재계획을 건다.**
         //    순회는 다음 한 정점까지만 계획된다. 그 칸을 넘어가 버린 뒤에 움직이면
         //    실행 게이트가 "계획에 없는 칸" 으로 보고 강등한다 — 순회를 계획에 넣어
         //    없애려던 churn 이 그대로 돌아온다. 넘기 **전에** 새 구간을 받아 둔다.
         if (t.patrol && t.plan_end_idx >= 0 && static_cast<int>(t.idx) >= t.plan_end_idx) {
-          replan_requested_ = true;
+          request_replan("순회 계획 구간 끝");
         }
         if (t.idx >= t.path.size()) {
           if (t.patrol) {
@@ -1327,13 +1623,33 @@ private:
       if (!t.moving) {
         int cur = t.path[t.idx - 1];
         int next = t.path[t.idx];
-        MoveDecision dec = traffic_->request_move(t.robot, cur, next, compute_priority(t.robot, t));
+        // ⚠️ **차단된 정점에는 통행을 안 준다.** 교통 플러그인은 `blocked_until_` 을
+        //    모른다(그 표는 계획 스냅샷에만 실린다). 여기서 막지 않으면 사람이 서 있는
+        //    정점으로 다른 로봇을 들여보낸다 — 재계획이 적용되기 전, CBS 가 해를 못
+        //    찾았을 때, 반응형 폴백 중 전부 해당한다(codex 검토 P0).
+        //    기다리게만 한다(예약은 안 건드린다) — 유효시간이 지나면 저절로 풀린다.
+        //
+        //    ⚠️ **WAIT 로 다룬다 — 건너뛰면 안 된다.** 처음엔 여기서 `continue` 로 빠져
+        //       나갔는데, 그러면 아래 WAIT 경로의 **타임드 우회**
+        //       (`kRerouteWaitTicks` 뒤 `dijkstra(cur, goal, next)` 로 그 정점을 피해
+        //       돌아가는 장치)를 통째로 건너뛴다. 차단된 정점 앞에서 로봇이 영원히
+        //       기다리기만 하고 우회를 안 한다. `request_move` 를 안 부르면서 판정만
+        //       WAIT 로 두면 그 장치가 그대로 산다.
+        const bool blocked_ahead =
+          (cur != next) && is_node_blocked(next, t.robot);
+        MoveDecision dec =
+          blocked_ahead ? MoveDecision::WAIT
+                        : traffic_->request_move(t.robot, cur, next, compute_priority(t.robot, t));
         if (dec == MoveDecision::GRANT) {
-          if (cur != next) { traffic_->release_node(t.robot, cur); }   // 출발 순간 이전 노드 해제 (cur==next=start==goal 케이스는 목표 유지)
+          // ⚠️ **출발 노드를 여기서 놓지 않는다.** 예전에는 GRANT 즉시 놓았고, 그래서
+          //    주행 중 로봇은 목표 정점 하나만 쥐었다 — 레인은 아무도 안 지켰다.
+          //    지금은 도착 분기(아래 `t.moving && d < reach`)에서 놓는다. 그동안 두
+          //    끝점을 다 쥐므로 그 레인에 남이 못 들어온다(= 간선 예약).
+          //    근거와 대가는 `reservation_deadlock.hpp` 머리말.
           // full_path 면 남은 정점을 전부 실어 보낸다 — 로봇이 간선을 따라 멈춤 없이 간다.
-          // ⚠️ 예약(traffic)은 여전히 **다음 한 노드**만 잡는다. 로봇이 여러 대면 예약하지
-          //    않은 노드로 들어갈 수 있으므로, 다중 로봇 운영 전에 예약도 구간 단위로
-          //    확장해야 한다. 그때까지는 `-p full_path:=false` 로 한 노드씩 되돌릴 수 있다.
+          // ⚠️ 예약(traffic)은 여전히 **다음 한 칸**만 잡는다. full_path 로 보낸 그 뒤
+          //    정점·간선은 예약 밖이라 다중 로봇에서 위험하다(codex P0).
+          //    그때까지는 `-p full_path:=false`(기본값) 로 한 노드씩 간다.
           std::vector<int> route;
           if (full_path_) {
             for (size_t k = t.idx; k < t.path.size(); ++k) { route.push_back(t.path[k]); }
@@ -1354,7 +1670,24 @@ private:
                         t.id.c_str(), t.robot.c_str(), next, reroute.size(), t.reroutes, kMaxReroutes);
             t.path = reroute; t.idx = 1; t.moving = false; t.wait_logged = false; t.stuck = false;
           } else {
-            if (!t.stuck) {   // 우회 불가 or 우회 반복초과(livelock) → 우선순위 최상위 escalate(주변이 비켜줌) 후 대기
+            // ⚠️ 원인이 사람이면 최상위로 올리지 않는다.
+            //
+            // escalation 의 뜻은 "주변이 비켜 준다" 인데, 막은 것이 사람이면 온 플릿이
+            // 양보해도 안 비킨다. 그러면 헛된 우선순위 상승이 플릿 전체를 흔들 뿐이다.
+            // 사람 차단은 유효시간이 지나면 저절로 풀리므로 기다리는 편이 낫다.
+            //
+            // 이 task 의 남은 경로에 "사람" 사유로 막힌 정점이 있나. 그때만 escalation 을
+            // 끈다(플릿 전체에 사람 차단이 하나라도 있으면 다 끄는 것은 과하다).
+            bool blocked_by_person = false;
+            for (size_t i = t.idx; i < t.path.size(); ++i) {
+              for (const auto & kv : blocked_reason_) {
+                if (kv.first.first == t.path[i] && kv.second == "person") {
+                  blocked_by_person = true; break;
+                }
+              }
+              if (blocked_by_person) { break; }
+            }
+            if (!t.stuck && !blocked_by_person) {   // 우회 불가 or 우회 반복초과(livelock) → 우선순위 최상위 escalate(주변이 비켜줌) 후 대기
               t.stuck = true;
               RCLCPP_WARN(get_logger(), "[%s] %s ⛔ 완전막힘/우회반복(v%d) → 우선순위 최상위 상향, 대기",
                           t.id.c_str(), t.robot.c_str(), next);
@@ -1402,7 +1735,20 @@ private:
     }
     // 활성 task 가 하나도 없으면 지킬 시간표도 없다. 래치 토픽이라 여기서 비워 주지
     // 않으면 화면이 마지막 계획을 몇 시간이고 현재처럼 띄운다 — `clear_plan_once` 머리말.
-    if (tasks_.empty()) { clear_plan_once("활성 작업 없음"); }
+    if (tasks_.empty()) {
+      clear_plan_once("활성 작업 없음");
+    } else if (tasks_.size() != tasks_before) {
+      // ⚠️ [2026-08-03] **한 대만 빠져도 `/fms/plan` 을 다시 낸다.**
+      //
+      //   예전에는 전부 비었을 때만 비웠다. 그래서 순회 중단으로 한 대의 task 만
+      //   지워지고 다른 로봇이 남아 있으면, **취소된 로봇의 옛 시간표가 래치 토픽에
+      //   그대로 살아** 관제가 그 카운트다운을 계속 흘렸다(0 → -10초). 실행 쪽은 task 가
+      //   없어 감시도 안 하는데 화면만 세고 있는 상태다(codex 지적 P0).
+      //
+      //   재계획을 요청해 두면 다음 틱의 `service_replan_requests` 가 남은 로봇만으로
+      //   다시 짜서 발행한다 — 사라진 로봇 항목이 그때 없어진다.
+      request_replan("작업 정리");
+    }
     publish_occupancy();
     publish_routes();
     publish_goals();
@@ -1493,17 +1839,83 @@ private:
     return true;
   }
 
+  // 이 정점이 지금 막혀 있나. `active_blocks()` 와 같은 표를 보지만 **정리는 안 한다** —
+  // 매 틱 이동 판단에서 불리므로 부작용이 없어야 한다(정리는 on_timer 의 sweep 몫).
+  //
+  // ⚠️ [2026-08-03] 이게 없어서 **반응형 진입 게이트가 차단을 모르고 있었다.**
+  //    차단 정점은 CBS 스냅샷(`snap.blocked`)에만 들어가 진입 간선이 끊겼는데,
+  //    `request_move()` 는 그 표를 안 본다. 그래서 재계획이 적용되기 전이나 CBS 가
+  //    해를 못 찾아 반응형으로 떨어진 동안, **다른 로봇이 사람이 서 있는 정점으로
+  //    GRANT 를 받을 수 있었다**(codex 검토 P0).
+  bool is_node_blocked(int node, const std::string & robot = "") const
+  {
+    const double now = now_sec();
+    for (const auto & kv : blocked_until_) {
+      if (kv.first.first != node || now >= kv.second) { continue; }
+      const auto reason = blocked_reason_.find(kv.first);
+      const bool own_dock_lock =
+        reason != blocked_reason_.end() && reason->second == "shelf_dock" &&
+        kv.first.second.rfind("dock:", 0) == 0 &&
+        norm_robot_name(kv.first.second.substr(5)) == norm_robot_name(robot);
+      if (!own_dock_lock) { return true; }
+    }
+    return false;
+  }
+
+  // 도킹 소유자가 향하는 최종 정점은 CBS의 전역 차단 목록에서만 제외한다.
+  // 다른 로봇은 is_node_blocked(next, robot)에서 여전히 멈춘다.
+  bool is_owned_shelf_dock_goal(int node) const
+  {
+    const double now = now_sec();
+    for (const auto & kv : blocked_until_) {
+      if (kv.first.first != node || now >= kv.second) { continue; }
+      const auto reason = blocked_reason_.find(kv.first);
+      if (reason == blocked_reason_.end() || reason->second != "shelf_dock" ||
+          kv.first.second.rfind("dock:", 0) != 0) {
+        continue;
+      }
+      const auto owner = norm_robot_name(kv.first.second.substr(5));
+      for (const auto & task : tasks_) {
+        if (norm_robot_name(task.robot) == owner && !task.path.empty() &&
+            task.path.back() == node) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  // 유효시간이 지난 차단을 지우고, 살아 있는 정점 집합(중복 없이)을 돌려준다.
+  std::vector<int> active_blocks()
+  {
+    const double now = now_sec();
+    std::set<int> nodes;
+    for (auto it = blocked_until_.begin(); it != blocked_until_.end(); ) {
+      if (now >= it->second) {
+        RCLCPP_INFO(get_logger(), "[block] 정점 %d owner=%s 유효시간 만료 — 자동 해제",
+                    it->first.first, it->first.second.c_str());
+        blocked_reason_.erase(it->first);
+        it = blocked_until_.erase(it);
+      } else {
+        nodes.insert(it->first.first);
+        ++it;
+      }
+    }
+    return std::vector<int>(nodes.begin(), nodes.end());
+  }
+
   // ── 플래너 워커 ────────────────────────────────────────────────────────
   //
   // 스냅샷 하나만 들고 있는다(큐가 아니다). 새 요청이 오면 **덮어쓴다** — 낡은 스냅샷으로
   // 계산해 봐야 그 결과는 어차피 버려진다. 계획은 "지금 상태"에 대한 답이어야 한다.
-  bool hand_to_planner(PlanSnapshot && snap)
+  bool hand_to_planner(PlanSnapshot && snap, const std::string & why = "")
   {
     {
       std::lock_guard<std::mutex> lk(planner_mu_);
       // graph_ 포인터는 노드 수명 내내 유효하다(멤버). 스냅샷은 값 복사라 안전하다.
       pending_snap_ = std::move(snap);
       pending_gen_ = state_gen_;
+      pending_reason_ = why;
       pending_ready_ = true;
     }
     planner_cv_.notify_one();
@@ -1515,12 +1927,14 @@ private:
     for (;;) {
       PlanSnapshot snap;
       uint64_t gen = 0;
+      std::string why;
       {
         std::unique_lock<std::mutex> lk(planner_mu_);
         planner_cv_.wait(lk, [this] { return pending_ready_ || planner_stop_; });
         if (planner_stop_) { return; }
         snap = std::move(pending_snap_);
         gen = pending_gen_;
+        why = pending_reason_;
         pending_ready_ = false;
       }
       // ⚠️ 여기가 **긴 구간**이다. 어떤 잠금도 쥐지 않는다.
@@ -1532,6 +1946,7 @@ private:
         result_routes_ = std::move(routes);
         result_snap_ = std::move(snap);
         result_gen_ = gen;
+        result_reason_ = why;
         result_ready_ = true;
       }
     }
@@ -1881,6 +2296,8 @@ private:
   int replan_cooldown_ticks_{0};      // 재계획 최소 간격(틱). 0 = 즉시(:179 머리말)
   int replan_cooldown_{0};
   bool replan_requested_{false};      // 도착 마감 초과로 fleet_node 가 스스로 요청
+  //: `request_replan` 이 남긴 사유. `service_replan_requests` 가 소비한다.
+  std::string requested_why_;
   int replan_streak_{0};              // 진전 없이 이어진 재계획 횟수(backoff 지수)
   double arrive_radius_{kArriveDefault};   // 도착 판정 반경(m) — 맵 축척마다 다름
   double prefetch_radius_{kPrefetchDefault};  // 경유 노드 선행 통과 반경(m). 0 이면 꺼짐
@@ -1913,6 +2330,7 @@ private:
   bool last_plan_empty_{true};
   rclcpp::Publisher<libi_fleet_msgs::msg::FleetRoutes>::SharedPtr route_pub_;
   rclcpp::Subscription<libi_fleet_msgs::msg::RobotHold>::SharedPtr hold_sub_;
+  rclcpp::Subscription<libi_fleet_msgs::msg::NodeBlock>::SharedPtr node_block_sub_;
 
   // ── [2026-08-01] 공유 상태 잠금 ──────────────────────────────────────────
   //
@@ -1947,12 +2365,22 @@ private:
   uint64_t pending_gen_{0};
   uint64_t result_gen_{0};
   PlanSnapshot pending_snap_;
+  //: 이번 재계획의 사유. 계획 요청과 결과에 같이 실려 `/fms/plan.reason` 이 된다.
+  std::string pending_reason_;
+  std::string result_reason_;
   PlanSnapshot result_snap_;
   std::vector<PlannedRoute> result_routes_;
   bool pending_ready_{false};
   bool result_ready_{false};
   bool planner_stop_{false};
   std::map<std::string, double> hold_until_;   // 로봇 → 붙잡기 만료 시각(steady 초)
+  // ── 정점 차단 (2026-08-03) ────────────────────────────────────────────
+  // 사람이 막았거나 도킹이 잡아 둔 정점. 유효시간이 지나면 스스로 푼다
+  // (RobotHold 와 같은 이유 — 푸는 쪽이 죽어도 길이 영영 막히면 안 된다).
+  // (정점, owner) 로 나눠 잡는다 — 같은 정점을 사람 차단과 서가 잠금이 함께 잡을 수
+  // 있어, 소유자별로 따로 풀어야 한다(한쪽의 ttl<=0 이 남의 차단까지 지우면 안 된다).
+  std::map<std::pair<int, std::string>, double> blocked_until_;        // (정점,owner) → 만료 시각(steady 초)
+  std::map<std::pair<int, std::string>, std::string> blocked_reason_;  // (정점,owner) → 사유
   rclcpp::Publisher<libi_fleet_msgs::msg::FleetGoals>::SharedPtr goal_pub_;
   rclcpp::Service<SubmitTask>::SharedPtr srv_;
   rclcpp::Service<SetPlugins>::SharedPtr plugins_srv_;

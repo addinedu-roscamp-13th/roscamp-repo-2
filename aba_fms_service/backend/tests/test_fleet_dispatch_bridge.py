@@ -90,7 +90,7 @@ def test_no_arm_leg_key_is_silently_dropped(monkeypatch):
 
     legs = decompose_delivery(book="B1", pickup="문학서가", dropoff="1번테이블",
                               tier=2, row=3) + decompose_collection()
-    for leg in [l for l in legs if l.type == LegType.PERFORM_ACTION]:
+    for leg in [l for l in legs if l.type == LegType.PERFORM_ACTION and l.params["action"] != "backup"]:
         bridge.real_dispatch("t1", "Pinky-3", leg)
         missing = set(leg.params) - set(sent["args"])
         assert not missing, f"{leg.params['action']} 다리의 키가 사라졌다: {missing}"
@@ -567,3 +567,17 @@ def test_pick_robot_allows_patrol_task_to_be_preempted():
          "battery": 80, "stale": False},
     ]
     assert pick_robot(robots) == "patrolling"
+
+def test_fms_backup_leg_is_sent_directly_to_robot_agent(monkeypatch):
+    sent = {}
+
+    def fake_send(robot, action, args=None):
+        sent.update(robot=robot, action=action, args=args)
+        return "backup-1"
+
+    monkeypatch.setattr(bridge.fleet_telemetry, "send_command_async", fake_send)
+    cmd_id = bridge.real_dispatch(
+        "t1", "Pinky-3", Leg(LegType.PERFORM_ACTION, {"action": "backup", "at": "문학서가"}))
+
+    assert cmd_id == "backup-1"
+    assert sent == {"robot": "Pinky-3", "action": "backup", "args": {}}

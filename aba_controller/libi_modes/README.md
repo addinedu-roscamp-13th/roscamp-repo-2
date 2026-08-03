@@ -383,10 +383,11 @@ PatrolBranch (Sequence, memory=False)
 ├── IsMode("PATROL")
 ├── Parallel(SuccessOnOne)
 │   ├── PatrolNavigation                        # 순회 주행 — 계속 RUNNING
-│   └── exit_watchdog(...)                      # 이탈 조건 + 끝에 Running()
-│       ├── FaultDetected
-│       ├── BatteryCheck("<=", 15, "RETURNING")
-│       └── CommandListener
+│   ├── exit_watchdog(...)                      # 이탈 조건 + 끝에 Running()
+│   │   ├── FaultDetected
+│   │   ├── BatteryCheck("<=", 15, "RETURNING")
+│   │   └── CommandListener
+│   └── PersonBlockGuard                        # ← 신규(2026-08-03), 앞캠 감시
 └── RequestTransition()
 ```
 
@@ -398,6 +399,17 @@ PatrolBranch (Sequence, memory=False)
 
 **신규 leaf: `PatrolNavigation`**
 
+**`PersonBlockGuard` (2026-08-03 추가)** — WorkingBranch 와 **같은 leaf** 다. 순회 중에도
+앞캠을 켜고(패널에 영상이 뜬다) 앞을 막는 사람에 정지한다. 두 가지가 다르다:
+
+- `require_command=None` — 이 브랜치는 순회밖에 안 하므로 **브랜치 자체가 게이트**다.
+  순회 중 `ACTIVE_COMMAND` 는 아예 `None` 이라 `navigate` 게이트를 두면 영영 안 돈다.
+- `block_fn` 은 **배달과 똑같이 꽂는다** — 순회 홉도 같은 통로로 온다.
+  `fleet_dispatch_bridge.on_path_request` 가 순회 로봇에도
+  `navigate{x,y,node,is_destination}` 을 내려보내므로(fleet_node 의 `patrol_` 모드가
+  idle 로봇을 순회 루프로 라우팅한다) `providers._committed_node` 는 **홉마다 갱신된다.**
+  낡은 값이 아니다 — 막히면 알려야 CBS 가 경로를 다시 짠다.
+
 ### 4. SECURITY_PATROL
 
 ```
@@ -407,10 +419,11 @@ SecurityPatrolBranch (Sequence, memory=False)
 │   ├── Sequence(memory=True)                   # 순찰 1회
 │   │   ├── SecurityPatrolNavigation            # 주행 + 침입 감지·녹화·알림
 │   │   └── SetNextMode("IDLE")
-│   └── exit_watchdog(...)
-│       ├── FaultDetected
-│       ├── BatteryCheck("<=", 15, "RETURNING")
-│       └── CommandListener                     # stop_request 만
+│   ├── exit_watchdog(...)
+│   │   ├── FaultDetected
+│   │   ├── BatteryCheck("<=", 15, "RETURNING")
+│   │   └── CommandListener                     # stop_request 만
+│   └── PersonBlockGuard                        # ← 신규(2026-08-03), PATROL 과 동일
 └── RequestTransition()
 ```
 
@@ -567,6 +580,62 @@ RMF에 잔존하여 재배차되지 않는다. (보고 자체는 이 트리 밖 
 >     arte2 레인이 0.151~0.601m 라 1~5초마다 멈춰 안내가 계속 끊긴다
 
 테스트: `test/test_guide_exec.py` (분류 분리·유예·실제 정지·재개·포기·도착·감시없음)
+
+#### 서가 정밀 도킹·복귀·사람 차단 감시 (2026-08-03)
+
+`WorkingBranch` 에 리프가 셋 늘었다 — 둘은 `CommandDispatch` Selector 안, 하나는 밖이다.
+
+```
+WorkingBranch (Sequence, memory=False)
+├── IsMode("WORKING")
+├── undock_gate
+├── Parallel(SuccessOnOne)                       # "ExecuteAndWatch"
+│   ├── Selector(memory=False)                   # "CommandDispatch"
+│   │   ├── NavigationExec                       # navigate
+│   │   ├── GuideExec                             # guide
+│   │   ├── ArmExec                               # perform_action
+│   │   ├── ShelfDockExec                         # shelf_dock  ← 신규
+│   │   ├── BackupExec                            # backup      ← 신규
+│   │   ├── FollowExec                            # follow_admin
+│   │   └── Running("AwaitingCommand")
+│   ├── exit_watchdog(...)
+│   └── PersonBlockGuard                          # ← 신규, Selector **밖**
+└── RequestTransition()
+```
+
+**`ShelfDockExec`(`shelf_dock`) / `BackupExec`(`backup`)** — `ArmExec` 바로 다음
+`CommandDispatch` 항목이다. 절차 자체(회전 → 표식 검출 → 지도 레이캐스트 → 개루프 이동)는
+이 트리 밖 `robot_agent` 의 `app/core/shelf_dock.py`(서가 도킹) · `app/core/backup_runner.py`
+(복귀)가 블로킹으로 끝까지 돈다 — 두 leaf 는 명령을 시작하고 결과를 기다릴 뿐이다
+(`ArucoApproach` 와 같은 위임 관계). `handles` 가 서로 겹치지 않아야 한다 — 겹치면 앞의
+것이 먼저 집어가 뒤가 영영 안 돈다. `backup` 은 사람 차단 후퇴와 서가 도킹 뒤 복귀가
+공유한다.
+
+**`PersonBlockGuard`** — 주행 중 사람이 앞을 막는 것을 감시한다. **`CommandDispatch`
+Selector 가 아니라 `ExecuteAndWatch` `Parallel(SuccessOnOne)` 의 세 번째 자식**이다 —
+Selector 에 넣으면 첫 매치 규칙 때문에 `navigate` 를 가로챈다. **절대 SUCCESS 를 돌려주지
+않는다** — 이 자리에서 SUCCESS 를 내면 그 Parallel 전체가 끝나 주행이 통째로 끊긴다
+(exit_watchdog 은 일부러 그 성질을 쓰지만, 감시자인 이 leaf 는 항상 RUNNING 이다).
+파라미터 `person_stop_size` 가 0(실측 전 기본값)이면 트리에 아예 안 붙는다 —
+`common/person_block.py` 는 화면상 좌우 위치는 안 보고 **크기(`sqrt(area)`)만으로** 판정한다.
+
+**어느 브랜치에 붙어 있나 (2026-08-03)**
+
+| 브랜치 | 붙음 | `require_command` | `block_fn` |
+|---|---|---|---|
+| `WorkingBranch` | ✅ | `"navigate"` | ✅ 정점 차단 보고 |
+| `PatrolBranch` | ✅ | `None`(브랜치가 게이트) | ✅ |
+| `SecurityPatrolBranch` | ✅ | `None` | ✅ |
+| `ReturningBranch` · 길잡이 | ❌ | — | — |
+
+복귀·길잡이에 **못 붙인다** — 그 둘은 뒷캠을 쥐고 있고(`BackCamOn`, `guide_watch{camera:back}`),
+`camera_sender` 는 **선택된 캠 하나만 송출**한다(`camera_sender.py:194`). 앞 영상이 Pi 밖으로
+안 나가므로 AI 서버가 볼 방법이 없다. 붙이려면 대기 캠도 저주기 송출 + 프레임에 캠 태그가
+필요하다(프로토콜 변경, 3개 서비스). 지금은 그 구간의 전방 장애물을 **nav2 라이다 costmap**
+이 담당한다.
+
+테스트: `test/test_person_block.py`(정책) · `test/test_person_block_guard.py`(leaf, SUCCESS
+를 절대 안 내는지) · `test/test_person_block_wiring.py`(배선)
 
 ### 7. RETURNING
 

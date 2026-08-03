@@ -34,6 +34,7 @@ def _providers():
     p._guide_actions = {"guide"}
     p._mission_actions = {"goal", "goto", "home", "mission_start"}
     p._arm_actions = {"perform_action"}
+    p._exec_actions = {"shelf_dock", "backup"}
     p._follow_actions = {"follow_admin"}
     p._fsm_triggers = set(TRANSITION_TRIGGERS)
     p._active_command = None

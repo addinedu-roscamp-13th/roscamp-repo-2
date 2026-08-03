@@ -1,4 +1,6 @@
 #pragma once
+#include <algorithm>
+#include <cctype>
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -7,6 +9,29 @@
 // ROS·플러그인 비의존이라 폴더 이동·단위테스트에 독립적으로 따라다닌다.
 namespace libi_fleet
 {
+
+// 로봇 이름 표기 차이를 지운 **비교용 키**. `pinky-3` 과 `pinky3` 이 같아진다.
+//
+// ⚠️ [2026-08-03] 이게 없어서 **실기에서 사람 차단 후퇴가 통째로 죽어 있었다.**
+//    `fleet_node` 가 아는 이름은 `RmfRobotState.name`(=`pinky-3`)인데
+//    `/fms/node_block` 의 `robot` 은 브릿지 키(`pinky3`)로 온다
+//    (`fleet_dispatch_bridge.py:1300` → `on_person_blocked` → `_publish_node_block`).
+//    `t.robot != m->robot` 이 한 번도 안 맞아 `moving=false` 가 안 내려갔고,
+//    1초짜리 목표 재전송이 **사람 쪽으로 계속** 나갔다. 화면엔 새 경로가 그려지는데
+//    (`publish_routes` 는 매 틱 무조건 낸다) 로봇은 서 있었다.
+//    실기 로그: `[block] 정점 8 차단 60s ... 로봇=pinky3` vs `[P-pinky-3] pinky-3`.
+//
+// ⚠️ 같은 종류를 오늘 오전에 한 번 고쳤다(`fleet_dispatch_bridge.py:498` `_rkey`).
+//    그때 `_nav_goal` 만 고치고 이 필드는 남겼다 — **받는 자리에서 흡수**해야
+//    발행자가 무엇을 보내든 안 깨진다.
+inline std::string norm_robot_name(const std::string & s)
+{
+  std::string o;
+  for (unsigned char c : s) {
+    if (std::isalnum(c)) { o += static_cast<char>(std::tolower(c)); }
+  }
+  return o;
+}
 
 // 도착 판정 거리(m) — **맵 축척에 따라 달라져야 해서 파라미터(`arrive_radius`)로 뺐다.**
 // 이 값은 실제 건물 크기(수십 m) 기준 기본값이다.
@@ -57,6 +82,24 @@ struct ActiveTask
   size_t idx{1};           // 현재 향하는 path 인덱스
   bool moving{false};
   bool wait_logged{false};
+  //: `pr.start == pr.goal` 로 이번 라운드 계획에서 빠졌나.
+  //
+  //  ⚠️ [2026-08-03] **재계획 루프를 막는 표시다**(codex 3차 P1).
+  //     배달 로봇이 최종 정점으로 향하는 중이면 `start == goal` 이라 매 재계획에서
+  //     빠진다 — 드문 경우가 아니라 **모든 배달의 마지막 구간**이다. 그때 낡은
+  //     `plan_epoch`/`plan_arrive` 가 남아 있는데 이미 마감을 넘겼으면,
+  //     `check_plan_deadline` 이 매 틱 재계획을 요청하고 → 또 제외되고 → 또 요청한다.
+  //     기본 `replan_cooldown_ticks = 0` 이라 backoff 도 안 걸려 150ms 마다 CBS 가 돈다.
+  //
+  //     그 로봇에게 재계획은 **정의상 무의미하다** — 짤 것이 없다(start == goal).
+  //     그래서 이 표시가 서 있는 동안은 그 task 의 마감으로 재계획을 요청하지 않는다.
+  //     다른 로봇의 마감은 그대로 감시하므로 "0이면 재계획" 보장은 유지된다.
+  //
+  //  계획이 실제로 이 task 에 적용되거나(`apply_routes`) 노드에 도달하면 내려간다 —
+  //  둘 다 "상황이 바뀌었다" 는 뜻이라 다시 볼 이유가 생긴 것이다.
+  bool plan_excluded{false};
+  //: 위 제외를 이미 로그로 남겼나. 매 재계획마다 찍으면 로그가 그것만으로 찬다.
+  bool excluded_logged{false};
   bool patrol{false};      // 순회 task(주간/야간 공통): 끝에 도달해도 완료 안 하고 루프 반복
   bool security{false};    // 야간 보안순회면 true → security_patrol_route_ 사용(그 외 patrol_route_)
   bool stuck{false};       // 완전 막힘(우회 실패) → 우선순위 top 으로 escalate, 풀리면 원복
@@ -130,6 +173,74 @@ inline bool traversed_edge_to_credit(const std::vector<int> & path,
   if (f == missed_from && t == missed_to) { return false; }
   from = f;
   to = t;
+  return true;
+}
+
+/// `from_idx` 부터 **처음으로 마감을 넘긴 칸**의 인덱스. 없으면 `npos` 상당(= 범위 끝).
+///
+/// ⚠️ [2026-08-03] **왜 커밋 칸 하나가 아니라 그 뒤 전부를 보나**
+///
+///   관제의 **예약 표**는 `FleetPlan.arrive_tick` 이 `>= 0` 인 **모든 칸**에 카운트다운을
+///   찍는다(`WaypointEditor.tsx:908-921`). 예전에는 `fleet_node` 가 커밋 칸 하나만
+///   검사해서, 로봇이 아직 안 닿은 **먼 칸**이 0을 지나 `지연 +16.3s` 로 빨갛게 떠
+///   있는데 아무도 재계획을 안 거는 상태가 생겼다(실기 2026-08-03).
+///
+///   계획의 약속("이 정점을 이 시각에 비운다")은 모든 칸에 걸려 있다. 먼 칸이 밀렸다는
+///   것은 그 시간표가 이미 남에게 틀린 통과 허가를 주고 있다는 뜻이다.
+///
+///   ⚠️ **가장 이른 초과 칸 하나만** 돌려준다. 재계획 요청은 어차피 bool 하나라 한 틱에
+///      한 번이고, 로그도 원인에 가장 가까운 칸을 가리키는 편이 읽힌다.
+///   ⚠️ `arrive < 0` 은 건너뛴다 — 이미 떠난 칸, 그리고 CBS 가 안 짠 순회 꼬리다.
+///      화면도 같은 규칙으로 라벨을 안 붙인다(`WaypointEditor.tsx:914`).
+///   ⚠️ 경계는 `arrive` 와 `path` 중 **짧은 쪽**이다. 순회 꼬리 때문에 `path` 가 더 길다.
+///
+/// `due(i) = epoch + arrive[i] * tick_sec + slack`. `now > due(i)` 여야 초과다
+/// (같으면 아직 아니다 — 기존 `now_sec() <= due` 판정을 그대로 옮겼다).
+inline std::size_t first_overdue_cell(const std::vector<int> & path,
+                                      const std::vector<int> & arrive,
+                                      std::size_t from_idx,
+                                      double epoch, double tick_sec, double slack,
+                                      double now)
+{
+  const std::size_t last = std::min(arrive.size(), path.size());
+  for (std::size_t i = from_idx; i < last; ++i) {
+    if (arrive[i] < 0) { continue; }
+    const double due = epoch + arrive[i] * tick_sec + slack;
+    if (now > due) { return i; }
+  }
+  return last;
+}
+
+/// 재계획할 때 이 로봇의 경로를 **어디서부터** 짤 것인가.
+///
+/// `start` 는 계획의 출발 정점, `committed_from` 은 "지금 타고 있는 간선의 출발점"
+/// (없으면 -1). 플러그인은 `committed_from` 이 있어야 그 간선의 예산
+/// (`commit_deadline_tick`)을 계산해 준다.
+///
+/// 규칙:
+///   · 이동 중이 아니면 → 서 있는 정점(`path[idx-1]`)에서, 커밋 간선 없음
+///   · 이동 중이면      → 향해 가는 정점(`path[idx]`)에서, 커밋 간선 `path[idx-1]→path[idx]`
+///   · **이동 중인데 향해 가는 정점이 차단됐으면** → 떠나온 정점에서, 커밋 간선 없음
+///
+/// ⚠️ [2026-08-03] 마지막 줄이 이번에 생겼다. 사람이 막은 정점은 곧 로봇이 향하던
+///    `path[idx]` 인데, 차단 때 `moving` 을 아무도 내리지 않아 예전에는 그 노드를
+///    출발점으로 줬다. CBS 가 **"로봇이 이미 거기 도착했다"** 고 가정하고 그 너머에서
+///    경로를 짜서, 새 계획의 첫 홉이 **사람 너머**에서 시작했다. 로봇에 내려보내면
+///    nav2 가 사람을 뚫으려다 실패한다(실기: `Failed to create plan with tolerance
+///    of: 0.100000`). 사람 차단 뒤 FMS 가 보내는 `backup` 도 `path[idx-1]` 로 물리므로,
+///    이렇게 두면 계획과 실제 위치가 같은 곳을 가리킨다.
+///
+/// 범위 밖(`idx < 1` 또는 `idx >= path.size()`)이면 아무것도 안 건드리고 false.
+inline bool plan_start_for(const std::vector<int> & path, std::size_t idx, bool moving,
+                           const std::vector<int> & blocked,
+                           int & start, int & committed_from)
+{
+  if (idx < 1 || idx >= path.size()) { return false; }
+  const bool commit_blocked =
+    moving && std::find(blocked.begin(), blocked.end(), path[idx]) != blocked.end();
+  const bool ride = moving && !commit_blocked;
+  start = ride ? path[idx] : path[idx - 1];
+  committed_from = ride ? path[idx - 1] : -1;
   return true;
 }
 

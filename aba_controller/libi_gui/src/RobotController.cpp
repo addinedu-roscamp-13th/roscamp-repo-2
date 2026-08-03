@@ -100,6 +100,12 @@ RobotController::RobotController(QObject *parent) : QObject(parent) {
     connect(this, &RobotController::poseChanged, this, &RobotController::updateGuideDistance);
 }
 
+void RobotController::clearLogs() {
+    if (m_logs.isEmpty()) return;
+    m_logs.clear();
+    emit logsChanged();
+}
+
 void RobotController::log(const QString &line) {
     const QString stamped = QTime::currentTime().toString("HH:mm:ss") + "  " + line;
     m_logs.prepend(stamped);
@@ -1101,6 +1107,11 @@ void RobotController::attachRos(RosLink *ros) {
     m_fsmFreshness.setSingleShot(true);
     m_fsmFreshness.setInterval(POSE_TTL_MS);
     connect(&m_fsmFreshness, &QTimer::timeout, this, [this]() {
+        // 상태가 안 오면 정지 여부도 모른다 — 마지막 값을 붙들고 있으면 화면이
+        // "정지 중"이라고 계속 우긴다. pose 와 같은 원칙으로 되돌린다.
+        if (m_personBlocked) { m_personBlocked = false; emit personBlockedChanged(); }
+        if (m_frontPersonSize != 0.0) { m_frontPersonSize = 0.0; emit frontPersonSizeChanged(); }
+        if (m_personBlockIn >= 0.0) { m_personBlockIn = -1.0; emit personBlockInChanged(); }
         if (!m_rosConnected) return;
         m_rosConnected = false;
         emit rosConnectedChanged();
@@ -1129,6 +1140,92 @@ void RobotController::attachRos(RosLink *ros) {
     connect(ros, &RosLink::odomReceived, this, [this](double linX, double angZ) {
         m_odomLinVel = linX; m_odomAngVel = angZ;
         emit odomChanged();
+    });
+
+    connect(ros, &RosLink::personBlockedReceived, this, [this](bool blocked) {
+        if (blocked == m_personBlocked) return;
+        m_personBlocked = blocked;
+        emit personBlockedChanged();
+        // ⚠️ **여기서 log() 를 부르지 않는다.** 임계(209px) 근처에서 사람이 조금만
+        // 움직여도 값이 2~3초마다 뒤집혀서 기록이 이것만으로 가득 찬다(2026-08-03 실측).
+        // 상태는 옆의 배지가 실시간으로 보여주므로 기록에 또 남길 이유가 없다.
+    });
+
+    connect(ros, &RosLink::frontPersonSizeReceived, this, [this](double px) {
+        // 5Hz 로 들어오고 값이 잘게 흔들린다 — 1px 미만 변화는 무시해 화면 갱신을 줄인다.
+        if (std::abs(px - m_frontPersonSize) < 1.0) return;
+        m_frontPersonSize = px;
+        emit frontPersonSizeChanged();
+    });
+
+    connect(ros, &RosLink::personBlockInReceived, this, [this](double sec) {
+        // 5Hz 로 들어오고 0.2초씩 줄어든다. 0.05초 미만 차이는 무시해 갱신을 줄인다.
+        // "세는 중 ↔ 안 셈" 전환은 값이 크게 튀므로 이 문턱에 안 걸린다.
+        if (std::abs(sec - m_personBlockIn) < 0.05) return;
+        m_personBlockIn = sec;
+        emit personBlockInChanged();
+    });
+
+    connect(ros, &RosLink::personBlockReported, this, [this](int seq, int node) {
+        if (m_personBlockSeq < 0) { m_personBlockSeq = seq; return; }   // 첫 수신 — 기준만 잡는다
+        if (seq <= m_personBlockSeq) return;
+        m_personBlockSeq = seq;
+        log(node >= 0
+            ? QStringLiteral("사람이 앞을 막음 — 경로 재탐색 요청 (정점 %1)").arg(node)
+            : QStringLiteral("사람이 앞을 막음 — 경로 재탐색 요청"));
+    });
+
+    connect(ros, &RosLink::replanReasonReceived, this, [this](int seq, QString reason) {
+        if (m_replanSeq < 0) { m_replanSeq = seq; return; }   // 래치 재배달 — 기준만 잡는다
+        // ⚠️ **되감김은 FMS 재기동이다.** `plan_seq_` 는 fleet_node 멤버라 재기동하면
+        //    0 부터 다시 센다. `seq <= 기준` 만 보면, 살아 있는 패널이 그 뒤의 모든
+        //    사건을 "이미 본 것" 으로 영원히 무시한다 — 조용히 죽는다(codex 검토 P1).
+        //    작아졌으면 기준을 새로 잡고 이번 것부터 다시 센다.
+        if (seq < m_replanSeq) { m_replanSeq = seq; }
+        else if (seq == m_replanSeq) { return; }
+        m_replanSeq = seq;
+        log(QStringLiteral("관제 경로 재탐색 — %1").arg(reason));
+    });
+
+    connect(ros, &RosLink::shelfDockStatusReceived, this, [this](QString raw) {
+        const auto doc = QJsonDocument::fromJson(raw.toUtf8());
+        if (!doc.isObject()) return;
+        const auto o = doc.object();
+        if (o.value("event").toString() != QLatin1String("shelf_dock")) return;
+        const QString phase = o.value("phase").toString();
+        const QString shelf = o.value("shelf").toString();
+        if (phase == QLatin1String("started")) {
+            log(QStringLiteral("%1 정밀 도킹 시작 — 서가 2cm 앞에서 정지").arg(shelf));
+        } else if (phase == QLatin1String("initial_marker_centered")) {
+            log(QStringLiteral("테이프 초기 중앙정렬 완료 (%1프레임)").arg(o.value("frames").toInt()));
+        } else if (phase == QLatin1String("lateral_start")) {
+            log(QStringLiteral("옆축 PID 시작 — 오차 %1m, 목표 %2m")
+                .arg(o.value("initial_error_m").toDouble(), 0, 'f', 3)
+                .arg(o.value("target_m").toDouble(), 0, 'f', 3));
+        } else if (phase == QLatin1String("lateral_complete")) {
+            log(QStringLiteral("옆축 PID 완료 — 잔여 오차 %1m")
+                .arg(o.value("final_error_m").toDouble(), 0, 'f', 3));
+        } else if (phase == QLatin1String("reobserve_marker_centered")) {
+            log(QStringLiteral("재관측 테이프 중앙정렬 완료 — PGM 거리 재계산"));
+        } else if (phase == QLatin1String("final_start")) {
+            log(QStringLiteral("최종축 PID 시작 — PGM을 보며 2cm까지 전진"));
+        } else if (phase == QLatin1String("final_progress")) {
+            log(QStringLiteral("최종축: PGM %1m · 2cm까지 %2m · 테이프 오차 %3px")
+                .arg(o.value("pgm_distance_m").toDouble(), 0, 'f', 3)
+                .arg(o.value("remaining_to_clearance_m").toDouble(), 0, 'f', 3)
+                .arg(o.value("marker_error_px").toDouble(), 0, 'f', 1));
+        } else if (phase == QLatin1String("backup_started")) {
+            log(QStringLiteral("FMS 승인 역순 복귀 시작 — 총 %1m")
+                .arg(o.value("planned_drive_m").toDouble(), 0, 'f', 3));
+        } else if (phase == QLatin1String("backup_completed")) {
+            log(QStringLiteral("FMS 승인 역순 복귀 완료 — 서가 정점으로 복귀"));
+        } else if (phase == QLatin1String("backup_failed")) {
+            log(QStringLiteral("FMS 승인 역순 복귀 실패 — %1").arg(o.value("message").toString()));
+        } else if (phase == QLatin1String("completed")) {
+            log(QStringLiteral("정밀 도킹 완료 — 2cm 여유 확보"));
+        } else if (phase == QLatin1String("failed")) {
+            log(QStringLiteral("정밀 도킹 실패 — %1").arg(o.value("message").toString()));
+        }
     });
 
     connect(ros, &RosLink::fsmStateReceived, this,

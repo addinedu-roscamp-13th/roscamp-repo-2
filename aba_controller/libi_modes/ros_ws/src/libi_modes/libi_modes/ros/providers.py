@@ -36,10 +36,27 @@ import math
 import time
 
 from geometry_msgs.msg import PoseWithCovarianceStamped
+from nav_msgs.msg import Odometry
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool, Float32, Float64, String
 
 from libi_modes.registry import TRANSITION_TRIGGERS
+
+#: 직진으로 볼 최소 전진 속도(m/s)와 허용 회전(rad/s).
+#: 차단을 알린 뒤 감지를 다시 켜는 조건이다 — 돌고 있는 동안은 안 켠다.
+_STRAIGHT_MIN_LINEAR = 0.03
+_STRAIGHT_MAX_ANGULAR = 0.10
+
+
+def is_moving_straight(linear_x: float, angular_z: float,
+                       min_linear: float = _STRAIGHT_MIN_LINEAR,
+                       max_angular: float = _STRAIGHT_MAX_ANGULAR) -> bool:
+    """로봇이 앞으로 곧게 가고 있나.
+
+    후진은 직진이 아니다 — 차단 뒤 되돌아가는 동안 감지가 다시 켜지면 안 된다.
+    """
+    return float(linear_x) >= float(min_linear) and abs(float(angular_z)) <= float(max_angular)
+
 
 #: `/amcl_pose` 는 TRANSIENT_LOCAL 로 발행된다 — 기본 QoS(VOLATILE)로 구독하면
 #: 아무것도 못 받는다. 조용히 위치가 안 오면 NavigationExec 이 영영 도착 판정을
@@ -48,20 +65,29 @@ _LATCHED = QoSProfile(depth=1)
 _LATCHED.durability = DurabilityPolicy.TRANSIENT_LOCAL
 _LATCHED.reliability = ReliabilityPolicy.RELIABLE
 
+#: 사람 차단 입력(`front_person_size`/`odom`)은 센서 스트림 관례를 따른다 — 최신값이
+#: 중요하고, 놓친 프레임 하나 때문에 재전송을 기다리면 그만큼 판정이 늦는다.
+_SENSOR_QOS = QoSProfile(depth=5)
+_SENSOR_QOS.reliability = ReliabilityPolicy.BEST_EFFORT
+
 
 class RosProviders:
     def __init__(self, node, *, battery_topic="battery/percent", docked_topic="is_docked",
                  fault_topic="fault", cmd_topic="fleet_cmd", ui_touch_topic="ui_last_touch_at",
                  pose_topic="/amcl_pose",
+                 front_person_size_topic="/libi/front_person_size",
+                 odom_topic="/odom",
                  requester_topic="/libi/requester_visible",
                  requester_area_topic="/libi/requester_area",
                  guide_search_failed_topic="/libi/guide_search_failed",
                  requester_ttl_sec=2.0,
+                 front_person_size_ttl_sec=2.0,
                  now_fn=time.monotonic,
                  mission_actions=("goal", "goto", "home", "mission_start"),
                  nav_actions=("navigate",),
                  guide_actions=("guide",),
                  arm_actions=("perform_action",),
+                 exec_actions=("shelf_dock", "backup"),
                  follow_actions=("follow_admin",),
                  fsm_triggers=TRANSITION_TRIGGERS):
         self._node = node
@@ -80,6 +106,9 @@ class RosProviders:
         # 팔 명령은 이름을 그대로 active_command 로 쓴다 — ArmExec 의 handles 와 맞춰야 한다
         # (working_actions.ArmExec: handles={"perform_action"}).
         self._arm_actions = set(arm_actions)
+        # 서가 도킹·복귀도 같은 규칙 — ShelfDockExec/BackupExec 의 handles 와 이름이 같아야
+        # 한다. 두 명령은 슬롯을 배타적으로 쓰므로 args 보관도 하나로 겸한다(아래 _exec_args).
+        self._exec_actions = set(exec_actions)
         # 추종도 같은 규칙 — FollowExec.handles={"follow_admin"} 과 이름이 같아야 한다.
         # ⚠️ 이 분류가 없으면 follow_admin 이 last_command 로 새어 나가 **active_command 가
         #    되지 않고**, FollowExec 은 ACTIVE_COMMAND 만 보므로 드라이버를 꽂아도
@@ -106,9 +135,26 @@ class RosProviders:
         self._arm_args = None
         #: 그 팔 명령의 `/fleet_cmd` id. 완료 결과를 이 id 로 올려야 FMS 가 다리를 닫는다.
         self._arm_cmd_id = None
+        #: shelf_dock/backup 명령의 args 원본 — 위 `_arm_args` 와 같은 이유(실행 드라이버가
+        #: 뭘 할지 알려면 args 를 들고 있어야 한다).
+        self._exec_args = None
+        #: 그 명령의 `/fleet_cmd` id. **재발행이 아니라 이 id 로 온 결과를 기다리는 데**
+        #: 쓴다 — robot_agent 가 이미 실행하므로(codex P0), BT 쪽 드라이버가 같은 액션을
+        #: 다시 내면 물리 동작이 두 번 돈다. `main.ExecResultWaiter` 가 이 id 를 읽는다.
+        self._exec_cmd_id = None
         #: 지금 도는 `guide` 홉의 `/fleet_cmd` id — 위 `_on_cmd` 의 ⚠️ 주석 참고.
         self._guide_cmd_id = None
         self._robot_pose = None
+        #: 앞캠에 잡힌 가장 큰 사람의 크기(sqrt(area) px). 0.0 은 "안 보인다"(None)로 읽는다.
+        self._front_person_size = None
+        #: 로봇이 실제로 **0.3초 이상 연속** 직진 중인가. `_straight_since` 가 그 연속
+        #: 구간의 시작 시각이다 — 짧은 흔들림이 재무장 조건을 만족시키면 안 된다.
+        self._moving_straight = False
+        self._straight_since = None
+        #: FMS 가 허가한 다음 정점과, 그게 이번 다리의 목적지인가. navigate/guide 의
+        #: args 에서 온다 — 없으면 모른다(None/False).
+        self._committed_node = None
+        self._committed_is_destination = False
         self._command_received_at = 0.0
         self._ui_last_touch_at = 0.0
         self._requester_visible = None      # None = 감시가 안 돌고 있다
@@ -121,6 +167,12 @@ class RosProviders:
         self._guide_search_failed = None
         self._guide_search_failed_stamp = None
         self._requester_ttl = float(requester_ttl_sec)
+        #: `FRONT_PERSON_SIZE` 신선도(초). 검출 파이프라인·도메인 브릿지가 죽으면
+        #: 마지막 값이 영원히 남아 `PersonBlockGuard` 가 유령 앞에서 계속 멈추고
+        #: 차단까지 보고할 수 있다(codex P1) — `requester_ttl_sec` 과 같은 급의 값.
+        self._front_person_size_ttl = float(front_person_size_ttl_sec)
+        #: 마지막으로 `/libi/front_person_size` 를 받은 시각. `None` = 한 번도 안 왔다.
+        self._front_person_size_stamp = None
         self._now = now_fn
 
         node.create_subscription(Float32, battery_topic, self._on_battery, 10)
@@ -129,6 +181,11 @@ class RosProviders:
         node.create_subscription(String, cmd_topic, self._on_cmd, 10)
         node.create_subscription(Float64, ui_touch_topic, self._on_ui_touch, 10)
         node.create_subscription(PoseWithCovarianceStamped, pose_topic, self._on_pose, _LATCHED)
+        # 사람 차단(PersonBlockGuard)의 입력 — 앞을 막은 크기(다른 bbox 스트림인
+        # requester_area 와 같은 QoS)와, 실제 직진 여부(센서 스트림 관례: BEST_EFFORT).
+        node.create_subscription(Float32, front_person_size_topic,
+                                 self._on_front_person_size, 10)
+        node.create_subscription(Odometry, odom_topic, self._on_odom, _SENSOR_QOS)
         node.create_subscription(Bool, requester_topic, self._on_requester, 10)
         # 거리 게이트(보이지만 너무 멀다)의 입력. Bool 하나로는 "보이나"만 알 수 있어
         # 10m 뒤에 있어도 계속 간다. 커스텀 msg 를 새로 만들지 않는 이유는 실을 값이
@@ -148,6 +205,34 @@ class RosProviders:
 
     def _on_fault(self, msg):
         self._fault = bool(msg.data)
+
+    def _on_front_person_size(self, msg):
+        """`/libi/front_person_size` → `FRONT_PERSON_SIZE`.
+
+        0.0 은 "안 보인다"는 뜻이라 `None` 으로 바꾼다 — `PersonBlockPolicy` 가 `None` 을
+        "안 보인다"로 읽는다(0.0 을 그대로 두면 "아주 작게 보인다"와 구분이 안 된다).
+
+        수신 시각도 같이 찍는다 — `_fresh_front_person_size()` 가 신선도를 판정하는
+        근거다(codex P1: 발행이 끊기면 마지막 값이 영원히 남아 유령 앞에서 계속 멈춘다).
+        """
+        value = float(msg.data)
+        self._front_person_size = value if value != 0.0 else None
+        self._front_person_size_stamp = self._now()
+
+    def _on_odom(self, msg):
+        """`/odom` twist → 로봇이 **0.3초 이상 연속** 직진 중인가.
+
+        순간값 하나로 재무장하면 흔들리는 프레임 한 번에 다시 무장했다가 곧바로 다시
+        막히는 일이 생긴다 — 연속으로 붙들고 있어야 "정말 직진으로 돌아왔다"로 친다.
+        """
+        twist = msg.twist.twist
+        if is_moving_straight(twist.linear.x, twist.angular.z):
+            if self._straight_since is None:
+                self._straight_since = self._now()
+            self._moving_straight = self._now() - self._straight_since >= 0.3
+        else:
+            self._straight_since = None
+            self._moving_straight = False
 
     def _on_requester(self, msg):
         # 시각은 **보였을 때만** 갱신한다. 안 보이는 동안 계속 덮으면 "얼마나 오래
@@ -201,8 +286,24 @@ class RosProviders:
             return None
         return self._requester_area
 
-    def _stale(self, stamp) -> bool:
-        return self._requester_ttl > 0 and (self._now() - stamp) > self._requester_ttl
+    def _fresh_front_person_size(self):
+        """[codex P1] 신선하지 않으면 `None`(안 보인다)이다.
+
+        `detection_receiver.py` 의 규칙과 같다 — "모르는 것을 안다고 하지 않는다".
+        검출 파이프라인이나 도메인 브릿지가 죽으면 마지막 값이 블랙보드에 영원히
+        남고, `PersonBlockGuard` 는 그걸 "사람이 계속 앞에 있다"로 읽어 유령 앞에서
+        영원히 멈추고 FMS 에 차단까지 보고한다. `None` 은 "안 보인다"와 같은 값이라
+        정책이 안전한 쪽(DRIVE)으로 읽는다.
+        """
+        if self._front_person_size_stamp is None:
+            return None                          # 한 번도 안 왔다
+        if self._stale(self._front_person_size_stamp, self._front_person_size_ttl):
+            return None
+        return self._front_person_size
+
+    def _stale(self, stamp, ttl=None) -> bool:
+        ttl = self._requester_ttl if ttl is None else ttl
+        return ttl > 0 and (self._now() - stamp) > ttl
 
     def _on_ui_touch(self, msg):
         # payload 값은 신뢰하지 않는다 — libi_gui 가 다른 머신(노트북/sim)이면 monotonic 시계가
@@ -264,6 +365,11 @@ class RosProviders:
             except (KeyError, TypeError, ValueError):
                 self._log.warning(f"{action} 명령에 좌표가 없다: {args!r}")
                 return
+            # PersonBlockGuard 가 정지 보고 대상을 가리는 근거 — fleet_node 가 허가한
+            # 다음 정점과, 그게 이번 다리의 목적지인지(목적지는 차단을 보고하지 않는다,
+            # Story 13). 없으면 모른다(None/False).
+            self._committed_node = args.get("node")
+            self._committed_is_destination = bool(args.get("is_destination", False))
             # guide 는 이름을 그대로 둔다 — GuideExec.handles 와 같아야 잡힌다.
             self._active_command = action if action in self._guide_actions else "navigate"
             # ⚠️ [2026-08-02] **길잡이 홉의 id 를 보관한다 — 팔(`_arm_cmd_id`)과 같은 이유.**
@@ -299,6 +405,15 @@ class RosProviders:
             # (위 `_arm_args` 주석 참고). 중계 드라이버가 tick 시점에 이걸 읽는다.
             self._arm_args = dict(cmd.get("args") or {})
             self._arm_cmd_id = str(cmd.get("id") or "")
+        elif action in self._exec_actions:
+            # 서가 도킹·복귀도 실행 커맨드다 — ShelfDockExec/BackupExec 이 받는다.
+            # 팔과 같은 규칙: 이름을 그대로 active_command 로 쓰고 args 를 보관한다
+            # (안 보관하면 실행 드라이버가 무엇을 할지 모른다) — 위 `_arm_args` 주석 참고.
+            self._active_command = action
+            self._exec_args = dict(cmd.get("args") or {})
+            # id 도 보관한다 — robot_agent 가 이 명령을 이미 실행하므로(codex P0),
+            # BT 드라이버는 재발행하지 않고 **이 id 로 온 결과만 기다린다.**
+            self._exec_cmd_id = str(cmd.get("id") or "")
         elif action in self._fsm_triggers:
             self._last_command = action
         else:
@@ -367,6 +482,8 @@ class RosProviders:
             "nav_target": lambda: self._nav_target,
             "arm_args": lambda: self._arm_args,
             "arm_cmd_id": lambda: self._arm_cmd_id,
+            "exec_args": lambda: self._exec_args,
+            "exec_cmd_id": lambda: self._exec_cmd_id,
             "guide_cmd_id": lambda: self._guide_cmd_id,
             "robot_pose": lambda: self._robot_pose,
             "requester_visible": self._fresh_requester_visible,
@@ -374,4 +491,8 @@ class RosProviders:
             "requester_area": self._fresh_requester_area,
             "guide_search_failed": self._fresh_guide_search_failed,
             "command_received_at": lambda: self._command_received_at,
+            "front_person_size": self._fresh_front_person_size,
+            "moving_straight": lambda: self._moving_straight,
+            "committed_node": lambda: self._committed_node,
+            "committed_is_destination": lambda: self._committed_is_destination,
         }

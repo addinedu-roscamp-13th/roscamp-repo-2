@@ -99,6 +99,28 @@ class Keys:
     # ⚠️ **한 tick 만 산다.** main.py `_tick()` 이 tick 끝에 무조건 지운다. 남겨 두면
     #    낡은 표시가 우연히 같은 목표를 노린 자율 전이까지 유지 시간을 뚫게 만든다.
     COMMANDED_MODE = "commanded_mode"
+    #: 주행 중 앞캠에 잡힌 **가장 큰 사람**의 크기(sqrt(area) px @320). None = 감지 안 됨.
+    FRONT_PERSON_SIZE = "front_person_size"
+    #: 로봇이 실제로 직진 중인가(odom twist 기준). 차단 뒤 감지 재무장 조건이다.
+    MOVING_STRAIGHT = "moving_straight"
+    #: FMS 가 허가한 다음 정점 번호. 차단 보고 대상이다. None = 모른다.
+    COMMITTED_NODE = "committed_node"
+    #: `COMMITTED_NODE` 가 **이번 다리의 목적지인가**. FMS 가 `/fleet_cmd` args 의
+    #: `is_destination` 을 실어 보낸다. 목적지는 차단을 보고하지 않는다(PRD Story 13) —
+    #: 값이 없으면(providers 미배선) False 로 본다.
+    COMMITTED_IS_DESTINATION = "committed_is_destination"
+    #: 지금 사람 때문에 서 있는가. `PersonBlockGuard` 만 쓰고, `state_io` 가
+    #: `/libi/fsm_state` JSON 의 `person_blocked` 로 내보내 패널이 그린다.
+    #: 다른 이유의 정지(비상정지·에러·명령 대기)는 여기 안 들어온다.
+    PERSON_BLOCKED = "person_blocked"
+    #: 사람 때문에 차단을 알리기까지 남은 초. `None`/음수 = 세고 있지 않음.
+    #: 관제에서 재계획이 **사람 때문인지 지연 때문인지** 구분하려고 낸다.
+    PERSON_BLOCK_IN = "person_block_in"
+    #: 사람 차단을 **알린 횟수**. 화면은 이 값이 늘어난 순간에만 기록을 남긴다 —
+    #: `PERSON_BLOCKED`(레벨)로 기록하면 임계 근처에서 깜빡여 로그가 그것만으로 찬다.
+    PERSON_BLOCK_SEQ = "person_block_seq"
+    #: 마지막으로 차단을 알린 정점 번호. 기록 문구에 같이 찍는다. None = 없음.
+    PERSON_BLOCK_NODE = "person_block_node"
 
 
 #: 등록 누락 경고를 키마다 한 번만 낸다 (tick 마다 도배하지 않게).

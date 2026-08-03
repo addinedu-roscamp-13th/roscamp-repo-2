@@ -9,6 +9,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/TaskState.msg"
   "msg/RobotState.msg"
   "msg/RobotHold.msg"
+  "msg/NodeBlock.msg"
   "msg/RobotPlan.msg"
   "msg/FleetPlan.msg"
   "msg/FleetOccupancy.msg"

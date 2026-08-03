@@ -90,8 +90,39 @@ import type { BtNodeFlag } from "@/components/admin/BtGraphView";
  * 실기에서 복귀 한 사이클이 끝까지 돌았다(사용자 확인). ArucoApproach·DockNudge·
  * DockSettle·Undock 넷의 해제 조건은 아래에 하나씩 적는다 — 셋은 실기 근거로 풀렸고
  * 하나는 **근거가 아니라 설계 결정으로** 풀렸다. 그 구분이 중요하다.
+ *
+ * ## 2026-08-03 — 서가 정밀 도킹 리프 셋 추가 (`WorkingBranch`)
+ *
+ * `branches/working.py` 의 `CommandDispatch`·`ExecuteAndWatch` 에 리프가 셋 늘었다.
+ *
+ *   PersonBlockGuard  주행 중 사람 차단 감시. `CommandDispatch` Selector **안이 아니라**
+ *                     `ExecuteAndWatch` Parallel(SuccessOnOne)의 세 번째 자식이다 —
+ *                     Selector 에 넣으면 첫 매치 규칙으로 `navigate` 를 가로챈다. **항상
+ *                     RUNNING** 만 돌려준다(SUCCESS 를 내면 그 병렬이 끝나 주행이 통째로
+ *                     끊긴다). `person_stop_size` 가 0(실측 전 기본)이면 `LkdPeek` 과 같은
+ *                     이유로 트리에 아예 안 붙는다 — 그때는 범례 숫자가 안 바뀐다.
+ *   ShelfDockExec     `shelf_dock` 명령 위임. `CommandDispatch` 에서 `ArmExec` 바로 다음.
+ *   BackupExec        `backup` 명령(사람 차단 후퇴·서가 도킹 복귀 공용) 위임. `ShelfDockExec`
+ *                     바로 다음.
+ *
+ * 셋 다 배선은 정상이다. 아래 플래그에는 `PersonBlockGuard` 하나만 올린다 — 배선
+ * 문제가 아니라 **판정이 원래 좌우를 안 보는** 알려진 한계라서다.
  */
 export const BT_NODE_FLAGS: Record<string, BtNodeFlag> = {
+  // ── 서가 정밀 도킹 리프 셋 (2026-08-03 신설) ─────────────────────────────
+  //
+  // PersonBlockGuard — 사람 크기(sqrt(area) 픽셀)만 보고 정지한다. 화면상 좌우
+  // 위치는 안 본다 — 옆으로 비켜선 사람도 크게 보이면 그대로 잡힌다.
+  //   common/person_block.py 머리말("왜 크기만 보나")
+  //   해제 조건: 좌우 위치(또는 진행 방향과의 각도)를 판정에 넣을 때.
+  PersonBlockGuard: "partial",
+  //
+  // ShelfDockExec · BackupExec — 정상 배선, 플래그 없음. `branches/working.py`
+  // `CommandDispatch` 에서 `ArmExec` 바로 다음 두 항목(handles={"shelf_dock"} /
+  // {"backup"}). 절차 자체는 robot_agent 의 app/core/shelf_dock.py ·
+  // backup_runner.py 가 블로킹으로 끝까지 돈다 — 이 leaf 는 명령을 시작하고
+  // 결과를 기다릴 뿐이다(ArucoApproach 와 같은 위임 관계).
+
   // ── 복귀 6단계 (2026-07-27 신설 · 2026-07-30 재편) ────────────────────────
   //
   // ① GoToParkingEntrance  nav2 로 주차장 입구까지        — 정상

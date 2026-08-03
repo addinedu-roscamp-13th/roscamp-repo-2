@@ -343,6 +343,19 @@ def _dispatch(action: str, args: dict) -> tuple[bool, int, Any, str]:
         # 다시 이 함수를 부를 때(goal/arm_home/…) 일어난다.
         return True, 202, {"accepted": True, "handled_by": "bt"}, ""
 
+    if action == "shelf_dock":
+        # 서가 정밀 도킹(앞캠 + /map LOS). 계산은 app/core/shelf_dock.plan_dock 이 하고
+        # 여기서는 실행만 한다. 블로킹으로 끝까지 돌고 결과 하나를 돌려준다 —
+        # BT tick 은 5Hz 라 leaf 안에서 못 돌린다(dock_runner/marker_dock 선례).
+        from app.core import shelf_dock
+        return shelf_dock.run_shelf_dock(args or {})
+
+    if action == "backup":
+        # 사람 차단 후퇴, 또는 서가 도킹 복귀. 몸을 돌려 온 만큼(또는 FMS 가 준
+        # 좌표까지) 전진한다 — app/core/backup_runner.run_backup.
+        from app.core import backup_runner
+        return backup_runner.run_backup(args or {})
+
     if action == "aruco_dock":
         # 뒷캠 ArUco 정밀 도킹. BT `ReturningBranch` 의 ④단계(`ArucoApproach`)가 부른다.
         #
@@ -469,10 +482,16 @@ def _link_thread() -> None:
             # [2026-07-30] 마커 도킹 취소도 **여기서** 한다. 워커는 `aruco_dock` 을
             # 블로킹으로 수행 중이라 큐에 넣어 봐야 이 도킹이 끝나야 꺼낸다 — 즉 BT 가
             # 포기한 뒤에도 바퀴가 계속 돈다. 정지가 인라인인 이유와 정확히 같다.
+            # [2026-08-03] 서가 도킹(shelf_dock)·후퇴(backup_runner)도 같은 이유로 같은
+            # 자리에서 취소한다 — 둘 다 워커에서 블로킹으로 돈다(Task 9).
             if action in ("stop", "mission_stop", "schedule_stop", "follow_stop"):
-                from app.core import marker_dock
+                from app.core import backup_runner, marker_dock, shelf_dock
                 if marker_dock.request_cancel():
                     print(f"[fleet_link] {action} → 진행 중인 마커 도킹 취소", flush=True)
+                if shelf_dock.request_cancel():
+                    print(f"[fleet_link] {action} → 진행 중인 서가 도킹 취소", flush=True)
+                if backup_runner.request_cancel():
+                    print(f"[fleet_link] {action} → 진행 중인 후퇴 취소", flush=True)
             if action in ("mission_stop", "schedule_stop"):
                 bump_generation()
                 run_and_reply(cmd)

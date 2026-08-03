@@ -160,3 +160,30 @@ def test_marker_is_cleared_on_apply(seed, tick, read):
     assert tick(RequestTransition(clock=clock)) == Status.SUCCESS
     assert read(Keys.CURRENT_MODE) == "WORKING"
     assert read(Keys.COMMANDED_MODE) is None
+
+
+# ── INTERACTING 탈출은 유지 시간에 안 막힌다 (2026-08-03 실측) ────────────────
+
+def test_leaving_interacting_is_never_held(seed, tick, read):
+    """패널에서 수동 전이를 한 번 하면 `HOLD_UNTIL = now+300` 이 걸린다. 그 뒤 방문자
+    터치로 INTERACTING 에 들어가면(명령 유래라 유지 시간을 뚫는다), 20초 뒤 복귀는
+    **BT 자율 전이**라 남은 280초에 막혀 **로봇이 INTERACTING 에 갇혔다.**
+    실측 로그: `전이 요청이 적용되지 않았다: INTERACTING -> PATROL (패널 유지 시간 중…)`
+
+    갇히면 순찰도 배차도 전부 멈춘다. 되돌림 확인: `_HOLD_EXEMPT_SOURCES` 검사를
+    지우면 이 시험이 빨개진다.
+    """
+    clock = FakeClock()
+    seed(**{Keys.CURRENT_MODE: "INTERACTING", Keys.NEXT_MODE: "PATROL",
+            Keys.HOLD_UNTIL: clock() + 300.0})
+    assert tick(RequestTransition(clock=clock)) == Status.SUCCESS
+    assert read(Keys.CURRENT_MODE) == "PATROL"
+
+
+def test_other_states_are_still_held(seed, tick, read):
+    """면제는 INTERACTING 에서 나가는 것 하나뿐이다 — 유지 시간 자체를 없앤 게 아니다."""
+    clock = FakeClock()
+    seed(**{Keys.CURRENT_MODE: "PATROL", Keys.NEXT_MODE: "IDLE",
+            Keys.HOLD_UNTIL: clock() + 300.0})
+    assert tick(RequestTransition(clock=clock)) == Status.FAILURE
+    assert read(Keys.CURRENT_MODE) == "PATROL"

@@ -194,11 +194,24 @@ class RemoteControl:
                                                _latched_qos())
         self._vis_pub = node.create_publisher(Bool, config.REQUESTER_VISIBLE_TOPIC, 10)
         self._area_pub = node.create_publisher(Float32, config.REQUESTER_AREA_TOPIC, 10)
+        # 화면 전체에서 가장 큰 사람 — 등록 대상 매칭·세션 역할과 무관하다
+        # (config.FRONT_PERSON_SIZE_TOPIC 머리말). `_publish_requester` 와 달리
+        # 역할로 거르지 않는다 — 사람 차단 판정은 추종 중에도 필요하다.
+        self._front_person_size_pub = node.create_publisher(
+            Float32, config.FRONT_PERSON_SIZE_TOPIC, 10)
         #: 회복 BT 가 포기했음을 안내 쪽에 알린다 — 근거는 config 의 그 토픽 주석.
         self._guide_fail_pub = node.create_publisher(Bool, config.GUIDE_SEARCH_FAILED_TOPIC, 10)
         self._Bool, self._Float32, self._String = Bool, Float32, String
         self._last_cam_pub_at = 0.0
+        #: 세션이 있어서 `camera_select` 를 지금 이 발행자가 쥐고 있는가.
+        #: [2026-08-03] `_publish_camera` 의 유휴 침묵/1회 반납 판정 근거 — 그 메서드
+        #: 머리말 참고.
+        self._camera_owned = False
         self._get_detection = None             # 감시 역할일 때 쓰는 검출 조회
+        #: `DetectionReceiver.front_person_size` 조회기. owner 유무와 무관한 값이라
+        #: `_get_detection` 과 **따로** 둔다 — `_get_detection()` 은 owner 가 없으면
+        #: None 을 돌려주므로 거기서 크기를 꺼내려 하면 주행 중(owner 없음) 내내 0 이 된다.
+        self._get_front_person_size = None
         self._start_session_fn = None          # 역할을 실어 세션을 켜는 콜백
         node.create_subscription(String, cmd_topic, self._on_cmd, 10)
 
@@ -215,6 +228,10 @@ class RemoteControl:
     def bind_detection(self, get_detection):
         """감시(guide/watch) 세션이 볼 검출 조회기. 없으면 가시성을 발행하지 않는다."""
         self._get_detection = get_detection
+
+    def bind_front_person_size(self, get_size):
+        """`DetectionReceiver.front_person_size` 조회기. 없으면 0.0 을 낸다."""
+        self._get_front_person_size = get_size
 
     def request_camera(self, name):
         """회복 BT 가 탐색 중 반대 캠을 보고 싶을 때 부른다.
@@ -379,13 +396,38 @@ class RemoteControl:
 
     # ── 발행 ────────────────────────────────────────────────────────────
     def _publish_camera(self, force=False):
-        """카메라 선택을 **주기적으로 다시 낸다.**
+        """세션이 있는 동안은 카메라 선택을 **주기적으로 다시 낸다.**
 
         한 번만 내면 송출기의 만료 워치독이 스스로 `none` 으로 떨어뜨려 영상이 끊긴다.
         그 워치독은 발행자가 죽었을 때 카메라가 계속 켜져 있는 것을 막으려고 둔 것이라,
         여기서 갱신해 주는 것이 짝이다.
+
+        ⚠️ [2026-08-03] **세션이 없으면(유휴) 주기 재발행을 멈춘다 — 놓아준 뒤로는
+        침묵한다.** `navigate` 다리(등록 대상 없음, 세션도 없음) 중에는 미션 BT
+        의 `PersonBlockGuard` 가 **직접** `camera_select` 에 `"front"` 를 발행한다
+        (`camera_sender.py` 기본값이 `none` 이라 누군가는 켜야 프레임이 나간다).
+        `RemoteControl.tick()` 은 세션 유무와 무관하게 매 tick `_publish_camera()`
+        를 부르므로, 예전처럼 유휴 중에도 계속 `none` 을 재발행하면 두 발행자가
+        같은 토픽을 밀어 **마지막 도착이 이기는 경합**이 된다(`_publish_for_role`
+        머리말과 같은 함정) — 앞캠이 깜빡이고 검출이 끊긴다.
+
+        `force` 는 이 침묵을 덮지 않는다 — 세션이 없는데 명시적으로 부르는
+        호출(예: `request_camera` 가 세션 없이 불리는 방어적 경로)은 예전처럼
+        `camera_for()`(='none')를 그대로 낸다. 바뀌는 것은 오직 `RemoteControl.tick()`
+        이 매 tick 부르는 **무조건·비강제** 호출뿐이다.
         """
         now = self._now()
+        has_session = self._sessions.role is not None
+        if not has_session and not force:
+            if not self._camera_owned:
+                return                    # 계속 유휴 — 침묵한다, 토픽은 BT 것
+            # 세션이 방금 끝났다 — 한 번만 놓아주고 그 뒤로는 조용해진다.
+            self._camera_owned = False
+            self._last_cam_pub_at = now
+            self._cam_pub.publish(self._String(data='none'))
+            self._role_pub.publish(self._String(data='none'))
+            return
+        self._camera_owned = has_session
         period = 1.0 / config.CAMERA_SELECT_HZ if config.CAMERA_SELECT_HZ > 0 else 0.0
         if not force and (now - self._last_cam_pub_at) < period:
             return
@@ -468,6 +510,25 @@ class RemoteControl:
         if visible:
             self._area_pub.publish(self._Float32(data=float(det.area)))
 
+    def _publish_front_person_size(self):
+        """화면에서 가장 큰 사람의 크기 — **역할과 무관하게 매 tick** 낸다.
+
+        `_publish_requester` 와 달리 GUIDE/WATCH 로 거르지 않는다: 이 값은 등록
+        대상 매칭과 독립이고(`Detection.front_person_size` 머리말), 사람 차단
+        판정은 추종·평시 주행 중에도 필요하다.
+
+        ⚠️ [2026-08-03] **`_get_detection()` 이 아니라 `_get_front_person_size()` 를 쓴다.**
+        주행(`navigate`) 중에는 등록된 추종 대상이 아예 없어 `_get_detection()` 이
+        영원히 None 이다 — 거기서 크기를 꺼내면 `PersonBlockGuard` 가 주행 내내 0.0
+        만 본다. `DetectionReceiver.front_person_size()` 는 owner 유무와 무관한
+        별도 슬롯이라 이 문제가 없다(detection_receiver.py 머리말).
+
+        조회기가 없으면(바인딩 안 됨) 0.0 을 낸다 — "모른다" 를 안 내는 게 아니라
+        0 을 낸다(구독자가 없음으로 해석).
+        """
+        size = self._get_front_person_size() if self._get_front_person_size is not None else 0.0
+        self._front_person_size_pub.publish(self._Float32(data=float(size or 0.0)))
+
     def _publish_guide_search_failed(self):
         """길잡이 회복 BT 가 다 훑고도 못 찾았나.
 
@@ -496,6 +557,7 @@ class RemoteControl:
             self._guide_seen_at = None
         self._publish_camera()
         self._publish_requester()
+        self._publish_front_person_size()
         self._publish_guide_search_failed()
         self.publish_snapshot()
         if self._active_id is None:
@@ -570,6 +632,9 @@ def main(args=None):
             # 이게 없으면 `/libi/requester_visible` 발행자가 여전히 없는 셈이라
             # GuideExec 이 '감시 없음' 으로 읽고 사람을 놓쳐도 계속 간다.
             self.remote.bind_detection(self._get_detection)
+            # 크기는 owner 유무와 무관하다 — `_get_detection` 과 따로 바인딩한다
+            # (`_publish_front_person_size` 머리말 — 주행 중엔 owner 가 아예 없다).
+            self.remote.bind_front_person_size(self._receiver.front_person_size)
             self.remote.bind_session_starter(self._start_session_for)
             if self.get_parameter('autostart').value:
                 self.session.start()
@@ -580,6 +645,17 @@ def main(args=None):
                 f'(follow_admin/stop)')
 
         def _tick(self):
+            # ⚠️ [2026-08-03] **세션이 없어도 매 tick 소켓을 비운다.**
+            #
+            # `front_person_size` 는 등록 대상(owner)과 무관해야 하는데, `_receiver.update()`
+            # 는 지금까지 `_get_detection()`(ControlLoop 가 세션 중에만 부른다, 또는
+            # GUIDE/WATCH 의 `_publish_requester`)을 통해서만 호출됐다. 세션이 아예 없는
+            # 평시 주행(`navigate` 다리 — 등록 대상이 애초에 없다) 중에는 아무도
+            # `update()` 를 안 불러 수신 버퍼가 안 비워지고, `front_person_size()` 는
+            # `_stamp` 가 영원히 None 이라 늘 0.0 만 낸다 — 바로 이 기능이 고치려던 결함이
+            # 배선 한 군데 남아 되살아나는 셈이다. 여기서 무조건 한 번 불러 둔다
+            # (`ControlLoop` 이 같은 tick 에 또 부르면 poll() 이 빈 리스트를 주므로 무해하다).
+            self._receiver.update()
             # 순서가 중요하다: 세션을 먼저 굴리고 그 결과를 본다. 반대로 하면 이번 tick 에
             # 끝난 세션의 결과가 한 tick 늦게 나간다.
             self.session.tick()

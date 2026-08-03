@@ -34,6 +34,7 @@ def test_command_received_at_is_monotonic_not_epoch():
     p._guide_actions = set()
     p._mission_actions = set()
     p._arm_actions = set()
+    p._exec_actions = set()
     p._follow_actions = set()
     # 분류 안 된 액션은 이제 슬롯을 건드리지 않는다 — FSM 트리거만 통과한다
     # (registry.TRANSITION_TRIGGERS / test_fleet_cmd_slot.py 참고).

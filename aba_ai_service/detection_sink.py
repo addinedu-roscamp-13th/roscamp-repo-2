@@ -5,8 +5,10 @@
 libi_perception(TcpDetectionSource, 기본 :6000)으로 직접 가야 한다. 두 소비자는
 페이로드도 주기도 다르므로 기존 경로를 바꾸지 않고 채널을 하나 추가한다.
 
-주인이 안 보이는 프레임은 JSON `null` 로 보낸다 — 수신측 detection_from_dict() 가
-None 을 그대로 통과시키는 계약과 맞춘다.
+주인이 안 보이고 화면에 아무도 없는 프레임은 JSON `null` 로 보낸다 — 수신측
+detection_from_dict() 가 None 을 그대로 통과시키는 계약과 맞춘다. 주인은 없어도
+누군가(통행인 포함) 보이면 `{"front_person_size": ...}` 만 실린 dict 를 보낸다 —
+`cx` 가 없는 dict 는 "owner 없음"으로 읽힌다(detection_to_dict 참고).
 """
 from __future__ import annotations
 
@@ -19,7 +21,7 @@ ROBOT_HOST = os.environ.get("ROBOT_DETECTION_HOST", "127.0.0.1")
 ROBOT_PORT = int(os.environ.get("ROBOT_DETECTION_PORT", "6000"))
 
 
-def detection_to_dict(det, frame=None):
+def detection_to_dict(det, frame=None, front_person_size=None):
     """libi_perception.detection.detection_from_dict 가 읽는 payload 형태.
 
     bbox 는 list 로 내보낸다 — tuple 은 JSON 왕복 후 어차피 list 가 되므로,
@@ -48,9 +50,25 @@ def detection_to_dict(det, frame=None):
        **쓰러진 사람 앞에서 서는 게이트가 통째로 무력화된다.**
 
     `frame` 을 안 주면 키를 안 넣는다 — 받는 쪽이 예전처럼 640 가정으로 떨어진다.
+
+    ## `front_person_size` — owner 와 독립인 값
+
+    화면에서 **가장 큰 사람**(owner 매칭 전 전체 후보 중)의 `sqrt(area)`. 호출자가
+    계산해 넘긴다(이 함수는 `det` 하나만 보므로 전체 후보 목록을 모른다). 안 주면
+    (`None`) 키를 안 넣는다 — `image_width` 와 같은 관례다.
+
+    ## [2026-08-03] `det is None` 이어도 크기는 보낸다
+
+    주행(`navigate`) 중에는 등록된 추종 대상이 **애초에 없다.** 예전처럼 여기서
+    바로 `None`(JSON `null`)을 돌려주면 `front_person_size` 가 실릴 자리가 없어,
+    `PersonBlockGuard` 가 주행 내내 0.0 만 보고 사람을 영영 못 본다. `cx` 가 없는
+    dict 는 받는 쪽(`detection_from_dict`)이 "owner 없음"으로 읽으므로 계약이
+    깨지지 않는다.
     """
     if det is None:
-        return None
+        if front_person_size is None:
+            return None
+        return {"front_person_size": float(front_person_size)}
     out = {
         "cx": det.cx, "cy": det.cy, "area": det.area, "bbox": list(det.bbox),
         "track_id": det.track_id, "is_owner": det.is_owner,
@@ -66,6 +84,8 @@ def detection_to_dict(det, frame=None):
         h, w = frame.shape[:2]
         out["image_width"] = int(w)
         out["image_height"] = int(h)
+    if front_person_size is not None:
+        out["front_person_size"] = float(front_person_size)
     return out
 
 

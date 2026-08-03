@@ -168,3 +168,92 @@ def test_other_commands_fall_through(leaf):
     node = leaf(**{Keys.ACTIVE_COMMAND: "perform_action"})
     assert node.update() == Status.FAILURE
     assert node.driver.start_count == 0
+
+
+def test_halted_time_does_not_count_toward_the_arrive_timeout():
+    """사람을 기다리며 서 있던 시간은 "가다가 못 갔다" 에 안 들어간다.
+
+    안 그러면 60초를 넘겨 FAILURE → CommandTimeout → ERROR 로 가고,
+    fleet_node 가 is_immobile("ERROR") 로 보아 **이 로봇 자체를 영구 장애물**로
+    표시한다. 사람을 기다리다 스스로 장애물이 되는 경로다.
+    """
+    import py_trees
+    from py_trees.common import Access, Status
+
+    from libi_modes.blackboard import Keys
+    from libi_modes.common.working_actions import NavigationExec
+
+    class Clock:
+        def __init__(self):
+            self.t = 0.0
+
+        def __call__(self):
+            return self.t
+
+    class Driver:
+        def start(self, args=None):
+            pass
+
+        def poll(self):
+            return "running"
+
+        def stop(self):
+            pass
+
+    clock = Clock()
+    leaf = NavigationExec(Driver(), arrive_tolerance=0.05, arrive_resend_sec=30.0,
+                          arrive_timeout_sec=60.0, now_fn=clock)
+    leaf.setup()
+    bb = py_trees.blackboard.Client(name="t")
+    for k in (Keys.ACTIVE_COMMAND, Keys.NAV_TARGET, Keys.ROBOT_POSE):
+        bb.register_key(key=k, access=Access.WRITE)
+    bb.set(Keys.ACTIVE_COMMAND, "navigate")
+    bb.set(Keys.NAV_TARGET, {"x": 5.0, "y": 0.0})
+    bb.set(Keys.ROBOT_POSE, {"x": 0.0, "y": 0.0, "yaw": 0.0})
+
+    assert leaf.update() == Status.RUNNING
+    leaf.pause_arrive_timer(True)          # 사람 때문에 정지
+    clock.t = 300.0                         # 5분을 서 있었다
+    leaf.pause_arrive_timer(False)          # 다시 출발
+    clock.t = 310.0
+    assert leaf.update() == Status.RUNNING, "멈춰 있던 300초가 시계를 먹었다"
+
+
+def test_halted_drive_does_not_resend_the_goal(leaf):
+    """[Critical] 사람 때문에 멈춘 동안 `arrive_resend_sec` 이 지나도 goal 을 다시
+    내면 안 된다 — 다시 내면 nav2 가 새 goal 을 받아 로봇이 사람 쪽으로 다시
+    출발한다(정지가 안 유지된다). 되돌리면(재전송 분기를 pause 검사보다 앞에 두면)
+    이 시험이 반드시 빨개져야 한다.
+    """
+    clock = _Clock()
+    node = leaf(clock=clock, **{Keys.ACTIVE_COMMAND: "navigate",
+                                Keys.NAV_TARGET: _to(1.0, 0.0),
+                                Keys.ROBOT_POSE: _at(0.0, 0.0)})
+    node.update()
+    assert node.driver.start_count == 1
+
+    node.pause_arrive_timer(True)
+    for t in (RESEND, RESEND * 2, RESEND * 5):
+        clock.t = t
+        assert node.update() == Status.RUNNING
+    assert node.driver.start_count == 1, "멈춰 있는 동안 goal 을 다시 내면 안 된다"
+
+
+def test_resumed_drive_sends_the_goal_again(leaf):
+    """반대쪽 실패도 막는다 — 정지가 풀리면 goal 이 반드시 다시 나가야 한다.
+
+    안 그러면 사람이 비켜도 로봇이 영영 안 간다.
+    """
+    clock = _Clock()
+    node = leaf(clock=clock, **{Keys.ACTIVE_COMMAND: "navigate",
+                                Keys.NAV_TARGET: _to(1.0, 0.0),
+                                Keys.ROBOT_POSE: _at(0.0, 0.0)})
+    node.update()
+    node.pause_arrive_timer(True)
+    clock.t = RESEND * 5
+    node.update()
+    assert node.driver.start_count == 1     # 멈춰 있는 동안은 그대로
+
+    node.pause_arrive_timer(False)
+    assert node.update() == Status.RUNNING
+    assert node.driver.start_count == 2, "정지가 풀리면 goal 을 다시 내야 한다"

@@ -41,6 +41,20 @@ topics:
     type: std_msgs/msg/String
     reversed: True
     remap: /fleet_cmd
+
+  # [2026-08-03] 서버→로봇: 재계획 **사유**. 로봇 패널이 기록에 남겨 "이 재계획이
+  # 사람 때문인지 지연 때문인지" 를 화면에서 가른다. 사람 사유는 로봇이 스스로 알지만
+  # 지연·차단해제·다른 로봇 때문에 난 재계획은 fleet_node 로그에만 있었다.
+  # String(JSON) 인 이유는 node_block 과 같다 — 로봇에 libi_fleet_msgs 가 없다.
+  #
+  # ⚠️ `remap` 을 **반드시** 쓴다. 이 항목을 `{KEY}/fleet_cmd` 바로 뒤에 끼워 넣으면서
+  #    그쪽 `remap: /fleet_cmd` 줄을 가로챈 적이 있다(codex 검토에서 발견). 그러면 사유
+  #    JSON 이 **로봇의 명령 토픽으로 쏟아지고** 명령 자체도 remap 을 잃는다 — 둘 다
+  #    조용히 깨진다.
+  {KEY}/replan_reason:
+    type: std_msgs/msg/String
+    reversed: True
+    remap: /replan_reason
   # [2026-07-29] **관제 직접 속도 명령 제거.** twist_mux 의 `fleet` 입력(priority 150)을
   #   없앴다 — 시나리오에 관제가 바퀴를 직접 미는 경우가 없는데, 자율 제어 전부를 이기는
   #   문만 열려 있었다. 주행은 아래 `robot_path_requests`(fleet_node 경로) 로만 간다.
@@ -65,6 +79,12 @@ topics:
   libi/requester_visible:
     type: std_msgs/msg/Bool
     remap: /{KEY}/requester_visible
+
+  # [2026-08-03] 주행 중 사람이 정점을 막았다는 로봇발 보고. 커스텀 메시지가 아니라
+  # String(JSON) 인 이유는 requester_visible 과 같다 — 로봇에는 libi_fleet_msgs 가 없다.
+  libi/node_block:
+    type: std_msgs/msg/String
+    remap: /{KEY}/node_block
 
   # ── libi_modes 미션 FSM (2026-07-20) ─────────────────────────────────────────
   # 상태·BT 스냅샷은 payload 안에 robot_id 가 들어 있어 서버에서 토픽을 나누지 않는다

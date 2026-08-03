@@ -127,11 +127,31 @@ def build_branches(params: dict, drivers: dict) -> dict:
                                   drivers.get("guide_watch"),
                                   junctions=drivers.get("junctions"),
                                   guide_result_fn=drivers.get("guide_result"),
-                                  undock_gate=_undock(params, drivers)),
+                                  undock_gate=_undock(params, drivers),
+                                  # 앞을 막은 사람 정지·차단 보고 — 안 꽂으면 PersonBlockGuard
+                                  # 는 로그만 남기고 아무 일도 안 한다(codex 지적 P0).
+                                  person_stop_driver=drivers.get("person_stop"),
+                                  block_fn=drivers.get("person_block"),
+                                  shelf_dock_driver=drivers.get("shelf_dock"),
+                                  backup_driver=drivers.get("backup"),
+                                  # navigate 중 앞캠을 켜 둔다(Task 17) — 안 꽂으면
+                                  # FRONT_PERSON_SIZE 가 영원히 0(=None)이라 위 차단
+                                  # 판정 자체가 죽는다.
+                                  camera_driver=drivers.get("camera_select")),
         "INTERACTING": interacting.create(params),
+        # 순회에도 앞캠 감시를 붙인다 — 패널에 영상이 뜨고, 앞을 막으면 서고,
+        # 오래 막히면 배달과 **똑같이** 정점 차단을 알려 CBS 가 경로를 다시 짠다.
+        # 순회 홉도 `on_path_request` 가 내려보내는 같은 `navigate{node,...}` 라
+        # `committed_node` 가 홉마다 갱신된다(patrol.py 의 같은 자리 주석).
         "SECURITY_PATROL": security_patrol.create(params, drivers["security_patrol"],
-                                                 undock_gate=_undock(params, drivers)),
+                                                 undock_gate=_undock(params, drivers),
+                                                 person_stop_driver=drivers.get("person_stop"),
+                                                 block_fn=drivers.get("person_block"),
+                                                 camera_driver=drivers.get("camera_select")),
         "PATROL": patrol.create(params, drivers["patrol"],
-                                undock_gate=_undock(params, drivers)),
+                                undock_gate=_undock(params, drivers),
+                                person_stop_driver=drivers.get("person_stop"),
+                                block_fn=drivers.get("person_block"),
+                                camera_driver=drivers.get("camera_select")),
         "IDLE": idle.create(params),
     }

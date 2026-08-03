@@ -33,8 +33,9 @@ import os
 import threading
 import time
 
-from app import fleet_events, fleet_link, fleet_telemetry
+from app import fleet_events, fleet_link, fleet_telemetry, fsm_link
 from app.fleet_orchestrator import LegType
+from app.node_block import NodeBlockRegistry
 
 log = logging.getLogger("fleet_dispatch_bridge")
 
@@ -88,17 +89,19 @@ NAVGRAPH_PATH = os.environ.get(
 )
 
 _vertex_index: dict[str, int] | None = None
+#: 정점 인덱스 → (x, y). `_load_vertex_index` 가 같은 파싱에서 함께 채운다.
+_vertex_coords: list[tuple[float, float]] | None = None
 
 
 def _load_vertex_index() -> dict[str, int]:
-    """navgraph 의 `정점 이름 → 인덱스` 표.
+    """navgraph 의 `정점 이름 → 인덱스` 표(와 좌표 표 `_vertex_coords`).
 
     ⚠️ **왜 필요한가**: `fleet_node.cpp` 의 `on_submit` 은 `std::stoi(req->dropoff)` 로
     목적지를 **숫자 인덱스**로만 받는다(이름 조회 함수가 없다). 주문은 `문학-1` 같은
     waypoint 이름을 쓰므로, 여기서 인덱스로 바꿔 넘긴다.
     fleet_node(C++) 를 고치지 않기 위한 변환이며, navgraph 파일이 같으므로 인덱스가 일치한다.
     """
-    global _vertex_index
+    global _vertex_index, _vertex_coords
     if _vertex_index is not None:
         return _vertex_index
 
@@ -108,15 +111,41 @@ def _load_vertex_index() -> dict[str, int]:
         data = yaml.safe_load(f)
     verts = data["levels"]["L1"]["vertices"]
     table: dict[str, int] = {}
+    coords: list[tuple[float, float]] = []
     for i, v in enumerate(verts):
         # 정점 형식: [x, y, {name: '...'}]
         meta = v[2] if len(v) > 2 and isinstance(v[2], dict) else {}
         name = meta.get("name")
         if name:
             table[str(name)] = i
+        coords.append((float(v[0]), float(v[1])))
     _vertex_index = table
+    _vertex_coords = coords
     log.info("[dispatch] navgraph 정점 %d개 로드: %s", len(table), NAVGRAPH_PATH)
     return table
+
+
+def vertex_at(x: float, y: float, tol: float = 0.05) -> int | None:
+    """world 좌표에 해당하는 navgraph 정점 인덱스. `tol`(m) 안에 없으면 `None`.
+
+    [Critical 1] `on_path_request` 가 fleet_node 로부터 받는 홉은 좌표뿐이라(정점
+    번호가 없다) 여기서 되돌린다. navgraph 가 작아(수십 개 정점) 선형 스캔으로 충분하다.
+    """
+    _load_vertex_index()   # _vertex_coords 를 채운다(이름 표를 안 써도 같은 캐시를 탄다)
+    if not _vertex_coords:
+        return None
+    best_i, best_d = None, tol
+    for i, (vx, vy) in enumerate(_vertex_coords):
+        d = ((vx - x) ** 2 + (vy - y) ** 2) ** 0.5
+        if d <= best_d:
+            best_i, best_d = i, d
+    return best_i
+def vertex_xy(idx: int) -> tuple[float, float] | None:
+    """정점 인덱스 → (x, y). [Critical 2] 사람 차단 뒤 후진 목표 좌표를 구할 때 쓴다."""
+    _load_vertex_index()
+    if _vertex_coords is None or not (0 <= idx < len(_vertex_coords)):
+        return None
+    return _vertex_coords[idx]
 
 
 def resolve_vertex(name: str) -> int:
@@ -199,6 +228,26 @@ def _release_hold(robot: str) -> None:
             _held_by_cmd.pop(k, None)
 
 
+#: 정밀 도킹 대상 서가. navgraph 에 yaw 가 박힌 정점만 여기 넣는다 —
+#: 예술서가는 yaw 가 없어 이번 범위 밖이다(arte2.navgraph.yaml).
+SHELF_NODES = ("문학서가", "과학-인문학서가")
+
+#: 서가 도킹(+팔 작업)이 끝나기까지 정점 잠금과 로봇 hold 에 함께 쓰는 TTL. **반드시
+#  같은 값**이어야 한다 — 어긋나면 한쪽이 먼저 풀려 그 사이 재배차/재진입이 들어온다.
+SHELF_DOCK_TTL_SEC = float(os.environ.get("LIBI_SHELF_DOCK_TTL_SEC", "180"))
+
+#: [Critical 3] fleet_node 의 fleet task_id → (robot, shelf, node). 서가 정점으로
+#  **정상 주행**(submit_task)을 태운 뒤, `on_task_state` 의 COMPLETED(도착)를 기다렸다가
+#  그때서야 `shelf_dock` 을 낸다 — 배차 즉시 로봇 BT 로 직행하면(라운드 3의 실수)
+#  로봇이 도착도 안 한 채 도킹 절차를 시작한다.
+_shelf_pending: dict[str, tuple[str, str, int]] = {}
+
+#: shelf_dock 의 cmd_id → (원래 NAVIGATE 다리의 fleet task_id, shelf 이름). 도킹 결과가
+#  오면 이걸로 **원래 다리**를 닫는다(`on_shelf_dock_phase` 의 "done" 도 같이 낸다).
+_shelf_dock_wait: dict[str, tuple[str, str]] = {}
+
+
+
 def real_dispatch(task_id: str, robot: str, leg) -> str:
     """orchestrator 가 다리 하나를 내보낼 때 부른다. 반환값이 cmd_id."""
     # ── 주행이 아닌 다리(팔) 동안은 로봇을 **붙잡는다** ────────────────────────
@@ -218,6 +267,22 @@ def real_dispatch(task_id: str, robot: str, leg) -> str:
 
         # fleet_node 는 숫자 인덱스만 받는다(위 resolve_vertex 주석 참고).
         goal_idx = resolve_vertex(waypoint)
+
+        # [Critical 3] 서가 정점도 **정상적으로 주행을 태운다.** 라운드 3 은 여기서
+        # fleet_node(submit_task)를 우회해 로봇에 `shelf_dock` 을 바로 쐈는데, 그러면
+        # 앞선 주행이 없으니 **로봇이 그 자리에 선 채로 도킹을 시작한다**(실측 지적).
+        # 잠금·hold 는 배차 시점 그대로 걸어 둔다(다른 로봇이 오면 안 되니까) — 실제
+        # `shelf_dock` 발행은 `on_task_state` 가 도착(COMPLETED)을 본 뒤로 미룬다.
+        is_shelf = waypoint in SHELF_NODES
+        if is_shelf:
+            # ⚠️ `LegType.NAVIGATE` 라 위 팔 hold 가드(`leg.type != NAVIGATE`)를 안
+            #    탄다 — 그런데 도착 뒤 도킹이 끝날 때까지는 fleet_node 가 이 태스크를
+            #    COMPLETED 로 보고(=유휴로 보임) `RobotHold.msg` 가 막으려는 바로 그
+            #    상황이 생긴다. 팔 다리와 똑같이 hold 를 건다.
+            if robot:
+                fleet_link.set_robot_hold(robot, True, SHELF_DOCK_TTL_SEC)
+            on_shelf_dock_lock(robot, goal_idx, SHELF_DOCK_TTL_SEC)
+
         res = fleet_link.submit_task(
             dropoff=str(goal_idx),
             robot=robot or "",
@@ -232,14 +297,35 @@ def real_dispatch(task_id: str, robot: str, leg) -> str:
         cmd_id = res.get("task_id") or ""
         if not cmd_id:
             raise RuntimeError("fleet_node 가 task_id 를 주지 않았다")
+
+        # [Critical 1] is_destination 판정용 — **어느 다리의 목적지인지 같이 기억한다.**
+        # 예전엔 정점 번호만 넣고 아무 데서도 안 지웠다. 배달이 끝난 뒤 순회를 돌면
+        # 그 낡은 목적지와 같은 정점에서만 `is_destination=True` 가 되어, 순회 중
+        # **그 노드 하나만 조용히 차단 보고가 안 나갔다**(2026-08-03). cmd_id 를 같이
+        # 들고 있다가 `on_task_state` 에서 그 다리가 닫힐 때 지운다.
+        _nav_goal[_rkey(robot)] = (str(cmd_id), goal_idx)
+
+        if is_shelf:
+            # 도착(TaskState COMPLETED)은 `on_task_state` 가 안다 — 거기서 마저 진행한다.
+            _shelf_pending[str(cmd_id)] = (robot, waypoint, goal_idx)
+
         log.info(
-            "[dispatch] %s NAVIGATE→%s(v%d) robot=%s fleet_task=%s",
+            "[dispatch] %s NAVIGATE→%s(v%d) robot=%s fleet_task=%s%s",
             task_id, waypoint, goal_idx, robot or "(경매)", cmd_id,
+            " (서가 도킹 대기)" if is_shelf else "",
         )
         return cmd_id
 
     if leg.type == LegType.PERFORM_ACTION:
         action = leg.params.get("action", "?")
+        if action == "backup":
+            # 이 명령은 팔 BT가 아니라 FMS가 배정한 robot_agent 복귀 다리다.
+            cmd_id = fleet_telemetry.send_command_async(robot, action="backup", args={})
+            if not cmd_id:
+                raise RuntimeError("FMS backup 명령 전송 실패")
+            _held_by_cmd[str(cmd_id)] = robot
+            log.info("[backup] %s FMS 승인 복귀 다리 배정 robot=%s cmd=%s", task_id, robot, cmd_id)
+            return cmd_id
         # 숫자 인덱스로 온 정점도 이름으로 되돌린다 — 중계가 이름에서 장소를 유도한다.
         where = vertex_name(leg.params.get("at", "")) or "?"
         if not ARM_STUB:
@@ -297,15 +383,60 @@ def real_dispatch(task_id: str, robot: str, leg) -> str:
 
 
 def on_task_state(payload: dict) -> None:
-    """fleet_link 훅 — fleet task 가 끝나면 orchestrator 에 알린다."""
+    """fleet_link 훅 — fleet task 가 끝나면 orchestrator 에 알린다.
+
+    [Critical 3] 서가 정점으로 가는 다리(`_shelf_pending`)는 여기서 COMPLETED 를 봐도
+    **다리를 바로 안 닫는다** — 도착했을 뿐 정밀 도킹은 이제 시작이다. `shelf_dock`
+    을 내고, 그 결과가 오면(`on_cmd_result`) 그때 이 cmd_id 를 닫는다.
+    """
     state = (payload.get("state") or "").upper()
     if state not in ("COMPLETED", "FAILED", "REJECTED"):
         return  # ASSIGNED/EXECUTING 은 진행 중
-    cmd_id = payload.get("task_id") or ""
+    cmd_id = str(payload.get("task_id") or "")
     if not cmd_id:
         return
     ok = state == "COMPLETED"
     log.info("[dispatch] fleet task %s → %s", cmd_id, state)
+
+    # 이 다리가 세운 목적지 기억을 지운다 — 안 지우면 그 뒤 순회 중에 낡은 목적지가
+    # `is_destination` 을 True 로 만들어 그 정점의 차단 보고가 조용히 사라진다.
+    for r, entry in list(_nav_goal.items()):
+        if entry[0] == cmd_id:
+            _nav_goal.pop(r, None)
+
+    pending = _shelf_pending.pop(cmd_id, None)
+    if pending is not None:
+        robot, shelf, node = pending
+        if not ok:
+            # 주행 자체가 실패/거절됐다 — 도킹을 시작할 수 없다. 다리를 그대로 닫는다.
+            try:
+                _orc().on_result(cmd_id, False, state)
+            except Exception:  # noqa: BLE001
+                log.exception("[shelf] on_result 실패 cmd=%s", cmd_id)
+            return
+        # 도착했다 — 이제 정밀 도킹을 시작한다.
+        on_shelf_dock_phase(robot, shelf, "started")   # [Important 5]
+        dock_cmd_id = fleet_telemetry.send_command_async(
+            robot, action="shelf_dock", args={"shelf": shelf, "node": node},
+        )
+        if not dock_cmd_id:
+            log.warning(
+                "[shelf] %s 도킹 명령 전송 실패(로봇 명령 링크 없음) — 다리를 실패 처리한다",
+                robot,
+            )
+            try:
+                _orc().on_result(cmd_id, False, "shelf_dock_send_failed")
+            except Exception:  # noqa: BLE001
+                log.exception("[shelf] on_result 실패 cmd=%s", cmd_id)
+            return
+        # 팔 다리와 같은 방식으로 등록 — `on_cmd_result` 가 이 cmd_id 의 결과를 받으면
+        # `_robot_of_cmd` 로 이 로봇을 찾아 hold 를 푼다(새 메커니즘을 안 만든다).
+        _held_by_cmd[str(dock_cmd_id)] = robot
+        _shelf_dock_wait[str(dock_cmd_id)] = (cmd_id, shelf)
+        log.info("[shelf] %s 도착 → shelf_dock 발행 cmd=%s (원 다리 cmd=%s 는 대기)",
+                 robot, dock_cmd_id, cmd_id)
+        return
+
     try:
         _orc().on_result(cmd_id, ok, state)
     except Exception:  # noqa: BLE001
@@ -347,6 +478,54 @@ NAV_RESEND_SEC = float(os.environ.get("LIBI_NAV_RESEND_SEC", "20"))
 #: 로봇별 (마지막 목적지, 보낸 시각).
 _last_nav: dict[str, tuple] = {}
 _nav_lock = threading.Lock()
+
+#: [Critical 1] 로봇별 **현재 NAVIGATE 다리의 최종 목적지** 정점. `real_dispatch` 가
+#  다리를 낼 때 적어 두고, `on_path_request` 가 이번 홉과 비교해 `is_destination` 을 판정한다.
+#: robot → (그 목적지를 세운 다리의 cmd_id, 목적지 정점). 다리가 닫히면 지운다 —
+#: 안 지우면 순회 중에 낡은 목적지가 `is_destination` 을 True 로 만들어 그 정점의
+#: 차단 보고가 조용히 사라진다.
+_nav_goal: dict[str, tuple[str, int]] = {}
+
+# ⚠️ [2026-08-03] `_prev_granted`/`_last_granted` 를 **없앴다.**
+#
+#   fleet_node(C++) 의 커밋 경로를 파이썬 쪽에서 다시 구성해 두고, 사람 차단 때
+#   "떠나온 직전 정점" 으로 후퇴를 쐈던 표다. 그 후퇴가 **예약 체계 밖**이라
+#   충돌 창을 만들었고(codex 3차 P0), 되돌리는 일은 이제 `fleet_node` 가
+#   `/fms/node_block` 콜백에서 예약을 원자적으로 갈아타며 직접 한다.
+#   같은 사실을 두 곳에서 들고 있으면 반드시 어긋난다 — 그래서 지운다.
+
+
+def _rkey(robot: str) -> str:
+    """로봇 이름을 **표기 차이를 지운 하나의 키**로 바꾼다.
+
+    ⚠️ [2026-08-03] 이 세 표를 **서로 다른 이름으로 읽고 쓰고 있었다.**
+
+      · `on_path_request` 는 fleet_node 가 준 이름(`pinky-3`)으로 **쓴다**
+      · `_on_node_block_report` 는 토픽 접두사(`pinky3`)로 **읽는다**
+
+    그래서 사람 차단이 와도 `_prev_granted.get("pinky3")` 이 영원히 `None` 이었고,
+    후퇴 명령이 **한 번도 안 나갔다**(실기 로그:
+    `[backup] pinky3 직전 정점을 몰라 후진 명령을 못 낸다`, 11:35:48 · 11:50:07).
+    후퇴가 죽어 있으니 로봇은 사람 앞에 그대로 서 있고, 그 자리에서 재계획을 해 봐야
+    nav2 가 경로를 못 만든다(`Failed to create plan with tolerance of: 0.100000`).
+
+    `fsm_link.match_key` 가 이미 같은 일을 한다 — 캐시 키 표기 흡수용으로 있던 것을
+    여기서도 쓴다. 새 규칙을 만들면 그 규칙이 또 어긋난다.
+    """
+    return fsm_link.match_key(robot or "")
+def _current_dest_node(robot: str, action: str) -> int | None:
+    """이번 홉이 향하는 다리/안내의 **최종 목적지** 정점. `is_destination` 판정용.
+
+    `guide` 는 orchestrator 다리가 아니라 `fleet_link.guide_target` 에 등록된 목표
+    좌표를 쓴다(길잡이는 `_nav_goal` 을 채우는 `real_dispatch` 를 거치지 않는다).
+    """
+    if action == "guide":
+        target = fleet_link.guide_target(robot) or {}
+        if "x" in target and "y" in target:
+            return vertex_at(float(target["x"]), float(target["y"]))
+        return None
+    entry = _nav_goal.get(_rkey(robot))
+    return entry[1] if entry else None
 
 
 def should_send_nav(robot: str, key: tuple, now: float) -> bool:
@@ -470,7 +649,22 @@ def on_path_request(robot: str, points: list) -> None:
     if not should_send_nav(robot, (round(x, 3), round(y, 3)), time.monotonic()):
         return
 
+    # [Critical 1] `node`/`is_destination` 없이 보내면 로봇의 `PersonBlockGuard` 가
+    # `node is None` 이라 **조용히 아무것도 안 한다** — 사람이 아무리 오래 막아도
+    # 차단 보고가 한 번도 안 나간다. 좌표→정점은 이 홉이 이미 navgraph 정점이라는
+    # 전제(fleet_node 가 정점 단위로 예약한다)로 역으로 찾는다.
+    node = vertex_at(x, y)
+    if node is None:
+        log.warning(
+            "[nav] %s 좌표 (%.3f, %.3f) 에 대응하는 navgraph 정점을 못 찾았다 — "
+            "node/is_destination 없이 보낸다(로봇의 사람-차단 보고가 죽는다)",
+            robot, x, y,
+        )
+
     args = {"x": x, "y": y, "yaw": yaw}
+    if node is not None:
+        args["node"] = node
+        args["is_destination"] = node == _current_dest_node(robot, action)
     if action == "guide":
         # 목적지 이름은 승인 때 등록해 둔 것을 그대로 싣는다 — 화면이 "어디로 안내 중"
         # 을 그 값으로 띄운다. 없으면 빈 문자열이라 표시만 비고 주행은 정상이다.
@@ -648,6 +842,23 @@ def on_cmd_result(res: dict) -> None:
         _pause_guide_reservation(robot)
         return
 
+    # [Critical 3] shelf_dock 결과 — 원래 NAVIGATE 다리(fleet task_id)를 이제야 닫는다.
+    dock_wait = _shelf_dock_wait.pop(cmd_id, None)
+    if dock_wait is not None:
+        nav_cmd_id, shelf = dock_wait
+        robot = _robot_of_cmd(cmd_id)
+        if robot:
+            fleet_link.set_robot_hold(robot, False)
+        if ok:
+            on_shelf_dock_phase(robot, shelf, "done")   # [Important 5]
+        log.info("[shelf] %s 도킹 결과 cmd=%s ok=%s → 원 다리 cmd=%s 닫음",
+                 robot, cmd_id, ok, nav_cmd_id)
+        try:
+            _orc().on_result(nav_cmd_id, ok, msg)
+        except Exception:  # noqa: BLE001
+            log.exception("[shelf] on_result 실패 cmd=%s", nav_cmd_id)
+        return
+
     log.info("[arm] BT 결과 cmd=%s ok=%s status=%s", cmd_id, ok, res.get("status"))
     # ⚠️ **결과가 오면 반드시 푼다.** 안 풀면 그 로봇은 TTL 이 만료될 때까지 순회를 못 한다.
     #    다음 다리가 주행이면 fleet_node 가 곧바로 다시 몰고 가므로 여기서 풀어도 안전하다.
@@ -743,6 +954,11 @@ def find_orphans(robots, live_ids) -> list[tuple[str, str]]:
 
 def reconcile_once() -> int:
     """고아 task 를 찾아 로봇을 놓아준다. 정리한 개수를 반환."""
+    # [P2-1] 정점 차단 TTL 만료 sweep. `on_person_blocked`/`on_shelf_dock_lock` 안에서만
+    # 불리면 아무도 그 정점을 다시 안 건드리는 한 `node_unblocked` 사건이 영영 안 나간다
+    # (레지스트리 내부는 맞게 풀려도 관제 화면은 언제 풀렸는지 모른다, PRD Story 44).
+    # 이미 도는 이 주기 루프에 얹는다 — 새 스레드/타이머를 안 만든다.
+    _publish_ttl_expirations(time.monotonic())
     try:
         orc = _orc()
         live = {
@@ -988,6 +1204,8 @@ def install() -> None:
     fleet_telemetry.add_cmd_result_hook(on_cmd_result)
     # 길잡이 재획득 → 경로 재할당 (`on_requester_visible` 주석 참고)
     fleet_link.add_requester_visible_hook(on_requester_visible)
+    # 로봇발 "사람이 정점을 막았다" 보고 → on_person_blocked (아래 `_on_node_block_report`)
+    fleet_link.add_node_block_hook(_on_node_block_report)
 
     # 고아 task 화해 — 백엔드만 재기동한 경우를 자동으로 되돌린다.
     if RECONCILE_SEC > 0:
@@ -1007,3 +1225,139 @@ def install() -> None:
         "[dispatch] 실배선 활성화 (arm_stub=%s, delay=%.1fs, auto_assign=%.1fs)",
         ARM_STUB, ARM_STUB_DELAY_SEC, AUTO_ASSIGN_SEC,
     )
+
+
+# ── 정점 차단·서가 도킹 → 사건 (Task 14) ─────────────────────────────────────
+#
+# 로봇이 "사람이 이 정점을 막았다" 고 보고하면 fleet_node 로 중계하고, 관제 화면이
+# 볼 사건을 남긴다. 서가 도킹 진행도 같은 사건 버스로 알린다.
+
+#: 정점 차단 대장. fleet_node(C++) 도 자기 것을 들고 있지만, 이쪽은 사건 발행과
+#: 화면 조회를 위해 같은 사실을 파이썬 쪽에서도 안다.
+_node_blocks = NodeBlockRegistry()
+
+_DOCK_EVENTS = {"started": "shelf_dock_started", "done": "shelf_dock_done"}
+
+
+def _publish_node_block(*, robot: str, node: int, ttl_sec: float, reason: str, owner: str) -> None:
+    """`/fms/node_block` 로 `NodeBlock` 을 낸다 — `fleet_node.cpp` 가 그 토픽을 구독한다
+    (`aba_fms_service/fleet_ws/src/libi_fleet/src/fleet_node.cpp:344-346`).
+
+    이 파일이 이미 쓰는 통로(`fleet_link` — `set_robot_hold` 가 같은 계약의 `RobotHold` 를
+    낸다, `app/fleet_link.py:613-631`)에 맞춘다. 그 모듈에 아직 node_block 용 발행 함수가
+    없으면(다른 작업 몫) 경고만 남기고 돌아간다 — **사건 발행은 이 함수 호출 전에 이미
+    끝났으므로 알림이 조용히 사라지지 않는다.**
+    """
+    publish = getattr(fleet_link, "set_node_block", None)
+    if publish is None:
+        log.warning(
+            "[node_block] fleet_link 에 node_block 발행 통로가 없다 — "
+            "robot=%s node=%s ttl=%.1f owner=%s (사건 발행은 계속한다)",
+            robot, node, float(ttl_sec), owner,
+        )
+        return
+    try:
+        publish(node, float(ttl_sec), reason=reason, robot=robot, owner=owner)
+    except Exception:  # noqa: BLE001 — ROS 발행 실패로 사건 발행까지 막으면 안 된다
+        log.exception("[node_block] 발행 실패 node=%s", node)
+
+
+def _publish_ttl_expirations(now: float) -> None:
+    """`_node_blocks` 가 저절로 만료시킨 정점마다 `node_unblocked` 를 낸다 (R8-3).
+
+    명시적 `ttl_sec<=0` 해제는 `on_person_blocked` 가 스스로 발행하므로 여기서 다시
+    안 낸다 — `expired_since` 는 **자연 만료**만, 그것도 한 번만 돌려준다.
+    """
+    for node in _node_blocks.expired_since(now):
+        fleet_events.publish("node_unblocked", node=node, reason="ttl")
+
+
+def _on_node_block_report(robot: str, payload: dict) -> None:
+    """`fleet_link.add_node_block_hook` 콜백 — 로봇이 올린 정점 차단/해제 보고를
+    `on_person_blocked` 로 흘려보낸다.
+
+    `payload` 는 `fleet_link.node_block_from_json` 이 이미 검증한 값이라 `node` 가
+    항상 있다(구독 콜백 쪽에서 이미 걸러졌다 — 여기서 다시 검증하지 않는다).
+
+    ⚠️ `reason` 을 보고 owner 를 가른다. 로봇이 도킹 정밀 이동을 시작하며 스스로 푸는
+    보고(`reason="shelf_dock"`)를 `person:` owner 로 처리하면 **엉뚱한 차단(사람 차단)
+    을 지운다** — `on_shelf_dock_lock` 이 잡은 `dock:{robot}` 이 아니라.
+
+    [Important 4] `fleet_telemetry.bridge_key` 로 정규화한다 — `on_shelf_dock_lock`
+    도 같은 함수를 거친다(아래). 여기 `robot` 은 이미 브릿지 키라 사실상 항등이지만,
+    **양쪽이 같은 정규화 함수를 통과**해야 어느 쪽이 DB 이름을 받아도 어긋나지 않는다.
+    """
+    reason = str(payload.get("reason") or "person")
+    owner = (f"dock:{fleet_telemetry.bridge_key(robot)}" if reason == "shelf_dock"
+             else f"person:{robot}")
+    ttl_sec = float(payload.get("ttl_sec", 0.0))
+    on_person_blocked(robot, int(payload["node"]), ttl_sec, owner=owner, reason=reason)
+    # ⚠️ [2026-08-03] **여기서 로봇에 `backup` 을 쏘지 않는다.**
+    #
+    #   예전에는 사람 차단 직후 FMS 가 로봇에게 직접 후퇴를 명령했다. 그 이동은
+    #   **예약 체계 밖**이라, 이미 놓아 준 직전 정점에 다른 로봇이 들어와 정면으로
+    #   만날 수 있었다(codex 3차 P0 셋이 전부 여기서 나왔다).
+    #
+    #   되돌리는 일은 이제 `fleet_node` 가 한다 — `/fms/node_block` 콜백에서
+    #   직전 정점을 `request_move(A, A)` 로 **점유 claim 한 뒤에만** 막힌 정점을 놓고
+    #   `moving=false` 로 내린다. 그 뒤는 평소 경로대로 GRANT 가 나가고
+    #   `send_path` 가 로봇의 **실제 좌표**에서 경로를 내므로 nav2 가 알아서 몬다.
+    #   즉 후퇴도 교통관제 안에서 일어난다.
+    #
+    #   `backup` 액션 자체는 남아 있다 — **서가 도킹 복귀**가 쓴다(BackupExec).
+def on_person_blocked(robot: str, node: int, ttl_sec: float, now: float | None = None,
+                       *, owner: str | None = None, reason: str = "person") -> None:
+    """로봇이 "사람이 이 정점을 막았다" 고 알려 왔다.
+
+    fleet_node 로 중계하고 관제 화면이 볼 사건을 남긴다. `ttl_sec <= 0` 은 해제다.
+    소유자는 기본 `f"person:{robot}"` — 서가 도킹 잠금(`f"dock:{robot}"`)과 겹쳐도 서로
+    남의 차단을 지우지 않는다(R4). `owner`/`reason` 은 `_on_node_block_report` 가 로봇의
+    `shelf_dock` 해제 보고를 `dock:` owner 로 돌리는 데 쓴다 — 밖에서 부를 땐 안 줘도 된다.
+
+    `now` 는 시험이 시계를 직접 밀 수 있도록 둔 선택 인자다. 기본은 `time.monotonic()`.
+    """
+    if now is None:
+        now = time.monotonic()
+    _publish_ttl_expirations(now)   # 이번 호출 전에 저절로 풀린 정점부터 알린다
+    owner = owner or f"person:{robot}"
+    _node_blocks.set(node, ttl_sec, now, owner=owner, reason=reason)
+    _publish_node_block(robot=robot, node=node, ttl_sec=ttl_sec, reason=reason, owner=owner)
+    if float(ttl_sec) <= 0.0:
+        fleet_events.publish("node_unblocked", robot=robot, node=node)
+    else:
+        fleet_events.publish("person_blocked", robot=robot, node=node,
+                              ttl_sec=float(ttl_sec))
+
+
+def on_shelf_dock_lock(robot: str, node: int, ttl_sec: float = SHELF_DOCK_TTL_SEC,
+                        now: float | None = None) -> None:
+    """서가 다리 배차 시 그 정점을 잠근다. 로봇이 정밀 이동을 시작하면 스스로 푼다
+    (`reason="shelf_dock"` 보고 → `_on_node_block_report` → 여기와 같은 `dock:` owner 해제).
+
+    ⚠️ owner 가 `person:` 과 달라야 한다 — 같은 정점을 사람 차단과 도킹 잠금이 함께
+       잡을 수 있고, 한쪽 해제가 남의 차단까지 지우면 안 된다(NodeBlockRegistry 계약).
+
+    TTL 기본은 `SHELF_DOCK_TTL_SEC`(로봇 hold 와 같은 값) — 도킹+팔 작업이 그 안에
+    끝난다는 전제이고, 안 끝나면 스스로 풀려 교착을 막는다(`RobotHold` 와 같은 이유).
+    """
+    if now is None:
+        now = time.monotonic()
+    _publish_ttl_expirations(now)
+    # [Important 4] `fleet_telemetry.bridge_key` 로 정규화한다. 여기 `robot` 은
+    # `real_dispatch` 가 준 DB 표기(`Pinky-1`)일 수 있는데, 해제는 로봇 자신의 보고가
+    # **브릿지 키**(`pinky1`, `fleet_link.py` 의 `/{key}/node_block` 구독)로 온다 —
+    # 정규화 없이 그대로 쓰면 owner 문자열이 갈려 **해제가 no-op** 이 되고 TTL 까지
+    # 잠겨 있는다(실측 지적).
+    owner = f"dock:{fleet_telemetry.bridge_key(robot)}"
+    _node_blocks.set(node, ttl_sec, now, owner=owner, reason="shelf_dock")
+    _publish_node_block(robot=robot, node=node, ttl_sec=ttl_sec, reason="shelf_dock", owner=owner)
+    fleet_events.publish("shelf_node_locked", robot=robot, node=node, ttl_sec=float(ttl_sec))
+
+
+def on_shelf_dock_phase(robot: str, shelf: str, phase: str) -> None:
+    """서가 도킹 진행을 관제에 알린다."""
+    kind = _DOCK_EVENTS.get(phase)
+    if kind is None:
+        log.warning("[shelf] %s 알 수 없는 도킹 단계: %s", robot, phase)
+        return
+    fleet_events.publish(kind, robot=robot, shelf=shelf)

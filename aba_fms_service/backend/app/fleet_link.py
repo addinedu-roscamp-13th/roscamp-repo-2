@@ -57,6 +57,9 @@ TOPIC_PLAN = "/fms/plan"
 #  fleet_node 는 주행 다리만 알아서, 팔 다리가 도는 동안 로봇이 유휴로 보인다.
 #  TTL 이 있어 푸는 쪽이 죽어도 로봇이 영영 묶이지 않는다.
 TOPIC_HOLD = "/fms/robot_hold"
+#: 사람이 막았거나 도킹이 잡아 둔 정점. `RobotHold` 와 같은 계약(owner 별 TTL) —
+#  `app/node_block.py`·`NodeBlock.msg` 참고. `fleet_node.cpp` 가 이미 구독한다.
+TOPIC_NODE_BLOCK = "/fms/node_block"
 TOPIC_GOALS = "/fms/goals"
 TOPIC_ROBOT_STATE = "/robot_state"
 #: fleet_node 가 발행하는 주행 경로. 예전엔 로봇 쪽 path_request_driver 가 직접 받아
@@ -95,6 +98,13 @@ _plugins: dict[str, str] = {"dispatcher": "", "traffic": ""}
 _last_ros_at: float = 0.0
 
 _hold_pub: Any = None
+_node_block_pub: Any = None
+#: 로봇 key → `/{key}/replan_reason` 발행자. **서버→로봇 하행**이라 도메인 브릿지에
+#: `reversed: True` 로 실린다(`fleet_cmd` 와 같은 방향).
+#: 로봇에는 `libi_fleet_msgs` 가 없어 `node_block` 과 같이 String(JSON) 으로 낸다.
+_replan_reason_pubs: dict[str, Any] = {}
+#: 마지막으로 내보낸 계획 seq. 같은 계획을 두 번 알리지 않는다.
+_replan_reason_seq: int = -1
 _clients: dict[str, Any] = {}
 _node: Any = None
 
@@ -174,6 +184,25 @@ def _fire_requester_visible(robot: str, visible: bool) -> None:
             print(f"[fleet_link] requester_visible 훅 실패: {exc}", flush=True)
 
 
+#: 로봇발 "사람이 정점을 막았다" 보고 훅. `on_node_block(robot, payload)` 로 부른다.
+#  payload = {"node": int, "ttl_sec": float, "reason": str} — `node_block_from_json`
+#  이 이미 검증한 값이라 여기 도달하면 `node` 는 항상 있다.
+_node_block_hooks: list[Any] = []
+
+
+def add_node_block_hook(fn) -> None:
+    if fn not in _node_block_hooks:
+        _node_block_hooks.append(fn)
+
+
+def _fire_node_block(robot: str, payload: dict) -> None:
+    for fn in list(_node_block_hooks):
+        try:
+            fn(robot, payload)
+        except Exception as exc:  # noqa: BLE001 — 훅 하나가 구독 스레드를 죽이면 안 된다
+            print(f"[fleet_link] node_block 훅 실패: {exc}", flush=True)
+
+
 def _fire_task_state_hooks(payload: dict) -> None:
     for fn in list(_task_state_hooks):
         try:
@@ -248,6 +277,25 @@ def parse_json_map(raw: str) -> dict:
     except Exception:
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def node_block_from_json(raw: str) -> dict | None:
+    """`/{key}/node_block` 로 온 로봇발 "사람이 막았다" 보고를 검증한다.
+
+    깨진 JSON 이거나 `node` 가 없으면 `None` — 구독 콜백은 이걸 보고 경고만 남기고
+    버린다(예외를 올리면 콜백이 죽는다). ROS 의존이 없어 시험이 직접 부를 수 있다.
+    """
+    payload = parse_json_map(raw)
+    if "node" not in payload:
+        return None
+    try:
+        return {
+            "node": int(payload["node"]),
+            "ttl_sec": float(payload.get("ttl_sec", 0.0)),
+            "reason": str(payload.get("reason", "")),
+        }
+    except (TypeError, ValueError):
+        return None
 
 
 def _fsm_entry(fsm: dict[str, dict[str, Any]], name: str) -> dict[str, Any]:
@@ -631,6 +679,62 @@ def set_robot_hold(robot: str, hold: bool, ttl_sec: float = 120.0) -> bool:
     return True
 
 
+def set_node_block(node: int, ttl_sec: float, reason: str = "",
+                    robot: str = "", owner: str = "") -> bool:
+    """정점 차단/잠금을 fleet_node 에 알린다. `ttl_sec <= 0` 은 그 owner 의 것만 해제.
+
+    ⚠️ `RobotHold` 와 같은 계약이다 — 유효시간이 필수인 이유도 같다(푸는 쪽이 죽어도
+       길이 영영 막히면 안 된다). `fleet_node.cpp` 가 `/fms/node_block` 을 이미 구독한다.
+    """
+    if _node_block_pub is None:
+        return False
+    # ⚠️ 메시지 타입은 함수 안에서 import 한다 — `set_robot_hold` 와 같은 이유
+    #    (rclpy 없이도 이 모듈이 import 돼야 한다).
+    from libi_fleet_msgs.msg import NodeBlock
+
+    m = NodeBlock()
+    m.node = int(node)
+    m.ttl_sec = float(ttl_sec)
+    m.reason = str(reason)
+    m.robot = str(robot)
+    m.owner = str(owner)
+    _node_block_pub.publish(m)
+    return True
+
+
+def _relay_replan_reason(plan: dict) -> None:
+    """`/fms/plan` 의 재계획 사유를 **로봇 쪽으로 내려보낸다**(`/{key}/replan_reason`).
+
+    ⚠️ [2026-08-03] 왜 필요한가 — 관제·패널에서 **재계획이 왜 났는지 구분이 안 됐다.**
+       사람 차단은 로봇이 스스로 알아 패널에 띄울 수 있지만(`person_block_seq`),
+       지연·차단해제·다른 로봇 때문에 난 재계획은 **fleet_node 로그에만** 있었다.
+       그래서 화면만 보고는 "이건 사람 때문" 인지 알 수 없었다(사용자 요구).
+
+    ⚠️ 타입이 `String(JSON)` 인 이유는 `node_block` 과 같다 — **로봇에는
+       `libi_fleet_msgs` 가 없다.** 방향은 서버→로봇이라 도메인 브릿지에서
+       `reversed: True` 로 실린다(`fleet_cmd` 와 같은 방향).
+
+    ⚠️ **같은 seq 를 두 번 안 보낸다.** `/fms/plan` 은 transient_local 이라 재구독할 때
+       마지막 값이 다시 배달된다 — 그걸 새 사건으로 세면 패널 기록에 유령이 찍힌다.
+    """
+    global _replan_reason_seq
+    if not _replan_reason_pubs:
+        return
+    seq = int(plan.get("seq") or 0)
+    reason = str(plan.get("reason") or "")
+    if seq == _replan_reason_seq:
+        return
+    _replan_reason_seq = seq
+    if not reason:
+        return          # 사유 없는 계획(기동 직후 등)은 알릴 것이 없다
+    payload = json.dumps({"seq": seq, "reason": reason}, ensure_ascii=False)
+    from std_msgs.msg import String as _String
+    for pub in _replan_reason_pubs.values():
+        m = _String()
+        m.data = payload
+        pub.publish(m)
+
+
 def set_battery(robot: str, value: float) -> dict[str, Any]:
     if _node is None:
         return {"ok": False, "reason": "fleet_link_down"}
@@ -710,7 +814,7 @@ def _fleet_thread() -> None:
 
         from libi_fleet_msgs.msg import TaskState
         from libi_fleet_msgs.msg import (
-            FleetGoals, FleetOccupancy, FleetPlan, FleetRoutes, RobotHold,
+            FleetGoals, FleetOccupancy, FleetPlan, FleetRoutes, NodeBlock, RobotHold,
         )
         from libi_fleet_msgs.srv import SetBattery, SetPlugins, SetRobotMode, SubmitTask
         from rmf_fleet_msgs.msg import PathRequest
@@ -804,6 +908,7 @@ def _fleet_thread() -> None:
                     for r in msg.robots
                 },
             }
+            _relay_replan_reason(parsed)
             with _lock:
                 _plan.clear()
                 _plan.update(parsed)
@@ -840,8 +945,9 @@ def _fleet_thread() -> None:
         node.create_subscription(FleetOccupancy, TOPIC_OCCUPANCY, on_occupancy, 10)
         # nav2 실주행 경로 — 어댑터가 로봇별 `/pinkyN/plan` 을 이름 붙여 넘긴다.
         node.create_subscription(String, "/robot_nav_path", on_nav_path, 10)
-        global _hold_pub
+        global _hold_pub, _node_block_pub
         _hold_pub = node.create_publisher(RobotHold, TOPIC_HOLD, 10)
+        _node_block_pub = node.create_publisher(NodeBlock, TOPIC_NODE_BLOCK, 10)
         node.create_subscription(FleetRoutes, TOPIC_ROUTES, on_routes, 10)
         # ⚠️ transient_local 로 발행하므로 **구독도 같은 durability** 여야 붙는다.
         #    reliable/volatile 로 잡으면 QoS 불일치로 조용히 한 건도 안 온다.
@@ -862,6 +968,8 @@ def _fleet_thread() -> None:
 
         # 길잡이 요청자 가시성 — **로봇별 토픽**이다(payload 에 robot_id 가 없다).
         # 브릿지가 `/{key}/requester_visible` 로 remap 한다(domain_bridge.template.yaml).
+        # 사람이 정점을 막았다는 로봇발 보고도 같은 이유로 로봇별 토픽·String(JSON) 이다
+        # (로봇에는 libi_fleet_msgs 가 없어 커스텀 메시지를 못 쓴다) — 같은 자리에 얹는다.
         try:
             from std_msgs.msg import Bool as _Bool
 
@@ -874,8 +982,27 @@ def _fleet_thread() -> None:
                         _fire_requester_visible(_n, bool(msg.data))
                     return _cb
                 node.create_subscription(_Bool, f"/{_key}/requester_visible", _mk(_key), 10)
+
+                def _mk_nb(name):
+                    def _cb(msg, _n=name):
+                        parsed = node_block_from_json(msg.data)
+                        if parsed is None:
+                            print(f"[fleet_link] {_n} node_block 보고를 버렸다: {msg.data!r}",
+                                  flush=True)
+                            return
+                        _fire_node_block(_n, parsed)
+                    return _cb
+                node.create_subscription(String, f"/{_key}/node_block", _mk_nb(_key), 10)
+
+                # 하행: 재계획 사유를 로봇 패널로 내려보낸다(`_relay_replan_reason`).
+                # 래치로 낸다 — 패널이 늦게 떠도 마지막 사유는 보인다. 중복 기록은
+                # 받는 쪽이 `seq` 로 막는다.
+                _replan_reason_pubs[_key] = node.create_publisher(
+                    String, f"/{_key}/replan_reason",
+                    QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                               durability=DurabilityPolicy.TRANSIENT_LOCAL))
         except Exception as exc:    # noqa: BLE001 — 구독 실패로 링크 전체를 막지 않는다
-            print(f"[fleet_link] requester_visible 구독 실패: {exc}", flush=True)
+            print(f"[fleet_link] requester_visible/node_block 구독 실패: {exc}", flush=True)
 
         node.create_subscription(FleetGoals, TOPIC_GOALS, on_goals, 10)
         node.create_subscription(PathRequest, TOPIC_PATH_REQUESTS, on_path_request, 10)

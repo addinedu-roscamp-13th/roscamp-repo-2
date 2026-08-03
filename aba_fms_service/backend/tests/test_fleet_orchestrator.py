@@ -40,10 +40,10 @@ class FakeDispatcher:
 
 # ── 분해 ─────────────────────────────────────────────────────────────────────
 
-def test_delivery_decomposes_into_four_legs():
+def test_delivery_decomposes_into_fms_backup_leg():
     legs = decompose_delivery(book="B1", pickup=7, dropoff=3)
     assert [l.type for l in legs] == [
-        LegType.NAVIGATE, LegType.PERFORM_ACTION, LegType.NAVIGATE, LegType.PERFORM_ACTION,
+        LegType.NAVIGATE, LegType.PERFORM_ACTION, LegType.PERFORM_ACTION, LegType.NAVIGATE, LegType.PERFORM_ACTION,
     ]
     assert legs[0].params == {"waypoint": 7}
     # 팔 계약(2026-07-30): 정점 이름이 아니라 **장소 종류**로 움직인다.
@@ -52,9 +52,10 @@ def test_delivery_decomposes_into_four_legs():
         "from_place": "서가", "to_place": "리비바구니",
         "tier": 0, "row": 0, "slot": 1,
     }
+    assert legs[2].params == {"action": "backup", "at": 7}
     # ⚠️ `place` 의 `to_place` 는 **없다.** 목적지가 테이블인지 안내데스크인지는 정점의
     #    정체를 알아야 정해지고 그 지식은 이 코어에 없다 — 로봇 중계가 `at` 에서 유도한다.
-    assert legs[3].params == {
+    assert legs[4].params == {
         "action": "place", "at": 3, "book": "B1", "object": "book",
         "from_place": "리비바구니",
         "tier": 0, "row": 0, "slot": 1,
@@ -69,9 +70,9 @@ def test_delivery_carries_shelf_coordinates_only_on_pick():
     """
     legs = decompose_delivery(book="B1", pickup=7, dropoff=3, tier=3, row=2)
     assert (legs[1].params["tier"], legs[1].params["row"]) == (3, 2)
-    assert (legs[3].params["tier"], legs[3].params["row"]) == (0, 0)
+    assert (legs[4].params["tier"], legs[4].params["row"]) == (0, 0)
     # pick 에 넣은 칸과 place 에서 꺼낼 칸이 같아야 한다 — 팔은 상태를 갖지 않는다.
-    assert legs[1].params["slot"] == legs[3].params["slot"]
+    assert legs[1].params["slot"] == legs[4].params["slot"]
 
 
 def test_collection_decomposes_into_nav_plus_three_arm_legs():
@@ -127,7 +128,7 @@ def test_submit_delivery_queues_pending():
     tid = orc.submit_delivery(book="B1", pickup=7, dropoff=3, requester="사서")
     task = orc.get(tid)
     assert task.status == TaskStatus.PENDING
-    assert len(task.legs) == 4
+    assert len(task.legs) == 5
     assert [t["id"] for t in orc.pending()] == [tid]
 
 
@@ -179,7 +180,7 @@ def test_assign_allows_robot_after_previous_task_completed():
     orc = Orchestrator(d)
     t1 = orc.submit_delivery(book="B1", pickup=7, dropoff=3)
     orc.assign(t1, "pinky3")
-    for cmd_id in ("c1", "c2", "c3", "c4"):
+    for cmd_id in ("c1", "c2", "c3", "c4", "c5"):
         orc.on_result(cmd_id, ok=True)
     assert orc.get(t1).status == TaskStatus.COMPLETED
 
@@ -188,7 +189,7 @@ def test_assign_allows_robot_after_previous_task_completed():
     assert orc.get(t2).robot == "pinky3"
 
 
-def test_happy_path_sequences_all_four_legs_in_order():
+def test_happy_path_sequences_fms_backup_leg_in_order():
     d = FakeDispatcher()
     orc = Orchestrator(d)
     tid = orc.submit_delivery(book="B1", pickup=7, dropoff=3)
@@ -196,14 +197,15 @@ def test_happy_path_sequences_all_four_legs_in_order():
 
     # 한 번에 하나씩 — 완료 보고해야 다음이 나간다.
     orc.on_result("c1", ok=True)      # navigate(pickup) 완료 → pick 나감
-    orc.on_result("c2", ok=True)      # pick 완료 → navigate(dropoff)
-    orc.on_result("c3", ok=True)      # navigate 완료 → place
+    orc.on_result("c2", ok=True)      # pick 완료 → FMS backup 배정
+    orc.on_result("c3", ok=True)      # backup 완료 → navigate(dropoff)
+    orc.on_result("c4", ok=True)      # navigate 완료 → place
     assert orc.get(tid).status == TaskStatus.EXECUTING
-    orc.on_result("c4", ok=True)      # place 완료 → COMPLETED
+    orc.on_result("c5", ok=True)      # place 완료 → COMPLETED
 
     assert orc.get(tid).status == TaskStatus.COMPLETED
     assert d.leg_types == [
-        LegType.NAVIGATE, LegType.PERFORM_ACTION, LegType.NAVIGATE, LegType.PERFORM_ACTION,
+        LegType.NAVIGATE, LegType.PERFORM_ACTION, LegType.PERFORM_ACTION, LegType.NAVIGATE, LegType.PERFORM_ACTION,
     ]
 
 
@@ -279,7 +281,7 @@ def test_cancel_terminal_is_noop():
     orc = Orchestrator(d)
     tid = orc.submit_delivery(book="B1", pickup=7, dropoff=3)
     orc.assign(tid, "pinky3")
-    for c in ("c1", "c2", "c3", "c4"):
+    for c in ("c1", "c2", "c3", "c4", "c5"):
         orc.on_result(c, ok=True)
     assert orc.get(tid).status == TaskStatus.COMPLETED
     orc.cancel(tid)                            # 완료된 걸 취소 시도 → 무시
@@ -302,7 +304,7 @@ def test_force_advance_through_all_legs_completes():
     orc = Orchestrator(FakeDispatcher())
     tid = orc.submit_delivery(book="B1", pickup=7, dropoff=3)
     orc.assign(tid, "pinky3")
-    for _ in range(4):
+    for _ in range(5):
         if orc.get(tid).status == TaskStatus.EXECUTING:
             orc.force_advance(tid)
     assert orc.get(tid).status == TaskStatus.COMPLETED
@@ -450,7 +452,7 @@ def test_lifecycle_done_on_completion():
     orc = Orchestrator(d, task_lifecycle=lambda r, p: seen.append((r, p)))
     tid = orc.submit_delivery(book="B1", pickup=7, dropoff=3)
     orc.assign(tid, "Pinky-3")
-    for cid in ("c1", "c2", "c3", "c4"):
+    for cid in ("c1", "c2", "c3", "c4", "c5"):
         orc.on_result(cid, ok=True)
     assert orc.get(tid).status == TaskStatus.COMPLETED
     assert [p for _, p in seen] == ["start", "done"]

@@ -45,6 +45,26 @@ public slots:
 signals:
     void fsmStateReceived(QString currentState, double remainingSec,
                           QString errorCode, double batteryPercent, bool docked);
+    /** /libi/fsm_state 의 `person_blocked` — 주행 중 앞을 막는 사람 때문에 서 있는가.
+     *  `fsmStateReceived` 에 인자를 더하지 않고 따로 낸다 — 그 시그니처를 건드리면
+     *  기존 연결·시험이 전부 같이 바뀐다. */
+    void personBlockedReceived(bool blocked);
+    /** /libi/fsm_state 의 `front_person_size` — 앞캠에 보이는 가장 큰 사람의
+     *  sqrt(area) px(320 기준). 0 = 안 보임. 임계값을 실기에서 맞추려고 화면에 띄운다. */
+    void frontPersonSizeReceived(double px);
+    /** /libi/fsm_state 의 `person_block_in` — 사람 때문에 정점 차단을 알리기까지 남은 초.
+     *  음수면 세고 있지 않다. 관제에서 재계획이 사람 때문인지 지연 때문인지 가르는 값. */
+    void personBlockInReceived(double sec);
+    /** /libi/fsm_state 의 `person_block_seq`/`person_block_node` — 사람 차단을 **알린**
+     *  누적 횟수와 그 정점. 늘어난 순간이 곧 "사람 때문에 재탐색을 요청했다" 다.
+     *  레벨(`person_blocked`)이 아니라 횟수인 이유는 임계 근처 깜빡임 때문이다. */
+    void personBlockReported(int seq, int node);
+    /** /libi/replan_reason — FMS 가 내려보내는 **재계획 사유**(String JSON `{seq, reason}`).
+     *  사람 사유는 로봇이 스스로 알지만(`person_block_seq`), 지연·차단해제·다른 로봇
+     *  때문에 난 재계획은 fleet_node 만 안다. 그걸 패널 기록에 남기려고 받는다. */
+    void replanReasonReceived(int seq, QString reason);
+    /** `shelf_dock_status` — 정밀 도킹/역순 복귀의 단계·거리 JSON. */
+    void shelfDockStatusReceived(QString json);
     /** /amcl_pose — map 프레임 좌표[m]와 yaw[rad]. 그림 좌표 변환은 RobotController 가 한다. */
     void poseReceived(double x, double y, double yawRad);
     /** odom — pinky_bringup 이 엔코더로 계산해 30Hz 로 쏘는 실측 바퀴 속도[m/s, rad/s].

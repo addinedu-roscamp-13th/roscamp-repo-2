@@ -24,6 +24,18 @@ from libi_modes.blackboard import Keys
 #  것"을 막으려고 있는 것이지, 이미 일어난 일을 못 본 척하라는 뜻이 아니다.
 _ALWAYS_ALLOWED = ("ERROR", "RETURNING", "CHARGING")
 
+#  ⚠️ **INTERACTING 에서 나가는 것도 막지 않는다** (2026-08-03 실측).
+#
+#  패널에서 상태를 한 번 수동 지정하면 `apply_pending` 이 `HOLD_UNTIL = now + 300` 을
+#  건다. 그 뒤 방문자가 화면을 만지면 `ui_touch` 는 **명령 유래라 유지 시간을 뚫고**
+#  INTERACTING 으로 들어간다. 그런데 20초 뒤 `UiSessionTimer` 가 내는 복귀는 BT 자율
+#  전이라 `COMMANDED_MODE` 가 없다 — 남은 280초 동안 **로봇이 INTERACTING 에 갇힌다.**
+#  실측 로그: `전이 요청이 적용되지 않았다: INTERACTING -> PATROL (패널 유지 시간 중…)`
+#
+#  갇히면 순찰도 배차도 전부 멈춘다. 그리고 이 복귀는 사람의 결정을 **되돌리는 것이
+#  아니라 사람이 정해 둔 상태로 돌아가는 것**이라, 유지 시간이 지킬 대상이 아니다.
+_HOLD_EXEMPT_SOURCES = ("INTERACTING",)
+
 
 class RequestTransition(py_trees.behaviour.Behaviour):
     """Applies blackboard.next_mode to current_mode, then clears next_mode.
@@ -79,6 +91,8 @@ class RequestTransition(py_trees.behaviour.Behaviour):
     def _held(self, target: str) -> bool:
         if target in _ALWAYS_ALLOWED:
             return False
+        if bb.get(self.blackboard, Keys.CURRENT_MODE) in _HOLD_EXEMPT_SOURCES:
+            return False               # 세션 종료는 언제나 나갈 수 있다 — 위 주석 참고
         # 명령 유래(task_assigned·ui_touch·task_done·task_failed·stop_request)는 뚫는다.
         # 유지 시간의 목적은 "로봇이 스스로 사람의 결정을 되돌리는 것"을 막는 것이고,
         # 관제·패널 명령은 그 사람의 결정 자체다. 막으면 배차·터치·복귀가 조용히 사라진다

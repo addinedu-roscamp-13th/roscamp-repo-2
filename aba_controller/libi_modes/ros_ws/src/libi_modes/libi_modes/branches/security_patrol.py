@@ -1,3 +1,5 @@
+import time
+
 import py_trees
 from py_trees.common import ParallelPolicy
 
@@ -6,6 +8,7 @@ from libi_modes.common.command_listener import CommandListener
 from libi_modes.common.fault_detected import FaultDetected
 from libi_modes.common.is_mode import IsMode
 from libi_modes.common.navigation_actions import PatrolNavigation
+from libi_modes.common.person_block import PersonBlockGuard, PersonBlockPolicy
 from libi_modes.common.request_transition import RequestTransition
 from libi_modes.common.watchdog import exit_watchdog
 
@@ -18,7 +21,9 @@ from libi_modes.common.watchdog import exit_watchdog
 _COMMAND_MAP = {"stop_request": "IDLE"}
 
 
-def create(params: dict, driver, *, undock_gate) -> py_trees.behaviour.Behaviour:
+def create(params: dict, driver, *, undock_gate, clock=time.monotonic,
+           person_stop_driver=None, block_fn=None,
+           camera_driver=None) -> py_trees.behaviour.Behaviour:
     """SecurityPatrolBranch — keep patrolling for night security (does NOT end after one lap).
 
     Same skeleton and same execution path as PATROL (PatrolNavigation over fleet_node-granted
@@ -31,6 +36,11 @@ def create(params: dict, driver, *, undock_gate) -> py_trees.behaviour.Behaviour
     low = params["battery"]["low"]
     # 순회 주행과 같은 도착 판정 파라미터를 쓴다 — 같은 뜻을 두 값으로 두면 반드시 어긋난다.
     work = params["working"]
+    person_stop_size = work.get("person_stop_size", 0)
+    person_sustain = work.get("person_sustain_sec", 10.0)
+    person_grace = work.get("person_resume_grace_sec", 1.0)
+    nav = PatrolNavigation(driver, work["arrive_tolerance_m"],
+                           work["arrive_resend_sec"], work["arrive_timeout_sec"])
     return py_trees.composites.Sequence(
         name="SecurityPatrolBranch",
         memory=False,
@@ -45,13 +55,20 @@ def create(params: dict, driver, *, undock_gate) -> py_trees.behaviour.Behaviour
                 name="SecurityPatrolAndWatch",
                 policy=ParallelPolicy.SuccessOnOne(),
                 children=[
-                    PatrolNavigation(driver, work["arrive_tolerance_m"],
-                                     work["arrive_resend_sec"], work["arrive_timeout_sec"]),
+                    nav,
                     exit_watchdog("SecurityPatrolExitConditions", [
                         FaultDetected(),
                         BatteryCheck("<=", low, "RETURNING"),
                         CommandListener(_COMMAND_MAP),
                     ]),
+                    # 야간 순찰도 낮 순찰과 같다 — 이유는 `branches/patrol.py` 의 같은 자리
+                    # 주석 참고(브랜치가 게이트라 require_command=None, 홉이 배달과 같은
+                    # 통로로 와서 committed_node 가 매 홉 갱신되므로 block_fn 도 꽂는다).
+                    *([PersonBlockGuard(
+                        PersonBlockPolicy(person_stop_size, person_sustain, person_grace),
+                        stop_driver=person_stop_driver, block_fn=block_fn,
+                        nav_leaf=nav, camera_driver=camera_driver,
+                        now_fn=clock, require_command=None)] if person_stop_size > 0 else []),
                 ],
             ),
             RequestTransition(),

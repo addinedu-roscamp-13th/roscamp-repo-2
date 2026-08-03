@@ -138,3 +138,18 @@ def test_new_fields_survive_json_roundtrip():
     """생산자 → JSON → 소비자 계약이 실제로 이어지는지. 한쪽만 고치면 여기서 깨진다."""
     payload = json.loads(json.dumps(detection_to_dict(_RichDet())))
     assert payload["camera"] == "back" and payload["camera_epoch"] == 7
+
+
+# ── [2026-08-03] fix round 1 — owner 없어도 크기는 흘러야 한다 ─────────────────
+#
+# 주행(navigate) 중에는 등록된 추종 대상이 애초에 없다. `det is None` 이라고 통째로
+# None(JSON null)을 돌려주면 PersonBlockGuard 가 주행 내내 0.0 만 본다.
+
+def test_owner_less_size_only_payload_is_a_dict_not_null():
+    d = detection_to_dict(None, front_person_size=214.5)
+    assert d == {"front_person_size": 214.5}
+
+
+def test_owner_less_and_sizeless_payload_is_still_null():
+    """크기도 없으면 예전처럼 null — 안 보이는 것과 안 재는 것은 다르지 않다."""
+    assert detection_to_dict(None) is None

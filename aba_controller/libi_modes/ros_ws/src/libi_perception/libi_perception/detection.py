@@ -36,9 +36,20 @@ class Detection:
     #: 카메라 전환마다 1 증가. 전환 순간 섞여 들어온 옛 프레임을 버리는 데 쓴다.
     camera_epoch: int = 0
 
+    #: 화면에서 **가장 큰 사람** 박스의 크기(sqrt(area) px, 320 원본 기준).
+    #: 0 = 안 보이거나 소스가 안 알려줬다.
+    #:
+    #: ⚠️ 이건 `area`(등록 대상의 면적)와 **다른 값**이다. 등록 매칭과 무관하게
+    #:    화면 안 사람 전체 중 가장 큰 것이라, 통행인도 여기에 잡힌다. 주행 중
+    #:    사람 차단 판정(`libi_modes` 의 `PersonBlockGuard`)이 이 값을 쓴다.
+    front_person_size: float = 0.0
+
 
 def detection_from_dict(d):
-    if d is None:
+    # owner 없는 프레임은 `cx` 가 없는 dict 로 온다(크기만 실려 있다) —
+    # `detection_sink.detection_to_dict` 의 [2026-08-03] 변경. "모른다"를
+    # KeyError 로 터뜨리지 않고, null 과 마찬가지로 "owner 없음"으로 읽는다.
+    if d is None or 'cx' not in d:
         return None
     return Detection(
         cx=d['cx'], cy=d['cy'], area=d['area'], bbox=tuple(d['bbox']),
@@ -51,4 +62,5 @@ def detection_from_dict(d):
         motion_ok=bool(d.get('motion_ok', True)),
         camera=d.get('camera'),
         camera_epoch=int(d.get('camera_epoch', 0) or 0),
+        front_person_size=float(d.get('front_person_size', 0.0) or 0.0),
     )

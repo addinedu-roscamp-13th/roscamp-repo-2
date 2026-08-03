@@ -95,6 +95,55 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(test_deadline_credit libi_fleet_core)
 
+  # 마감 초과를 **어느 칸까지** 찾는가 — 커밋 칸만 보다가 먼 칸이 0을 지나도 재계획이
+  # 안 걸리던 결함의 회귀 방지(2026-08-03 실기: 화면은 `지연 +16.3s`, 실제 재계획 0건).
+  ament_add_gtest(test_plan_deadline_scan test/test_plan_deadline_scan.cpp)
+  target_include_directories(test_plan_deadline_scan PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(test_plan_deadline_scan libi_fleet_core)
+
+  # 재계획을 **어느 정점에서** 시작하는가 — 사람이 막은 커밋 노드를 출발점으로 줘서
+  # 새 계획의 첫 홉이 사람 너머에서 시작하던 결함의 회귀 방지(2026-08-03 실기).
+  ament_add_gtest(test_plan_start test/test_plan_start.cpp)
+  target_include_directories(test_plan_start PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(test_plan_start libi_fleet_core)
+
+  # 사람이 막은 정점을 **실제 지도로** 피해 가는가 — 사용자 질문(2026-08-03)에 대한
+  # 실증. 코드를 읽고 답하는 대신 arte2 navgraph 로 계획을 돌려 확인한다.
+  ament_add_gtest(test_blocked_reroute test/test_blocked_reroute.cpp)
+  target_include_directories(test_blocked_reroute PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(test_blocked_reroute libi_fleet_core)
+  target_compile_definitions(test_blocked_reroute PRIVATE
+    TEST_ARTE2_NAVGRAPH_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../../maps/library/arte2.navgraph.yaml")
+
+  # 사람 차단 때 예약을 원자적으로 갈아타는 것이 안전한가 — `request_move(A,A)` claim 이
+  # 남이 쥔 정점에서 실패한다는 성질 위에 그 순서가 서 있다(codex 3차 P0 대응).
+  ament_add_gtest(test_block_reservation_swap test/test_block_reservation_swap.cpp)
+  target_include_directories(test_block_reservation_swap PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(test_block_reservation_swap libi_fleet_core)
+
+  # 로봇 이름 표기 흡수 — 브릿지 키(`pinky3`)와 RMF 이름(`pinky-3`)이 안 맞아
+  # 실기에서 사람 차단 후퇴가 통째로 죽어 있었다(2026-08-03 실기 로그).
+  ament_add_gtest(test_robot_name_key test/test_robot_name_key.cpp)
+  target_include_directories(test_robot_name_key PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+  # 레인(간선) 상호배제 — 안 쥔 정점을 떠나는 허가를 주면 같은 레인을 마주 본다
+  # (codex 설계 판정 2026-08-03 P0). 출발지 소유 검증 + 도착 때 해제의 회귀 방지.
+  ament_add_gtest(test_edge_exclusion test/test_edge_exclusion.cpp)
+  target_include_directories(test_edge_exclusion PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(test_edge_exclusion libi_fleet_core)
+
+  # 재계획 사유를 누가 정하는가 — 끈적한 `last_demote_reason` 이 우리 요청에 붙어
+  # 화면에 거짓 원인이 뜨던 결함의 회귀 방지(codex 3차 P1).
+  ament_add_gtest(test_replan_reason test/test_replan_reason.cpp)
+  target_include_directories(test_replan_reason PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
   ament_add_gtest(test_security_patrol_cycle test/test_security_patrol_cycle.cpp)
   target_include_directories(test_security_patrol_cycle PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include)

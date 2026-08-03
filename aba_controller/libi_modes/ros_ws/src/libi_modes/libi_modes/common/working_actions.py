@@ -150,6 +150,24 @@ class NavigationExec(CommandDrivenAction):
         #    듯 서고, 다음 노드 허가가 올 때까지 정지해 있는다. 끊는 것은 이 leaf 가
         #    **진짜 끝날 때**(무효화)여야 한다.
         self._goal_outstanding = False
+        #: 사람 때문에 멈춰 있는 동안은 도착 시계를 세지 않는다.
+        #
+        # ⚠️ `arrive_timeout_sec`(60)은 **"가다가 못 갔다"** 를 재는 값이다. 사람이
+        #    비키기를 기다리며 서 있던 시간까지 여기 들어가면, 조금만 오래 기다려도
+        #    FAILURE → `CommandTimeout` → ERROR 로 가고, fleet_node 는
+        #    `is_immobile("ERROR")` 로 이 로봇을 **영구 장애물**로 표시한다.
+        #    사람을 기다리다 자기가 장애물이 되는 경로다.
+        self._paused_at = None
+
+    def pause_arrive_timer(self, paused: bool) -> None:
+        """도착 시계를 멈추거나 다시 돌린다. `PersonBlockGuard` 가 부른다."""
+        if paused:
+            if self._paused_at is None:
+                self._paused_at = self._now()
+            return
+        if self._paused_at is not None:
+            self._target_at += self._now() - self._paused_at
+            self._paused_at = None
 
     def setup(self, **kwargs):
         super().setup(**kwargs)
@@ -202,6 +220,14 @@ class NavigationExec(CommandDrivenAction):
         # 곧바로 성공하면 nav2 가 헛돌고 직전 주행만 끊긴다.
         if self._arrived(target):
             return self._release(self._arrived_status())
+
+        # ⚠️ [Critical, 실측 근거] 이 검사가 재전송 분기 **뒤**에 있으면 못 막는다 —
+        #    사람이 `arrive_resend_sec` 보다 오래 서 있을 때 nav2 가 새 goal 을 받아
+        #    **로봇이 사람 쪽으로 다시 출발한다**(정지가 유지되지 않는다). 그래서
+        #    재전송·실패 폴링보다 **먼저** 본다: 멈춰 있는 동안은 goal 을 새로 내지도,
+        #    실행 층 상태를 묻지도 않는다 — 시계도 같이 멈춘다.
+        if self._paused_at is not None:
+            return Status.RUNNING
 
         if self._sent_at is None or now - self._sent_at >= self.arrive_resend_sec:
             # 처음이거나, 같은 목적지인데 아직 못 갔다 — 주행이 도착 없이 끝났을 수 있다.
@@ -855,6 +881,34 @@ class ArmExec(CommandDrivenAction):
 
     def __init__(self, driver, name: str | None = None):
         super().__init__(driver, handles={"perform_action"}, name=name or "ArmExec")
+
+
+class ShelfDockExec(CommandDrivenAction):
+    """shelf_dock — 서가 정밀 도킹을 로봇 에이전트에 위임한다.
+
+    절차 자체(회전 → 표식 검출 → 레이캐스트 → 개루프 이동)는 `robot_agent` 의
+    `app/core/shelf_dock.py` 가 블로킹으로 끝까지 돌린다. 이 leaf 는 그 명령을
+    시작하고 결과를 기다릴 뿐이다 — `ArucoApproach` 와 같은 위임 관계다.
+
+    ⚠️ 12Hz 로 수십 초 도는 루프를 여기서 직접 돌리면 안 된다. BT tick 은 5Hz 이고
+       leaf 는 블로킹하면 안 된다(`marker_dock.py` 머리말).
+    """
+
+    def __init__(self, driver=None, name: str | None = None):
+        super().__init__(driver or UnwiredDriver("shelf_dock"),
+                         handles={"shelf_dock"}, name=name or "ShelfDockExec")
+
+
+class BackupExec(CommandDrivenAction):
+    """backup — 몸을 돌려 온 만큼 전진해 원래 자리로 돌아간다.
+
+    사람 차단 뒤 후퇴와 서가 도킹 뒤 복귀가 같은 명령을 쓴다. 후진이 아니라 회전 후
+    전진인 이유는 `robot_agent/app/shelf/geometry.py` 머리말에 있다.
+    """
+
+    def __init__(self, driver=None, name: str | None = None):
+        super().__init__(driver or UnwiredDriver("backup"),
+                         handles={"backup"}, name=name or "BackupExec")
 
 
 class UnwiredDriver:

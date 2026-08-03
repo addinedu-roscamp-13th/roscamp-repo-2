@@ -126,6 +126,9 @@ def decompose_delivery(*, book: str, pickup, dropoff, tier: int = 0, row: int = 
         Leg(LegType.PERFORM_ACTION, {"action": "pick", "at": pickup,
                                      "from_place": "서가", "to_place": "리비바구니",
                                      "tier": int(tier), "row": int(row), **arm}),
+        # FMS가 pick 완료 결과를 받은 뒤에만 이 다리를 배정한다. robot_agent는
+        # 도킹 때 저장한 체크포인트를 최종축 → 옆축 역순으로 복귀한다.
+        Leg(LegType.PERFORM_ACTION, {"action": "backup", "at": pickup}),
         Leg(LegType.NAVIGATE, {"waypoint": dropoff}),
         # `place` 는 서가에 손을 안 뻗는다(바구니 → 테이블). 층·줄을 실어 보내면 팔이
         # 무시할지 따를지 헷갈린다 — 계약대로 0 으로 비운다.
