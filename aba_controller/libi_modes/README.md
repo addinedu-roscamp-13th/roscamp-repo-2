@@ -436,7 +436,8 @@ SecurityPatrolBranch (Sequence, memory=False)
 Parallel(SuccessOnOne)
   ├ Selector("PatrolOrChase", memory=False)
   │   ├ IntruderChase        ← 사람이 1.5초 보이면 nav2 취소 후 follow_admin 세션
-  │   └ PatrolNavigation     ← 평소
+  │   ├ PatrolNavigation     ← 평소
+  │   └ SecurityPatrolFallback ← nav 실패해도 Parallel 이 FAILURE 로 안 빠지게 붙잡는다
   ├ exit_watchdog(...)       ← 정지·고장·저전력 (추종 중에도 계속 tick 된다)
   └ CameraSelectRenew        ← 앞캠 유지. **없으면 프레임이 아예 안 온다**
 ```
