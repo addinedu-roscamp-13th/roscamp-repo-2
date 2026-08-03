@@ -211,11 +211,18 @@ def test_무장하지_않으면_아무_일도_안_한다(tmp_path):
     assert sink.opened == [] and sink.reports == []
 
 
-def test_무장_해제되면_진행_중_클립을_즉시_닫는다(rec):
-    """사서가 「주간」을 누르면 미완성 mp4 가 남으면 안 된다."""
+def test_무장_해제되면_다음_tick에서_진행_중_클립을_닫는다(rec):
+    """사서가 「주간」을 누르면 미완성 mp4 가 남으면 안 된다.
+
+    arm() 은 _want_armed 플래그만 세우고 실제 전이는 다음 _tick()(= 다음
+    feed()) 에서 일어난다 — ModePoller 워커 스레드와 메인 프레임 루프가
+    동시에 상태를 건드리는 경합을 피하려는 의도적 설계다. 시험 쪽을 고쳐
+    실제 동작(다음 프레임에서 닫힘 — 운영 17fps 라면 ~59ms 이내)을 반영한다.
+    """
     r, clock, sink = rec
     _see(r, clock, 1.1)
     r.arm(False)
+    r.feed(None, 0.0)                      # 다음 tick에서 전이가 적용된다
     assert len(sink.closed) == 1
     assert len(sink.attached) == 1
 
