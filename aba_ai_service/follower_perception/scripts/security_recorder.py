@@ -264,7 +264,7 @@ class FfmpegClipWriter:
             return
         os.makedirs(self._dir, exist_ok=True)
         self._path = os.path.join(str(self._dir), name)
-        self._proc = subprocess.Popen(
+        proc = subprocess.Popen(
             [self._bin, "-hide_banner", "-loglevel", "error",
              "-f", "image2pipe", "-vcodec", "mjpeg",
              "-framerate", str(self._fps), "-i", "-",
@@ -272,7 +272,13 @@ class FfmpegClipWriter:
              "-movflags", "+faststart", "-y", self._path],
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL)
-        self._thread = threading.Thread(target=self._pump, daemon=True)
+        # ⚠️ 새 Queue/proc 를 만들고 스레드 인자로 넘긴다 — `_pump` 가 `self.*` 를
+        #    돌면서 읽으면, close_clip() 의 join(timeout=5) 이 만료돼도 옛 스레드가
+        #    살아 있을 수 있고, 그 스레드가 **다음** open_clip() 이 갈아 끼운
+        #    self._proc/self._q 로 쓰기 시작해 새 클립이 조용히 망가진다.
+        q = queue.Queue(maxsize=self._q.maxsize)
+        self._proc, self._q = proc, q
+        self._thread = threading.Thread(target=self._pump, args=(proc, q), daemon=True)
         self._thread.start()
 
     def write(self, jpeg):
@@ -298,7 +304,7 @@ class FfmpegClipWriter:
                     self._q.get_nowait()
                     self.dropped += 1
                 except queue.Empty:
-                    break
+                    continue
         if self._thread is not None:
             self._thread.join(timeout=5)
         proc, self._proc, self._thread = self._proc, None, None
@@ -311,13 +317,13 @@ class FfmpegClipWriter:
             return False
         return proc.returncode == 0 and os.path.exists(self._path)
 
-    def _pump(self):
+    def _pump(self, proc, q):
         while True:
-            item = self._q.get()
+            item = q.get()
             if item is None:
                 return
             try:
-                self._proc.stdin.write(item)
+                proc.stdin.write(item)
             except (BrokenPipeError, ValueError, AttributeError, OSError):
                 # 디스크가 찼거나 ffmpeg 이 죽었다 — 이 클립만 실패로 끝난다.
                 return
