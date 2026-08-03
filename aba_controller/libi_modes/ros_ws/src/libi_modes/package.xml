@@ -15,6 +15,10 @@
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>python3-py-trees</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
+  <!-- 라이다 노치 도킹 (libi_modes/lidar/) — LaserScan 구독과 통계 연산에 쓴다.
+       numpy 는 lidar/ 안에서만 쓴다. BT leaf 와 common/ 에는 새 의존을 만들지 않는다. -->
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
 
   <test_depend>python3-pytest</test_depend>
 

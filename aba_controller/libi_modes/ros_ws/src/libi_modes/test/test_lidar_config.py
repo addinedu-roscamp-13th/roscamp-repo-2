@@ -38,3 +38,68 @@ def test_from_params_ignores_none_and_unknown_keys():
     c = LidarDockConfig.from_params({"stop_m": 0.07, "k_y": None, "무슨키": 1})
     assert c.stop_m == 0.07
     assert c.k_y == LidarDockConfig().k_y
+
+
+def test_shipped_params_yaml_builds_a_valid_config():
+    """params.yaml 에 오타가 있으면 기본값이 조용히 쓰인다 — 여기서 드러낸다."""
+    import pathlib
+    import yaml
+    from libi_modes.lidar.config import LidarDockConfig
+
+    text = pathlib.Path(__file__).resolve().parents[1].joinpath(
+        "config/params.yaml").read_text(encoding="utf-8")
+    doc = yaml.safe_load(text)
+    # ⚠️ 이 파일의 최상위 키는 `libi_modes:` 다(`/**`/`ros__parameters` 아님) —
+    #    main.py._load_params 가 `yaml.safe_load(f)["libi_modes"]` 로 읽는 것과 같다.
+    node = doc.get("libi_modes", doc)
+    node = node.get("/**", node)
+    params = node.get("ros__parameters", node)
+    ret = params["returning"]
+
+    assert ret["dock_sensor"] in ("aruco", "lidar")
+    # ⑤는 ArUco 용 값 그대로 둔다 — 라이다일 때 0 은 main.py 가 강제한다(codex P0 #7).
+    assert ret["nudge_distance_m"] > 0.0
+
+    # ⚠️ **오타를 실제로 잡는다** (codex P1 #6). `from_params` 는 모르는 키를 조용히
+    #    버리므로, 키 이름을 한 자만 틀려도 기본값이 쓰이고 아무 증상이 안 난다.
+    seen = []
+    cfg = LidarDockConfig.from_params(ret["lidar_dock"], on_unknown=seen.append)
+    assert seen == [], f"params.yaml 에 모르는 키가 있다(오타?): {seen}"
+    assert cfg.stop_m > 0.05, "C1 min range 아래는 측정 불가다"
+    assert cfg.v_near_mps == 0.05
+    assert cfg.ema_coef == 0.5
+
+
+def test_typo_in_params_is_reported_not_swallowed():
+    from libi_modes.lidar.config import LidarDockConfig
+    seen = []
+    cfg = LidarDockConfig.from_params({"stop_mm": 0.07}, on_unknown=seen.append)
+    # from_params 는 unknown 키를 모아 on_unknown 을 **한 번**, 리스트로 부른다
+    # (config.py 자체 docstring: "노드는 로거를, 시험은 리스트를 넘긴다"). 그래서
+    # seen.append 를 쓰면 seen 은 [["stop_mm"]] 이지 ["stop_mm"] 이 아니다 — brief
+    # 원문은 키마다 개별 호출된다고 가정했으나 실제 구현(Task 2, 이미 커밋됨)과
+    # 안 맞아 이 형태로 고쳤다(task-8-report.md 참고).
+    assert seen == [["stop_mm"]]
+    assert cfg.stop_m == LidarDockConfig().stop_m     # 기본값이 쓰였다는 사실도 확인
+
+
+def test_shipped_params_yaml_top_level_key_is_libi_modes():
+    """위 시험의 경로 탐색이 실제로 옳은 키를 짚는지 확인한다.
+
+    brief 원문의 탐색 로직(`doc.get("/**", doc)` → `.get("ros__parameters", node)`)은
+    `/**`/`ros__parameters` 감싸기가 있는 launch-time 파라미터 파일을 가정한다. 이
+    저장소의 params.yaml 은 최상위 키가 그냥 `libi_modes:` 라(main.py:433
+    `yaml.safe_load(f)["libi_modes"]`), 그 로직 그대로 쓰면 `params["returning"]` 에서
+    KeyError 가 난다 — brief Step 3 가 "확인 명령이 KeyError 나면 파일의 실제 구조에
+    맞춰 경로를 고친다"고 명시한 바로 그 상황. 이 시험은 그 구조 가정 자체가 맞는지
+    (그리고 앞으로도 깨지면 바로 드러나는지) 고정한다.
+    """
+    import pathlib
+    import yaml
+
+    text = pathlib.Path(__file__).resolve().parents[1].joinpath(
+        "config/params.yaml").read_text(encoding="utf-8")
+    doc = yaml.safe_load(text)
+    assert "/**" not in doc, "이 파일이 /** 래핑으로 바뀌면 위 시험의 경로 탐색도 고쳐야 한다"
+    assert "libi_modes" in doc
+    assert "returning" in doc["libi_modes"]
