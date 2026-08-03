@@ -327,3 +327,158 @@ class FfmpegClipWriter:
             except (BrokenPipeError, ValueError, AttributeError, OSError):
                 # 디스크가 찼거나 ffmpeg 이 죽었다 — 이 클립만 실패로 끝난다.
                 return
+
+
+def _default_post(url, json, timeout):
+    import requests
+    r = requests.post(url, json=json, timeout=timeout)
+    r.raise_for_status()
+    return r.json()
+
+
+def _default_patch(url, json, timeout):
+    import requests
+    requests.patch(url, json=json, timeout=timeout).raise_for_status()
+
+
+def _default_get(url, timeout):
+    import requests
+    r = requests.get(url, timeout=timeout)
+    r.raise_for_status()
+    return r.json()
+
+
+class OpsSink:
+    """클립 저장은 `writer` 에 맡기고, 관제 보고를 담당한다.
+
+    ## HTTP 는 워커 하나 + 유한 큐다
+
+    호출마다 `Thread()` 를 만들면 관제가 느려질 때 스레드가 쌓인다. 그리고
+    호출부(메인 루프)는 **결과를 안 기다린다** — 기다리면 그만큼 추종 반응이 늦는다.
+    보고 자체(`report`)만은 `event_id` 가 필요해 동기로 부르되, 짧은 타임아웃을 건다.
+    """
+
+    #: PATCH 재시도 상한. 관제가 잠깐 재시작해도 영상이 붙게 한다.
+    MAX_ATTACH_RETRY = 3
+
+    def __init__(self, base_url, robot_name, writer, *,
+                 post_fn=None, patch_fn=None, queue_max=32):
+        self._base = base_url.rstrip("/")
+        self._robot = robot_name
+        self._w = writer
+        self._post = post_fn or _default_post
+        self._patch = patch_fn or _default_patch
+        self._q = queue.Queue(maxsize=queue_max)
+        #: clip_name → event_id. 워커 스레드만 읽고 쓴다.
+        self._ids = {}
+        self._worker = threading.Thread(target=self._pump, daemon=True)
+        self._worker.start()
+
+    # sink 프로토콜 — 클립
+    def open_clip(self, name):
+        self._w.open_clip(name)
+
+    def write(self, jpeg):
+        self._w.write(jpeg)
+
+    def close_clip(self):
+        return bool(self._w.close_clip())
+
+    # sink 프로토콜 — 보고. **둘 다 큐에 넣기만 하고 즉시 돌아온다.**
+    def report(self, clip_name, note):
+        """`clip_name` 을 키로 침입을 보고한다.
+
+        ⚠️ **`event_id` 를 돌려주지 않는다.** 돌려받으려면 메인 루프에서 HTTP 를 최대
+        3초 기다려야 하는데, 그 자리가 YOLO·검출송출·추종의 심장이다. 워커가 응답의
+        id 를 `clip_name` 에 저장해 두고, 뒤이은 `attach_clip` 이 꺼내 쓴다 —
+        **워커가 하나라 순서는 FIFO 로 보장된다.**
+
+        `zone` 은 일부러 안 싣는다. AI 서버는 로봇이 어느 정점에 있는지 모른다 —
+        관제(`ops_extra._zone_from_fleet`)가 플릿 스냅샷에서 채운다.
+        """
+        self._enqueue(("report", clip_name, note))
+
+    def attach_clip(self, clip_name, clip_path):
+        self._enqueue(("attach", clip_name, clip_path, 0))
+
+    def shutdown(self):
+        """워커를 비우고 끝낸다 — 프로세스 종료 시 마지막 PATCH 가 나가야 한다.
+
+        ⚠️ 종료 신호(`None`)를 넣기 **전에** `_q.join()` 으로 재시도까지 전부
+        빠지길 기다린다. 먼저 넣으면 실패한 PATCH 가 다시 큐에 넣은 재시도가
+        그 `None` 뒤에 줄을 서고, 워커는 `None` 을 먼저 만나 빠져나가 재시도가
+        영영 안 나간다 — `queue.Queue` 는 FIFO 라 순서를 안 봐주지 않는다.
+        """
+        self._q.join()
+        self._enqueue(None)
+        self._worker.join(timeout=5)
+
+    def _enqueue(self, item):
+        try:
+            self._q.put_nowait(item)
+        except queue.Full:
+            pass                    # 큐가 차면 버린다. 메인 루프를 막지 않는 게 우선이다
+
+    def _pump(self):
+        while True:
+            item = self._q.get()
+            if item is None:
+                self._q.task_done()
+                return
+            kind = item[0]
+            try:
+                if kind == "report":
+                    _, clip_name, note = item
+                    got = self._post(
+                        f"{self._base}/api/admin/ops/security/events",
+                        json={"source": self._robot, "note": note},
+                        timeout=(1, 3))
+                    self._ids[clip_name] = (got or {}).get("id")
+                else:
+                    _, clip_name, clip_path, tries = item
+                    event_id = self._ids.get(clip_name)
+                    if event_id is None:
+                        continue    # 보고 자체가 실패했다 — 붙일 곳이 없다
+                    self._patch(
+                        f"{self._base}/api/admin/ops/security/events/{event_id}/clip",
+                        json={"clip_path": clip_path}, timeout=(1, 3))
+                    self._ids.pop(clip_name, None)
+            except Exception:                                   # noqa: BLE001
+                # PATCH 만 재시도한다 — 관제가 잠깐 재시작하면 영상이 영원히 안 붙는다.
+                if kind == "attach" and item[3] < self.MAX_ATTACH_RETRY:
+                    self._enqueue(("attach", item[1], item[2], item[3] + 1))
+            finally:
+                self._q.task_done()
+
+
+class ModePoller:
+    """운영 모드를 주기 폴링해 `on_change(True|False)` 로 알린다.
+
+    ⚠️ **어떤 예외로도 이 루프가 끝나면 안 된다.** 끝나면 마지막으로 읽은 모드에
+    영원히 고정된다 — 주간인데 계속 녹화하거나, 야간인데 무장 안 된 채로 남는다.
+    초기값은 `day`(무장 안 함)다.
+    """
+
+    def __init__(self, base_url, on_change, *, get_fn=None, interval=10.0):
+        self._base = base_url.rstrip("/")
+        self._cb = on_change
+        self._get = get_fn or _default_get
+        self._interval = interval
+        self._stop = threading.Event()
+        self._thread = None
+
+    def start(self):
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+
+    def _loop(self):
+        while not self._stop.is_set():
+            try:
+                got = self._get(f"{self._base}/api/admin/ops/security/mode", timeout=3)
+                self._cb((got or {}).get("mode") == "night")
+            except Exception:                                   # noqa: BLE001
+                pass                                            # 마지막 모드 유지
+            self._stop.wait(self._interval)
