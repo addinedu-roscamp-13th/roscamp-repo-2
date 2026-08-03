@@ -146,6 +146,26 @@ def test_강제_종료_뒤_사람이_사라지면_그때_등록을_해제한다(
     assert len(resets) == 1
 
 
+def test_강제_종료_뒤_대기_중_주간_전환되면_등록을_해제한다(tmp_path):
+    """⚠️ 상한 종료로 `_pending_release` 가 켜진 채(대상이 여전히 보여 아직 안
+    풀린 채) 사서가 「주간」을 누르면, `_recording` 은 이미 False 라
+    `if self._recording: self._stop(...)` 경로를 안 타 등록이 안 풀리고 그대로
+    새 지 않으면 다음 밤 침입자가 어제 갤러리에 매칭된다.
+    """
+    clock, sink = Clock(), FakeSink()
+    resets = []
+    r = SecurityRecorder(robot_name="pinky-3", media_dir=tmp_path, sink=sink,
+                         now_fn=clock, reset_fn=lambda: resets.append(clock.t),
+                         params=SecurityParams(fps=10))
+    r.arm(True)
+    _see(r, clock, 1.1)
+    _see(r, clock, 130.0)                     # 상한으로 강제 종료. 사람은 아직 보인다
+    assert resets == []                       # 아직 대기 중 — 아직 안 풀렸다
+    r.arm(False)
+    r.feed(None, 0.0)                         # 다음 tick에서 주간 전환이 적용된다
+    assert len(resets) == 1                   # 대기 중이던 등록이 여기서 풀려야 한다
+
+
 def test_등록_해제는_한_번만_불린다(tmp_path):
     clock, sink = Clock(), FakeSink()
     resets = []

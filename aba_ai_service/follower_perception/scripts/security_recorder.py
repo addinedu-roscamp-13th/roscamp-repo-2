@@ -119,6 +119,11 @@ class SecurityRecorder:
                 # 남아 영영 재생이 안 된다(파일 핸들도 안 닫힌다).
                 if self._recording:
                     self._stop(now, release=True)
+                elif self._pending_release:
+                    # 상한 종료 뒤 소실을 기다리던 중 주간으로 꺼졌다 — 여기서
+                    # 안 풀면 다음 재시작까지 영영 안 풀린다(위 `_pending_release`
+                    # 필드 주석·`_release_registration` 머리말 참고).
+                    self._release_registration()
                 self._ring.clear()
                 self._seen_since = None
                 self._pending_release = False
