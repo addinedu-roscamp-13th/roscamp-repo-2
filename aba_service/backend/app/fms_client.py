@@ -61,11 +61,12 @@ def _request(
 FMS_LOGIN_PATH = "/api/auth/login"
 
 
-def _login() -> tuple[bool, str]:
+def _login(timeout: int = TIMEOUT_SEC) -> tuple[bool, str]:
     status, text = _request(
         FMS_LOGIN_PATH,
         "POST",
         {"username": FMS_USER, "password": FMS_PASSWORD},
+        timeout=timeout,
     )
     if status == 0:
         return False, f"FMS 연결 실패: {text}"
@@ -88,7 +89,7 @@ def _authed(
     global _token
     with _lock:
         if _token is None:
-            ok, value = _login()
+            ok, value = _login(timeout=timeout)
             if not ok:
                 return False, value
             _token = value
@@ -97,7 +98,7 @@ def _authed(
     status, text = _request(path, method, body, token, timeout=timeout)
     if status == 401:
         with _lock:
-            ok, value = _login()
+            ok, value = _login(timeout=timeout)
             if not ok:
                 return False, value
             _token = value
