@@ -288,15 +288,25 @@ TEST(CbsTraffic, DeadEndCostsUTurn)
   const auto g = load_graph();
   const auto tg = tr.graph_for(g, {});
 
-  // arte2 의 v0(주차장)은 v1 하고만 이어져 있다 — 나가려면 반드시 U턴.
-  ASSERT_EQ(g.neighbors(0).size(), 1u) << "테스트 전제: v0 은 막다른 정점";
-  const int w = g.neighbors(0)[0];
+  // [2026-08-01] **정점 번호를 박지 않는다.** 예전엔 "arte2 의 v0(주차장)" 을 전제했는데
+  //   두 겹으로 낡아 있었다: 이 타깃이 로드하는 것은 arte2 가 아니라 new_map 이고,
+  //   arte2 에도 `주차장` 정점은 없다(있는 것은 충전소통로·충전소입구·충전소).
+  //   그래서 `neighbors(0).size()==1` 이 깨져 테스트가 전제에서 죽었다.
+  //   이제 그래프에서 **차수 1인 정점을 찾아** 쓴다. 없으면 이 그래프로는 잴 수 없다.
+  int dead = -1;
+  for (int i = 0; i < g.size(); ++i) {
+    if (g.neighbors(i).size() == 1u) { dead = i; break; }
+  }
+  if (dead < 0) {
+    GTEST_SKIP() << "이 navgraph 에는 막다른 정점이 없다 — U턴 몫을 잴 대상이 없다";
+  }
+  const int w = g.neighbors(dead)[0];
 
   int cost = -1;
-  for (const auto & [n, c] : tg[0]) { if (n == w) { cost = c; } }
+  for (const auto & [n, c] : tg[dead]) { if (n == w) { cost = c; } }
   ASSERT_GT(cost, 0);
 
-  const auto & a = g.vertex(0);
+  const auto & a = g.vertex(dead);
   const auto & b = g.vertex(w);
   const double travel = std::hypot(b.x - a.x, b.y - a.y) / tr.speed_mps();
   const int travel_only = libi_fleet::ticks_for(1.0, 1.0 / travel, tr.tick_seconds());
@@ -324,9 +334,16 @@ TEST(CbsTraffic, GateStaysResponsiveDuringReplan)
 
   std::atomic<bool> done{false};
   std::thread planner([&] {
-    for (int i = 0; i < 20; ++i) {
+    // ⚠️ **횟수가 아니라 시간으로 묶는다.** 계획 한 번의 비용은 지도와 틱 길이에 달려
+    //    있어 고정 횟수로 두면 테스트 길이가 그것들을 따라 널뛴다 — 실제로 arte2 에
+    //    레인 하나를 나눴더니(9-13 을 9-10-13 으로) 회전비용이 붙어 한 번이 3 ms 에서
+    //    8.9 초가 됐고, 20회 고정이던 이 테스트가 3분으로 늘어 ament 기본 제한(60초)에
+    //    걸렸다. 재는 것은 "계획이 도는 동안" 게이트가 열려 있느냐지, 계획 횟수가 아니다.
+    //    (실운영 틱 1.0 초에서는 같은 계획이 1 ms 다 — 느린 것은 이 파일의 0.02 초뿐이다.)
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    do {
       tr.replan(make_snapshot(g, {{"A", 0, 3, 0}, {"B", 3, 0, 0}, {"C", 1, 2, 0}}));
-    }
+    } while (std::chrono::steady_clock::now() < until);
     done = true;
   });
 
@@ -368,4 +385,304 @@ TEST(CbsTraffic, BadSnapshotPlansNothing)
   PlanSnapshot no_graph;
   no_graph.robots = {{"A", 0, 3, 0}};
   EXPECT_TRUE(tr.replan(no_graph).empty()) << "그래프가 없으면 계획할 수 없다";
+}
+
+// ── 🔴 회귀: 근접 정점 규칙이 CbsTraffic 을 **통과해서** 걸리는가 ─────────
+//
+// CbsTraffic 은 물리 점유 판정을 자기 안의 fallback_(ReservationDeadlock)에 위임한다.
+// set_min_separation 을 바깥 객체에만 걸면 fallback_ 은 설정을 못 받아 규칙이 **조용히
+// 꺼진 채로** 돈다. 실제로 그랬고, sim 에서 "규칙을 넣었는데 최소거리가 그대로"로 나타났다.
+// 그건 규칙이 무력한 게 아니라 규칙이 전달되지 않은 것이었다.
+//
+// ⚠️ 이 규칙은 **노드 충돌만** 막는다. 간선을 지나는 동안 쓸고 가는 통로는 보호하지 않는다.
+TEST(CbsTraffic, MinSeparationReachesPhysicalFallback)
+{
+  set_env(1, 1, 1000);
+  libi_fleet::CbsTraffic tr;
+  const auto g = load_graph();
+
+  // 서로 다른 두 정점 중 **가장 가까운** 쌍을 찾는다. 지도가 바뀌어도 따라온다.
+  int a = -1, b = -1;
+  double best = 1e9;
+  for (int i = 0; i < g.size(); ++i) {
+    for (int j = i + 1; j < g.size(); ++j) {
+      const double d = std::hypot(g.vertex(i).x - g.vertex(j).x,
+                                  g.vertex(i).y - g.vertex(j).y);
+      if (d < best) { best = d; a = i; b = j; }
+    }
+  }
+  ASSERT_GE(a, 0);
+
+  // 그 간격보다 **큰** 최소이격을 주면 두 정점은 동시 점유 불가여야 한다.
+  tr.set_min_separation(g, best + 0.01);
+  ASSERT_EQ(tr.request_move("R1", a, a, 0), MoveDecision::GRANT) << "먼저 온 로봇은 선다";
+  EXPECT_EQ(tr.request_move("R2", b, b, 0), MoveDecision::GRANT)
+    << "현재 위치 주장(from==to)은 막지 않는다 — 막아도 로봇이 안 비켜지고 기동만 막힌다";
+
+  // 진입은 막혀야 한다. 이게 fallback_ 까지 설정이 갔다는 증거다.
+  libi_fleet::CbsTraffic tr2;
+  tr2.set_min_separation(g, best + 0.01);
+  ASSERT_EQ(tr2.request_move("R1", a, a, 0), MoveDecision::GRANT);
+  const int far = (a + g.size() / 2) % g.size();
+  EXPECT_EQ(tr2.request_move("R2", far, b, 0), MoveDecision::WAIT)
+    << "v" << a << " 를 잡은 로봇이 있는데 " << best << "m 옆 v" << b << " 로 들여보냈다";
+
+  // 규칙을 끄면 예전과 같아야 한다(회귀 방지).
+  libi_fleet::CbsTraffic tr3;
+  tr3.set_min_separation(g, 0.0);
+  ASSERT_EQ(tr3.request_move("R1", a, a, 0), MoveDecision::GRANT);
+  EXPECT_EQ(tr3.request_move("R2", far, b, 0), MoveDecision::GRANT)
+    << "규칙을 껐는데도 막혔다";
+}
+
+// ── 반복 지연 간선: **막지 않고 비싸게** ─────────────────────────────────────
+//
+// 실기 증상(2026-08-02): "지연 +24.9s 인데 재경로를 안 찾는다".
+// 찾긴 찾는데 회피 대상(`blocked`)에 ERROR 로봇만 들어가서 **같은 길이 다시 나왔다.**
+// fleet_node 가 마감을 반복해 못 지킨 간선을 `slow_edges` 로 실어 주고, 계획이 그
+// 관측을 비용에 되먹인다.
+
+TEST(CbsTrafficSlowEdge, PenalisedEdgeMakesThePlannerPickAnother) {
+  set_env(/*clearance=*/1, /*slack=*/1, /*drift_limit=*/10);
+  libi_fleet::Navgraph g;
+  ASSERT_TRUE(g.load(TEST_NAVGRAPH_PATH, "L1"));
+  libi_fleet::CbsTraffic t;
+
+  PlanSnapshot snap;
+  snap.graph = &g;
+  PlanRequest r; r.robot = "a"; r.start = 0; r.goal = 4; r.priority = 0;
+  snap.robots.push_back(r);
+
+  const auto before = t.replan(snap);
+  ASSERT_EQ(before.size(), 1u);
+  ASSERT_GE(before[0].path.size(), 2u);
+  const int first_hop = before[0].path[1];
+
+  // 그 첫 홉이 반복해서 마감을 못 지켰다고 알려 준다.
+  snap.slow_edges.push_back({0, first_hop, 10});
+  const auto after = t.replan(snap);
+  ASSERT_EQ(after.size(), 1u);
+  ASSERT_GE(after[0].path.size(), 2u);
+  EXPECT_NE(after[0].path[1], first_hop) << "벌점을 줬는데 같은 길을 다시 냈다";
+  EXPECT_EQ(after[0].path.back(), 4) << "목적지는 그대로여야 한다";
+}
+
+// ⚠️ **막는 것과 다르다.** 대안이 없으면 그 길로 그냥 간다 — 여기서 끊어 버리면
+//    시간표가 통째로 실패하고("시간표를 세우지 못했습니다") 편대 전체가 반응형으로
+//    내려간다. 느린 길이라도 있는 길이 없는 길보다 낫다.
+TEST(CbsTrafficSlowEdge, PenaltyNeverDisconnectsTheGraph) {
+  set_env(1, 1, 10);
+  libi_fleet::Navgraph g;
+  ASSERT_TRUE(g.load(TEST_NAVGRAPH_PATH, "L1"));
+  libi_fleet::CbsTraffic t;
+
+  PlanSnapshot snap;
+  snap.graph = &g;
+  PlanRequest r; r.robot = "a"; r.start = 19; r.goal = 0; r.priority = 0;
+  snap.robots.push_back(r);
+
+  const auto before = t.replan(snap);
+  ASSERT_EQ(before.size(), 1u);
+  const int first_hop = before[0].path[1];
+
+  // 19→0 은 이 첫 홉 말고 길이 없다(실측: 막으면 도달 불가).
+  snap.slow_edges.push_back({19, first_hop, 1000});
+  const auto after = t.replan(snap);
+  ASSERT_EQ(after.size(), 1u) << "대안이 없는데 계획을 포기했다 — 벌점이 통행금지가 됐다";
+  EXPECT_EQ(after[0].path[1], first_hop);
+  EXPECT_EQ(after[0].path.back(), 0);
+}
+
+// 빈 slow_edges 는 예전과 완전히 같아야 한다.
+TEST(CbsTrafficSlowEdge, EmptyListChangesNothing) {
+  set_env(1, 1, 10);
+  libi_fleet::Navgraph g;
+  ASSERT_TRUE(g.load(TEST_NAVGRAPH_PATH, "L1"));
+  libi_fleet::CbsTraffic t1, t2;
+
+  PlanSnapshot a; a.graph = &g;
+  PlanRequest r; r.robot = "a"; r.start = 0; r.goal = 4;
+  a.robots.push_back(r);
+  PlanSnapshot b = a;
+  b.slow_edges.clear();
+
+  const auto pa = t1.replan(a);
+  const auto pb = t2.replan(b);
+  ASSERT_EQ(pa.size(), pb.size());
+  EXPECT_EQ(pa[0].path, pb[0].path);
+  EXPECT_EQ(pa[0].arrive_tick, pb[0].arrive_tick);
+}
+
+// ── 🔴 회귀: 지연 관용은 **0** 이다 ───────────────────────────────────
+//
+// 예약 시각을 넘긴 시간표는 그 순간부터 남에게 틀린 통과 허가를 내주고 있다.
+// 그래서 봐주는 폭이 없다 — 계획 시각을 지나 요청이 오면 그 자리에서 강등하고
+// 재계획을 건다.
+//
+// ⚠️ **강등해도 로봇은 서지 않는다.** 판정은 반응형(물리 예약)으로 내려갈 뿐이라
+//    결정은 GRANT 일 수 있다. 그래서 이 시험이 보는 것은 결정이 아니라
+//    `needs_replan()` 이다 — 결정만 보면 아무것도 검증하지 않는 시험이 된다.
+TEST(CbsTraffic, LatenessDemotesWithNoTolerance)
+{
+  set_env(1, 0, 0);              // ← drift_limit 0
+  set_env_fast_model();
+  libi_fleet::CbsTraffic tr;
+  const auto g = load_graph();
+
+  const auto snap = make_snapshot(g, {{"A", 0, 3, 0}});
+  const auto routes = tr.replan(snap);
+  ASSERT_EQ(routes.size(), 1u);
+  if (routes[0].path.size() < 3 || routes[0].arrive_tick[2] < 1) {
+    GTEST_SKIP() << "0틱 출발 칸뿐이라 '늦음' 을 만들 수 없다";
+  }
+  EXPECT_FALSE(tr.needs_replan()) << "계획 직후인데 이미 재계획을 원한다";
+
+  const int a = routes[0].path[0], b = routes[0].path[1], c = routes[0].path[2];
+  tr.request_move("A", a, a, 0);
+  ASSERT_EQ(tr.request_move("A", a, b, 0), MoveDecision::GRANT);
+  tr.release_node("A", a);
+
+  // b→c 의 계획 출발 시각을 확실히 지나서 물어본다.
+  sleep_ticks(routes[0].arrive_tick[2] + 2.0);
+  tr.request_move("A", b, c, 0);
+
+  EXPECT_TRUE(tr.needs_replan())
+    << "계획 시각을 넘겨 요청했는데 시간표를 그대로 들고 있다";
+  EXPECT_EQ(tr.last_demote_reason(), "계획 대비 지연");
+}
+
+// 같은 상황에서 관용을 주면 강등하지 않는다 — 위 시험이 문턱을 실제로 보고 있다는 증거.
+// (이게 없으면 "sleep 하면 늘 강등" 을 통과시키는 시험일 수도 있다.)
+TEST(CbsTraffic, LatenessToleratedWhenDriftLimitSet)
+{
+  set_env(1, 0, 1000);
+  set_env_fast_model();
+  libi_fleet::CbsTraffic tr;
+  const auto g = load_graph();
+
+  const auto routes = tr.replan(make_snapshot(g, {{"A", 0, 3, 0}}));
+  ASSERT_EQ(routes.size(), 1u);
+  if (routes[0].path.size() < 3 || routes[0].arrive_tick[2] < 1) {
+    GTEST_SKIP() << "0틱 출발 칸뿐이라 '늦음' 을 만들 수 없다";
+  }
+
+  const int a = routes[0].path[0], b = routes[0].path[1], c = routes[0].path[2];
+  tr.request_move("A", a, a, 0);
+  ASSERT_EQ(tr.request_move("A", a, b, 0), MoveDecision::GRANT);
+  tr.release_node("A", a);
+
+  sleep_ticks(routes[0].arrive_tick[2] + 2.0);
+  tr.request_move("A", b, c, 0);
+
+  EXPECT_FALSE(tr.needs_replan()) << "1000틱을 봐주기로 했는데 강등했다";
+}
+
+// 기본값이 0 인가. 환경변수를 안 주면 이 정책이 그대로 적용돼야 한다.
+// 사용자 스펙(2026-08-02): "지연시간이 넘어가면 바로 재계획. 화면은 거기까지 카운트다운".
+// 그 '지연시간' 이 `drift_limit × tick_sec` = **5초**다.
+//
+// ⚠️ 이 값은 **화면의 카운트다운과 같은 값**이다(`/fms/plan` 의 `drift_limit` →
+//    `WaypointEditor.tsx` 의 `tol`). 화면이 0 을 찍는 순간과 재계획이 걸리는 순간이
+//    같아야 하므로 여기서 못 박아 둔다. 한쪽만 바꾸면 화면이 거짓말을 시작한다.
+//
+// ⚠️ **0 으로 내리지 마라.** 틱이 1초라 0.1초 흔들림도 틱 경계를 넘는 순간 지연이 되어
+//    재계획이 폭주한다(실측: 2분에 16회). 하한은 1 이다.
+TEST(CbsTraffic, DefaultDriftLimitIsFiveTicks)
+{
+  // ⚠️ 앞 시험들이 `set_env`/`set_env_fast_model` 로 환경을 더럽혀 둔다.
+  //    **기본값**을 보는 시험이므로 둘 다 지우고 새로 만든다.
+  unsetenv("LIBI_CBS_DRIFT_LIMIT");
+  unsetenv("LIBI_CBS_TICK_SEC");
+  libi_fleet::CbsTraffic tr;
+  EXPECT_EQ(tr.drift_limit(), 5) << "지연 관용 기본값이 5 가 아니다";
+  EXPECT_DOUBLE_EQ(tr.tick_seconds(), 1.0) << "틱이 1초가 아니면 '5초' 가 성립하지 않는다";
+  EXPECT_GE(tr.drift_limit(), 1) << "0 은 못 쓴다 — 틱 경계 반올림에 걸린다";
+}
+
+// ── 커밋 간선 예산 (`commit_deadline_tick`) ─────────────────────────────
+//
+// 로봇이 **가고 있는 중**에 재계획하면 계획은 그 목적지 정점을 t=0 으로 잡는다.
+// 그런데 로봇은 아직 도착 전이라, 0 을 마감으로 쓰면 계획이 서자마자 초과가 된다.
+// 그래서 예전엔 `fleet_node` 가 그 마감을 통째로 버렸고(센티널 -1), 그 구간이
+// **무감지**가 됐다 — sim 실측(2026-08-02)에서 25초 지연을 주입한 로봇의 마감 초과
+// 경고가 0건이었다.
+//
+// 답은 0 도 -1 도 아닌 **그 간선의 예산**이고, 그 값은 이 플러그인이 계산해야 한다.
+// `fleet_node` 가 거리·속도로 다시 계산하면 회전·노드 정지·slow-edge 가 빠져
+// 모델이 갈라진다.
+
+// 커밋 간선을 안 실어 보내면 예전 그대로 -1 이다 — 기존 호출자는 아무 영향 없다.
+TEST(CbsTraffic, NoCommitEdgeMeansNoDeadline)
+{
+  set_env(1, 0, 0);
+  set_env_fast_model();
+  libi_fleet::CbsTraffic tr;
+  const auto g = load_graph();
+
+  const auto routes = tr.replan(make_snapshot(g, {{"A", 0, 3, 0}}));
+  ASSERT_EQ(routes.size(), 1u);
+  EXPECT_EQ(routes[0].commit_deadline_tick, -1)
+    << "커밋 간선을 안 줬는데 마감을 지어냈다";
+}
+
+// 커밋 간선을 실어 보내면 **그 간선의 실제 비용**이 돌아온다.
+// 값을 상수로 박지 않고 `graph_for()` 로 대조한다 — 그래야 소요 모델을 고쳐도
+// 이 시험이 같이 따라온다(박아 두면 모델이 바뀔 때 조용히 거짓말을 한다).
+TEST(CbsTraffic, CommitEdgeBudgetMatchesTheTimeModel)
+{
+  set_env(1, 0, 0);
+  set_env_fast_model();
+  libi_fleet::CbsTraffic tr;
+  const auto g = load_graph();
+
+  const auto & nbrs = g.neighbors(0);
+  ASSERT_FALSE(nbrs.empty()) << "정점 0 에 나가는 간선이 없다";
+  const int from = 0, to = nbrs[0];
+
+  // 지금 0 → to 간선을 타고 가는 중이라고 알린다.
+  PlanRequest pr;
+  pr.robot = "A";
+  pr.start = to;
+  pr.goal = 3;
+  pr.committed_from = from;
+  const auto routes = tr.replan(make_snapshot(g, {pr}));
+  ASSERT_EQ(routes.size(), 1u);
+
+  const auto tg = tr.graph_for(g, {});
+  int expected = -1;
+  for (const auto & e : tg[from]) { if (e.first == to) { expected = e.second; } }
+  ASSERT_GT(expected, 0) << "시험 전제가 깨졌다 — 그 간선의 비용이 없다";
+
+  EXPECT_EQ(routes[0].commit_deadline_tick, expected)
+    << "커밋 간선 예산이 플래너의 소요 모델과 다르다";
+  // ⚠️ [2026-08-02] **계획의 첫 도착틱이 곧 커밋 예산이어야 한다.**
+  //
+  //   처음엔 예산을 `commit_deadline_tick` 으로만 내보내고 계획은 0틱 출발로 뒀다.
+  //   그러면 로봇이 그 칸을 실제로 타고 도착해 다음 간선을 요청하는 순간
+  //   `request_move` 가 `now - depart`(depart≈0) 를 보고 무조건 지연으로 강등한다
+  //   (실기 실측: 재계획 사유의 90%). 이제 `PlanOptions::start_ticks` 로 계획 자체가
+  //   그 시각에서 출발하므로 **둘이 같다.** 여기가 갈리면 그 회귀다.
+  ASSERT_FALSE(routes[0].arrive_tick.empty());
+  EXPECT_EQ(routes[0].arrive_tick[0], routes[0].commit_deadline_tick)
+    << "계획이 커밋 예산에서 출발하지 않는다 — 도착 즉시 지연 강등이 난다";
+  EXPECT_GT(routes[0].arrive_tick[0], 0)
+    << "0 에서 출발하면 계획이 서자마자 초과가 된다 — 그게 옛 churn 이다";
+}
+
+// 인접하지 않은 정점을 커밋 간선이라고 주면 마감을 지어내지 않는다.
+TEST(CbsTraffic, UnknownCommitEdgeYieldsNoDeadline)
+{
+  set_env(1, 0, 0);
+  set_env_fast_model();
+  libi_fleet::CbsTraffic tr;
+  const auto g = load_graph();
+
+  PlanRequest pr;
+  pr.robot = "A";
+  pr.start = 0;
+  pr.goal = 3;
+  pr.committed_from = 999;          // 그래프 밖
+  const auto routes = tr.replan(make_snapshot(g, {pr}));
+  ASSERT_EQ(routes.size(), 1u);
+  EXPECT_EQ(routes[0].commit_deadline_tick, -1) << "없는 간선의 예산을 지어냈다";
 }

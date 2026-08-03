@@ -66,12 +66,21 @@ class FleetCmdDriver:
     def _now(self):
         return self._node.get_clock().now().nanoseconds / 1e9
 
-    def start(self):
+    def start(self, args=None):
+        """`args` 를 주면 `args_fn` 대신 그것을 싣는다.
+
+        ⚠️ 같은 액션인데 **상황에 따라 인자가 달라지는** 경우에만 쓴다. `args_fn` 은
+        노드가 만들 때 고정되므로 leaf 의 그때그때 상태(예: 회복 회전 허가 여부)를
+        담을 수 없다. 그렇다고 leaf 상태를 노드까지 끌어내리면 배선이 한 겹 늘고,
+        "누가 그 값을 쓰는지" 가 코드에서 안 보인다. 호출부에서 명시하는 쪽이 낫다.
+        (`GuideExec._allow_rotate` 가 유일한 사용처다.)
+        """
         self._seq += 1
         self._abandoned_id = None       # 새 명령을 내면 옛 포기 기록은 의미가 없다
         self._pending_id = f"{self._action}-{self._seq}-{int(self._now() * 1000)}"
         self._started_at = self._now()
-        self._publish(self._action, self._args_fn(), self._pending_id)
+        self._publish(self._action, self._args_fn() if args is None else args,
+                      self._pending_id)
 
     def poll(self):
         if self._pending_id is None:
@@ -169,3 +178,103 @@ class YawGoalDriver:
 
     def stop(self):
         self._driver.stop()
+
+
+class NudgeDriver:
+    """정해진 속도를 정해진 시간만큼 밀어 **개루프로 몇 cm** 를 움직인다.
+
+    복귀 ⑤단계(`DockNudge`)가 쓴다. ArUco 접근이 6cm 에서 손을 떼면, 마커가 카메라
+    화각을 벗어나는 마지막 구간이 남는다. 그 구간은 볼 수단이 없으므로 시간으로 민다.
+
+    ## ⚠️ `/cmd_vel` 이 아니라 `cmd_vel_dock` 이다
+
+    `/cmd_vel` 직접 발행은 twist_mux.yaml 이 금지한다 — 중재를 우회하면 "마지막에
+    도착한 명령이 이긴다"로 되돌아간다. `dock` 입력(priority 120)으로 보내면
+    비상정지(255)와 FSM hold(160)에는 지고 나머지는 이긴다. 그게 맞는 서열이다:
+    **주차 중에도 비상정지는 통해야 하고, 새어 나온 nav2 목표에는 져선 안 된다.**
+
+    ## ⚠️ 왜 BT tick 이 아니라 자기 타이머로 미는가
+
+    BT 는 5Hz 로 돌고, 이 로봇은 CPU 부하로 tick 이 밀린다(2026-07-30 실측: nav2 가
+    제어 주기를 놓칠 정도). tick 에 얹어 발행하면 부하가 튈 때 명령이 0.5초 이상
+    끊기고, 그러면 twist_mux 가 입력을 버리고 모터 워치독이 로봇을 세운다 —
+    **개루프 거리가 부하에 따라 달라진다.** 그래서 20Hz 전용 타이머로 민다.
+
+    ## ⚠️ 끝나고 0 을 실제로 낸다
+
+    발행만 멈추면 twist_mux timeout(0.5s)·모터 워치독(0.5s)이 세울 때까지 굴러간다.
+    0.08m/s 면 그동안 4cm 를 더 간다 — 3cm 를 재려는 판에 **이동량보다 크다.**
+    그래서 주행이 끝나면 0 을 명시적으로 낸다.
+
+    ## ⚠️ [2026-07-30] 시간이 아니라 **발행**을 기준으로 센다 (codex 리뷰 지적)
+
+    처음엔 `start()` 시각으로 종료 시각을 박고, 0 구간도 "종료 + 0.3초"로 두었다.
+    둘 다 지터에 샜다:
+
+      ① `start()` 는 아무것도 발행하지 않는다. 첫 timer callback 이 위상에 따라
+         0~50ms 뒤에 오는데 종료 시각은 `start()` 기준이라 **매번 그만큼 짧게** 갔다.
+         부하로 첫 callback 이 더 밀리면(수백 ms 는 실제로 일어난다) 그만큼 더 짧아진다.
+         → 종료 시각을 **첫 발행 tick** 에서 정한다. 그러면 실제로 민 시간이 곧 `duration` 이다.
+
+      ② 0 구간을 시각으로 재면, 주행 종료 직후 callback 이 0.3초 넘게 밀렸을 때
+         `now >= _zero_until` 로 바로 빠져 **0 을 한 번도 안 낸다.** 그러면 위에서 막으려던
+         "워치독이 세울 때까지 2.5cm 더 감"이 그대로 되살아난다.
+         → 0 을 **횟수로** 센다. 몇 번 밀리든 0 은 반드시 그만큼 나간다.
+    """
+
+    def __init__(self, node, topic, *, distance_m, speed_mps,
+                 rate_hz=20.0, zero_sec=0.3):
+        from geometry_msgs.msg import Twist
+
+        self._Twist = Twist
+        self._pub = node.create_publisher(Twist, topic, 10)
+        self._clock = node.get_clock()
+        self._log = node.get_logger()
+        #: 속도 부호가 방향이다. **음수 = 후진** (충전 단자가 뒤에 있다).
+        self._speed = float(speed_mps)
+        self._duration = abs(float(distance_m) / self._speed) if self._speed else 0.0
+        #: 주행 뒤 낼 0 의 **개수**. 시각이 아니라 개수라야 지터에 안 샌다(위 ② 참고).
+        self._zero_ticks = max(1, round(float(zero_sec) * float(rate_hz)))
+        self._deadline = None           # 첫 발행 tick 에서 정한다
+        self._zeroed = 0
+        self._active = False
+        node.create_timer(1.0 / float(rate_hz), self._tick)
+
+    def _now(self):
+        return self._clock.now().nanoseconds / 1e9
+
+    def start(self):
+        self._deadline = None
+        self._zeroed = 0
+        self._active = True
+        self._log.info(
+            f"도킹 미세 이동: {self._speed:+.3f} m/s × {self._duration:.2f}s")
+
+    def poll(self):
+        return "running" if self._active else "success"
+
+    def stop(self):
+        """중단. 남은 주행을 버리고 0 구간으로 넘어간다 — 조용히 손을 떼는 게 아니라
+        **0 을 내고** 멈춘다(위 ② 와 같은 이유).
+
+        아직 한 번도 발행하지 않았어도 `_deadline` 을 지금으로 박는다. `None` 으로 두면
+        다음 tick 이 "첫 발행"으로 보고 거기서부터 다시 `duration` 을 재 **끊었는데 그때부터
+        3cm 를 간다.**"""
+        if self._active:
+            self._deadline = self._now()
+
+    def _tick(self):
+        if not self._active:
+            return                      # 안 도는 동안은 침묵 — 입력이 없는 것으로 친다
+        now = self._now()
+        if self._deadline is None:
+            self._deadline = now + self._duration
+        msg = self._Twist()
+        if now < self._deadline:
+            msg.linear.x = self._speed
+            self._pub.publish(msg)
+            return
+        self._pub.publish(msg)          # 0
+        self._zeroed += 1
+        if self._zeroed >= self._zero_ticks:
+            self._active = False

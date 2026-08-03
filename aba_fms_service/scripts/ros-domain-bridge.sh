@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 로봇 도메인 <-> 서버 도메인(86) 브릿지를 DB(rc_robots) 기준으로 기동한다.
+# 로봇 도메인 <-> 서버 도메인(111) 브릿지를 DB(rc_robots) 기준으로 기동한다.
 # gen_domain_bridges.py 는 두 가지가 갖춰진 셸에서 돌아야 한다:
 #   - ROS2(ros2 명령) — 브릿지 자체를 서브프로세스로 띄우는 데 필요
 #   - backend/.venv 의 파이썬 — pymysql 이 시스템 python3 에는 없다

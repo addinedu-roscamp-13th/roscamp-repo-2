@@ -45,8 +45,24 @@ ACCEPTING_STATES = frozenset({"IDLE", "PATROL", "INTERACTING"})
 # 승인되면 로봇을 이 상태로 옮긴다. IDLE/PATROL -> WORKING 은 전이표의 정식 간선
 # (task_assigned)이라 force 가 필요 없다 — ACCEPTING_STATES 가 딱 그 둘인 이유이기도 하다.
 FOLLOW_STATE = "WORKING"
-# 해제하면 되돌릴 상태. WORKING -> IDLE 은 stop_request 간선.
-RELEASE_STATE = "IDLE"
+# 해제하면 되돌릴 상태. WORKING -> PATROL 은 task_done 간선이라 force 가 필요 없다.
+#
+# ⚠️ [2026-08-02] **"IDLE" 이었다 — 추종이 끝나면 로봇이 순찰로 갔다가 곧바로 대기로
+#    떨어지는 버그의 원인이다.**
+#
+#    로봇 쪽은 이미 "추종 끝 → 순찰" 로 짜여 있다: `FollowExec._release` 가
+#    `NEXT_MODE="PATROL"` 을 예약하고 `RequestTransition` 이 그 tick 에 적용한다
+#    (libi_modes/common/working_actions.py). 그런데 거의 같은 시각에 여기서 보낸
+#    IDLE 이 로봇의 `state_io.apply_pending()` 에 도착하고, 그 함수는 검사 없이
+#    `CURRENT_MODE` 를 덮어쓴다 — 로봇이 방금 정한 PATROL 이 뭉개진다.
+#    화면에는 "순찰로 잠깐 갔다가 바로 대기" 로 보인다(실측 2026-08-02).
+#
+#    게다가 `apply_pending` 은 `HOLD_UNTIL = now + manual_hold_sec` 를 찍는데
+#    params.yaml 이 300초라, 그 뒤 **5분 동안 로봇이 스스로 못 빠져나온다.**
+#
+#    PATROL 로 맞추면 로봇이 스스로 간 곳과 FMS 가 미는 곳이 같아져 경합 자체가
+#    사라진다. 배터리가 낮으면 `PatrolBranch` 의 `BatteryCheck` 가 알아서 복귀시킨다.
+RELEASE_STATE = "PATROL"
 
 # 로봇이 스스로 들어간 상태 — 추종 해제가 여기서 끌어내면 안 된다.
 #   ERROR      : error_code 확인 없이 에러를 지우는 셈이 된다.
@@ -172,7 +188,14 @@ async def request_admin_follow(req: AdminFollowRequest) -> AdminFollowResponse:
         fleet_telemetry.send_command_async, req.robot_id, FOLLOW_COMMAND, {})
     if cmd_id is None:
         # 명령이 안 나갔으면 되돌린다 — WORKING 에 갇힌 로봇을 남기지 않는다(guide.py 와 같다).
-        await _move_state(req.robot_id, RELEASE_STATE)
+        #
+        # ⚠️ [2026-08-02] **`RELEASE_STATE` 를 쓰면 안 된다 — 원래 상태로 되돌려야 한다.**
+        #   `RELEASE_STATE`(=PATROL) 는 "추종을 정상적으로 마쳤다 → 순찰 재개" 라는 뜻이다.
+        #   여기는 **아무 일도 안 일어난** 경우라, PATROL 을 밀면 IDLE·INTERACTING 에
+        #   서 있던 로봇이 **갑자기 순찰 주행을 시작한다**(fleet_node 가 task 없는 PATROL 에
+        #   순회 경로를 부여한다). 관리자가 패널 앞에 서 있는데 로봇이 떠나 버린다.
+        #   위에서 읽어 둔 `state`(ACCEPTING_STATES 중 하나)로 정확히 되돌린다.
+        await _move_state(req.robot_id, state)
         with _grants_lock:
             _grants.pop(req.robot_id, None)
         return _reject("로봇 명령 링크가 없습니다 (브릿지 미기동?).")

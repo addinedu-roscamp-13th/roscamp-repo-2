@@ -98,7 +98,13 @@ PY
 
 PATROL_ROUTE="$(resolve_route "$NAVGRAPH" "$PATROL_NAMES")" || die "patrol_route 해석 실패 — 위 stderr 참고 (navgraph 재생성 필요할 수 있음)"
 SECURITY_ROUTE="$(resolve_route "$NAVGRAPH" "$SECURITY_NAMES")" || die "security_patrol_route 해석 실패"
+# [2026-08-01] 동시 1대만 허용할 구역. 충전소는 대피선 없는 막다른 사슬이라
+# 두 대가 들어가면 서로 못 지나간다(정면교차 전수검사 462쌍 중 실패 6건이 전부 여기였다).
+# ⚠️ 없는 이름이면 그냥 비워 둔다 — 규칙이 안 걸릴 뿐 기동을 막지는 않는다.
+EXCLUSIVE_REGION="$(resolve_route "$NAVGRAPH" "충전소 충전소통로 충전소입구" 2>/dev/null || true)"
+
 echo "[fms] patrol_route         = $PATROL_ROUTE"
+echo "[fms] exclusive_region     = ${EXCLUSIVE_REGION:-(없음)}"
 echo "[fms] security_patrol_route = $SECURITY_ROUTE"
 
 need_cmd tmux "sudo apt install -y tmux"
@@ -126,14 +132,40 @@ if [ -x "$FMS/backend/.venv/bin/python" ]; then
 fi
 
 cd "$REPO_ROOT"
-tmux new-session -d -s "$SESSION" -n bridge \
-  bash -c "cd '$FMS' && echo '[bridge] 로봇 도메인 <-> 86 (DB rc_robots 기준)...' && ./scripts/ros-domain-bridge.sh; exec bash"
 
-# fleet_node(배차·교통) — 백엔드와 같은 도메인 86 에서 돈다(fleet_link 가 같은 도메인 전제).
+# ── 서버(관제) 도메인 ────────────────────────────────────────────────────────
+# [2026-07-30] **86 → 111**, 그리고 값을 여기 박지 않고 변수로 뺐다.
+#
+# 왜: 이 PC 는 루트 `.env:67` 의 `ROS_DOMAIN_ID=119`(실물 로봇 pinky-3 용)를 모든
+# 프로세스가 물려받는다. FMS 백엔드의 `ros_bridge` 가 도메인을 명시하지 않아 그 119 를
+# 그대로 타서 **로봇 도메인에 올라가 `/cmd_vel` 을 직접 발행**했다(중재 우회).
+# 백엔드는 app/ros_domains.py 로 고쳤고, 여기(fleet_node)도 같은 값을 봐야 한다 —
+# fleet_link 가 "백엔드와 fleet_node 가 같은 도메인"을 전제하기 때문이다.
+#
+# ⚠️ 이 값은 **로봇 도메인(117~119)과 절대 겹치면 안 된다.**
+SERVER_DOMAIN="${LIBI_SERVER_DOMAIN_ID:-111}"
+
+# ⚠️ **중복 검사는 세션을 만들기 전에 한다.** 실측 사고 2026-08-02:
+#    13:36 에 띄운 fleet_node 를 안 죽인 채 20:21 에 세션을 새로 만들어 **13시간 동안
+#    두 개**가 돌았다. 둘이 같은 로봇에 서로 다른 CBS 예약을 발급해 교통관제가
+#    깨졌고, 관제 지도는 두 계획을 번갈아 그려 깜빡였다. **에러는 한 줄도 안 났다.**
+#
+#    ⚠️ 이 검사를 `tmux new-session` **뒤에** 두면, 중복이라 die 해도 그 사이에 만든
+#       bridge 창이 남는다 — 정리했다고 믿는데 도메인 브릿지 하나가 계속 도는
+#       상태가 된다(codex 지적). 아무것도 만들기 전에 멈춰야 한다.
+#    근거·상세는 `_common.sh` 의 `require_single_instance` 머리말.
+require_single_instance "libi_fleet/lib/libi_fleet/fleet_node" "fleet_node(배차·교통)" \
+  "./scripts/all/kill-libi_server.sh"
+
+tmux new-session -d -s "$SESSION" -n bridge \
+  bash -c "cd '$FMS' && echo '[bridge] 로봇 도메인 <-> $SERVER_DOMAIN (DB rc_robots 기준)...' && ./scripts/ros-domain-bridge.sh; exec bash"
+
+# fleet_node(배차·교통) — 백엔드와 같은 서버 도메인에서 돈다(fleet_link 가 같은 도메인 전제).
 # fleet_ws 안 빌드면 colcon build. RMW/CycloneDDS 는 ~/.bashrc 설정을 따른다(bridge 와 동일).
+# 중복 기동 차단은 위 `require_single_instance` 가 이미 했다.
 if [ -f "$FLEET_WS/install/setup.bash" ] || ensure_built "$FLEET_WS"; then
   tmux new-window -t "$SESSION" -n fleet-node \
-    bash -c "source /opt/ros/jazzy/setup.bash && source '$FLEET_WS/install/setup.bash' && export ROS_DOMAIN_ID=86 && echo '[fleet-node] 배차·교통 (domain 86)...' && ros2 run libi_fleet fleet_node --ros-args -p navgraph_file:='$NAVGRAPH' -p arrive_radius:=$ARRIVE_RADIUS -p prefetch_radius:=$PREFETCH_RADIUS -p patrol_route:='$PATROL_ROUTE' -p security_patrol_route:='$SECURITY_ROUTE'; exec bash"
+    bash -c "source /opt/ros/jazzy/setup.bash && source '$FLEET_WS/install/setup.bash' && export ROS_DOMAIN_ID=$SERVER_DOMAIN && echo '[fleet-node] 배차·교통 (domain $SERVER_DOMAIN)...' && ros2 run libi_fleet fleet_node --ros-args -p navgraph_file:='$NAVGRAPH' -p arrive_radius:=$ARRIVE_RADIUS -p prefetch_radius:=$PREFETCH_RADIUS -p patrol_route:='$PATROL_ROUTE' -p security_patrol_route:='$SECURITY_ROUTE' -p exclusive_region:='$EXCLUSIVE_REGION'; exec bash"
 fi
 
 # 로봇 상태 어댑터 — 도메인 86 에서 돈다(fleet_node·브릿지와 같은 자리라 여기 둔다).

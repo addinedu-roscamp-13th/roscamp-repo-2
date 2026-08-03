@@ -12,6 +12,22 @@ VERIFY_FRAMES = 5              # consecutive passes to lock safe_id
 # Online gallery
 CALIBRATION_INTERVAL = 15      # frames between online updates (ReID gallery + HSV EMA); ~1s @15fps
 CALIBRATION_ADD_THRESHOLD = 0.85  # append only if best gallery sim < this
+
+# ── 등록 직후 집중 학습 ─────────────────────────────────────────────────────
+#
+# `register()` 는 **한 장**으로 템플릿을 만든다(gallery = [template]). 그 뒤 갤러리는
+# `CALIBRATION_INTERVAL`(15프레임 ≈ 0.9초) 마다 한 번씩만 자라므로, 등록하자마자
+# 카메라가 뒤로 바뀌거나 사람이 조금만 돌아서면 **유사도가 REID_THRESHOLD 를 못 넘어
+# owner 가 안 잡힌다.** 그때 파이프라인은 코스팅으로 넘어가고 화면에는 예측(주황) 박스만
+# 뜬다 — `requester_visible` 은 예측을 거르므로 길잡이가 **영영 출발하지 못한다**
+# (실측 2026-08-02: 뒷캠에 노란 박스만 나와 테스트 자체가 안 됐다).
+#
+# 그래서 등록 직후 짧게 **매 프레임** 갤러리를 채운다. 사람이 서 있는 그 몇 초 동안
+# 자세·조명·거리가 조금씩 달라지므로, 한 장보다 훨씬 넓은 표현을 얻는다.
+#
+# ⚠️ 이 구간에도 `CALIBRATION_ADD_THRESHOLD` 는 그대로 적용된다 — 새로운 각도일 때만
+#    추가되므로 같은 그림이 50장 쌓이지 않는다(MAX_GALLERY_SIZE 도 그대로).
+REGISTRATION_LEARN_SEC = 3.0      # 등록 직후 매 프레임 학습할 시간(초)
 MAX_GALLERY_SIZE = 50
 HSV_UPDATE_ALPHA = 0.1            # online HSV template EMA rate (adapt to lighting; 0 = off)
 
@@ -24,7 +40,26 @@ SMOOTHER_ALPHA = 0.45
 SMOOTHER_BETA = 0.15
 FRAME_DT = 0.05                # nominal seconds per frame (20 FPS)
 PREDICT_DT = 0.05             # latency-compensation lookahead
-COAST_LIMIT = 30              # max consecutive missed frames still output (predicted; ~2s @15fps)
+# [2026-08-02] 30 → **24. 사용자 지정 1.4초 @17fps** (24/17 = 1.41s).
+#   유실 구간 동안 예측 위치로 계속 몰아 목표 크기에 맞춰 가고, 다 쓰면 회복 BT 의
+#   `LkdPeek` 가 **마지막으로 돌던 방향(LKD)** 부터 훑는다. 그 방향은 코스팅 중에
+#   기록된다 — 코스팅이 꺼져 있으면 LKD 도 안 갱신되므로 peek 이 엉뚱한 쪽을 본다.
+#
+# [2026-08-01] 30 → 10 → 30, [2026-08-02] → **24**.
+#   10(0.6초)은 사람이 잠깐 몸을 돌리거나 서가에 가려지는 흔한 구간에서 먼저 끊겨
+#   회복 탐색이 바로 돌았다(실측 "사라지면 바로 peek 된다").
+#   24 로 맞춘 이유: 로봇쪽 길잡이 코스팅(`libi_perception/config.py GUIDE_COAST_SEC`)이
+#   **1.4초**인데, 파이프라인이 그보다 길면 길잡이에서 두 값 중 짧은 쪽만 의미를 갖고
+#   긴 쪽은 죽은 설정이 된다. 24/17 = **1.41초** 라 둘이 사실상 같아진다
+#   (사용자 확인 2026-08-02: "1.4초 유지해줘 추종과 같이").
+#
+# ⚠️ **단위가 초가 아니라 프레임이다.** 실제 송출 fps 가 바뀌면 유예 시간도 같이 바뀐다.
+#    실측 기준은 **17fps** — `scripts/all/libi_pi.sh:486` 이 `FPS='17'` 로 띄운다
+#    (`image-sender.sh:14` 의 기본값 15 를 덮어쓴다). 24/17 = 1.41초.
+#    ⚠️ fps 를 바꾸면 `GUIDE_COAST_SEC`(초 단위)과 어긋난다 — 그날 같이 고칠 것.
+#    ⚠️ 이 파일의 다른 프레임 상수 주석은 아직 15fps 로 적혀 있다
+#       (CALIBRATION_INTERVAL, UNKNOWN_STOP_FRAMES) — 실제로는 각각 12% 짧다.
+COAST_LIMIT = 24              # max consecutive missed frames still output (predicted)
 
 # HSV histogram
 HSV_BINS = 16                 # per channel; total 48-d (H+S+V)

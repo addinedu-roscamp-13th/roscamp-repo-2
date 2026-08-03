@@ -98,17 +98,40 @@ class Task:
         }
 
 
-def decompose_delivery(*, book: str, pickup, dropoff) -> list[Leg]:
+def decompose_delivery(*, book: str, pickup, dropoff, tier: int = 0, row: int = 0,
+                       slot: int = 1) -> list[Leg]:
     """배달 = 선반으로 주행 → 집기 → 전달지로 주행 → 놓기.
 
     pickup/dropoff 는 waypoint 식별자(정점 번호/이름) — 코어는 그 정체를 모른다
     (도서→선반→waypoint 해석은 상위 #27 데이터 계층이 한다).
+
+    ## 팔 계약 필드 (2026-07-30)
+
+    팔은 정점 이름이 아니라 **장소 종류**로 움직인다 — 어느 서가든 동작이 같으므로.
+    그래서 팔 leg 에 `object`/`from_place`/`to_place` 를 싣는다.
+
+    ⚠️ `place` 의 `to_place` 는 **비워 둔다.** 목적지가 테이블인지 안내데스크인지는
+    정점의 정체를 알아야 정해지고, 그 지식은 이 코어에 없다(위 docstring). 로봇 쪽 중계
+    (`libi_modes/arm_task_map.py`)가 `at` 정점 이름에서 유도한다 — 거기 규칙과 테스트가 있다.
+
+    `tier`/`row` 는 도서 DB 값(`books.tier`/`books.row`)이라 상위가 넘겨준다. 0 이면
+    "층·줄 정보 없음"이고 팔이 시각으로 찾는다. **`pick` 에만 싣는다** — `place` 는 서가가
+    아니라 바구니에서 꺼내므로 층·줄이 뜻을 갖지 않는다(계약: 0).
+    `slot` 은 리비바구니 칸이다. 주문 1건 = 도서 1권이라 지금은 항상 1 이고, 다중 배달을
+    넣을 때 여기서 배정한다 — **팔은 상태를 갖지 않으므로 pick 과 place 가 같은 번호여야 한다.**
     """
+    arm = {"book": book, "object": "book", "slot": int(slot)}
     return [
         Leg(LegType.NAVIGATE, {"waypoint": pickup}),
-        Leg(LegType.PERFORM_ACTION, {"action": "pick", "book": book, "at": pickup}),
+        Leg(LegType.PERFORM_ACTION, {"action": "pick", "at": pickup,
+                                     "from_place": "서가", "to_place": "리비바구니",
+                                     "tier": int(tier), "row": int(row), **arm}),
         Leg(LegType.NAVIGATE, {"waypoint": dropoff}),
-        Leg(LegType.PERFORM_ACTION, {"action": "place", "book": book, "at": dropoff}),
+        # `place` 는 서가에 손을 안 뻗는다(바구니 → 테이블). 층·줄을 실어 보내면 팔이
+        # 무시할지 따를지 헷갈린다 — 계약대로 0 으로 비운다.
+        Leg(LegType.PERFORM_ACTION, {"action": "place", "at": dropoff,
+                                     "from_place": "리비바구니",
+                                     "tier": 0, "row": 0, **arm}),
     ]
 
 
@@ -140,17 +163,29 @@ def decompose_collection() -> list[Leg]:
 
     액션 이름(`unload_to_floor`/`load_from_box`/`refill_box`)은 지금 팔이 스텁이라 물리
     동작으로 안 이어진다 — 나중에 팔이 실제로 붙을 때 이 이름에 맞는 동작을 넣으면 된다.
-    ⚠️ `book` 키를 그대로 쓴다(`cargo` 가 아니다) — `fleet_dispatch_bridge.real_dispatch()`
-    의 PERFORM_ACTION 분기가 `leg.params.get("book", "")` 로 **"book" 키만** 읽는다. 다른
-    키를 쓰면 그 값이 조용히 사라진다.
+
+    ## [2026-07-30] `object` 로 대상 종류를 분리했다
+
+    예전에는 `book: "바구니"` 였다 — **대상 종류를 도서명 필드에 문자열로 위장**해 넣은
+    것이다. 팔이 "이게 도서냐 바구니냐"를 도서명으로 추측해야 했고, 그건 오타 하나로
+    엉뚱한 파지 루틴을 도는 종류의 배선이다. 이제 `object: "basket"` 이 그 일을 한다.
+
+    `book` 은 빈 문자열이다(바구니는 전체를 드니 도서명이 없다). `tier`/`row`/`slot` 도
+    비운다 — 바구니는 칸을 지목하지 않는다.
+
+    세 이동은 **바닥을 임시 자리로 쓰는 3단 교대**라 순서가 고정이다. 모든 이동의 목적지가
+    비어 있어야 하기 때문이다: 리비→바닥(리비 빔) → 수거함→리비(수거함 빔) → 바닥→수거함.
     """
     at = COLLECTION_WAYPOINT
-    basket = {"book": "바구니", "at": at}
+    common = {"book": "", "object": "basket", "at": at, "tier": 0, "row": 0, "slot": 0}
     return [
         Leg(LegType.NAVIGATE, {"waypoint": at}),
-        Leg(LegType.PERFORM_ACTION, {"action": "unload_to_floor", **basket}),
-        Leg(LegType.PERFORM_ACTION, {"action": "load_from_box", **basket}),
-        Leg(LegType.PERFORM_ACTION, {"action": "refill_box", **basket}),
+        Leg(LegType.PERFORM_ACTION, {"action": "unload_to_floor",
+                                     "from_place": "리비바구니", "to_place": "바닥", **common}),
+        Leg(LegType.PERFORM_ACTION, {"action": "load_from_box",
+                                     "from_place": "수거함", "to_place": "리비바구니", **common}),
+        Leg(LegType.PERFORM_ACTION, {"action": "refill_box",
+                                     "from_place": "바닥", "to_place": "수거함", **common}),
     ]
 
 
@@ -192,8 +227,9 @@ class Orchestrator:
 
     # ── 주문 접수 ────────────────────────────────────────────────────────────
     def submit_delivery(self, *, book: str, pickup, dropoff, requester: str = "",
-                        priority: int = 0) -> str:
-        legs = decompose_delivery(book=book, pickup=pickup, dropoff=dropoff)
+                        priority: int = 0, tier: int = 0, row: int = 0) -> str:
+        legs = decompose_delivery(book=book, pickup=pickup, dropoff=dropoff,
+                                  tier=tier, row=row)
         return self._enqueue("delivery", legs, requester=requester, priority=priority)
 
     def submit_navigation(self, *, dropoff, requester: str = "",
@@ -248,6 +284,9 @@ class Orchestrator:
                 raise ValueError(f"배정 불가: {robot} 는 이미 다른 주문에 배정돼 있습니다")
             task.robot = robot
             task.status = TaskStatus.ASSIGNED
+            # 배차가 나갔으니 "왜 안 나가는지" 설명은 지운다 — 안 지우면 실행 중인 주문에
+            # `배차 대기 — 상태 미상` 이 그대로 붙어 있어 화면이 거짓말을 한다(실측).
+            task.reason = ""
             if task_id in self._queue:
                 self._queue.remove(task_id)
             self._start_leg(task)
@@ -298,6 +337,18 @@ class Orchestrator:
                 self._start_leg(task)        # 다음 다리(없으면 COMPLETED)
             else:
                 self._fail_or_retry(task, msg or "다리 실패")
+
+    def set_reason(self, task_id: str, reason: str) -> None:
+        """대기 중인 주문에 사유를 적는다(배차가 왜 안 나가는지 등).
+
+        상태는 건드리지 않는다 — PENDING 은 그대로 두고 **설명만** 붙인다.
+        이미 끝난 주문에는 쓰지 않는다(끝난 이유를 덮어쓰면 안 된다).
+        """
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None or task.status is not TaskStatus.PENDING:
+                return
+            task.reason = reason
 
     def _fail_or_retry(self, task: Task, reason: str) -> None:
         leg = task.current_leg()

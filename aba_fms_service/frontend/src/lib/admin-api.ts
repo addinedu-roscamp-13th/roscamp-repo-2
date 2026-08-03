@@ -1469,16 +1469,52 @@ export interface FleetTaskEvent {
   at: number;
 }
 
+/**
+ * CBS 시간표. `routes` 는 좌표뿐이라 "언제 어디" 를 모른다 — 예약 시각을 그리려면
+ * 도착틱이 필요하다.
+ *
+ * ⚠️ `robots` 가 **비어 있으면 계획을 버린 상태**다(`reason` 에 이유). 그때 화면은
+ *    경로 강조를 지워야 한다. 옛 예약을 계속 띄우면 코드는 멀쩡한데 화면만 거짓이 된다.
+ * ⚠️ 반응형 교통(ReservationDeadlock)에서는 `plan` 자체가 안 온다 — 예약 표시가
+ *    없는 것이 정상이다.
+ *
+ * 벽시계 환산: `epoch_wall + arrive[i] * tick_sec` (초). 브라우저가 자기 시계로 그리므로
+ * 카운트다운에 통신이 더 들지 않는다.
+ *
+ * ⚠️ **`epoch` 가 아니라 `epoch_wall` 이다.** `epoch` 는 fleet_node 의 steady_clock
+ *    (부팅 후 경과초)이라 브라우저 시계와 비교할 수 없다 — 쓰면 모든 예약이 과거로 보인다.
+ */
+export interface FleetPlan {
+  seq: number;
+  /** fleet_node 내부 steady_clock. 화면에서 쓰지 말 것 — epoch_wall 을 쓴다. */
+  epoch: number;
+  /** 같은 순간의 벽시계(unix 초). 예약 시각 = epoch_wall + arrive*tick_sec. */
+  epoch_wall: number;
+  tick_sec: number;
+  /** 계획 대비 몇 틱까지 늦어도 봐주는가. 이 안이면 "지연" 이 아니라 "도착 중" 이다. */
+  drift_limit?: number;
+  reason?: string;
+  robots: Record<string, {
+    path: number[];
+    arrive: number[];
+    /** 각 path 정점의 월드 좌표. 인덱스→좌표 표를 화면이 따로 들 필요를 없앤다. */
+    xy: [number, number][];
+  }>;
+}
+
 export interface FleetSnapshot {
   robots: FleetRobotRow[];
   tasks: FleetTaskEvent[];
   occupancy: Record<string, string>;
   routes: Record<string, number[][]>;
+  plan?: FleetPlan;
   goals: Record<string, number>;
   plugins: { dispatcher: string; traffic: string };
   linked: boolean;
   domain_id: number;
   stale: boolean;
+  /** 서버 벽시계(unix 초). 브라우저 시계 오차를 빼는 데 쓴다. */
+  server_now?: number;
 }
 
 export interface FleetTaskInput {

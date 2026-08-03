@@ -169,3 +169,72 @@ def test_calibrate_ema_updates_hsv_toward_current():
     after = m.template_hsv
     assert not np.array_equal(before, after)   # HSV template moved (online update)
     assert hist_similarity(before, after) > 0.9  # but only ~10% blended (EMA)
+
+
+def test_crop_returns_none_for_a_fully_out_of_frame_bbox():
+    """화면 밖 bbox — 잘라내면 아무것도 안 남는다.
+
+    ⚠️ 예전엔 이 경우 **프레임 전체**를 돌려줬다. 그 프레임에 진짜 owner가
+    있으면 이 '크롭'이 owner 템플릿과 맞아 엉뚱한 후보가 owner 로 이긴다
+    (2026-08-01 codex 지적, 설계문서 R7 절).
+    """
+    frame = np.zeros((100, 100, 3), dtype=np.uint8)
+    roi = TargetMatcher._crop(frame, (200, 200, 250, 250))
+    assert roi is None
+
+
+def test_crop_returns_none_for_a_zero_area_bbox():
+    """폭 또는 높이가 0인 bbox — 클램프해도 여전히 빈 영역이다."""
+    frame = np.zeros((100, 100, 3), dtype=np.uint8)
+    roi = TargetMatcher._crop(frame, (50, 50, 50, 80))
+    assert roi is None
+
+
+def test_crop_still_returns_the_valid_region_for_a_normal_bbox():
+    """유효한 crop 은 한 픽셀도 안 바뀐다 — 이게 회귀 방어선이다."""
+    frame = np.zeros((100, 100, 3), dtype=np.uint8)
+    frame[10:20, 10:20] = 255
+    roi = TargetMatcher._crop(frame, (10, 10, 20, 20))
+    assert roi is not None
+    assert roi.shape == (10, 10, 3)
+    assert (roi == 255).all()
+
+
+def test_crop_still_clamps_a_partially_out_of_frame_bbox():
+    """절반만 화면 밖 — 클램프한 나머지 절반은 여전히 유효한 crop 이다."""
+    frame = np.zeros((100, 100, 3), dtype=np.uint8)
+    roi = TargetMatcher._crop(frame, (-10, -10, 20, 20))
+    assert roi is not None
+    assert roi.shape == (20, 20, 3)
+
+
+def test_match_skips_a_candidate_whose_crop_is_empty():
+    """이게 진짜 안전장치다 — 빈 crop 인 후보는 owner 로 못 이긴다.
+
+    프레임에 진짜 owner(가운데)와 화면 밖으로 잘리는 가짜 후보가 같이 있을 때,
+    가짜 후보가 owner 로 오인되면 안 된다.
+    """
+    class FakeReID:
+        def extract(self, roi):
+            return np.ones(4, dtype=np.float32)
+
+        def similarity(self, a, b):
+            return 1.0  # 항상 완벽히 맞는다고 답하는 가짜 — HSV/crop 유효성만 시험한다
+
+    class Cand:
+        def __init__(self, track_id, bbox):
+            self.track_id, self.bbox = track_id, bbox
+
+    matcher = TargetMatcher(reid=FakeReID())
+    frame = np.zeros((100, 100, 3), dtype=np.uint8)
+    frame[40:60, 40:60] = 200                       # owner 가 있을 법한 영역
+    matcher.template_reid = np.ones(4, dtype=np.float32)
+    from follower_perception.color_hist import hsv_hist
+    matcher.template_hsv = hsv_hist(frame[40:60, 40:60])
+    matcher.gallery = [matcher.template_reid]
+
+    owner = Cand(track_id=1, bbox=(40, 40, 60, 60))          # 유효한 crop
+    ghost = Cand(track_id=2, bbox=(200, 200, 250, 250))      # 화면 밖 — 빈 crop
+
+    result = matcher.match([ghost, owner], frame)
+    assert result == 1, "화면 밖 후보(빈 crop)가 owner 로 이기면 안 된다"

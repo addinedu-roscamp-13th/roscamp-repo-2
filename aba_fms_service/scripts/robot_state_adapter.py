@@ -7,7 +7,7 @@
 `battery/percent`, `fleet_status` 만 낸다. 그래서 **로봇→fleet_node 고리가 비어 있고,
 fleet_node 가 로봇을 0대로 본다 → 배차가 아예 불가능**했다.
 
-이 어댑터가 그 틈을 메운다. 이미 domain_bridge 가 서버 도메인(86)으로 옮겨 놓은
+이 어댑터가 그 틈을 메운다. 이미 domain_bridge 가 서버 도메인(111)으로 옮겨 놓은
 `/pinky3/amcl_pose` 와 `/pinky3/battery/percent` 를 읽어 `/robot_state` 로 재발행한다.
 **로봇은 무수정** — 서버에서만 돈다.
 
@@ -15,13 +15,14 @@ fleet_node 가 로봇을 0대로 본다 → 배차가 아예 불가능**했다.
 `RobotState.name` 은 `FsmState.robot_id` 와 같은 키여야 fleet_node 안에서 상태가 매칭된다
 (fleet_node.cpp 주석 참고). 스크립트들이 로봇을 `pinky3` 로 부르므로 그 값을 기본으로 쓴다.
 
-## 실행 (서버, 도메인 86)
-    ROS_DOMAIN_ID=86 python3 aba_fms_service/scripts/robot_state_adapter.py --robot pinky3
+## 실행 (서버, 도메인 111)
+    ROS_DOMAIN_ID=111 python3 aba_fms_service/scripts/robot_state_adapter.py --robot pinky3
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import time
@@ -29,16 +30,68 @@ import traceback
 
 import rclpy
 from geometry_msgs.msg import PoseWithCovarianceStamped
+from nav_msgs.msg import Path
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rmf_fleet_msgs.msg import Location, RobotMode, RobotState
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32, String
 
 PUBLISH_HZ = 2.0
 
 #: amcl_pose 를 못 받는 상태를 몇 초마다 알릴지. 발행 주기(2 Hz)보다 훨씬 커야 로그를 안 덮는다.
 POSE_WAIT_WARN_SEC = 15.0
+
+# ── 로봇 생존 판정 ───────────────────────────────────────────────────────────
+#
+# ## ⚠️ [2026-08-02] 로봇이 꺼져도 **유령이 계속 발행되고 있었다** (실측)
+#
+# pinky-3 의 Pi 를 완전히 내린 뒤에도 이 어댑터가 `/robot_state` 를 계속 냈다.
+# `_tick` 이 "위치를 **한 번이라도** 받았나"만 보고 신선도를 안 봤기 때문이다.
+# 그 결과가 줄줄이 이어졌다:
+#   · fleet_node 가 꺼진 로봇에게 **순회를 배정**했다 ("[P-pinky-3] 순회 시작")
+#   · 관제 지도에 없는 로봇이 떠 있었다 — 사람이 그걸 보고 배차를 판단한다
+#   · 그 로봇이 노드를 예약해 **살아 있는 로봇의 길을 막는다**
+# 프론트에서 "좌표가 있으면 살아 있다"로 거르는 것으로는 못 막는다 — 유령도 좌표가 있다.
+#
+# ## 위치와 생존은 **다른 종류의 신호**다
+#
+#   위치(amcl_pose) = **상태**. 로봇이 안 움직이면 안 바뀌는 게 정상이다.
+#     AMCL 은 주기 발행이 아니라 **갱신 때만** 내보낸다(아래 LATCHED_QOS 주석).
+#     그래서 "pose 가 안 온다"를 죽음으로 읽으면 **주차된 멀쩡한 로봇을 죽었다고 한다.**
+#   생존(battery/percent) = **이벤트**. `pinky_bringup/battery_publisher.py` 가
+#     5초 타이머로 **무조건** 발행한다(값이 안 변해도 — 그 파일 109-110행).
+#
+# 그래서 생존은 배터리로 재고, 위치는 마지막 값을 그대로 쓴다.
+#
+# ## ⚠️ latched pose 함정 — "위치가 있다"는 생존의 증거가 **아니다**
+#
+# `amcl_pose` 는 TRANSIENT_LOCAL 이라(아래 LATCHED_QOS) 로봇이 몇 시간 전에 꺼졌어도
+# **구독하는 순간 마지막 값이 배달된다.** 그래서 "하트비트를 본 적 있는 로봇만
+# 검사한다"로 두면, 이미 꺼진 로봇에 어댑터를 새로 띄웠을 때 배터리는 영영 안 오고
+# latched pose 만 받아 **영구 유령**이 된다. 실측 pinky-3 이 정확히 그 상태였다.
+#
+# 그래서 판정은 **둘 중 하나라도 신선하면 살아 있다**로 한다:
+#   · 배터리(5초 주기) — 로봇이 주차돼 있어도 온다
+#   · 위치(갱신 시에만) — 움직이는 동안 온다
+# 둘 다 끊기면 꺼진 것이다. 어느 한쪽 발행기가 없는 배포도 나머지 하나로 버틴다.
+#
+# ⚠️ **배터리 발행기가 없고 로봇이 주차만 하는 배포**에서는 이 검사가 로봇을 지운다.
+#    그런 구성이 있으면 `LIVENESS_TTL_SEC=0` 으로 끄거나 TTL 을 크게 잡아야 한다.
+# ## 이 값이 **유령 제거의 시작점**이다 — 하류는 이것 없이는 못 알아챈다
+#
+#   이 검사가 없으면 어댑터가 2 Hz 로 옛 좌표를 계속 밀기 때문에, 하류의
+#   staleness 검사(`fleet_node` kRobotStaleSec=10s, 백엔드 `fleet_link.FRESH_SEC`=10s)가
+#   **영원히 발동하지 않는다.** "마지막 수신 시각"이 늘 방금이기 때문이다.
+#   그래서 여기가 1차 판정이고, 하류 10초는 그 뒤의 전파 지연이다.
+#
+#   로봇 전원 차단 → 화면에서 사라지기까지:  이 TTL + 하류 10초
+#
+# ⚠️ 값 선택: 배터리 5초 주기(sim 은 1초)의 **3배**. 2배(10초)는 I2C 읽기 실패로
+#    한 주기를 거르면(battery_publisher.py 의 유효표본 검사) 곧바로 오탐이 난다.
+#    4배 이상은 유령이 화면에 남는 시간이 30초를 넘어 사람이 "왜 아직 있지" 를 겪는다.
+#: 하트비트가 이 시간 넘게 없으면 로봇이 꺼진 것으로 본다. 0 이면 검사 끔.
+LIVENESS_TTL_SEC = 15.0
 
 # ⚠️ amcl_pose 는 TRANSIENT_LOCAL 로 발행된다(브릿지가 그대로 넘긴다). 기본 QoS(VOLATILE)로
 # 구독하면 **매칭 자체가 안 돼** 마지막 위치조차 못 받는다. AMCL 은 주기 발행이 아니라
@@ -73,6 +126,13 @@ class RobotStateAdapter(Node):
         self._pose: tuple[float, float, float] | None = None
         self._battery = 100.0
         self._seq = 0
+        #: 마지막 하트비트 수신 시각. 배터리와 위치를 각각 따로 잰다 — 근거는
+        #: 위 LIVENESS_TTL_SEC 머리말(둘 중 하나라도 신선하면 살아 있다).
+        self._battery_at: float | None = None
+        self._pose_at: float | None = None
+        #: 지금 "꺼졌다"로 보고 있나. 상태가 바뀔 때만 로그를 찍으려고 둔다 —
+        #: 2 Hz 로 매번 찍으면 진짜 경고가 묻힌다.
+        self._offline = False
 
         # 진단용 — "프로세스가 살아 있다"와 "일하고 있다"를 구별하기 위한 최소 상태.
         self._prefix = prefix
@@ -85,6 +145,23 @@ class RobotStateAdapter(Node):
         self.create_subscription(
             Float32, f"{prefix}/battery/percent", self._on_battery, 10
         )
+        # ── nav2 실주행 경로 중계 (2026-08-02) ────────────────────────────
+        #
+        # 길잡이는 `GuideExec` 이 nav2 로 **직접** 몬다. fleet_node 는 그 목적지를
+        # 모르므로 `/fms/routes` 에 안 실린다 — 그래서 관제 지도에 안내 경로가
+        # 안 그려지고, 대신 **순찰 경로**만 떠서 화면이 거짓말을 했다
+        # (사용자 실측 2026-08-02: 화장실로 가는 중인데 순회 경로만 보였다).
+        #
+        # nav2 가 내는 `/plan` 은 **이미 도메인 브릿지에 있다**(`/pinky3/plan`,
+        # `config/generated/domain_bridge_pinky3.yaml`). 로봇은 손댈 필요가 없다.
+        # 다만 백엔드는 로봇별 접두사를 모른다 — 그건 이 어댑터만 안다(`--prefix`).
+        # 그래서 여기서 **이름을 붙여** 공용 토픽 하나로 넘긴다(`/robot_state` 와 같은 꼴).
+        #
+        # ⚠️ 점을 솎는다. nav2 경로는 수백 점이라 그대로 20Hz WS 에 실으면 관제
+        #    프론트가 그 하나로 막힌다. 지도에 그리는 데는 5cm 간격이면 충분하다.
+        self._nav_path_pub = self.create_publisher(String, "/robot_nav_path", 10)
+        self.create_subscription(Path, f"{prefix}/plan", self._on_nav_path, 10)
+
         self._pub = self.create_publisher(RobotState, "/robot_state", 10)
         self.create_timer(1.0 / PUBLISH_HZ, self._tick)
 
@@ -92,10 +169,56 @@ class RobotStateAdapter(Node):
             f"어댑터 시작: {prefix}/amcl_pose → /robot_state (name={robot})"
         )
 
+    #: 경로 점 사이 최소 간격(m). 이보다 촘촘한 점은 버린다.
+    NAV_PATH_MIN_STEP_M = 0.05
+    #: 한 경로에 실을 최대 점 수. 아주 긴 경로에서도 상한을 둔다.
+    NAV_PATH_MAX_POINTS = 400
+
+    def _on_nav_path(self, msg: Path) -> None:
+        """nav2 `/plan` → 이름 붙인 JSON 한 줄. 위 ⚠️ 주석 참고."""
+        pts: list[list[float]] = []
+        last: tuple[float, float] | None = None
+        for ps in msg.poses:
+            x, y = float(ps.pose.position.x), float(ps.pose.position.y)
+            if last is not None:
+                dx, dy = x - last[0], y - last[1]
+                if (dx * dx + dy * dy) < (self.NAV_PATH_MIN_STEP_M ** 2):
+                    continue
+            pts.append([round(x, 3), round(y, 3)])
+            last = (x, y)
+            if len(pts) >= self.NAV_PATH_MAX_POINTS:
+                break
+        # 마지막 점은 **반드시** 남긴다 — 솎다가 목적지를 버리면 경로가 도중에 끊겨
+        # 보인다. 빈 경로(nav2 가 목표를 취소했다)는 그대로 빈 채로 보낸다: 그것이
+        # "지금 가는 곳이 없다"는 사실이고, 화면이 옛 선을 계속 그리면 안 된다.
+        if msg.poses:
+            end = msg.poses[-1].pose.position
+            tail = [round(float(end.x), 3), round(float(end.y), 3)]
+            if not pts or pts[-1] != tail:
+                pts.append(tail)
+        self._nav_path_pub.publish(String(data=json.dumps(
+            {"name": self._robot, "points": pts}, ensure_ascii=False)))
+
     def _on_pose(self, msg: PoseWithCovarianceStamped) -> None:
         first = self._pose is None
         p = msg.pose.pose
-        self._pose = (p.position.x, p.position.y, yaw_from_quat(p.orientation.z, p.orientation.w))
+        pose = (p.position.x, p.position.y, yaw_from_quat(p.orientation.z, p.orientation.w))
+        # ⚠️ **값이 바뀐 pose 만 생존 신호로 친다 — latched 재배달을 걸러내려는 것이다.**
+        #
+        #   `amcl_pose` 는 TRANSIENT_LOCAL 이라(아래 LATCHED_QOS) 도메인 브릿지가
+        #   재연결되면 **몇 시간 전 pose 가 그대로 다시 배달된다.** 도착 시각만 찍으면
+        #   그걸 "방금 살아 있었다"로 읽어, 이미 꺼진 로봇의 유령을 다시 15초 살린다
+        #   (codex 지적 2026-08-02).
+        #
+        #   재배달은 **같은 메시지**라 값이 비트 단위로 같다. 반면 살아서 움직이는
+        #   로봇은 값이 바뀐다. 그래서 시계(header.stamp)를 안 보고 값의 변화로 가른다 —
+        #   로봇과 서버의 시계가 안 맞아도 성립한다.
+        #
+        #   ⚠️ 살아 있지만 **주차된** 로봇은 pose 가 안 바뀌어 여기서 신호를 못 얻는다.
+        #      그 경우는 배터리 하트비트가 받친다(LIVENESS_TTL_SEC 머리말).
+        if pose != self._pose:
+            self._pose_at = time.monotonic()
+        self._pose = pose
         if first:
             # "언제부터 정상이었나"를 로그에 남긴다. 이 줄이 없으면 어댑터가 일을 시작한
             # 시각을 알 방법이 없고, 시작조차 못 한 경우와 구별되지 않는다.
@@ -106,6 +229,20 @@ class RobotStateAdapter(Node):
 
     def _on_battery(self, msg: Float32) -> None:
         self._battery = float(msg.data)
+        self._battery_at = time.monotonic()
+
+    def _is_offline(self) -> bool:
+        """로봇이 꺼졌나. **배터리든 위치든 하나라도 신선하면 살아 있다.**
+
+        근거와 latched pose 함정은 위 LIVENESS_TTL_SEC 머리말 참고.
+        """
+        if LIVENESS_TTL_SEC <= 0:
+            return False
+        now = time.monotonic()
+        for at in (self._battery_at, self._pose_at):
+            if at is not None and (now - at) <= LIVENESS_TTL_SEC:
+                return False          # 하나라도 신선하다 → 살아 있다
+        return True
 
     def _tick(self) -> None:
         # 위치를 아직 못 받았으면 발행하지 않는다 — 좌표 0,0 인 유령 로봇이 생기면 안 된다.
@@ -125,6 +262,27 @@ class RobotStateAdapter(Node):
                     "도메인 브릿지(domain_bridge)와 AMCL 초기 위치를 확인하세요."
                 )
             return
+        # 꺼진 로봇을 계속 발행하지 않는다 — "모르는 것을 안다고 하지 않는다".
+        # (`libi_perception/detection_receiver.py` 의 TTL 과 같은 원칙이다.)
+        offline = self._is_offline()
+        if offline != self._offline:
+            self._offline = offline
+            if offline:
+                self.get_logger().warn(
+                    f"{self._prefix} 의 하트비트가 {LIVENESS_TTL_SEC:.0f}s 넘게 없습니다 "
+                    "(battery/percent 도, 값이 바뀐 amcl_pose 도 안 옵니다) — "
+                    "로봇이 꺼진 것으로 보고 /robot_state 발행을 멈춥니다. "
+                    "fleet_node 는 이 로봇을 **새 배차·순회 후보에서 제외**합니다"
+                    "(fleet_node.cpp state_stale). "
+                    "다만 **이미 잡고 있던 예약은 자동으로 안 풉니다** — 통신이 끊긴 것과 "
+                    "로봇이 그 자리에서 사라진 것은 다르기 때문입니다. 로봇이 실제로 "
+                    "치워졌다면 운영자가 확인 후 정리해야 합니다."
+                )
+            else:
+                self.get_logger().info("배터리 하트비트 복구 — /robot_state 발행을 재개합니다")
+        if offline:
+            return
+
         x, y, yaw = self._pose
 
         loc = Location()

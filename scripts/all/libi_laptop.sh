@@ -4,6 +4,10 @@
 #
 #   ./libi_laptop.sh --robot pinky-3 --domain-id 119
 #   ./libi_laptop.sh --robot pinky-1 --domain-id 117 --no-gui   # 패널 없이 추종만
+#   ./libi_laptop.sh --robot pinky-3 --domain-id 119 --window   # 패널을 이 PC 에 창으로
+#
+# `--window` 는 VNC 대신이다 — **둘 다는 안 된다**(Qt 플랫폼 플러그인이 하나뿐).
+# 창을 켜면 :590x VNC 는 안 열리므로, 태블릿에서도 봐야 하면 붙이지 마라.
 #
 # **`--domain-id` 는 필수다.** 기본값을 두지 않는다 — 안 주면 DB 에 등록된 값을 알려주고 멈춘다.
 #
@@ -44,6 +48,9 @@ ROBOT=""
 DOMAIN_ID=""
 WITH_AI=true
 WITH_GUI=true
+#: 패널을 이 PC 에 **창으로** 띄운다. 기본은 VNC(태블릿/로봇 패널이 붙는 쪽)이고,
+#  Qt 플랫폼 플러그인은 한 번에 하나라 **둘 다는 안 된다** — 창을 켜면 VNC :590x 는 안 열린다.
+WITH_WINDOW=false
 #: AI 서버에 그대로 넘길 추가 인자. `--pose` 같은 스위치용이다.
 AI_EXTRA=""
 while [ $# -gt 0 ]; do
@@ -52,6 +59,7 @@ while [ $# -gt 0 ]; do
     --domain-id) DOMAIN_ID="$(need_arg "$1" "${2:-}")"; shift 2 ;;
     --no-ai)     WITH_AI=false; shift ;;
     --no-gui)    WITH_GUI=false; shift ;;
+    --window)    WITH_WINDOW=true; shift ;;
     # 자세(pose) 판정을 **켠다**. [2026-07-30] 기본이 꺼짐으로 바뀌었다
     # (perception_server 의 `--pose` 옵트인). 꺼져 있으면 PostureGate 가 주행을 항상
     # 허용한다(posture_gate.py — "판정 소스가 아예 없다" 분기): Calibrating 정지도,
@@ -59,7 +67,7 @@ while [ $# -gt 0 ]; do
     # 켜면 그 판정이 돌아오는 대신 프레임당 2차 추론이 붙어 추종 주기가 느려진다.
     --pose)      AI_EXTRA="$AI_EXTRA --pose"; shift ;;
     *) die "모르는 인자: $1
-  사용법: ./libi_laptop.sh --robot <이름> [--no-ai] [--no-gui] [--pose] [--domain-id <n>]" ;;
+  사용법: ./libi_laptop.sh --robot <이름> [--no-ai] [--no-gui] [--window] [--pose] [--domain-id <n>]" ;;
   esac
 done
 
@@ -144,8 +152,17 @@ tmux new-session -d -s "$SESSION" -n urls \
 # ── 1) AI 추종 서버 ────────────────────────────────────────────────────────
 if [ "$WITH_AI" = true ]; then
   echo "[libi_laptop] ── AI 추종 서버 (앞캠 UDP:$VIDEO_PORT → 뷰어 :$VIEWER_PORT → $ROBOT 주행)"
+  # ⚠️ **ROS 를 소싱하고 로봇 도메인을 물려준다.** AI 서버는 원래 ROS 를 전혀 모른 채로
+  #    돌았는데, 그러면 로봇이 내는 두 가지를 못 듣는다:
+  #      · `/libi/camera_select` — 앞↔뒤 전환. 모르면 ByteTrack id 를 시점이 통째로 바뀐
+  #        프레임에 이어 붙이고, 전환 직후 재학습 창(`REGISTRATION_LEARN_SEC`)도 안 열려
+  #        뒷캠에서 owner 를 못 잡는다(노란 예측 박스만 나온다).
+  #      · `/libi/perception_role` — 지금 추종인가 길잡이인가. 모르면 길잡이에서도 자세를
+  #        재고 **골격을 JPEG 에 구워** 패널로 보낸다(패널은 그 그림을 못 끈다).
+  #    레포 `.venv` 는 `include-system-site-packages = true` 라 소싱만 하면 rclpy 가 잡힌다.
+  #    못 붙어도 죽지 않는다 — perception_server 가 경고만 찍고 예전대로 돈다.
   tmux new-window -t "$SESSION" -n ai \
-    bash -c "cd '$REPO_ROOT' && VIDEO_PORT='$VIDEO_PORT' VIEWER_PORT='$VIEWER_PORT' ./scripts/laptop/ai_follower_service.sh '$ROBOT'$AI_EXTRA; exec bash"
+    bash -c "cd '$REPO_ROOT' && [ -f /opt/ros/jazzy/setup.bash ] && . /opt/ros/jazzy/setup.bash; ROS_DOMAIN_ID='$DOMAIN_ID' VIDEO_PORT='$VIDEO_PORT' VIEWER_PORT='$VIEWER_PORT' ./scripts/laptop/ai_follower_service.sh '$ROBOT' --camera-topic /libi/camera_select$AI_EXTRA; exec bash"
 fi
 
 # [2026-07-29] 뒷캠 **수신 창을 없앴다.** 받을 게 없었다.
@@ -169,11 +186,13 @@ if [ "$WITH_GUI" = true ]; then
   로그: tmux attach -t libi_ui_fms  /  tmux attach -t libi_ui_lib"
     sleep 2; waited=$((waited + 2))
   done
-  echo "[libi_laptop] ── 터치패널 ($ROBOT, domain $DOMAIN_ID, 뷰어 :$VIEWER_PORT)"
+  echo "[libi_laptop] ── 터치패널 ($ROBOT, domain $DOMAIN_ID, 뷰어 :$VIEWER_PORT, $([ "$WITH_WINDOW" = true ] && echo '이 PC 에 창' || echo 'VNC'))"
   # PERCEPTION_URL 을 여기서 준다 — libi_gui.sh 기본값은 5007 고정이라
   # 2대째 로봇의 패널이 1대째 화면을 보게 된다.
+  GUI_FLAGS=""
+  [ "$WITH_WINDOW" = true ] && GUI_FLAGS=" --window"
   tmux new-window -t "$SESSION" -n gui \
-    bash -c "cd '$REPO_ROOT' && PERCEPTION_URL='$LAPTOP_IP:$VIEWER_PORT' ./scripts/ui/libi_gui.sh '$ROBOT' --domain-id '$DOMAIN_ID'; exec bash"
+    bash -c "cd '$REPO_ROOT' && PERCEPTION_URL='$LAPTOP_IP:$VIEWER_PORT' ./scripts/ui/libi_gui.sh '$ROBOT' --domain-id '$DOMAIN_ID'$GUI_FLAGS; exec bash"
 fi
 
 echo "[libi_laptop] 세션: $SESSION"

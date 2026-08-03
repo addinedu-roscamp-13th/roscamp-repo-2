@@ -74,6 +74,53 @@ def test_arm_leg_goes_to_robot_bt(monkeypatch):
     assert sent["args"]["action"] == "pick"
 
 
+def test_no_arm_leg_key_is_silently_dropped(monkeypatch):
+    """`leg.params` 의 키를 **하나하나 명시적으로 복사**하는 구조라 새 키가 조용히 사라진다.
+
+    실제로 그렇게 잃었다: 예전엔 `action`·`book`·`at` 셋만 복사했고 팔 계약 필드
+    (`object`/`from_place`/`to_place`/`tier`/`row`/`slot`)를 orchestrator 에 넣어도 로봇까지
+    안 갔다 — 에러도 없었다. orchestrator 에 키를 더하면 이 테스트가 먼저 깨진다.
+    """
+    from app.fleet_orchestrator import decompose_collection, decompose_delivery
+
+    sent = {}
+    monkeypatch.setattr(bridge.fleet_telemetry, "send_command_async",
+                        lambda robot, action, args=None: sent.update(args=args) or "cmd-1")
+    monkeypatch.setattr(bridge, "ARM_VIA_BT", True)
+
+    legs = decompose_delivery(book="B1", pickup="문학서가", dropoff="1번테이블",
+                              tier=2, row=3) + decompose_collection()
+    for leg in [l for l in legs if l.type == LegType.PERFORM_ACTION]:
+        bridge.real_dispatch("t1", "Pinky-3", leg)
+        missing = set(leg.params) - set(sent["args"])
+        assert not missing, f"{leg.params['action']} 다리의 키가 사라졌다: {missing}"
+
+
+def test_numeric_at_is_sent_as_a_vertex_name(monkeypatch):
+    """숫자 정점은 이름으로 되돌려 보낸다.
+
+    로봇 쪽 중계가 `at` **이름**에서 장소 종류를 유도한다(`*테이블`→테이블). 숫자를 그대로
+    보내면 유도가 실패해 팔 goal 이 아예 안 나가고, 원인은 주행 중에야 드러난다.
+    """
+    sent = {}
+    monkeypatch.setattr(bridge.fleet_telemetry, "send_command_async",
+                        lambda robot, action, args=None: sent.update(args=args) or "cmd-1")
+    monkeypatch.setattr(bridge, "ARM_VIA_BT", True)
+    monkeypatch.setattr(bridge, "_load_vertex_index", lambda: {"1번테이블": 7})
+
+    bridge.real_dispatch("t1", "Pinky-3",
+                         Leg(LegType.PERFORM_ACTION,
+                             {"action": "place", "book": "B1", "at": 7}))
+    assert sent["args"]["at"] == "1번테이블"
+
+
+def test_unknown_numeric_at_is_left_alone(monkeypatch):
+    """navgraph 에 없으면 지어내지 않는다 — 중계가 실패시키는 게 낫다."""
+    monkeypatch.setattr(bridge, "_load_vertex_index", lambda: {"1번테이블": 7})
+    assert bridge.vertex_name(99) == "99"
+    assert bridge.vertex_name("문학서가") == "문학서가"
+
+
 def test_arm_leg_falls_back_to_stub_without_link(monkeypatch):
     """브릿지 미기동·로봇 오프라인이면 조용히 멈추지 말고 스텁으로 내려간다."""
     monkeypatch.setattr(bridge.fleet_telemetry, "send_command_async",
@@ -295,6 +342,136 @@ def test_no_nav_dispatch_while_admin_follow_is_granted(monkeypatch):
     finally:
         with admin_follow._grants_lock:
             admin_follow._grants.pop("Pinky-3", None)
+
+
+def test_guide_hop_is_sent_as_guide_not_navigate(monkeypatch):
+    """길잡이도 홉을 받되 **액션 이름이 `guide`** 여야 한다.
+
+    ⚠️ [2026-08-02] 계약이 바뀌었다. 예전엔 여기서 아무것도 안 보냈다(길잡이를 교통관제
+       밖에 뒀다). 그러면 예약·간선 잠금·관제 지도의 경로선이 전부 없었다.
+
+    ⚠️ `navigate` 로 보내면 `providers` 가 `active_command` 를 "navigate" 로 세워
+       dispatch Selector 앞의 `NavigationExec` 이 가로챈다 — `GuideExec` 이 영영 안 돌아
+       요청자를 놓쳐도 아무도 멈추지 않는다. 이 시험이 그 회귀를 잡는다.
+    """
+    from app import fleet_dispatch_bridge as fdb
+
+    sent = []
+    monkeypatch.setattr(fdb.fleet_telemetry, "send_command_async",
+                        lambda robot, action, args: sent.append((robot, action, args)) or "id-1")
+    monkeypatch.setattr(fdb, "NAV_VIA_BT", True)
+    monkeypatch.setattr(fdb.fleet_link, "has_guide_target", lambda robot: robot == "Pinky-3")
+    monkeypatch.setattr(fdb.fleet_link, "guide_target",
+                        lambda robot: {"x": 9.0, "y": 9.0, "name": "과학-인문학서가"})
+    _reset_nav()
+
+    fdb.on_path_request("Pinky-3", [(1.0, 2.0, 0.0)])
+    assert len(sent) == 1, "길잡이에 홉을 안 보냈다 — 교통관제를 못 탄다"
+    robot, action, args = sent[0]
+    assert action == "guide", "navigate 로 보내면 NavigationExec 이 가로채 GuideExec 이 죽는다"
+    assert (args["x"], args["y"]) == (1.0, 2.0)
+    assert args["name"] == "과학-인문학서가", "표시용 목적지 이름이 안 실렸다"
+
+
+def test_lost_requester_pauses_the_reservation(monkeypatch):
+    """`requester_lost` 결과 → 붙잡기 + **예약 해제. 단 PATROL 을 밀지 않는다.**
+
+    ⚠️ `real_release()` 를 쓰면 두 가지가 같이 터진다(codex 검토 2026-08-02):
+         · 내부 `_release_hold()` 가 방금 건 붙잡기를 곧바로 푼다
+         · `set_robot_mode(PATROL)` 이 fleet 쪽 모드를 순찰로 바꿔, 로봇 FSM 이 아직
+           WORKING 인데도 순회가 시작될 수 있다
+       그래서 **현재 상태(WORKING)로** 모드를 다시 세워 태스크만 취소한다.
+    """
+    from app import fleet_dispatch_bridge as fdb
+
+    calls = []
+    monkeypatch.setattr(fdb.fleet_link, "set_robot_hold",
+                        lambda robot, hold, ttl=0.0: calls.append(("hold", robot, hold)))
+    monkeypatch.setattr(fdb.fleet_link, "set_robot_mode",
+                        lambda robot, mode: calls.append(("mode", robot, mode)) or {"ok": True})
+    monkeypatch.setattr(fdb, "real_release",
+                        lambda robot: calls.append(("real_release", robot)))
+    monkeypatch.setattr(fdb.fleet_link, "guide_target",
+                        lambda robot: {"x": 0.0, "y": 0.0, "name": "출입구"})
+    fdb._guide_hop_robot["hop-9"] = "Pinky-3"
+
+    fdb.on_cmd_result({"id": "hop-9", "ok": False, "msg": "requester_lost"})
+
+    assert calls == [("hold", "Pinky-3", True), ("mode", "Pinky-3", "WORKING")], \
+        "붙잡기가 먼저여야 하고, 모드는 WORKING 이어야 한다(PATROL 이면 순회가 시작된다)"
+    assert ("real_release", "Pinky-3") not in calls, \
+        "real_release 는 붙잡기를 풀고 PATROL 을 민다 — 회복 경로에서 쓰면 안 된다"
+    assert fdb._guide_paused.get("Pinky-3") == "출입구", "재획득 때 돌아갈 목적지를 안 기억했다"
+
+
+def test_guide_bookkeeping_is_cleared_on_release():
+    """안내가 끝나면 기억을 지운다 — 안 지우면 나중에 유령 재배차가 튄다."""
+    from app import fleet_dispatch_bridge as fdb
+
+    fdb._guide_paused["Pinky-3"] = "출입구"
+    fdb._guide_hop_robot["hop-1"] = "Pinky-3"
+    fdb._guide_hop_robot["hop-2"] = "Pinky-1"
+
+    fdb.clear_guide_bookkeeping("Pinky-3")
+
+    assert "Pinky-3" not in fdb._guide_paused
+    assert "hop-1" not in fdb._guide_hop_robot
+    assert fdb._guide_hop_robot.get("hop-2") == "Pinky-1", "남의 로봇 기억까지 지웠다"
+
+
+def test_reacquire_redispatches_then_releases_hold(monkeypatch):
+    """재획득 → **태스크를 다시 낸 뒤에** 붙잡기를 푼다."""
+    from app import fleet_dispatch_bridge as fdb
+
+    calls = []
+    monkeypatch.setattr(fdb.fleet_link, "set_robot_hold",
+                        lambda robot, hold, ttl=0.0: calls.append(("hold", robot, hold)))
+    import app.routers.guide as guide_router
+    monkeypatch.setattr(guide_router, "_submit_guide_task",
+                        lambda robot, wp: calls.append(("submit", robot, wp)) or "task-3")
+    monkeypatch.setattr(fdb.fleet_link, "has_guide_target", lambda robot: True)
+    fdb._guide_paused["Pinky-3"] = "출입구"
+
+    fdb.on_requester_visible("Pinky-3", True)
+
+    assert calls == [("submit", "Pinky-3", "출입구"), ("hold", "Pinky-3", False)], \
+        "붙잡기를 먼저 풀면 경로 없이 순회로 떠난다"
+
+
+def test_reacquire_after_the_guide_ended_only_releases_the_hold(monkeypatch):
+    """회복 중 취소·소진으로 안내가 끝났으면 **재배차하지 않는다.**
+
+    ⚠️ 안 막으면 지나가던 사람이 뒷캠에 잡히기만 해도 로봇이 옛 목적지로 떠난다 —
+       아무도 요청하지 않은 주행이다.
+    """
+    from app import fleet_dispatch_bridge as fdb
+
+    calls = []
+    monkeypatch.setattr(fdb.fleet_link, "set_robot_hold",
+                        lambda robot, hold, ttl=0.0: calls.append(("hold", robot, hold)))
+    import app.routers.guide as guide_router
+    monkeypatch.setattr(guide_router, "_submit_guide_task",
+                        lambda robot, wp: calls.append(("submit", robot, wp)) or "task-3")
+    monkeypatch.setattr(fdb.fleet_link, "has_guide_target", lambda robot: False)
+    fdb._guide_paused["Pinky-3"] = "출입구"
+
+    fdb.on_requester_visible("Pinky-3", True)
+
+    assert calls == [("hold", "Pinky-3", False)], "끝난 안내를 유령 재배차했다"
+    assert "Pinky-3" not in fdb._guide_paused, "기억이 안 지워지면 다음에 또 튄다"
+
+
+def test_reacquire_without_a_paused_guide_does_nothing(monkeypatch):
+    """평소 가시성 신호로 아무 일도 일어나면 안 된다 — 이 토픽은 계속 온다."""
+    from app import fleet_dispatch_bridge as fdb
+
+    calls = []
+    monkeypatch.setattr(fdb.fleet_link, "set_robot_hold",
+                        lambda robot, hold, ttl=0.0: calls.append(("hold", robot, hold)))
+    fdb._guide_paused.pop("Pinky-3", None)
+
+    fdb.on_requester_visible("Pinky-3", True)
+    assert calls == []
 
 
 def test_nav_dispatch_resumes_after_release(monkeypatch):

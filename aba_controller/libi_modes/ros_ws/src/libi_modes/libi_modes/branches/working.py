@@ -20,7 +20,7 @@ _COMMAND_MAP = {
 
 def create(params: dict, nav_driver, arm_driver, follow_driver=None,
            guide_driver=None, guide_stop_driver=None, guide_watch_driver=None,
-           junctions=None, clock=time.monotonic) -> py_trees.behaviour.Behaviour:
+           junctions=None, guide_result_fn=None, *, undock_gate, clock=time.monotonic) -> py_trees.behaviour.Behaviour:
     """WorkingBranch — execute whatever command the task adapter has dispatched.
 
     Deliberately NO BatteryCheck: the fleet manager accounts for battery when it assigns
@@ -34,8 +34,8 @@ def create(params: dict, nav_driver, arm_driver, follow_driver=None,
     arrive_tolerance = params["working"]["arrive_tolerance_m"]
     arrive_resend = params["working"]["arrive_resend_sec"]
     arrive_timeout = params["working"]["arrive_timeout_sec"]
-    guide_grace = params["working"]["guide_lost_grace_sec"]
-    guide_timeout = params["working"]["guide_lost_timeout_sec"]
+    guide_coast = params["working"]["guide_coast_sec"]
+    guide_wait = params["working"]["guide_wait_sec"]
     # 0 이면 꺼진다. 실측 전에는 꺼 두는 것이 기본이다 — 근거 없는 임계로 멈추면
     # "왜 안 가지" 를 찾느라 시간을 버린다.
     guide_far = params["working"].get("guide_far_area_min", 0)
@@ -46,6 +46,11 @@ def create(params: dict, nav_driver, arm_driver, follow_driver=None,
         memory=False,
         children=[
             IsMode("WORKING"),
+            # 도킹 자세에서 빠져나온다 — **주행을 내기 전에.** 벽에서 9cm 안쪽은
+            # costmap 이 통행불가(253)라 nav2 가 시작 격자에서 경로를 못 만든다.
+            # 도킹 상태가 아니면(평소) 즉시 통과하고 아무 일도 안 한다.
+            #   근거·수치: common/undock.py 머리말
+            undock_gate,
             py_trees.composites.Parallel(
                 name="ExecuteAndWatch",
                 policy=ParallelPolicy.SuccessOnOne(),
@@ -59,12 +64,13 @@ def create(params: dict, nav_driver, arm_driver, follow_driver=None,
                             # 길잡이. handles={"guide"} 라 NavigationExec("navigate")과
                             # 겹치지 않는다 — 겹치면 앞의 것이 먼저 집어가 여기가 죽는다.
                             GuideExec(guide_driver or nav_driver, arrive_tolerance, arrive_resend,
-                                      arrive_timeout, guide_grace, guide_timeout,
+                                      arrive_timeout, guide_coast, guide_wait,
                                       stop_driver=guide_stop_driver,
                                       watch_driver=guide_watch_driver,
                                       far_area_min=guide_far, near_area_max=guide_near,
                                       junctions=junctions,
-                                      junction_hold_sec=junction_hold, now_fn=clock),
+                                      junction_hold_sec=junction_hold,
+                                      result_fn=guide_result_fn, now_fn=clock),
                             ArmExec(arm_driver),
                             FollowExec(follow_driver),
                             py_trees.behaviours.Running(name="AwaitingCommand"),

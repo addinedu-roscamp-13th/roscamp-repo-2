@@ -297,12 +297,20 @@ def test_rejected_transition_surfaces_the_robot_reason(client, link):
     assert _post(client)["reason"] == "로봇이 거부함"
 
 
-def test_release_returns_a_working_robot_to_idle(client, link):
+def test_release_returns_a_working_robot_to_patrol(client, link):
+    """[2026-08-02] **IDLE → PATROL.**
+
+    로봇 쪽은 세션이 끝나면 스스로 순찰로 간다(`FollowExec._release` 가 `NEXT_MODE`
+    를 PATROL 로 예약). 여기서 IDLE 을 밀면 거의 같은 시각에 도착해 `apply_pending()`
+    이 검사 없이 덮어써 로봇이 방금 정한 PATROL 이 뭉개진다. 게다가 그 함수는
+    `HOLD_UNTIL = now + manual_hold_sec`(params.yaml 기준 300초)를 찍어서, IDLE 로
+    떨어지면 **5분 동안 스스로 못 빠져나온다.**
+    """
     _seed("pinky1", "IDLE")
     _post(client)
     _seed("pinky1", "WORKING")          # 승인 후 로봇이 실제로 WORKING 이 된 상태
     assert _release(client)["released"] is True
-    assert link.targets == ["WORKING", "IDLE"]
+    assert link.targets == ["WORKING", "PATROL"]
 
 
 @pytest.mark.parametrize("state", ["ERROR", "RETURNING", "CHARGING"])
@@ -321,7 +329,7 @@ def test_release_returns_the_robot_even_if_the_cache_still_says_idle(client, lin
     _seed("pinky1", "IDLE")
     _post(client)                        # WORKING 으로 옮겼지만 캐시는 아직 IDLE
     _release(client)
-    assert link.targets == ["WORKING", "IDLE"]
+    assert link.targets == ["WORKING", "PATROL"]
 
 
 def test_release_still_succeeds_when_the_return_transition_fails(client, link):
@@ -368,14 +376,35 @@ def test_follow_admin_is_sent_after_the_transition(client, cmd, link):
     assert cmd.actions[-1] == "follow_admin"
 
 
-def test_dispatch_failure_rolls_back_to_idle_and_drops_the_grant(client, cmd, link, ):
-    """명령이 안 나갔으면 WORKING 에 갇힌 로봇을 남기지 않는다(guide.py 와 같은 계약)."""
+def test_dispatch_failure_rolls_back_to_the_original_state(client, cmd, link, ):
+    """명령이 안 나갔으면 WORKING 에 갇힌 로봇을 남기지 않는다(guide.py 와 같은 계약).
+
+    ⚠️ [2026-08-02] **되돌릴 곳은 `RELEASE_STATE` 가 아니라 원래 상태다.**
+       `RELEASE_STATE`(PATROL)는 "정상적으로 마쳤다 → 순찰 재개" 라는 뜻이다.
+       여기는 **아무 일도 안 일어난** 경우인데, PATROL 을 밀면 IDLE·INTERACTING 에
+       서 있던 로봇이 **갑자기 순회 주행을 시작한다**(fleet_node 가 task 없는 PATROL 에
+       순회 경로를 준다). 사람이 패널 앞에 서 있는데 로봇이 떠나 버린다.
+    """
     cmd.result = None
     _seed("pinky1", "PATROL")
     body = _post(client)
     assert body["accepted"] is False
-    assert link.targets == ["WORKING", "IDLE"], f"복귀 전이가 없다: {link.targets}"
+    assert link.targets == ["WORKING", "PATROL"], f"복귀 전이가 없다: {link.targets}"
     assert _status(client)["following"] == [], "승인 기록이 남았다 — 재시도가 막힌다"
+
+
+def test_dispatch_failure_does_not_push_an_idle_robot_into_patrol(client, cmd, link):
+    """⚠️ 위 시험의 짝. IDLE 이었으면 **IDLE 로** 돌아가야 한다.
+
+    `_seed` 를 PATROL 로 두면 "원래 상태로" 와 "RELEASE_STATE 로" 가 우연히 같은 값이라
+    구분이 안 된다. 다른 상태에서 시작해야 계약이 드러난다.
+    """
+    cmd.result = None
+    _seed("pinky1", "IDLE")
+    body = _post(client)
+    assert body["accepted"] is False
+    assert link.targets == ["WORKING", "IDLE"], \
+        f"원래 상태(IDLE)가 아니라 {link.targets[-1]} 로 밀었다 — 로봇이 혼자 순회한다"
 
 
 def test_stop_failure_does_not_block_the_follow(client, cmd):

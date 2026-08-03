@@ -115,8 +115,43 @@ def test_이송은_대상_출발_목적지를_그대로_보낸다(client, admin_
             "dropoff": "안네데스크",
             "requester": "사서:transfer",
             "priority": 0,
+            # 카탈로그에 없는 제목이라 서가 좌표를 못 찾는다 — 0(정보 없음)으로 나간다.
+            "tier": 0,
+            "row": 0,
         }
     ]
+
+
+def test_서가_좌표는_1에서_3까지만_받는다(client, admin_auth):
+    """실물이 3층 × 3줄이다. `tier=4` 를 저장하면 그 도서 주문마다 로봇 쪽 중계가 goal 을
+    못 만들어 실패한다(`arm_task_map`) — 원인이 주행 중에야 드러나므로 입력에서 막는다."""
+    body = {"title_kr": "좌표시험", "author": "a", "category": "literature",
+            "zone": "문학서가"}
+    for bad in ({"tier": 4}, {"row": 9}, {"tier": -1}):
+        res = client.post("/api/admin/ops/books", json={**body, **bad},
+                          headers=admin_auth)
+        assert res.status_code == 422, (bad, res.text)
+    res = client.post("/api/admin/ops/books", json={**body, "tier": 3, "row": 1},
+                      headers=admin_auth)
+    assert res.status_code in (200, 201), res.text
+    assert (res.json()["tier"], res.json()["row"]) == (3, 1)
+
+
+def test_도서의_서가_좌표가_주문에_실린다(client, admin_auth, fake_fms, db_session):
+    """팔이 손을 뻗으려면 층·줄이 필요하다. 정점(`pickup`)은 "어느 서가"까지만 말한다."""
+    make_book(db_session, title="코스모스", zone="과학-1", tier=2, row=3)
+    res = client.post(
+        TASKS,
+        json={
+            "kind": "transfer",
+            "book": "코스모스",
+            "pickup": "과학-1",
+            "dropoff": "안네데스크",
+        },
+        headers=admin_auth,
+    )
+    assert res.status_code == 201, res.text
+    assert (fake_fms.orders[0]["tier"], fake_fms.orders[0]["row"]) == (2, 3)
 
 
 def test_진열의_목적지는_도서의_서가에서_나온다(
@@ -161,6 +196,9 @@ def test_수거는_아무것도_안_받고_접수된다(client, admin_auth, fake
             "dropoff": "",
             "requester": "사서:collect",
             "priority": 0,
+            # 바구니 작업이라 서가 좌표가 없다 — 팔은 바구니 전체를 든다.
+            "tier": 0,
+            "row": 0,
         }
     ]
 

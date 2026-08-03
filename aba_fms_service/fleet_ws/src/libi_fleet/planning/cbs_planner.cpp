@@ -105,6 +105,14 @@ std::vector<int> reverse_dijkstra(const TimedGraph & g, int goal)
   return d;
 }
 
+// 로봇 i 의 출발 시각(틱). 안 주면 0 — 예전과 같은 동작이다.
+// 음수는 0 으로 본다("모른다" 를 미래로 해석하지 않는다).
+int start_tick_of(const PlanOptions & opt, std::size_t i)
+{
+  if (i >= opt.start_ticks.size()) { return 0; }
+  return std::max(0, opt.start_ticks[i]);
+}
+
 // 가중 Space-Time A*: 제약을 지키며 start→goal 의 시각별 경로. 실패 시 빈 Route.
 //
 // 상태는 (정점, 도착틱). 확장은 두 가지다:
@@ -114,7 +122,7 @@ std::vector<int> reverse_dijkstra(const TimedGraph & g, int goal)
 // 대기를 1틱짜리 상태로 쪼개 두므로, 머무는 동안의 정점 제약이 자동으로 매 틱 검사된다.
 Route timed_astar(
   const TimedGraph & g, int start, int goal, const TimedConstraints & c, int horizon,
-  int max_expansions)
+  int max_expansions, int start_tick)
 {
   const std::vector<int> h = reverse_dijkstra(g, goal);
   if (h[start] == kInf) { return {}; }   // 도달 불가 그래프
@@ -141,8 +149,11 @@ Route timed_astar(
   //   물리적으로 두 로봇이 한 정점에 겹칠 수는 없지만, arte2 처럼 정점 간격이 좁고
   //   도착 판정 반경이 0.05 m 인 맵에서는 **초기 위치가 같은 정점으로 스냅**될 수 있다.
   //   그때 플래너가 안 돌아오면 배차 전체가 멈춘다.
-  if (vertex_blocked(c, start, 0)) { return {}; }
-  open.push({start, 0, h[start]});
+  // ⚠️ **출발 시각은 0 이 아닐 수 있다.** 이동 중 재계획이면 로봇이 `start` 에 닿기까지
+  //    남은 시간이 있고, 그 값이 `start_tick` 으로 들어온다 — 근거는 `PlanOptions::start_ticks`.
+  //    여기서 반영해야 arrive/depart 와 **충돌 제약이 같은 시간축**에서 밀린다.
+  if (vertex_blocked(c, start, start_tick)) { return {}; }
+  open.push({start, start_tick, start_tick + h[start]});
 
   int expansions = 0;
   while (!open.empty()) {
@@ -311,7 +322,8 @@ std::string route_to_string(const Route & r)
   return s;
 }
 
-std::vector<Route> cbs_plan_timed(
+// 실제 계획 한 번. 지평선 재시도는 아래 cbs_plan_timed 가 감싼다.
+std::vector<Route> cbs_plan_once(
   const TimedGraph & g, const std::vector<int> & starts, const std::vector<int> & goals,
   const PlanOptions & opt)
 {
@@ -336,7 +348,10 @@ std::vector<Route> cbs_plan_timed(
     for (int i = 0; i < N; ++i) {
       const std::vector<int> h = reverse_dijkstra(g, goals[i]);
       if (starts[i] >= 0 && starts[i] < static_cast<int>(h.size()) && h[starts[i]] != kInf) {
-        longest = std::max(longest, h[starts[i]]);
+        // ⚠️ 출발 시각을 더한다. 지평선은 **절대 시각**의 상한이라, 늦게 출발하는 로봇의
+        //    도착이 그만큼 뒤로 밀린다. 안 더하면 그 로봇만 지평선 밖으로 나가 계획이
+        //    실패하고, 편대 전체가 반응형으로 내려간다.
+        longest = std::max(longest, h[starts[i]] + start_tick_of(opt, i));
       }
     }
     horizon = 2 * longest + N * (max_edge + opt.clearance + 1) + 8;
@@ -354,7 +369,8 @@ std::vector<Route> cbs_plan_timed(
   root.con.resize(N);
   root.routes.resize(N);
   for (int i = 0; i < N; ++i) {
-    root.routes[i] = timed_astar(g, starts[i], goals[i], root.con[i], horizon, opt.max_expansions);
+    root.routes[i] = timed_astar(g, starts[i], goals[i], root.con[i], horizon, opt.max_expansions,
+                                start_tick_of(opt, i));
     if (root.routes[i].empty()) { return {}; }
     root.cost += route_cost(root.routes[i]);
   }
@@ -362,9 +378,76 @@ std::vector<Route> cbs_plan_timed(
   std::priority_queue<CbsNode, std::vector<CbsNode>, Cmp> tree;
   tree.push(root);
 
+  // ── 폴백: 우선순위 계획 ──────────────────────────────────────────────────
+  //
+  // [2026-08-01] **CBS 가 상한에 걸리는 것은 해가 없어서가 아니다.** 실측으로 확인했다.
+  //
+  // 복도에서 두 로봇이 정면으로 만나면 **아무리 미뤄도 안 풀린다** — 한쪽이 대피선으로
+  // 빠져야만 풀린다. 그런데 CBS 가 만드는 제약은 "그 몇 틱만 피해라" 뿐이라
+  // "1틱 더 미룬 안"이 사실상 무한히 생기고, 그 전부가 우회안보다 싸다:
+  //
+  //     미룬 안   cost 212 → 234 → 238 → 242 → …   (수십만 개)
+  //     우회안    cost ~400                        (그 뒤에 줄 서 있음)
+  //
+  // 최선우선은 400 에 닿기 전에 상한을 소진한다. 정답이 트리 안에 있는데 도달을 못 한다.
+  // CBS 의 알려진 약점(corridor symmetry)이고, 정공법은 corridor reasoning(CBSH2-RTC)
+  // 이지만 훨씬 크다. 실측(2900+ 케이스)에서 이 폴백으로 충분했다.
+  //
+  // ⚠️ **제약집합 중복검출은 이 문제의 답이 아니다.** 표준 CBS 위생으로 넣어 봤더니
+  //    차단 건수가 **0** 이었다 — 같은 충돌이라도 누적 제약 이력이 달라 서로 다른 노드다.
+  //
+  // 우선순위 계획은 최적이 아니지만 **항상 끝나고**, 앞 로봇을 움직이는 장애물로 두므로
+  // "남이 점유한 곳을 우회" 가 자연히 나온다 — 응대(INTERACTING)로 멈춘 로봇을 피해
+  // 가야 한다는 요구와 같은 성질이다.
+  //
+  // 순서를 여러 개 시도한다. 고정 순서 하나는 해가 있는데도 실패할 수 있다(불완전성).
+  auto plan_with_order = [&](const std::vector<int> & order) -> std::vector<Route> {
+    std::vector<Route> out(N);
+    TimedConstraints acc;                 // 앞 로봇들이 만든 누적 장애물
+    for (int idx : order) {
+      out[idx] = timed_astar(g, starts[idx], goals[idx], acc, horizon, opt.max_expansions,
+                          start_tick_of(opt, idx));
+      if (out[idx].empty()) { return {}; }
+      for (size_t k = 0; k < out[idx].size(); ++k) {
+        const Step & st = out[idx][k];
+        // ⚠️ 목표 체류는 depart == kNeverEnds 다. 여유를 더할 때 포화시킨다 —
+        //    무한을 평범한 정수처럼 더하면 넘칠 수 있다.
+        const int dep = st.depart >= kNeverEnds ? kNeverEnds : st.depart + opt.clearance;
+        acc.vertex.push_back({st.v, st.arrive - opt.clearance, dep});
+        if (k + 1 < out[idx].size()) {
+          // 역방향 통과 금지 — 자리 맞바꿈(swap)을 막는다.
+          acc.edge.push_back({out[idx][k + 1].v, st.v,
+                              st.depart - opt.clearance,
+                              out[idx][k + 1].arrive + opt.clearance});
+        }
+      }
+    }
+    return out;
+  };
+
+  auto prioritized = [&]() -> std::vector<Route> {
+    std::vector<int> order(N);
+    for (int i = 0; i < N; ++i) { order[i] = i; }
+    if (auto r = plan_with_order(order); !r.empty()) { return r; }
+
+    std::vector<int> rev(order.rbegin(), order.rend());
+    if (auto r = plan_with_order(rev); !r.empty()) { return r; }
+
+    // 제약 많은 순 — 자유도가 적은 로봇에게 먼저 자리를 준다.
+    std::vector<int> hard = order;
+    std::vector<int> len(N, 0);
+    for (int i = 0; i < N; ++i) {
+      const std::vector<int> h = reverse_dijkstra(g, goals[i]);
+      len[i] = (starts[i] >= 0 && starts[i] < static_cast<int>(h.size())) ? h[starts[i]] : 0;
+    }
+    std::sort(hard.begin(), hard.end(), [&](int a, int b) { return len[a] > len[b]; });
+    return plan_with_order(hard);
+  };
+
   int expanded = 0;
   while (!tree.empty()) {
-    if (++expanded > opt.max_nodes) { return {}; }   // 상한 초과 — 실패로 본다
+    // 상한 초과 → **폴백으로 간다.** 예전엔 곧장 return 이라 폴백을 건너뛰었다.
+    if (++expanded > opt.max_nodes) { return prioritized(); }
     CbsNode cur = tree.top();
     tree.pop();
 
@@ -387,14 +470,63 @@ std::vector<Route> cbs_plan_timed(
         child.con[agent].vertex.push_back({cf.u, o0 - opt.clearance, o1 + opt.clearance});
       }
       child.routes[agent] = timed_astar(g, starts[agent], goals[agent],
-                                        child.con[agent], horizon, opt.max_expansions);
+                                        child.con[agent], horizon, opt.max_expansions,
+                                        start_tick_of(opt, agent));
       if (child.routes[agent].empty()) { continue; }  // 이 가지 막힘
       child.cost = 0;
       for (const auto & r : child.routes) { child.cost += route_cost(r); }
       tree.push(child);
     }
   }
-  return {};   // 제약트리 소진 — 해 없음
+  return prioritized();   // 제약트리 소진 → 폴백(위 주석 참고)
+}
+
+// [2026-08-01] **지평선을 실패했을 때만 키운다.**
+//
+// 자동 지평선은 `2×(자기 최단거리) + …` 인데, 두 로봇이 **인접**하면 그 값이 몇 틱밖에
+// 안 돼 비켜서는 우회로를 잘라 버린다. 실측(arte2): 순회경로-3↔순회경로-4 는 직선 4틱이라
+// 자동값으로는 실패하고 `horizon=2000` 이면 바로 풀렸다 — 해가 없던 게 아니라 못 보고 있었다.
+//
+// 그렇다고 처음부터 크게 잡으면 안 된다. 상태 수가 |V| × horizon 이라, 틱이 잘게 쪼개진
+// 설정(테스트의 TICK_SEC=0.02)에서 저수준 탐색이 통째로 터진다 — 실제로 테스트가 타임아웃했다.
+//
+// 그래서 **싼 값으로 먼저 풀고, 실패하면 그때 넓힌다.** 흔한 경우는 예전과 같은 비용이고,
+// 어려운 경우만 대가를 치른다. 호출자가 horizon 을 명시했으면 그 뜻을 존중해 재시도하지 않는다.
+std::vector<Route> cbs_plan_timed(
+  const TimedGraph & g, const std::vector<int> & starts, const std::vector<int> & goals,
+  const PlanOptions & opt)
+{
+  auto r = cbs_plan_once(g, starts, goals, opt);
+  if (!r.empty() || opt.horizon > 0) { return r; }
+
+  // 그래프 지름(모든 정점쌍 최단거리의 최댓값)을 하한으로 다시. 우회로도 결국
+  // 그래프 안의 경로이므로 공간적으로는 이 정도면 덮인다.
+  int diameter = 0;
+  int max_edge = 1;
+  for (int v = 0; v < static_cast<int>(g.size()); ++v) {
+    const std::vector<int> h = reverse_dijkstra(g, v);
+    for (int d : h) { if (d != kInf && d > diameter) { diameter = d; } }
+    for (const auto & e : g[v]) { max_edge = std::max(max_edge, e.second); }
+  }
+  if (diameter <= 0) { return r; }
+  PlanOptions wide = opt;
+  // ⚠️ **지름만으로는 모자란다 — 그건 거리를 재지 줄서기를 못 잰다.**
+  //    병목 정점 하나를 N 대가 차례로 통과해야 하면 완료 시각은 지름이 아니라 N 에 비례한다
+  //    (별 모양 그래프가 극단이다: 지름 2인데 잎이 10개면 중심에서 10번 줄을 선다).
+  //    그래서 대기 몫 N*(최대간선+clearance+1) 을 더한다.
+  //
+  //    ★ 이 항이 없으면 **"넓힌" 재시도가 첫 시도보다 좁아질 수 있다** — 첫 시도 식은
+  //      2*longest + N*(...) + 8 이라 N 이 크면 4*지름+16 을 넘는다. 지금 식은 지름이
+  //      longest 이상이므로(4D ≥ 2L, 16 > 8) 항상 첫 시도를 포함한다. 그 불변식을 깨지 말 것.
+  wide.horizon = 4 * diameter +
+    static_cast<int>(starts.size()) * (max_edge + opt.clearance + 1) + 16;
+  // ⚠️ 재시도는 **CBS 트리를 다시 돌지 않는다.** max_nodes=1 이면 첫 확장에서 곧장
+  //    우선순위 폴백으로 떨어진다 — 이 경우를 실제로 푸는 것이 그쪽이기 때문이다.
+  //    넓은 지평선으로 CBS 트리(최대 4000노드 × A* 6만 확장)를 다시 돌리면
+  //    틱이 잘게 쪼개진 설정에서 3분씩 걸린다(실측: 테스트 182초).
+  //    폴백은 로봇 수만큼의 A* 라 넓은 지평선에서도 싸다.
+  wide.max_nodes = 1;
+  return cbs_plan_once(g, starts, goals, wide);
 }
 
 std::vector<Path> cbs_plan(

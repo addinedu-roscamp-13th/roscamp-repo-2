@@ -50,6 +50,56 @@ _cmd_queue: "queue.Queue[dict]" = queue.Queue(maxsize=QUEUE_MAX)
 _recent_ids: deque[str] = deque(maxlen=64)
 _result_pub_lock = threading.Lock()  # cmd_result 는 콜백/워커 두 스레드가 발행
 
+#: 바퀴를 **출발시키는** 액션. 정지 배리어(_cmd_gen)의 대상이다.
+MOTION_START_ACTIONS = frozenset({
+    "goal", "goto", "home", "mission_start", "schedule_start", "waypoint_goto", "dock",
+})
+
+#: 정지 세대. `mission_stop`/`schedule_stop` 이 올 때마다 1 오른다.
+#
+# ⚠️ **왜 필요한가** — 정지는 큐를 **우회해서** 콜백에서 즉시 실행된다(워커가 긴 호출에
+#    잡혀 있어도 정지를 보장하려고 일부러 그렇게 했다). 그런데 `stop_mission()` 은 미션
+#    스레드와 nav2 목표만 끊고 **큐에 남은 명령은 건드리지 않는다.** 그래서 순서가 뒤집힌다:
+#
+#        goal / mission_start  →  큐에 적재
+#        mission_stop          →  콜백에서 즉시 cancel_nav()   (큐 우회)
+#        worker                →  남아 있던 goal 을 꺼내 실행  → **다시 움직인다**
+#
+#    큐를 그냥 비우는 것으로는 부족하다 — 워커가 이미 꺼내 든 명령은 큐에 없다. 그래서
+#    적재 시점의 세대를 명령에 실어 두고, **워커가 실행 직전에** 세대를 확인해 버린다.
+#
+# ⚠️ 남는 창: 워커가 세대 확인을 통과한 직후 정지가 들어오면 그 한 건은 나간다(수 ms).
+#    그건 정지의 `cancel_nav()` 가 뒤이어 끊는다 — 확인을 실행 직전으로 최대한 붙인 이유다.
+_cmd_gen = 0
+_gen_lock = threading.Lock()
+
+
+def current_generation() -> int:
+    with _gen_lock:
+        return _cmd_gen
+
+
+def bump_generation() -> int:
+    """정지가 들어왔다 — 이 시점 이전에 적재된 주행 명령은 모두 무효다."""
+    global _cmd_gen
+    with _gen_lock:
+        _cmd_gen += 1
+        return _cmd_gen
+
+
+def superseded_by_stop(cmd: dict, gen: int | None = None) -> bool:
+    """이 명령이 **자기가 적재된 뒤에 들어온 정지**에 의해 무효가 됐나.
+
+    주행 시작 액션만 본다 — 위치 저장·맵 저장 같은 건 정지와 무관하고, 그것까지 버리면
+    정지 한 번이 관계없는 명령을 조용히 삼킨다.
+    """
+    if str(cmd.get("action", "")) not in MOTION_START_ACTIONS:
+        return False
+    tagged = cmd.get("_gen")
+    if tagged is None:
+        return False                     # 세대가 안 붙은 경로(직접 호출·테스트) — 건드리지 않는다
+    return int(tagged) != (current_generation() if gen is None else gen)
+
 
 # ── 명령 실행 (HTTP nav_router 와 동일 의미/스키마) ─────────────────────────
 
@@ -94,14 +144,40 @@ BT_LAYER_ACTIONS = frozenset({
 }) | SESSION_ACTIONS
 
 
+#: 팔 명령. `LIBI_ARM_VIA_BT=1` 이면 **답도 하지 않는다** — 세션 명령과 같은 이유다.
+#
+# 팔이 실제로 붙으면 완료를 아는 쪽은 libi_modes BT 의 `HandyActionDriver` 다(`arm_task`
+# 액션의 result 를 받는 쪽). 여기서 "접수했다"를 결과로 내면 FMS 가 그걸 **완료로 소비**해
+# 다음 주행 다리를 시작한다 — 팔이 아직 뻗어 있는 채로 로봇이 움직인다.
+#
+# 기본값이 0(= 여기서 답한다)인 이유: 아직 팔 보드가 없다. 그때는 BT 쪽도 스텁이라
+# 아무도 답하지 않게 되고, FMS 는 다리 타임아웃이 없어 주문이 영원히 안 닫힌다.
+# ⚠️ 팔을 붙이는 날 **이 프로세스와 libi_modes 에 같은 env 를 주어야 한다.**
+ARM_ACTIONS = frozenset({"perform_action"})
+ARM_VIA_BT = os.getenv("LIBI_ARM_VIA_BT", "0") == "1"
+
+
 def should_publish_result(action: str, ok: bool) -> bool:
     """이 명령의 결과를 `/fleet_cmd_result` 로 낼까.
 
     세션 명령은 **접수에 성공했을 때만** 침묵한다(`SESSION_ACTIONS` 주석 참고).
     접수 자체가 실패했으면 답해야 한다 — 그건 세션이 안 열렸다는 뜻이고, 아무도 답을
     안 하면 부른 쪽이 드라이버 타임아웃(추종은 3600초)까지 매달린다.
+
+    팔 명령도 같다(`ARM_ACTIONS`) — 단 BT 가 답하는 배포에서만 침묵한다.
     """
+    if ok and ARM_VIA_BT and action in ARM_ACTIONS:
+        return False
     return not (ok and action in SESSION_ACTIONS)
+
+
+#: `_link_thread()` 가 만든 ROS context. marker_dock 이 같은 context 에 노드를 만든다.
+_ctx = None
+
+
+def get_context():
+    """fleet_link 의 ROS context. 아직 안 떴으면 None."""
+    return _ctx
 
 
 def _dispatch(action: str, args: dict) -> tuple[bool, int, Any, str]:
@@ -267,6 +343,15 @@ def _dispatch(action: str, args: dict) -> tuple[bool, int, Any, str]:
         # 다시 이 함수를 부를 때(goal/arm_home/…) 일어난다.
         return True, 202, {"accepted": True, "handled_by": "bt"}, ""
 
+    if action == "aruco_dock":
+        # 뒷캠 ArUco 정밀 도킹. BT `ReturningBranch` 의 ④단계(`ArucoApproach`)가 부른다.
+        #
+        # 아래 `dock`(라인 트레이싱 park_dock)과 **별개 구현**이다. BT 의 `dock_action`
+        # 기본값이 이쪽을 가리킨다 — 이름을 나눈 이유는 `libi_modes/main.py` 주석 참고
+        # (같은 이름이면 의도치 않은 알고리즘이 조용히 대신 돈다).
+        from app.core import marker_dock
+        return marker_dock.run_dock(**{k: v for k, v in args.items() if v is not None})
+
     if action == "dock":
         # 정밀 도킹(주차). BT 의 ReturningBranch 가 nav2 로 입구까지 온 다음 이걸 부른다.
         #
@@ -300,8 +385,8 @@ def _dispatch(action: str, args: dict) -> tuple[bool, int, Any, str]:
         act = str(args.get("action") or "")
         book = str(args.get("book") or "")
         at = str(args.get("at") or "")
-        print(f"[fleet_link] perform_action 접수: {act}({book}) at {at} "
-              f"— 팔 미배선이라 즉시 성공 처리", flush=True)
+        who = "BT 가 결과를 올린다 (여기선 침묵)" if ARM_VIA_BT else "팔 미배선이라 즉시 성공 처리"
+        print(f"[fleet_link] perform_action 접수: {act}({book}) at {at} — {who}", flush=True)
         return True, 200, {"success": True, "action": act, "book": book, "at": at,
                            "arm": "stub"}, ""
 
@@ -322,6 +407,11 @@ def _link_thread() -> None:
         dom = os.environ.get("ROS_DOMAIN_ID")
         rclpy.init(context=ctx, domain_id=int(dom) if dom else None)
         node = rclpy.create_node("fleet_link", context=ctx)
+        # [2026-07-30] 마커 도킹(marker_dock)이 **같은 context 에** 전용 노드를 만든다.
+        # 노드 하나를 두 executor 가 돌리는 게 아니라(그쪽은 자기 노드만 spin_once) 안전하고,
+        # 새 context 를 init 하면 shutdown·오류복구·도메인 일치 책임이 하나 더 생긴다.
+        global _ctx
+        _ctx = ctx
 
         qos_latched = QoSProfile(
             depth=1,
@@ -347,6 +437,11 @@ def _link_thread() -> None:
 
         def run_and_reply(cmd: dict) -> None:
             action = str(cmd.get("action", ""))
+            # 실행 직전에 정지 배리어를 확인한다 — 큐에서 꺼낸 뒤 확인해야 이미 꺼내 든
+            # 명령도 걸린다 (superseded_by_stop 주석 참고).
+            if superseded_by_stop(cmd):
+                publish_result(cmd["id"], False, 409, None, "정지로 취소된 명령 (배리어)")
+                return
             try:
                 ok, status, data, msg = _dispatch(action, cmd.get("args") or {})
             except Exception as e:
@@ -368,11 +463,22 @@ def _link_thread() -> None:
             if ts and (time.time() - ts) > CMD_STALE_SEC:
                 publish_result(cmd_id, False, 408, None, "stale command (재전달 거부)")
                 return
-            # 정지 계열은 인라인 즉시 실행 — 워커가 블로킹돼 있어도 정지 보장
+            # 정지 계열은 인라인 즉시 실행 — 워커가 블로킹돼 있어도 정지 보장.
+            # ⚠️ 실행 **전에** 세대를 올린다. 큐에 이미 쌓인 주행 명령이 정지 뒤에 실행돼
+            #    로봇이 다시 출발하는 것을 막는다(_cmd_gen 주석의 순서 역전).
+            # [2026-07-30] 마커 도킹 취소도 **여기서** 한다. 워커는 `aruco_dock` 을
+            # 블로킹으로 수행 중이라 큐에 넣어 봐야 이 도킹이 끝나야 꺼낸다 — 즉 BT 가
+            # 포기한 뒤에도 바퀴가 계속 돈다. 정지가 인라인인 이유와 정확히 같다.
+            if action in ("stop", "mission_stop", "schedule_stop", "follow_stop"):
+                from app.core import marker_dock
+                if marker_dock.request_cancel():
+                    print(f"[fleet_link] {action} → 진행 중인 마커 도킹 취소", flush=True)
             if action in ("mission_stop", "schedule_stop"):
+                bump_generation()
                 run_and_reply(cmd)
                 return
             try:
+                cmd["_gen"] = current_generation()
                 _cmd_queue.put_nowait(cmd)
             except queue.Full:
                 publish_result(cmd_id, False, 503, None, "명령 큐 포화")

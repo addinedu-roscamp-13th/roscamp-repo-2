@@ -176,7 +176,23 @@ def _bridge_thread() -> None:
         from nav_msgs.msg import OccupancyGrid, Odometry, Path
         from sensor_msgs.msg import LaserScan
 
-        rclpy.init()
+        # ⚠️ [2026-07-30] **도메인을 반드시 명시한다.** 인자 없이 `rclpy.init()` 을 부르면
+        #    프로세스의 `ROS_DOMAIN_ID` 를 타는데, 이 서버는 루트 `.env:67` 의
+        #    `ROS_DOMAIN_ID=119`(= 실물 로봇 pinky-3 용 값)를 물려받는다
+        #    (scripts/_load_env.sh → backend/start.sh → uvicorn).
+        #
+        #    그 결과 이 노드가 **로봇 도메인에 올라가** `/cmd_vel` 을 직접 발행했고,
+        #    로봇의 twist_mux 중재를 우회하는 두 번째 발행자가 됐다
+        #    (pinky_bringup/config/twist_mux.yaml 이 "발행자는 twist_mux 하나"를
+        #     불변식으로 못박아 둔 그것). 로봇 쪽 pinky_bringup 이 기동 30초마다 이걸
+        #     검사해 GID 와 함께 ERROR 로 찍는다.
+        #
+        #    형제 셋(fleet_link·fsm_link·fleet_telemetry)은 전부 자기 Context 에 도메인을
+        #    고정하고 있었다. 여기만 빠져 있었다. 값의 출처는 app/ros_domains.py 하나다.
+        from app.ros_domains import SERVER_DOMAIN_ID
+        rclpy.init(domain_id=SERVER_DOMAIN_ID)
+        print(f"[ros_bridge] ROS_DOMAIN_ID={os.environ.get('ROS_DOMAIN_ID')} 이지만 "
+              f"서버 도메인 {SERVER_DOMAIN_ID} 로 고정해 뜹니다")
 
         class BridgeNode(Node):
             def __init__(self) -> None:

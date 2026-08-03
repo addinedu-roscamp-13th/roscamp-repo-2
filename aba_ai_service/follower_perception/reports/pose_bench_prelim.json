@@ -1,0 +1,236 @@
+{
+  "front": {
+    "crops": 549,
+    "labeled": {
+      "standing": 148,
+      "lying": 34
+    },
+    "models": {
+      "yolo11n-pose": {
+        "conf_mean_all": {
+          "nose": 0.359,
+          "eyeL": 0.269,
+          "eyeR": 0.288,
+          "earL": 0.538,
+          "earR": 0.553,
+          "shL": 0.755,
+          "shR": 0.813,
+          "elL": 0.554,
+          "elR": 0.558,
+          "wrL": 0.46,
+          "wrR": 0.476,
+          "hipL": 0.695,
+          "hipR": 0.7,
+          "knL": 0.631,
+          "knR": 0.636,
+          "anL": 0.473,
+          "anR": 0.477
+        },
+        "torso4_conf_mean": 0.741,
+        "torso4_pass": 0.667,
+        "head_pass_nose": 0.321,
+        "head_hip_pass": 0.18,
+        "jitter_norm": 0.3223,
+        "ms_per_frame": 6.9
+      },
+      "yolo26m-pose": {
+        "conf_mean_all": {
+          "nose": 0.332,
+          "eyeL": 0.259,
+          "eyeR": 0.28,
+          "earL": 0.365,
+          "earR": 0.44,
+          "shL": 0.604,
+          "shR": 0.671,
+          "elL": 0.438,
+          "elR": 0.5,
+          "wrL": 0.399,
+          "wrR": 0.471,
+          "hipL": 0.524,
+          "hipR": 0.523,
+          "knL": 0.507,
+          "knR": 0.502,
+          "anL": 0.446,
+          "anR": 0.43
+        },
+        "torso4_conf_mean": 0.58,
+        "torso4_pass": 0.525,
+        "head_pass_nose": 0.326,
+        "head_hip_pass": 0.206,
+        "jitter_norm": 0.2419,
+        "ms_per_frame": 9.0
+      },
+      "rtmpose-m-humanart": {
+        "conf_mean_all": {
+          "nose": 0.725,
+          "eyeL": 0.76,
+          "eyeR": 0.758,
+          "earL": 0.743,
+          "earR": 0.741,
+          "shL": 0.679,
+          "shR": 0.67,
+          "elL": 0.645,
+          "elR": 0.657,
+          "wrL": 0.592,
+          "wrR": 0.594,
+          "hipL": 0.566,
+          "hipR": 0.548,
+          "knL": 0.64,
+          "knR": 0.634,
+          "anL": 0.626,
+          "anR": 0.624
+        },
+        "torso4_conf_mean": 0.616,
+        "torso4_pass": 0.754,
+        "head_pass_nose": 0.891,
+        "head_hip_pass": 0.745,
+        "jitter_norm": 0.2428,
+        "ms_per_frame": 13.4
+      },
+      "rtmpose-m-body7": {
+        "conf_mean_all": {
+          "nose": 0.697,
+          "eyeL": 0.705,
+          "eyeR": 0.719,
+          "earL": 0.715,
+          "earR": 0.73,
+          "shL": 0.72,
+          "shR": 0.714,
+          "elL": 0.64,
+          "elR": 0.667,
+          "wrL": 0.599,
+          "wrR": 0.62,
+          "hipL": 0.581,
+          "hipR": 0.583,
+          "knL": 0.639,
+          "knR": 0.642,
+          "anL": 0.652,
+          "anR": 0.663
+        },
+        "torso4_conf_mean": 0.65,
+        "torso4_pass": 0.796,
+        "head_pass_nose": 0.898,
+        "head_hip_pass": 0.778,
+        "jitter_norm": 0.228,
+        "ms_per_frame": 13.5
+      }
+    }
+  },
+  "back": {
+    "crops": 752,
+    "labeled": {
+      "standing": 261,
+      "lying": 53
+    },
+    "models": {
+      "yolo11n-pose": {
+        "conf_mean_all": {
+          "nose": 0.174,
+          "eyeL": 0.127,
+          "eyeR": 0.115,
+          "earL": 0.375,
+          "earR": 0.275,
+          "shL": 0.51,
+          "shR": 0.544,
+          "elL": 0.345,
+          "elR": 0.367,
+          "wrL": 0.291,
+          "wrR": 0.309,
+          "hipL": 0.487,
+          "hipR": 0.5,
+          "knL": 0.41,
+          "knR": 0.418,
+          "anL": 0.249,
+          "anR": 0.261
+        },
+        "torso4_conf_mean": 0.51,
+        "torso4_pass": 0.41,
+        "head_pass_nose": 0.134,
+        "head_hip_pass": 0.061,
+        "jitter_norm": 0.2061,
+        "ms_per_frame": 6.4
+      },
+      "yolo26m-pose": {
+        "conf_mean_all": {
+          "nose": 0.131,
+          "eyeL": 0.08,
+          "eyeR": 0.079,
+          "earL": 0.181,
+          "earR": 0.199,
+          "shL": 0.472,
+          "shR": 0.511,
+          "elL": 0.373,
+          "elR": 0.387,
+          "wrL": 0.326,
+          "wrR": 0.328,
+          "hipL": 0.446,
+          "hipR": 0.438,
+          "knL": 0.395,
+          "knR": 0.378,
+          "anL": 0.282,
+          "anR": 0.264
+        },
+        "torso4_conf_mean": 0.467,
+        "torso4_pass": 0.394,
+        "head_pass_nose": 0.106,
+        "head_hip_pass": 0.085,
+        "jitter_norm": 0.1761,
+        "ms_per_frame": 9.8
+      },
+      "rtmpose-m-humanart": {
+        "conf_mean_all": {
+          "nose": 0.638,
+          "eyeL": 0.665,
+          "eyeR": 0.665,
+          "earL": 0.654,
+          "earR": 0.651,
+          "shL": 0.596,
+          "shR": 0.594,
+          "elL": 0.541,
+          "elR": 0.534,
+          "wrL": 0.513,
+          "wrR": 0.492,
+          "hipL": 0.488,
+          "hipR": 0.482,
+          "knL": 0.543,
+          "knR": 0.54,
+          "anL": 0.544,
+          "anR": 0.537
+        },
+        "torso4_conf_mean": 0.54,
+        "torso4_pass": 0.59,
+        "head_pass_nose": 0.766,
+        "head_hip_pass": 0.584,
+        "jitter_norm": 0.1429,
+        "ms_per_frame": 13.9
+      },
+      "rtmpose-m-body7": {
+        "conf_mean_all": {
+          "nose": 0.606,
+          "eyeL": 0.6,
+          "eyeR": 0.604,
+          "earL": 0.628,
+          "earR": 0.614,
+          "shL": 0.634,
+          "shR": 0.631,
+          "elL": 0.567,
+          "elR": 0.56,
+          "wrL": 0.531,
+          "wrR": 0.515,
+          "hipL": 0.525,
+          "hipR": 0.53,
+          "knL": 0.561,
+          "knR": 0.559,
+          "anL": 0.574,
+          "anR": 0.568
+        },
+        "torso4_conf_mean": 0.58,
+        "torso4_pass": 0.691,
+        "head_pass_nose": 0.766,
+        "head_hip_pass": 0.676,
+        "jitter_norm": 0.1155,
+        "ms_per_frame": 13.9
+      }
+    }
+  }
+}

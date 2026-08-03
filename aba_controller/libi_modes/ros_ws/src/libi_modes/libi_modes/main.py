@@ -37,7 +37,8 @@ from libi_modes import tree as tree_mod
 from libi_modes.blackboard import Keys
 from libi_modes.common.junctions import JunctionSet, load_junctions
 from libi_modes.registry import BRANCH_ORDER
-from libi_modes.ros.fleet_cmd_driver import FleetCmdDriver, YawGoalDriver
+from libi_modes.ros.fleet_cmd_driver import FleetCmdDriver, NudgeDriver, YawGoalDriver
+from libi_modes.ros.handy_action_driver import ArmStubDriver, HandyActionDriver
 from libi_modes.ros.providers import RosProviders
 from libi_modes.ros.state_io import StateIO
 
@@ -63,6 +64,34 @@ from libi_modes.ros.state_io import StateIO
 # ⚠️ 바꿀 때 `libi_modes/registry.py` 와 FMS 의 `app/fsm_model.py` 를 **함께** 고쳐야 한다.
 #    둘이 어긋나면 `test_fsm_registry_drift.py` 가 잡는다.
 BOOT_STATE = "IDLE"
+
+#: 팔 다리를 **실제 팔 보드**로 중계할까 (`arm_task` 액션). 기본은 아니다.
+#
+# ⚠️ **답하는 쪽이 하나여야 한다.** `/fleet_cmd{perform_action}` 은 두 프로세스가 듣는다 —
+#    이 BT 와 robot_agent 의 `fleet_link`. FMS 는 `/fleet_cmd_result` 를 **처음 받은 것**으로
+#    다리를 닫으므로, 둘이 다 답하면 팔이 아직 움직이는 중에 다음 주행이 시작된다
+#    (팔을 뻗은 채 로봇이 간다). 그래서 같은 env 한 개로 갈라 놓는다:
+#
+#      0 (기본) 팔 보드 없음. robot_agent 가 즉시 성공으로 답하고, 여기선 스텁이 통과시킨다.
+#      1        팔 보드 있음. 여기서 액션으로 중계하고 **완료를 여기서 답한다**.
+#               robot_agent 는 침묵한다(`fleet_link.ARM_ACTIONS`).
+#
+#    ⚠️ 켤 때 **robot_agent 프로세스에도 같은 env 를 주어야 한다.** 한쪽만 켜면
+#       아무도 답하지 않아(0/1 반대면 둘이 답해) 주문이 조용히 멈춘다.
+ARM_VIA_BT = os.getenv("LIBI_ARM_VIA_BT", "0") == "1"
+
+#: 요청자를 놓쳤을 때 내는 `mission_stop` 의 응답 타임아웃(초).
+#
+# 기본값(120초)을 쓰면 **답이 안 올 때 안내가 2분을 통째로 멈춘다** —
+# `GuideExec._stop_settled()` 가 이 결과를 기다리는 동안 회복 회전이 안 열리고,
+# 회전이 안 열리면 회복 트리 자체가 안 만들어진다(`control_loop._start_search`).
+# 타임아웃이 나면 `GuideExec` 은 회전 대신 **안내를 끝낸다**(정지를 못 믿으므로).
+#
+# ⚠️ 너무 짧게 잡으면 멀쩡한 정지를 실패로 읽어 안내가 헛되이 끝난다. 실행 층의
+#    `mission_stop` 은 인라인이지만 `mission.stop_mission()` 이 살아 있는 미션
+#    스레드를 **최대 2초 join** 한다(robot_agent `app/core/mission.py`). 거기에
+#    DDS 왕복·콜백 지연 여유를 더해 8초로 둔다.
+GUIDE_STOP_TIMEOUT_SEC = 8.0
 
 
 class _CmdPublisher:
@@ -90,6 +119,9 @@ class FsmNode(Node):
         cmd_topic = self.declare_parameter("cmd_topic", "fleet_cmd").value
         result_topic = self.declare_parameter("result_topic", "fleet_cmd_result").value
         home_location = self.declare_parameter("home_location", "charger").value
+        # 도킹 미세 이동이 쓰는 twist_mux 입력. **`/cmd_vel` 이 아니다** —
+        # 직접 발행 금지는 twist_mux.yaml 이 정한 것이고, 그 문이 있어서 비상정지가 이긴다.
+        dock_nudge_topic = self.declare_parameter("dock_nudge_topic", "/cmd_vel_dock").value
 
         # 복귀 목적지 — **주차장 정점의 좌표와 자세**.
         #
@@ -101,22 +133,41 @@ class FsmNode(Node):
         # yaw 0 = +x 방향 = 입구·안내데스크 쪽(관제 화면에서 위쪽). waypoint.yaml 의
         # `주차장` 자세와 같은 값이다.
         #
-        # [2026-07-27] 복귀가 **5단계로 쪼개졌다.** 예전에는 goal 하나로 압축돼 있었다.
+        # [2026-07-30] 복귀 단계 재편 — 뒷캠 ArUco 정밀 주차.
         #
         #   ① 주차장 입구 이동   nav2 주행                    GoToParkingEntrance
-        #   ② 주차장 쪽 회전     지금은 좌표 기반             FaceParking   ← 앞캠 ArUco 자리
-        #   ③ 주차장 이동        nav2 주행                    GoToParking
-        #   ④ 180° 회전          충전 단자가 뒤에 있다         TurnAround
-        #   ⑤ 정렬               지금은 자리만                AlignDock     ← 뒷캠 ArUco 자리
+        #   ② 접근 자세 회전     절대각(approach_yaw_rad)      FaceApproachYaw
+        #   ③ nav2 목표 해제     바퀴를 외부에 넘기기 전       ReleaseNav
+        #   ④ ArUco 접근 6cm     **다른 저장소가 수행**        ArucoApproach
+        #   ⑤ 3cm 개루프 후진    cmd_vel_dock 정속 발행        DockNudge
+        #   ⑥ 안정화 대기        시간으로 넘긴다               DockSettle
         #
-        # ②⑤에 마커를 붙일 때 트리 배선은 안 바뀐다 — leaf 구현만 갈아끼우면 된다.
-        # (park_dock 연결은 여전히 미결: scripts/drive-pi/dock/README.md)
-        return_x = float(self.declare_parameter("return_x", -0.001).value)
-        return_y = float(self.declare_parameter("return_y", -0.033).value)
-        return_yaw = float(self.declare_parameter("return_yaw", 0.0).value)
-        # 주차장 **입구** 정점. arte2 navgraph 의 `주차장입구`.
-        entrance_x = float(self.declare_parameter("entrance_x", 0.6005).value)
-        entrance_y = float(self.declare_parameter("entrance_y", -0.0333).value)
+        # 없앤 것: `GoToParking`(nav2 로 주차장 정점까지) · `TurnAround`(180°).
+        # ②가 한 번에 접근 자세로 돌리므로 둘 다 필요 없어졌고, AMCL 오차가 충전 단자
+        # 폭보다 큰 마지막 구간을 nav2 에게 맡기지 않는 것이 이 재편의 요점이다.
+        #
+        # ⚠️ `return_x/y/yaw` 는 이제 **트리가 안 쓴다**(`GoToParking` 이 없어졌다).
+        #    선언만 남겨 둔다 — 이 값을 넘기는 런치 파일이 있고, 선언을 지우면 그쪽이
+        #    "undeclared parameter" 로 죽는다. 주차장 좌표 판정은 `dock_confirm.py` 몫이다.
+        # ⚠️ 이 좌표는 다시 **쓰인다.** ②가 "등을 충전소로 향한다"를
+        #    `atan2(충전소 − 현재) + 180°` 로 내기 때문이다(return_steps `_approach_yaw`).
+        #    arte2 navgraph 의 `충전소` 정점.
+        return_x = float(self.declare_parameter("return_x", -0.0007).value)
+        return_y = float(self.declare_parameter("return_y", -0.0333).value)
+        self.declare_parameter("return_yaw", 3.1415)
+        # 도킹 접근 정점 — arte2 navgraph 의 **`충전소통로`**.
+        #
+        # [2026-07-30] `충전소입구`(0.6005, 옛 `주차장입구`) → `충전소통로`(0.384) 로 옮겼다.
+        #   충전소통로 → 충전소 = **0.385m**. `axis_gate_m`(0.6) **안**이라 도착하자마자
+        #   자세를 신뢰하는 AXIS_ALIGN 구간으로 들어간다. 충전소입구(0.60m)는 딱 그 경계라
+        #   HOMING/AXIS_ALIGN 을 오갈 여지가 있었다.
+        #   좌표 출처: aba_fms_service/fleet_ws/maps/library/arte2.navgraph.yaml (19번 정점)
+        #
+        # ⚠️ 노드 이름은 `GoToParkingEntrance` 그대로다 — 관제 화면 라벨이라 개명하면
+        #    `btNodeFlags.ts`·README 를 같이 고쳐야 한다(CLAUDE.md). 목적지가 바뀐 것은
+        #    이 주석과 params 로 남긴다.
+        entrance_x = float(self.declare_parameter("entrance_x", 0.384).value)
+        entrance_y = float(self.declare_parameter("entrance_y", -0.03).value)
         entrance_yaw = float(self.declare_parameter("entrance_yaw", 3.1415).value)
 
         # [디버그] 잠글 상태 브랜치 — 콤마구분. ROS param `disabled_branches` 또는
@@ -127,6 +178,9 @@ class FsmNode(Node):
         self._apply_battery_auto(params)
 
         cmd_pub = _CmdPublisher(self, cmd_topic)
+        # 팔 완료를 FMS 에 올리는 통로. 팔을 중계할 때만 만든다 — 안 쓰는 발행자를
+        # 띄우면 "누가 답하는가"가 코드만 봐선 흐려진다(위 ARM_VIA_BT 주석).
+        self._result_pub = _CmdPublisher(self, result_topic) if ARM_VIA_BT else None
         self._providers = RosProviders(
             self, cmd_topic=cmd_topic,
             # 요청자 가시성이 이 시간 갱신되지 않으면 False(정지)로 본다.
@@ -160,13 +214,38 @@ class FsmNode(Node):
             # 좌표 없는 goal 을 보내면 fleet_link 가 KeyError 로 죽는다.
             "nav": FleetCmdDriver(self, "goal",
                                   args_fn=lambda: self._nav_args(home_location)).bind(cmd_pub),
-            "arm": FleetCmdDriver(self, "perform_action").bind(cmd_pub),
+            # 팔 — **액션 중계**다. `/fleet_cmd{perform_action}` 을 받아 팔 보드의
+            # `arm_task` 액션 서버를 부른다(2026-07-30 확정).
+            #
+            # ⚠️ 예전에는 `FleetCmdDriver(self, "perform_action")` 이었다. 그건 두 가지가
+            #    틀렸다: ① `args_fn` 이 없어 **`{}` 를 발행했다** — 어느 책을 어디서 집으라는
+            #    정보가 통째로 사라졌다. ② `/fleet_cmd` 로 되돌려 발행하니 그걸 받는 건
+            #    robot_agent 의 스텁이었고, 팔 보드까지 가는 통로가 아예 없었다.
+            #    (팔이 스텁이라 둘 다 드러나지 않았다)
+            #
+            # 취소·중복방어·진행보고를 직접 구현하지 않으려고 액션을 쓴다 —
+            # 옵시디언 `presen/final/14 로봇팔 통합 - 토픽 대신 액션.md`.
+            #
+            # ⚠️ **팔 보드가 붙기 전에는 스텁이다**(`LIBI_ARM_VIA_BT` 주석 참고).
+            "arm": (HandyActionDriver(self, lambda: self._read(Keys.ARM_ARGS),
+                                      result_fn=self._publish_arm_result)
+                    if ARM_VIA_BT else ArmStubDriver(self)),
             # 길잡이 주행 — nav 와 같은 실행 층 `goal` 이다. 다른 건 BT 층에서 누가 받느냐뿐.
             "guide": FleetCmdDriver(self, "goal",
                                     args_fn=lambda: self._nav_args(home_location)).bind(cmd_pub),
             # 요청자를 놓쳤을 때 **실제로 멈추는** 수단. mission_stop → ros_bridge.cancel_nav().
             # 이게 없으면 GuideExec 은 "기다리는 중"만 표시하고 로봇은 계속 달린다.
-            "guide_stop": FleetCmdDriver(self, "mission_stop").bind(cmd_pub),
+            #
+            # ⚠️ 응답 타임아웃을 기본(120초)에서 줄인다. `GuideExec._stop_settled()` 가
+            #    이 결과를 기다리는 동안 회복 회전이 안 열리고, 회전이 안 열리면
+            #    회복 트리 자체가 안 만들어진다(`control_loop._start_search`) —
+            #    즉 답이 안 오면 그만큼 안내가 통째로 멈춘다. `mission_stop` 은 실행
+            #    층이 큐를 우회해 인라인 처리하므로 몇 초 안에 안 오면 안 오는 것이다.
+            "guide_stop": FleetCmdDriver(self, "mission_stop",
+                                         timeout_sec=GUIDE_STOP_TIMEOUT_SEC).bind(cmd_pub),
+            # 요청자를 놓쳤다고 **FMS 에 알리는** 통로. 그 홉을 실패로 닫아야 FMS 가
+            # 예약을 풀고 로봇을 붙잡는다 — `GuideExec._report_lost` 주석.
+            "guide_result": self._publish_cmd_result,
             # 뒷캠 감시 세션. 이게 없으면 `/libi/requester_visible` 발행자가 없어
             # GuideExec 이 "감시 없음 → 그냥 주행"으로 읽고, 사람을 놓쳐도 계속 간다.
             # stop_action: 세션만 닫고 **주행은 안 끊는다** (FleetCmdDriver 주석 참고).
@@ -184,15 +263,11 @@ class FsmNode(Node):
             #    "추종 실패"로 관제에 뜬다.
             "follow": FleetCmdDriver(self, "follow_admin", timeout_sec=3600.0,
                                      stop_action="follow_stop").bind(cmd_pub),
-            # 주차장으로 goto. `home` 이 아니라 `goal` 인 이유는 위 return_x 주석 참고.
-            "return_dock": FleetCmdDriver(
-                self, "goal",
-                args_fn=lambda: {"x": return_x, "y": return_y, "yaw": return_yaw},
-            ).bind(cmd_pub),
         }
         # 복귀 5단계가 쓰는 것들.
         #   ⚠️ 팔 홈복귀(return_arm)는 뺐다 — 이 로봇에 팔이 없다(사용자 결정 2026-07-27).
         #      ArmHomeDriver 클래스는 남겨 둔다. 팔 로봇이 붙는 날 되살릴 자리다.
+        ret = params.get("returning", {})
         self._drivers["return_entrance"] = FleetCmdDriver(
             self, "goal",
             args_fn=lambda: {"x": entrance_x, "y": entrance_y, "yaw": entrance_yaw},
@@ -201,7 +276,63 @@ class FsmNode(Node):
             FleetCmdDriver(self, "goal").bind(cmd_pub),
             pose_fn=lambda: bb.get(self._bb, Keys.ROBOT_POSE))
         self._drivers["return_entrance_xy"] = (entrance_x, entrance_y)
+        self._drivers["return_entrance_yaw"] = entrance_yaw
         self._drivers["return_parking_xy"] = (return_x, return_y)
+        # ③ 바퀴를 외부에 넘기기 전에 nav2 목표를 끊는다.
+        #
+        # ①은 x·y 만 보고 성공하고, 성공한 단계는 stop 을 안 보낸다 — 그래서 입구 goal 이
+        # 살아 있는 채로 ④가 시작될 수 있다. 예전엔 `GoToParking` 이 새 goal 로 선점해
+        # 줬는데 그 단계를 없애면서 선점 주체가 사라졌다(codex 리뷰, 2026-07-30).
+        # `stop` 은 fleet_link 에서 `ros_bridge.cancel_nav()` 로 간다 — 취소할 목표가
+        # 없으면 아무 일도 안 일어난다.
+        self._drivers["return_nav_release"] = FleetCmdDriver(self, "stop").bind(cmd_pub)
+        # ④ 뒷캠 ArUco 정밀 접근 — **이 저장소에 구현이 없다.** `/fleet_cmd` 로 넘기고
+        #    `/fleet_cmd_result` 를 기다릴 뿐이다.
+        #
+        # ⚠️ **답하는 쪽이 하나여야 한다.** 둘이 답하면 **먼저 온 결과로 ⑤가 시작된다** —
+        #    즉 로봇이 아직 접근 중인데 3cm 후진이 겹친다. 팔에서 이미 밟은 함정이다
+        #    (CLAUDE.md `LIBI_ARM_VIA_BT`).
+        #
+        # ⚠️ 기본값이 `"dock"` 이 **아닌** 이유: 그 이름은 fleet_link 가 이미 잡아
+        #    `park_dock`(라인 트레이싱, **실물 미검증**)을 실제로 돌린다. 즉 외부 노드가
+        #    없어도 로봇이 움직이고 성공 결과까지 낸다 — 뒷캠 ArUco 인 줄 알고 있는데
+        #    다른 알고리즘이 도는, 가장 나쁜 종류의 조용한 실패다.
+        #    `aruco_dock` 은 fleet_link 가 모르는 이름이라 `400 알 수 없는 action` 이
+        #    **즉시** 돌아온다 → 재시도 소진 → fault → ERROR. 시끄럽게 실패한다.
+        #    외부 노드를 붙이는 날: 그 노드가 이 이름을 듣게 하면 끝이다.
+        #    (`park_dock` 을 쓰고 싶으면 `-p dock_action:=dock` 로 되돌린다)
+        dock_action = self.declare_parameter("dock_action", "aruco_dock").value
+        self._drivers["return_aruco"] = FleetCmdDriver(
+            self, str(dock_action),
+            timeout_sec=float(ret.get("aruco_timeout_sec", 180.0)),
+        ).bind(cmd_pub)
+        # 도킹 동안 **뒷캠을 선택 상태로** 만든다. 안 하면 대기 캠이라 8틱에 한 번
+        # (STANDBY_EVERY=8, 15fps → 1.9Hz)만 갱신돼 시각 서보가 못 돈다.
+        # `camera_select` 발행자는 follow_node 하나라는 규칙이 있어(follow_node.py) 그쪽에
+        # 요청하는 통로를 쓴다 — GuideExec 이 이미 쓰는 액션이다.
+        # stop_action 은 `follow_stop`: 세션만 닫고 주행은 안 끊는다.
+        self._drivers["return_back_cam"] = FleetCmdDriver(
+            self, "guide_watch", args_fn=lambda: {"camera": "back"},
+            timeout_sec=3600.0, stop_action="follow_stop").bind(cmd_pub)
+        # ⑤ 마지막 몇 cm — 마커가 화각을 벗어나는 구간이라 시간으로 민다.
+        self._drivers["return_nudge"] = NudgeDriver(
+            self, dock_nudge_topic,
+            distance_m=float(ret.get("nudge_distance_m", 0.03)),
+            speed_mps=float(ret.get("nudge_speed_mps", -0.08)))
+
+        # 도킹 탈출 — 나갈 때 **앞으로** 민다(부호가 양수인 것 말고는 ⑤와 같은 드라이버).
+        # 벽에서 9cm 안쪽은 costmap 통행불가라 nav2 가 시작 격자에서 경로를 못 낸다.
+        #   근거·수치: common/undock.py 머리말
+        # ⚠️ 드라이버가 **미는 거리**와 `Undock` 이 **요구하는 거리**는 다르다.
+        #    개루프 실이동은 명령값보다 항상 조금 적다(가속 램프·슬립·데드밴드). 같은 값을
+        #    쓰면 여유가 0 이라 한 번에 성공하지 못하고 재시도가 붙는다 — 재시도는
+        #    기준점을 새로 잡으므로 로봇이 앞으로 세 번 나간다(실측 2026-07-31).
+        #    여기서 여유만큼 더 밀고, 판정은 `registry._undock` 이 원래 값으로 한다.
+        self._drivers["undock"] = NudgeDriver(
+            self, dock_nudge_topic,
+            distance_m=(float(ret.get("undock_distance_m", 0.06))
+                        + float(ret.get("undock_slip_margin_m", 0.05))),
+            speed_mps=abs(float(ret.get("nudge_speed_mps", -0.08))))
 
         # 갈림길 정점 — 길잡이가 여기서만 잠깐 서서 사람을 확인한다. 모든 노드에서 서면
         # arte2 레인이 0.151~0.601m 라 1~5초마다 멈춰 안내가 계속 끊긴다.
@@ -224,17 +355,34 @@ class FsmNode(Node):
 
         self._bb = py_trees.blackboard.Client(name="fsm_node")
         for key in (Keys.CURRENT_MODE, Keys.LAST_COMMAND, Keys.ACTIVE_COMMAND,
-                    Keys.DISABLED_BRANCHES):
+                    Keys.DISABLED_BRANCHES, Keys.NEXT_MODE, Keys.COMMANDED_MODE):
             self._bb.register_key(key=key, access=Access.WRITE)
         # 주행 목적지는 Topics2BB 가 쓰고 여기선 읽기만 한다 (_nav_args).
         self._bb.register_key(key=Keys.NAV_TARGET, access=Access.READ)
+        # 팔 args·id 도 같은 이유로 읽기만 한다. **등록을 빼먹으면 `_read` 가 KeyError 를
+        # 삼켜 조용히 None 이 되고**, 드라이버는 "goal 로 옮길 수 없다"로 매번 실패한다.
+        self._bb.register_key(key=Keys.ARM_ARGS, access=Access.READ)
+        self._bb.register_key(key=Keys.ARM_CMD_ID, access=Access.READ)
+        # [2026-07-30] `return_rotate`(YawGoalDriver)가 **이 클라이언트로** pose 를 읽는다
+        # (아래 `pose_fn`). 등록이 빠져 있어서 복귀 ②단계가 처음 실제로 도는 순간
+        # `AttributeError: client 'fsm_node' does not have read/write access to
+        # '/robot_pose'` 로 **FSM 노드가 통째로 죽었다.** 실측 로그로 잡았다.
+        #   왜 여태 안 드러났나: 그 경로는 `_YawStep` 이 goal 을 실제로 낼 때만 지난다.
+        #   RETURNING 이 ②까지 간 적이 오늘이 처음이다.
+        self._bb.register_key(key=Keys.ROBOT_POSE, access=Access.READ)
         self._bb.set(Keys.CURRENT_MODE, BOOT_STATE)
         self._bb.set(Keys.DISABLED_BRANCHES, disabled_branches)
+        #: 마지막으로 경고한 "적용 안 된 전이 목표". 같은 요청으로 로그를 도배하지 않는다.
+        self._stranded = None
 
         # 패널 전이를 이 시간만큼은 붙잡는다 — 안 그러면 BT 가 다음 tick 에 되돌려서
         # 관제 화면·LED 에 아무 일도 안 일어난 것처럼 보인다 (state_io.apply_pending 참고).
+        # BT 스냅샷 발행 주기(초). 0 이면 매 tick — 예전 동작이다. 기본 0.5s(2Hz)로 낮춘 이유는
+        # state_io 의 `_snap_period` 주석에 있다(75노드 JSON 직렬화가 tick 마다 돌아 CPU 34%).
         self._io = StateIO(self, robot_id,
-                           manual_hold_sec=float(params.get("manual_hold_sec", 0.0)))
+                           manual_hold_sec=float(params.get("manual_hold_sec", 0.0)),
+                           snapshot_period_sec=float(self.declare_parameter(
+                               "bt_snapshot_period_sec", 0.5).value))
         self._boot_arm_home()
         self.create_timer(1.0 / tick_hz, self._tick)
         self.get_logger().info(
@@ -332,6 +480,44 @@ class FsmNode(Node):
             "[디버그] 배터리 자동 전이 OFF — 저전력 복귀·자동 순회 시작이 뜨지 않는다. "
             "복귀는 관제 UI 에서 직접 명령할 것.")
 
+    def _publish_cmd_result(self, cmd_id: str, ok: bool, msg: str) -> None:
+        """`/fleet_cmd_result` 로 임의의 명령 결과를 올린다.
+
+        `_publish_arm_result` 와 같은 모양이다 — 다른 건 id 를 **인자로 받는다**는 점뿐.
+        팔은 blackboard 에 하나뿐인 `ARM_CMD_ID` 를 쓰지만, 길잡이는 홉마다 id 가 달라서
+        부르는 쪽이 자기 id 를 알고 있다.
+
+        `status` 200/500 은 robot_agent 의 `publish_result` 와 같은 모양을 유지하려는
+        것이다 — FMS 쪽 소비자(`on_cmd_result`)가 한 형태만 알면 되게.
+        """
+        if not cmd_id or self._result_pub is None:
+            self.get_logger().warning(
+                f"명령 결과를 올릴 수 없다 (id={cmd_id!r}) — 관제가 그 홉을 못 닫는다")
+            return
+        self._result_pub.publish_json({"id": str(cmd_id), "ok": bool(ok),
+                                       "status": 200 if ok else 500,
+                                       "data": None, "msg": str(msg or "")})
+        self.get_logger().info(f"명령 결과 보고 cmd={cmd_id} ok={ok} {msg}")
+
+    def _publish_arm_result(self, ok: bool, msg: str) -> None:
+        """팔 동작이 끝났다고 `/fleet_cmd_result` 로 올린다 — **완료를 아는 쪽이 답한다.**
+
+        id 는 `/fleet_cmd` 로 받은 그 명령의 id 다(FMS 는 자기가 보낸 id 로만 대조하므로
+        다른 값을 쓰면 조용히 무시되고 주문이 영원히 안 닫힌다).
+
+        `status` 를 200/500 으로 채우는 이유: robot_agent 의 `publish_result` 와 같은 모양을
+        유지해야 FMS 쪽 소비자(`on_cmd_result`)가 한 가지 형태만 알면 된다.
+        """
+        cmd_id = self._read(Keys.ARM_CMD_ID)
+        if not cmd_id or self._result_pub is None:
+            self.get_logger().warning(
+                f"팔 결과를 올릴 수 없다 (id={cmd_id!r}) — 관제 다리가 안 닫힌다")
+            return
+        self._result_pub.publish_json({"id": cmd_id, "ok": bool(ok),
+                                       "status": 200 if ok else 500,
+                                       "data": None, "msg": str(msg or "")})
+        self.get_logger().info(f"팔 결과 보고 cmd={cmd_id} ok={ok} {msg}")
+
     def _on_result(self, msg):
         try:
             payload = json.loads(msg.data)
@@ -361,6 +547,24 @@ class FsmNode(Node):
         # leaf 가 소비한 명령을 provider 쪽에도 반영 (안 하면 다음 tick 에 되살아난다)
         self._providers.sync_consumed(
             self._read(Keys.LAST_COMMAND), self._read(Keys.ACTIVE_COMMAND))
+
+        # 명령 유래 표시는 **이 tick 안에서만** 유효하다. 남겨 두면 낡은 표시가 우연히 같은
+        # 목표를 노린 자율 전이까지 유지 시간을 뚫게 만든다 (blackboard.COMMANDED_MODE 참고).
+        self._bb.set(Keys.COMMANDED_MODE, None)
+
+        # ⚠️ 적용 안 된 전이 요청을 드러낸다. next_mode 가 남았는데 상태가 그대로면
+        #    **아무도 그 요청을 적용하지 않았다.** PATROL·WORKING 은 다음 tick 에 이 요청을
+        #    재시도할 통로가 없어(request_transition.py 클래스 주석) 그대로 유실된다.
+        #    이 경고가 없던 동안 배차·터치가 조용히 사라져 원인을 찾는 데 오래 걸렸다.
+        pending = self._read(Keys.NEXT_MODE)
+        if pending and after == before:
+            if pending != self._stranded:
+                self.get_logger().warning(
+                    f"전이 요청이 적용되지 않았다: {after} -> {pending} "
+                    f"(패널 유지 시간 중이거나, 브랜치가 RequestTransition 에 닿지 못했다)")
+                self._stranded = pending
+        else:
+            self._stranded = None
 
         self._io.publish(self._root)
 

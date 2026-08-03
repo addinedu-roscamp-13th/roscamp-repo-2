@@ -11,13 +11,16 @@ from py_trees.common import Status
 
 from libi_modes.blackboard import Keys
 from libi_modes.common.return_steps import (
-    AbsorbFailure, AlignDock, AlreadyDocked, create_return_steps, wrap_angle,
+    AbsorbFailure, AlreadyDocked, DockSettle, _YawStep, create_return_steps, wrap_angle,
 )
 
-from .fakes import FakeDriver, FakeYawDriver
+from .fakes import FakeDoneDriver, FakeDriver, FakeYawDriver
 
 ENTRANCE = (0.6, 0.0)
-PARKING = (0.0, 0.0)
+#: 회전 단계 시험에서 로봇을 놓아 둘 아무 좌표. 회전은 위치와 무관하다.
+SOMEWHERE = (0.0, 0.0)
+#: 접근 자세(절대각). config/params.yaml `returning.approach_yaw_rad` 와 같은 뜻.
+APPROACH_YAW = 0.0
 
 
 class _Clock:
@@ -29,13 +32,14 @@ class _Clock:
 
 
 def _steps(clock=None, **drivers):
-    d = dict(entrance_driver=FakeDriver(), dock_driver=FakeDriver(),
-             rotate_driver=FakeYawDriver())
+    d = dict(entrance_driver=FakeDriver(), rotate_driver=FakeYawDriver(),
+             nav_release_driver=FakeDoneDriver(),
+             aruco_driver=FakeDoneDriver(), nudge_driver=FakeDoneDriver())
     d.update(drivers)
     return create_return_steps(
-        entrance_xy=ENTRANCE, parking_xy=PARKING,
+        entrance_xy=ENTRANCE, approach_yaw=APPROACH_YAW,
         tolerance=0.05, resend_sec=10.0, timeout_sec=60.0,
-        yaw_tolerance_rad=0.15, retry_max=3, dock_confirm_sec=90.0,
+        yaw_tolerance_rad=0.15, retry_max=3, settle_sec=1.0,
         now_fn=clock or _Clock(), **d)
 
 
@@ -47,10 +51,18 @@ def _tick(node):
 
 # ── 순서 ────────────────────────────────────────────────────────────────────
 
-def test_five_steps_in_order():
+def test_six_steps_in_order():
     names = [s.decorated.name for s in _steps()]
-    assert names == ["GoToParkingEntrance", "FaceParking", "GoToParking",
-                     "TurnAround", "AlignDock"]
+    assert names == ["GoToParkingEntrance", "FaceApproachYaw", "ReleaseNav",
+                     "ArucoApproach", "DockNudge", "DockSettle"]
+
+
+def test_nav_is_released_before_the_external_docker_takes_over():
+    """①은 x·y 만 보고 성공하고 성공한 단계는 stop 을 안 보낸다 — 입구 nav2 목표가 살아
+    있는 채로 ArUco 접근이 시작될 수 있다. 예전엔 `GoToParking` 이 새 goal 로 선점해
+    줬는데 그 단계가 없어졌다. 그래서 넘기기 **직전에** 놓는 단계가 있어야 한다."""
+    names = [s.decorated.name for s in _steps()]
+    assert names.index("ReleaseNav") < names.index("ArucoApproach")
 
 
 def test_every_step_is_failure_absorbing():
@@ -58,10 +70,11 @@ def test_every_step_is_failure_absorbing():
     assert all(isinstance(s, AbsorbFailure) for s in _steps())
 
 
-def test_face_and_align_are_separate_leaves():
-    """ArUco 로직만 나중에 갈아끼우도록 자리를 분리해 둔다."""
+def test_aruco_and_nudge_are_separate_leaves():
+    """④는 다른 저장소가, ⑤는 여기가 한다. 한 leaf 로 합치면 어느 쪽이 실패했는지
+    화면에서 안 보이고, 외부 구현을 갈아끼울 자리도 사라진다."""
     steps = _steps()
-    assert steps[1].decorated is not steps[4].decorated
+    assert steps[3].decorated is not steps[4].decorated
 
 
 # ── 실패 흡수 ────────────────────────────────────────────────────────────────
@@ -117,29 +130,54 @@ def test_still_running_after_fault(seed, tick):
     assert tick(node) == Status.RUNNING
 
 
-# ── 도킹 확인 ───────────────────────────────────────────────────────────────
+# ── 안정화 대기 ─────────────────────────────────────────────────────────────
+#
+# [2026-07-30] `AlignDock`(is_docked 대기) → `DockSettle`(시간 대기). `is_docked` 는
+# 주차장 정점 반경 0.12m 판정이라 ④⑤를 지난 뒤에는 이미 참이고, 그래서 아무것도
+# 검증하지 못했다. 검증하는 척하는 게이트는 없느니만 못하다.
 
-def test_align_dock_waits_for_confirmation(seed, tick):
-    """즉시 SUCCESS 를 내면 로봇이 충전소에 닿지도 않은 채 CHARGING 을 선언한다."""
-    seed(**{Keys.IS_DOCKED: False})
-    assert tick(AlignDock(90.0, _Clock())) == Status.RUNNING
+def test_dock_settle_holds_until_the_time_passes(seed, tick):
+    """즉시 SUCCESS 를 내면 개루프 후진의 관성이 남은 채 CHARGING 이 선언된다."""
+    seed()
+    assert tick(DockSettle(1.0, _Clock())) == Status.RUNNING
 
 
-def test_align_dock_succeeds_when_docked(seed, tick):
-    seed(**{Keys.IS_DOCKED: True})
-    assert tick(AlignDock(90.0, _Clock())) == Status.SUCCESS
-
-
-def test_align_dock_times_out(seed):
-    seed(**{Keys.IS_DOCKED: False})
+def test_dock_settle_succeeds_after_the_wait(seed):
+    seed()
     clock = _Clock()
-    node = AlignDock(10.0, clock)
+    node = DockSettle(1.0, clock)
     node.setup()
     node.initialise()
     node.tick_once()
-    clock.t = 20.0
+    clock.t = 1.5
     node.tick_once()
-    assert node.status == Status.FAILURE
+    assert node.status == Status.SUCCESS
+
+
+def test_dock_settle_declares_the_dock(seed, read):
+    """대기가 끝나면 **도킹을 선언한다** — `state_io` 가 이 값을 `/is_docked` 로 낸다.
+
+    위치로 판정하던 `dock_confirm.py` 가 `pi.sh` 에서 빠져 아무도 그 토픽을 안 낸다.
+    선언이 없으면 `UndockNotNeeded` 가 None 을 "도킹 아님"으로 읽어 탈출을 건너뛰고,
+    벽에서 7cm 지점에서 nav2 가 경로를 못 낸다.
+    """
+    seed()
+    clock = _Clock()
+    node = DockSettle(1.0, clock)
+    node.setup()
+    node.initialise()
+    node.tick_once()
+    assert read(Keys.DOCK_DECLARED) in (None, False)   # 대기 중에는 아직 아니다
+    clock.t = 1.5
+    node.tick_once()
+    assert node.status == Status.SUCCESS
+    assert read(Keys.DOCK_DECLARED) is True
+
+
+def test_dock_settle_ignores_is_docked(seed, tick):
+    """도킹 신호가 이미 참이어도 대기를 건너뛰지 않는다 — 그 신호는 위치 판정이다."""
+    seed(**{Keys.IS_DOCKED: True})
+    assert tick(DockSettle(1.0, _Clock())) == Status.RUNNING
 
 
 def test_already_docked_short_circuits(seed, tick):
@@ -177,50 +215,63 @@ def test_goal_step_without_pose_never_claims_arrival(seed, tick):
 
 # ── 회전 단계 ───────────────────────────────────────────────────────────────
 
-def test_face_parking_aims_at_the_parking_spot(seed):
-    """입구에서 주차장(-x 방향)을 보므로 목표 yaw 는 pi 근처다."""
-    seed(**{Keys.ROBOT_POSE: {"x": ENTRANCE[0], "y": ENTRANCE[1], "yaw": 0.0}})
+def test_face_approach_yaw_turns_180_from_the_current_heading(seed):
+    """[2026-07-30 사용자 지정] **지금 보고 있는 방향에서 반 바퀴**다.
+
+    ①이 끝나면 로봇은 충전소를 바라보고 서 있다. 거기서 180° 돌면 등이 충전소를
+    향하고, 그래야 뒷캠이 마커를 본다.
+
+    고정 절대각도, 충전소 좌표 atan2 도 아니다 — 둘 다 실기에서 틀렸다
+    (`_approach_yaw` 주석 참고). 위치와 무관하게 **입력 헤딩에만** 달려 있어야 한다."""
+    for start, expect in ((math.pi, 0.0), (0.0, math.pi), (1.0, 1.0 - math.pi)):
+        seed(**{Keys.ROBOT_POSE: {"x": 9.9, "y": -3.3, "yaw": start}})
+        rot = FakeYawDriver()
+        step = _steps(rotate_driver=rot)[1]
+        step.setup_with_descendants()
+        step.initialise()
+        step.tick_once()
+        assert abs(wrap_angle(rot.last_yaw - expect)) < 1e-6, f"{start} → {rot.last_yaw}"
+
+
+def test_face_approach_yaw_needs_a_heading(seed):
+    """yaw 를 모르면 반 바퀴가 어디인지 알 수 없다 — 회전 명령을 내면 안 된다."""
+    seed(**{Keys.ROBOT_POSE: {"x": 0.0, "y": 0.0}})          # yaw 없음
     rot = FakeYawDriver()
     step = _steps(rotate_driver=rot)[1]
     step.setup_with_descendants()
     step.initialise()
     step.tick_once()
-    assert abs(abs(rot.last_yaw) - math.pi) < 1e-6
-
-
-def test_turn_around_targets_the_opposite_heading(seed):
-    seed(**{Keys.ROBOT_POSE: {"x": PARKING[0], "y": PARKING[1], "yaw": 0.0}})
-    rot = FakeYawDriver()
-    step = _steps(rotate_driver=rot)[3]
-    step.setup_with_descendants()
-    step.initialise()
-    step.tick_once()
-    assert abs(abs(rot.last_yaw) - math.pi) < 1e-6
+    assert rot.started is False
 
 
 def test_yaw_target_is_fixed_once(seed):
-    """매 tick 다시 계산하면 돌면서 목표도 따라 움직여 영원히 안 닿는다."""
-    seed(**{Keys.ROBOT_POSE: {"x": PARKING[0], "y": PARKING[1], "yaw": 0.0}})
+    """매 tick 다시 계산하면 돌면서 목표도 따라 움직여 영원히 안 닿는다.
+
+    지금 접근 각도는 상수라 이 결함이 안 드러난다. 그래도 `_YawStep` 자체의 성질이므로
+    **pose 를 따라가는 yaw_fn** 으로 직접 시험한다 — 여기를 상수 전용으로 두면
+    다음 사람이 pose 기반 각도를 붙였을 때 조용히 되살아난다."""
+    seed(**{Keys.ROBOT_POSE: {"x": 0.0, "y": 0.0, "yaw": 0.0}})
     rot = FakeYawDriver()
-    step = _steps(rotate_driver=rot)[3]
-    step.setup_with_descendants()
+    step = _YawStep("Chasing", rot, lambda pose: pose["yaw"] + math.pi,
+                    0.15, 60.0, _Clock())
+    step.setup()
     step.initialise()
     step.tick_once()
     first = rot.last_yaw
     py_trees.blackboard.Blackboard.set(
-        Keys.ROBOT_POSE, {"x": PARKING[0], "y": PARKING[1], "yaw": 1.0})
+        Keys.ROBOT_POSE, {"x": 0.0, "y": 0.0, "yaw": 1.0})
     step.tick_once()
     assert rot.last_yaw == first
 
 
 def test_yaw_step_succeeds_within_tolerance(seed, tick):
-    seed(**{Keys.ROBOT_POSE: {"x": PARKING[0], "y": PARKING[1], "yaw": math.pi}})
-    step = _steps()[3]
+    seed(**{Keys.ROBOT_POSE: {"x": SOMEWHERE[0], "y": SOMEWHERE[1], "yaw": math.pi}})
+    step = _steps()[1]
     step.setup_with_descendants()
     step.initialise()
-    step.tick_once()                       # 목표는 0(=pi 반대) 근처
+    step.tick_once()                       # 목표는 APPROACH_YAW(0)
     py_trees.blackboard.Blackboard.set(
-        Keys.ROBOT_POSE, {"x": PARKING[0], "y": PARKING[1], "yaw": 0.0})
+        Keys.ROBOT_POSE, {"x": SOMEWHERE[0], "y": SOMEWHERE[1], "yaw": APPROACH_YAW})
     step.tick_once()
     assert step.status == Status.SUCCESS
 
@@ -272,9 +323,9 @@ def test_goal_step_does_not_stop_when_it_succeeded(seed):
 
 
 def test_yaw_step_stops_the_rotation_when_preempted(seed):
-    seed(**{Keys.ROBOT_POSE: {"x": PARKING[0], "y": PARKING[1], "yaw": 0.0}})
+    seed(**{Keys.ROBOT_POSE: {"x": SOMEWHERE[0], "y": SOMEWHERE[1], "yaw": math.pi}})
     rot = FakeYawDriver()
-    step = _steps(rotate_driver=rot)[3].decorated
+    step = _steps(rotate_driver=rot)[1].decorated
     step.setup()
     step.initialise()
     step.tick_once()

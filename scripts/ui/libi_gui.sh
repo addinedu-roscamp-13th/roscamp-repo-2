@@ -18,10 +18,14 @@ set -eo pipefail
 # 무관하게 타이핑 여부가 그대로 드러나 이 문제 자체가 안 생긴다.
 ROBOT_ID_ARG=""
 DOMAIN_ID=""
+# gui.sh 로 그대로 넘길 인자(--window, --vnc-size 등). 옵션처럼 생긴 건 robot_id 가 아니다 —
+# 예전엔 `*)` 가 다 먹어서 `--window` 라는 이름의 로봇을 FMS 에 물어보고 있었다.
+GUI_ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --domain-id) DOMAIN_ID="${2:?--domain-id 뒤에 값이 필요합니다}"; shift 2 ;;
     --domain-id=*) DOMAIN_ID="${1#*=}"; shift ;;
+    -*) GUI_ARGS+=("$1"); shift ;;
     *) ROBOT_ID_ARG="$1"; shift ;;
   esac
 done
@@ -67,7 +71,12 @@ cd "$REPO_ROOT"
 #   pinky-1 → 5901   pinky-2 → 5902   pinky-3 → 5903   (번호를 못 뽑으면 5900)
 ROBOT_NUM="$(printf '%s' "$ROBOT_ID_ARG" | grep -oE '[0-9]+' | tail -1)"
 export VNC_PORT="${VNC_PORT:-$((5900 + ${ROBOT_NUM:-0}))}"
-echo "[libi_gui] VNC :$VNC_PORT — 태블릿/로봇 패널에서 $(hostname -I 2>/dev/null | awk '{print $1}'):$VNC_PORT 로 접속"
-echo "[libi_gui]   이 PC 에 창으로 띄우려면: ./aba_controller/libi_gui/gui.sh $ROBOT_ID_ARG --window"
+case " ${GUI_ARGS[*]} " in
+  *" --window "*)
+    echo "[libi_gui] 창 모드 — 이 PC 에 뜬다. **VNC 는 안 열린다**(Qt 플랫폼 플러그인이 하나라 동시 불가)." ;;
+  *)
+    echo "[libi_gui] VNC :$VNC_PORT — 태블릿/로봇 패널에서 $(hostname -I 2>/dev/null | awk '{print $1}'):$VNC_PORT 로 접속"
+    echo "[libi_gui]   이 PC 에 창으로 띄우려면: --window 를 붙이세요" ;;
+esac
 
-exec "$REPO_ROOT/aba_controller/libi_gui/gui.sh" "$ROBOT_ID_ARG"
+exec "$REPO_ROOT/aba_controller/libi_gui/gui.sh" "$ROBOT_ID_ARG" "${GUI_ARGS[@]}"

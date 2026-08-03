@@ -17,12 +17,16 @@
 //
 // 프로토콜 (scripts/frame_proto.py, scripts/perception_server.py):
 //   서버 -> 클라이언트 : [4바이트 빅엔디언 길이][페이로드]
-//       페이로드는 JPEG 이거나, "LIDR <8개 정수>" 라이다 텔레메트리 텍스트다. 둘이 같은
-//       스트림에 섞여 오므로 접두사로 갈라야 한다.
+//       페이로드는 JPEG 이거나, "LIDR <8개 정수>" 라이다 텔레메트리 텍스트이거나,
+//       "POSE <JSON>" 자세·주행 상태다. 셋이 같은 스트림에 섞여 오므로 접두사로 갈라야 한다.
 //   클라이언트 -> 서버 : "register\n" / "reset\n"
 //
-// bbox·OWNER 라벨·등록 대상 하이라이트는 **서버가 JPEG 안에 이미 그려서** 보낸다.
+// bbox·OWNER 라벨·스켈레톤·등록 대상 하이라이트는 **서버가 JPEG 안에 이미 그려서** 보낸다.
 // 여기서는 그리지 않는다 — 같은 화면을 두 곳에서 그리면 반드시 어긋난다.
+//
+// ⚠️ **글자는 반대다.** STATE·POSTURE·비율 같은 값은 화면 좌표와 무관하므로 서버가
+// 굽지 않고 POSE 로 보낸다(`draw_overlay(hud_text=False)`). 영상이 축소되면 구운
+// 글자는 같이 뭉개져 안 읽히고, 패널에서 글꼴·색도 못 고치기 때문이다.
 class PerceptionClient : public QObject {
     Q_OBJECT
 
@@ -35,6 +39,10 @@ class PerceptionClient : public QObject {
     // 8방향 장애물 거리(cm). 키: front/frontLeft/frontRight/left/right/back/backLeft/backRight.
     // -1 은 측정값 없음. 서버가 --lidar-ros 로 떴을 때만 채워진다.
     Q_PROPERTY(QVariantMap lidar READ lidar NOTIFY lidarChanged)
+    // 자세·주행 상태. 키: posture/motionOk/ratio/refRatio/sideTrip/axis/state/
+    // linearX/angularZ, 그리고 기준을 재는 동안만 calibrating{remainingSec,got,need}.
+    // 값이 없는 항목은 **키 자체가 빠지거나 undefined** 다 — QML 에서 반드시 확인하고 쓴다.
+    Q_PROPERTY(QVariantMap pose READ pose NOTIFY poseChanged)
 
 public:
     explicit PerceptionClient(QObject *parent = nullptr);
@@ -44,6 +52,7 @@ public:
     QString statusText() const { return m_statusText; }
     int frameCounter() const { return m_frameCounter; }
     QVariantMap lidar() const { return m_lidar; }
+    QVariantMap pose() const { return m_pose; }
 
     QImage latestFrame() const { return m_frame; }
 
@@ -57,6 +66,7 @@ signals:
     void statusTextChanged();
     void frameChanged();
     void lidarChanged();
+    void poseChanged();
 
 private:
     void onConnected();
@@ -64,7 +74,8 @@ private:
     void onReadyRead();
     bool takeFrame(QByteArray &payload);      // 버퍼에서 완결된 프레임 하나를 꺼낸다
     void applyLidar(const QByteArray &payload);
-    void sendCommand(const char *cmd);
+    void applyPose(const QByteArray &payload);
+    bool sendCommand(const char *cmd);      // 보냈으면 true, 끊겨서 못 보냈으면 false
     void setStatus(const QString &s);
 
     QTcpSocket m_sock;
@@ -76,9 +87,14 @@ private:
     quint16 m_port = 5007;
     bool m_connected = false;
     bool m_wanted = false;           // start() 로 켜둔 상태인지 (재시도 여부를 가른다)
+    //: 끊겨 있는 동안 요청된 등록 초기화. 연결되면 onConnected() 가 보낸다.
+    //: reset 만 예약한다 — register 는 "지금 화면 가운데 사람"이라 늦게 보내면
+    //: 엉뚱한 사람이 등록된다. 근거는 PerceptionClient.cpp 의 resetTarget 머리말.
+    bool m_pendingReset = false;
     int m_frameCounter = 0;
     QString m_statusText;
     QVariantMap m_lidar;
+    QVariantMap m_pose;
 };
 
 // QML 에 QImage 를 넘기는 통로. Image { source: "image://perception/frame?<counter>" }

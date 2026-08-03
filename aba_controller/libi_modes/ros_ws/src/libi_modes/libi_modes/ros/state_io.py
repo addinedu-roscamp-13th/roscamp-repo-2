@@ -36,7 +36,15 @@ from py_trees.common import Access, Status
 from libi_interfaces.msg import FsmState
 from libi_interfaces.srv import RequestTransition
 from geometry_msgs.msg import Twist
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool, String
+
+#: `/is_docked` 발행용. 도킹은 **상태**라 늦게 뜬 구독자도 마지막 값을 받아야 한다
+#: (`dock_confirm.py` 도 TRANSIENT_LOCAL 이었다 — sim_battery.py 주석 참고).
+#: VOLATILE 구독자와도 호환된다(발행자 durability 가 더 강한 쪽은 통과).
+_LATCHED_PUB = QoSProfile(depth=1)
+_LATCHED_PUB.durability = DurabilityPolicy.TRANSIENT_LOCAL
+_LATCHED_PUB.reliability = ReliabilityPolicy.RELIABLE
 
 from libi_modes.blackboard import Keys
 from libi_modes.registry import ANY, BRANCH_ORDER, START, TRANSITIONS
@@ -121,8 +129,13 @@ class StateIO:
                  typed_state_topic="fsm_state_typed",
                  motion_lock_topic="/libi/motion_lock",
                  hold_topic="/cmd_vel_hold",
+                 # ⚠️ `providers` 의 `docked_topic` 기본값과 **같아야 한다**(둘 다 상대
+                 #    이름 `is_docked` — 같은 노드 네임스페이스라 같은 토픽이 된다).
+                 #    다르면 우리가 낸 값을 우리가 못 받아 IS_DOCKED 가 계속 None 이다.
+                 docked_topic="is_docked",
                  follow_snapshot_topic="/libi/follow_bt_snapshot",
                  follow_stale_sec=3.0,
+                 snapshot_period_sec=0.5,
                  service_name="request_transition"):
         self._node = node
         self._robot_id = robot_id
@@ -168,13 +181,40 @@ class StateIO:
         self._follow_stale_sec = follow_stale_sec
         self._follow_tree = None
         self._follow_at = 0.0
+
+        # ── BT 스냅샷 스로틀 ─────────────────────────────────────────────────
+        #
+        # ⚠️ [2026-07-30] 스냅샷만 **주기 발행**으로 바꿨다. 상태·잠금·LED 는 매 tick 그대로다.
+        #
+        # 왜: `publish()` 가 매 tick(10Hz) `_to_dict(root)` 로 **75노드 트리를 재귀 순회**하고
+        # `json.dumps` 로 직렬화한다. 실측(Pi 4코어, 2026-07-30) fsm_node 가 CPU **33.9%** 를
+        # 썼고, 그 부하에서 nav2 가 제어 주기를 놓쳤다
+        # (`Control loop missed its desired rate of 10.0000 Hz`) — 순회가 20초씩 멈췄다.
+        # 관제 화면의 트리 뷰는 초당 10장을 쓸 수 없다. 2Hz 면 사람 눈에 충분하다.
+        #
+        # ⚠️ **상태·잠금은 절대 스로틀하지 않는다.** 모션 잠금(`/libi/motion_lock`)은
+        #    twist_mux 의 입력 timeout(0.5s)과 짝이다 — 늦추면 twist_mux 가 잠금이 풀린 것으로
+        #    보고 자율 제어를 통과시킨다. 그건 "대기인데 바퀴가 돈다"로 되돌아가는 길이다.
+        #
+        # 상태가 바뀐 tick 은 주기를 무시하고 **즉시** 낸다 — 전이 순간의 트리를 놓치면
+        # 화면이 한 박자 늦게 바뀐다.
+        self._snap_period = float(snapshot_period_sec)
+        self._snap_at = 0.0
+        self._snap_state = None
         node.create_subscription(String, follow_snapshot_topic, self._on_follow_snapshot, 10)
 
         self._bb = py_trees.blackboard.Client(name="state_io")
-        for key in (Keys.CURRENT_MODE, Keys.ERROR_CODE, Keys.HOLD_UNTIL):
+        for key in (Keys.CURRENT_MODE, Keys.ERROR_CODE, Keys.HOLD_UNTIL, Keys.NEXT_MODE):
             self._bb.register_key(key=key, access=Access.WRITE)
-        for key in (Keys.BATTERY_PERCENT, Keys.IS_DOCKED, Keys.INTERACTING_REMAINING):
+        for key in (Keys.BATTERY_PERCENT, Keys.IS_DOCKED, Keys.INTERACTING_REMAINING,
+                    Keys.DOCK_DECLARED):
             self._bb.register_key(key=key, access=Access.READ)
+        #: BT 가 선언한 도킹 여부를 밖으로 낸다 (`Keys.DOCK_DECLARED` 주석 참고).
+        #  latched 다 — 늦게 뜬 구독자(providers·sim_battery·FMS)도 마지막 값을 받는다.
+        self._docked_pub = node.create_publisher(Bool, docked_topic, _LATCHED_PUB)
+        #: 마지막으로 낸 값. **바뀔 때만** 낸다 — latched 라 재발행이 필요 없고,
+        #  20Hz 로 계속 내면 로그·대역만 먹는다. None = 아직 한 번도 선언 안 됨.
+        self._docked_sent = None
 
     def _publish_hold(self):
         """잠긴 동안 0 을 20Hz 로 낸다. 안 잠겼으면 **아무것도 안 낸다** —
@@ -268,6 +308,9 @@ class StateIO:
         if target is None:
             return False
         self._bb.set(Keys.CURRENT_MODE, target)
+        # 사람이 상태를 정했으면 **아직 적용 안 된 BT 전이 요청은 무효다.** 안 지우면 그
+        # 낡은 요청이 나중에(다른 상태에서) 살아나 사람이 정한 상태를 되돌릴 수 있다.
+        self._bb.set(Keys.NEXT_MODE, None)
         if self._manual_hold_sec > 0:
             self._bb.set(Keys.HOLD_UNTIL, self._clock() + self._manual_hold_sec)
         return True
@@ -288,6 +331,15 @@ class StateIO:
         self._locked = current in MOTION_LOCKED_STATES
         self._lock_pub.publish(Bool(data=self._locked))
 
+        # BT 가 선언한 도킹을 밖으로 낸다. 아무도 `/is_docked` 를 안 내던 자리를 메운다
+        # (`Keys.DOCK_DECLARED` 주석에 왜 위치 판정을 안 쓰는지 적어 뒀다).
+        # None(아직 선언 없음)이면 **아무것도 안 낸다** — 모르는 것을 False 로 단정하면
+        # 그것도 판정이 된다. 지금까지와 똑같이 구독자 쪽 값이 None 으로 남는다.
+        declared = self._read(Keys.DOCK_DECLARED)
+        if declared is not None and declared != self._docked_sent:
+            self._docked_sent = bool(declared)
+            self._docked_pub.publish(Bool(data=self._docked_sent))
+
         # remaining_sec 은 INTERACTING 일 때만 의미가 있다(UiSessionTimer 가 그 브랜치에서만
         # 쓴다). 다른 상태에선 0.0 으로 내보내 패널이 남은 카운트다운을 오인하지 않게 한다.
         remaining = self._read(Keys.INTERACTING_REMAINING) if current == "INTERACTING" else 0.0
@@ -304,12 +356,17 @@ class StateIO:
         }, ensure_ascii=False)
         self._state_pub.publish(state)
 
-        snap = String()
-        snap.data = json.dumps(
-            {"robot_id": self._robot_id, "current_state": current,
-             "tree": _to_dict(root, self._follow_subtree())},
-            ensure_ascii=False)
-        self._snap_pub.publish(snap)
+        # 스냅샷만 주기 발행 (위 `_snap_period` 주석 참고). 상태 변화는 즉시 낸다.
+        now = self._clock()
+        if current != self._snap_state or (now - self._snap_at) >= self._snap_period:
+            self._snap_at = now
+            self._snap_state = current
+            snap = String()
+            snap.data = json.dumps(
+                {"robot_id": self._robot_id, "current_state": current,
+                 "tree": _to_dict(root, self._follow_subtree())},
+                ensure_ascii=False)
+            self._snap_pub.publish(snap)
 
         typed = FsmState()
         typed.stamp = self._node.get_clock().now().to_msg()

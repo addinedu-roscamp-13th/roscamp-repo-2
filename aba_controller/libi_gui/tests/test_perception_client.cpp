@@ -79,6 +79,25 @@ int main(int argc, char *argv[]) {
           "전방 3방향이 서버가 보낸 순서(FL F FR)대로 들어간다");
     check(lidar.value("backRight").toInt() == 420, "마지막 값(BR)까지 어긋나지 않는다");
 
+    // 자세·비율(POSE)도 같은 스트림에 섞여 온다. 접두사 오프셋이 한 바이트만
+    // 어긋나도 JSON 파싱이 통째로 실패하는데, 그러면 `applyPose` 가 조용히
+    // return 하고 화면에는 **아무 글자도 안 뜬다** — 눈으로는 "값이 없나 보다"로
+    // 보여서 몇 시간을 잃는 종류의 고장이다.
+    check(waitFor([&] { return !client.pose().isEmpty(); }, 5000),
+          "POSE 프레임을 파싱한다");
+    const QVariantMap pose = client.pose();
+    check(pose.value("posture").toString() == QStringLiteral("Side"),
+          "자세 문자열이 그대로 들어온다");
+    check(pose.value("motionOk").toBool() == false,
+          "주행 차단 플래그가 뒤집히지 않는다");
+    // 비율 셋. 화면이 toFixed(2) 로 그리므로 실수로 살아 있어야 한다.
+    check(qAbs(pose.value("ratio").toDouble() - 3.42) < 1e-9 &&
+          qAbs(pose.value("refRatio").toDouble() - 2.10) < 1e-9 &&
+          qAbs(pose.value("sideTrip").toDouble() - 3.36) < 1e-9,
+          "비율 3개가 실수로 보존된다");
+    check(qAbs(pose.value("angularZ").toDouble() + 0.20) < 1e-9,
+          "음수 각속도의 부호가 유지된다");
+
     client.registerTarget();
     client.resetTarget();
     settle(400);                      // 서버가 받아 로그에 적을 시간

@@ -31,6 +31,7 @@ class CameraSelectSource:
 
     def __init__(self, topic="/libi/camera_select"):
         import rclpy
+        from rclpy.executors import SingleThreadedExecutor
         from rclpy.node import Node
         from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
         from std_msgs.msg import String
@@ -47,6 +48,22 @@ class CameraSelectSource:
                          reliability=ReliabilityPolicy.RELIABLE,
                          durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self._node.create_subscription(String, topic, self._on_select, qos)
+        # ⚠️ [2026-08-02] **전용 실행기를 쓴다 — 전역 실행기를 공유하면 안 받는다.**
+        #
+        #   `rclpy.spin_once(node)` 는 executor 를 안 주면 **전역 실행기**를 쓴다.
+        #   매 호출마다 `add_node` → `spin_once` → `finally: remove_node` 를 하는데,
+        #   이 모듈과 짝(`camera_select_source.py` / `role_source.py`)이 각자 스레드에서
+        #   동시에 그 짓을 하면 서로를 밟아 **나중에 만든 쪽이 콜백을 영영 못 받는다.**
+        #
+        #   실측 2026-08-02 (같은 로봇·같은 도메인, 차이는 실행기 하나):
+        #       전역 공유 : camera='none'  role=None      ← 끝까지 안 옴
+        #       전용     : camera='none'  role='guide'   ← 온다
+        #   `perception_server.main()` 이 camera_source 를 먼저 만들므로 **항상 역할
+        #   쪽이 졌고**, `pose_active` 는 "역할을 모르면 켠다" 가 기본이라 길잡이에서
+        #   골격이 그대로 나왔다. 구독 생성은 성공해서 `[ok]` 로그도 정상으로 보인다 —
+        #   증상이 로그에 안 드러나는 종류다.
+        self._exec = SingleThreadedExecutor()
+        self._exec.add_node(self._node)
         self._thread = threading.Thread(target=self._spin, daemon=True)
         self._thread.start()
 
@@ -56,10 +73,9 @@ class CameraSelectSource:
             self._value = v if v in ("front", "back", "none") else None
 
     def _spin(self):
-        import rclpy
         while self._run:
             try:
-                rclpy.spin_once(self._node, timeout_sec=0.2)
+                self._exec.spin_once(timeout_sec=0.2)
             except Exception:   # noqa: BLE001 — 구독이 죽어도 추론 루프는 계속 돈다
                 break
 
@@ -68,8 +84,13 @@ class CameraSelectSource:
             return self._value
 
     def close(self):
+        # ⚠️ 스레드가 멈춘 **뒤에** 노드를 부순다. 안 그러면 spin 중인 노드를 밑에서
+        #    치워 종료 때 `terminate called without an active exception` 으로 abort 한다
+        #    (실측 2026-08-02 — 데스크톱에 크래시 창이 떴다).
         self._run = False
+        self._thread.join(timeout=1.0)
         try:
+            self._exec.remove_node(self._node)
             self._node.destroy_node()
         except Exception:       # noqa: BLE001
             pass

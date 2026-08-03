@@ -108,6 +108,8 @@ class TargetMatcher:
         best_seen = -1.0
         for c in cands:
             roi = self._crop(frame, c.bbox)
+            if roi is None:
+                continue          # 빈 crop 인 후보는 owner 후보에서 제외한다
             reid_vec = self.reid.extract(roi)
             hsv_vec = hsv_hist(roi)
             reid_sim = max(self.reid.similarity(g, reid_vec) for g in self.gallery)
@@ -140,8 +142,18 @@ class TargetMatcher:
 
     @staticmethod
     def _crop(frame, bbox):
+        """bbox 로 잘라낸 영역. **비어 있으면 `None`** — 프레임 전체로 대체하지
+        않는다.
+
+        ⚠️ 예전엔 빈 ROI 일 때 프레임 전체를 돌려줬다. 그 프레임에 진짜 owner가
+        있으면 이 '크롭'이 owner 템플릿과 맞아, 화면 밖으로 잘린 엉뚱한 후보가
+        owner 로 이긴다 — "이 후보가 맞나?"가 "이 화면 어딘가에 맞는 사람이
+        있나?"로 바뀌는 범주 오류였다(2026-08-01 codex 지적).
+        """
+        h, w = frame.shape[:2]
         x1, y1, x2, y2 = (int(round(v)) for v in bbox)
-        x1 = max(0, x1)
-        y1 = max(0, y1)
-        roi = frame[y1:y2, x1:x2]
-        return roi if roi.size else frame
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(w, x2), min(h, y2)
+        if x2 <= x1 or y2 <= y1:
+            return None
+        return frame[y1:y2, x1:x2]

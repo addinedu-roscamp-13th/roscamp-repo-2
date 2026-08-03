@@ -21,11 +21,40 @@ kill_session() {   # <세션이름> <설명>
   fi
 }
 
-warn_port() {   # <포트> — 세션을 지웠는데도 열려 있으면 알림
-  if port_open "$1"; then
-    echo "[경고] :$1 이 아직 열려 있습니다 — 남은 프로세스가 있는지 확인하세요."
+# 세션을 지웠는데도 포트가 열려 있으면 **그 프로세스를 실제로 정리한다.**
+#
+# ⚠️ [2026-08-02] 예전에는 경고만 찍었다. 그 결과 실측 사고가 났다:
+#   전날 22:21 에 뜬 vite 가 세션 밖에서 살아남아 **14시간 동안 :9002 를 물고 있었고**,
+#   다음날 새로 띄운 vite 는 "Port 9002 is in use, trying another one..." 으로 조용히
+#   :9003 으로 비켜섰다. 사람은 늘 보던 :9002 를 열었으니 **하루 종일 옛 코드를 보며**
+#   "고쳤는데 화면이 안 바뀐다" 를 디버깅했다. 경고 한 줄은 아무도 안 읽는다.
+#
+# ⚠️ 포트를 여는 것이 남의 프로세스일 수도 있으므로 **무엇을 죽이는지 반드시 찍는다.**
+#    `fuser -k` 를 바로 쓰지 않는 이유가 그것이다 — 조용히 죽이면 이 사고의 반대편
+#    (엉뚱한 것이 죽었는데 아무도 모름)이 된다.
+free_port() {   # <포트> <설명>
+  port_open "$1" || return 0
+  local pids
+  pids="$(ss -tlnp 2>/dev/null | grep ":$1 " \
+          | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u | tr '\n' ' ')"
+  if [ -z "$pids" ]; then
+    echo "[경고] :$1 이 아직 열려 있는데 소유 프로세스를 못 찾았습니다 ($2)."
+    return 0
   fi
+  echo "[정리] :$1 이 아직 열려 있습니다 — 남은 프로세스를 정리합니다 ($2)"
+  for pid in $pids; do
+    printf '        %s  %s\n' "$pid" "$(ps -o args= -p "$pid" 2>/dev/null | cut -c1-70)"
+    kill "$pid" 2>/dev/null || true
+  done
+  sleep 2
+  for pid in $pids; do kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true; done
+  sleep 1
+  port_open "$1" && echo "[경고] :$1 이 여전히 열려 있습니다 — 손으로 확인하세요." \
+                 || echo "        :$1 해제됨"
 }
+
+# 옛 이름 유지 — 호출부를 한 번에 안 바꿔도 되게.
+warn_port() { free_port "$1" "${2:-}"; }
 
 kill_fms() {
   kill_session libi_ui_fms "관제 프론트 :9002"

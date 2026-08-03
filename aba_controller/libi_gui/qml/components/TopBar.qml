@@ -40,8 +40,26 @@ Rectangle {
         // "화면을 누르면 계속"은 **로봇이 해줘야 하는 약속**이라 rosConnected 일 때만 말한다.
         // 목 모드에서는 onScreenTouch 가 발행할 상대가 없어(RobotController.cpp:756) 눌러도
         // 세션이 안 늘어난다 — 그 상태에서 이 문구를 띄우면 화면이 거짓말을 한다.
+        // ⚠️ [2026-08-02] **길잡이 중에는 안 띄운다.**
+        //
+        //   길잡이는 목적지를 고르고 등록하는 동안 로봇이 `INTERACTING` 에 머문다.
+        //   그때 이 알약이 "곧 이동합니다 3초 · 화면을 누르면 계속" 을 띄우면
+        //   **두 가지가 동시에 거짓이 된다**:
+        //     · 로봇은 안내 목적지로 갈 뿐 "곧 이동" 하는 게 아니다
+        //     · 등록 3초를 서서 기다려야 하는데 화면을 누르라고 재촉한다
+        //   (실측 2026-08-02: 길잡이 목적지 선택 화면 위에 그대로 떴다)
+        //
+        //   ⚠️ [2026-08-02] `guidePhase` 만으로는 못 막는다. 목적지를 **고르는 동안**은
+        //      아직 `idle` 이라(안내는 등록이 끝나야 `guiding` 이 된다) 그때 그대로 떴다.
+        //      화면이 길잡이면 — 등록 전이든 후든 — 안 띄운다.
         StatusPill {
-            visible: controller.robotState === "이용중" && controller.interactingRemaining <= 5
+            readonly property bool guiding:
+                controller.mode === "guide"
+                || (controller.guidePhase !== "" && controller.guidePhase !== "idle"
+                    && controller.guidePhase !== "completed" && controller.guidePhase !== "failed"
+                    && controller.guidePhase !== "cancelled")
+            visible: !guiding && controller.robotState === "이용중"
+                     && controller.interactingRemaining <= 5
             anchors.verticalCenter: parent.verticalCenter
             pillColor: S.warning
             text: "곧 이동합니다 " + controller.interactingRemaining + "초"

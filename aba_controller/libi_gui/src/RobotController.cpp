@@ -109,12 +109,40 @@ void RobotController::log(const QString &line) {
 
 void RobotController::setRobotState(const QString &s) {
     if (m_robotState == s) return;
+    const QString prev = m_robotState;
     m_robotState = s; emit robotStateChanged();
+
+    // ⚠️ [2026-08-02] **응대 세션이 끝나면 화면도 홈으로 돌아간다.**
+    //
+    //   로봇 FSM 은 무터치 20초면 `INTERACTING → PATROL` 로 돌아간다
+    //   (`libi_modes` `config/params.yaml:30` ui_idle_timeout_sec: 20,
+    //    `common/ui_session_timer.py:58`). 그런데 패널은 그걸 보고도 열려 있던 화면을
+    //   그대로 뒀다 — 길잡이 목적지 선택 화면에 방문객이 없는 채 남아 있고, 로봇은
+    //   이미 순찰을 나간 상태가 된다. 다음 사람이 오면 **남의 선택 화면**을 본다.
+    //
+    //   ⚠️ WORKING 을 거쳐 끝나는 안내·추종은 여기 해당 없다(이용중이 아니라 작업중에서
+    //      나온다). 그 종료는 `finishGuideIfLeftWorking` 이 따로 홈으로 돌린다.
+    //   ⚠️ 관리자 화면은 예외다 — 관리자가 조작하는 중에 화면이 튕기면 안 된다.
+    if (prev == QStringLiteral("이용중") && s == QStringLiteral("순찰")
+            && m_mode != QLatin1String("home")
+            && m_mode != QLatin1String("adminLogin")
+            && m_mode != QLatin1String("adminControl")) {
+        log(QStringLiteral("응대 종료(무터치 20초) — 홈 화면으로 되돌린다"));
+        if (m_mode == QLatin1String("guide")) cancelGuideRegistration();
+        setMode(QStringLiteral("home"));
+    }
 }
 
 void RobotController::setTaskStatus(const QString &s) {
     if (m_taskStatus == s) return;
     m_taskStatus = s; emit taskStatusChanged();
+}
+
+void RobotController::reportRegistrationOwnerSeen() {
+    // 학습 중일 때만 유효하다. 다른 단계에서 들어온 신호로 래치를 세우면, 다음 등록이
+    // **지난번 사람**을 봤다는 근거로 통과한다.
+    if (m_guideRegPhase != QLatin1String("learning")) return;
+    m_regOwnerSeen = true;
 }
 
 void RobotController::setGuideRegPhase(const QString &p) {
@@ -164,16 +192,78 @@ void RobotController::startGuideRegistration() {
 }
 
 void RobotController::confirmGuideRegistration() {
-    // 자세 기준 비율을 다시 재는 동안(약 4초)에는 로봇이 안 움직인다.
-    // 그 사실을 화면에 드러내지 않으면 "왜 안 가지"가 된다.
-    setGuideRegPhase(QStringLiteral("calibrating"));
-    QTimer::singleShot(4000, this, [this] {
-        if (m_guideRegPhase == QLatin1String("calibrating"))
-            setGuideRegPhase(QStringLiteral("ready"));
+    // [2026-08-02] **자세 측정(4초)을 없앴다 — 길잡이는 자세를 아예 안 쓴다.**
+    //
+    //   자세 게이트는 **추종**의 안전 규칙이다(로봇이 사람에게 다가가므로 누워 있거나
+    //   코앞이면 멈춰야 한다). 길잡이는 로봇이 앞서 가고 사람이 뒤따르는 구조라 그
+    //   규칙이 성립하지 않는다. 실제로 코드가 두 곳 모두에서 자세를 빼고 있다:
+    //     · control_loop.py:219  `(not self._is_guide()) and not det.motion_ok`
+    //     · follow_node.requester_visible  — 자세를 아예 안 본다
+    //
+    //   그런데 화면만 "자세를 재고 있어요 — 잠시 그대로 서 주세요" 로 4초를 세웠다.
+    //   쓰지도 않을 값을 재느라 이용자를 세워 둔 것이다(사용자 지적 2026-08-02).
+    //
+    //   ⚠️ 영상 위 골격 오버레이는 AI 서버의 `--pose` 옵션이 그리는 것이라 여기서 못
+    //      끈다. 길잡이만 쓸 배포라면 `libi_laptop.sh` 에서 `--pose` 를 빼면 된다.
+    // ⚠️ [2026-08-02] **등록 직후 3초는 앞캠 그대로 두고 학습시킨다.**
+    //
+    //   `matcher.register()` 는 **한 장**으로 템플릿을 만든다. 그 상태로 곧바로 뒷캠으로
+    //   바꾸면 시점이 달라져 ReID 유사도가 `REID_THRESHOLD` 를 못 넘고, owner 가 안 잡혀
+    //   코스팅(주황 박스)만 나온다 — `requester_visible` 이 예측을 거르므로 길잡이가
+    //   **영영 출발하지 못한다**(실측 2026-08-02: 뒷캠에 노란 박스만 나왔다).
+    //
+    //   AI 서버는 등록 직후 `REGISTRATION_LEARN_SEC`(3초) 동안 **매 프레임** 갤러리를
+    //   채운다(`follower_perception/pipeline.py`). 그 시간을 실제로 주려면 화면이
+    //   앞캠에 머물러야 한다 — 바로 뒤로 바꾸면 배울 앞모습이 사라진다.
+    //
+    //   ⚠️ 이 3초가 "그냥 기다리는 시간" 이 아니다. 지운 자세 측정 4초와 다르다 —
+    //      그건 쓰지도 않을 값을 재는 것이었고, 이건 **출발 조건 자체를 만드는 시간**이다.
+    m_regOwnerSeen = false;   // 이번 등록에서 주인을 봤나 — 아래 판정의 근거
+    setGuideRegPhase(QStringLiteral("learning"));
+    QTimer::singleShot(kGuideLearnMs, this, [this] {
+        if (m_guideRegPhase != QLatin1String("learning")) { return; }   // 그새 취소됨
+        // ⚠️ [2026-08-02] **주인이 실제로 잡혔을 때만 다음 단계로 간다.**
+        //
+        //   예전에는 3초가 지나면 무조건 `ready` 였다. 그래서 화면에 아무도 없어도
+        //   — bbox 한 번 안 쳐져도 — 등록이 끝난 것처럼 넘어갔다(사용자 지적
+        //   2026-08-02). 그 뒤는 전부 헛돈다: 뒷캠에 잡힐 owner 가 없으니
+        //   `GuideExec._never_confirmed()` 가 출발을 막고, 이용자는 왜 안 가는지
+        //   모른 채 서 있는다.
+        //
+        //   판정 근거는 AI 서버가 POSE JSON 에 싣는 `isOwner` 다 — 패널이
+        //   `reportRegistrationOwnerSeen()` 으로 넘겨준다(GuideScreen.qml).
+        //   `matcher.register()` 가 성공해 그 사람을 owner 로 잡았다는 뜻이므로
+        //   "bbox 가 쳐졌나" 보다 정확하다(지나가던 사람은 owner 가 아니다).
+        if (!m_regOwnerSeen) {
+            setGuideRegPhase(QStringLiteral("registering"));   // 되돌린다 — 다시 누를 수 있게
+            log(QStringLiteral("등록 실패 — 3초 동안 주인이 한 번도 안 잡혔다"));
+            emit toast(QStringLiteral("등록에 실패했습니다. 화면 안에 서서 다시 눌러 주세요."));
+            return;
+        }
+        setGuideRegPhase(QStringLiteral("ready"));
+        // [2026-08-02] 학습이 끝나면 **뒷캠으로 바꾼다.**
+        //
+        //   출발 조건이 "뒷캠에서 요청자가 보임" 이다(GuideExec._never_confirmed).
+        //   등록은 앞캠이라, 이용자는 지금 로봇 **앞**에 서 있다. 뒤로 걸어와야
+        //   출발하는데, 화면이 앞캠이면 자기가 프레임에 들어왔는지 알 수 없다.
+        //   미리 바꿔 주면 "제 뒤로 와 주세요" 가 글자가 아니라 **보이는 신호**가 된다.
+        //
+        //   ⚠️ 세션은 그대로 두고 카메라만 바꾼다 — `publishWatch` 는 같은
+        //      `m_watchSessionId` 로 나가므로 lease 갱신이지 새 세션이 아니다.
+        publishWatch(QStringLiteral("back"));
+        setCurrentCamera(QStringLiteral("back"));
     });
 }
 
 void RobotController::cancelGuideRegistration() {
+    // ⚠️ [2026-08-02] **단계 되감기는 세션 유무보다 먼저다.**
+    //
+    //   예전엔 `m_watchSessionId` 가 비면 곧바로 return 해서 `guideRegPhase` 가
+    //   그대로 남았다. 등록이 `ready` 까지 갔다가 취소되면 세션은 이미 다른 주인
+    //   (BT 의 `guide_watch`)에게 넘어간 뒤라 여기가 비어 있는데, 화면은
+    //   "등록 완료 — 제 뒤로 와 주세요!" 를 계속 띄웠다(실측 2026-08-02:
+    //   안내취소 뒤 그 문구가 목적지 목록 위에 겹쳐 남았다).
+    setGuideRegPhase(QStringLiteral("idle"));
     if (m_watchSessionId.isEmpty()) return;
     // **자기 세션만** 닫는다. 공용 stop 으로 닫으면 관리자 추종까지 끊길 수 있다.
     if (m_ros)
@@ -183,12 +273,87 @@ void RobotController::cancelGuideRegistration() {
     m_watchLease.stop();
     m_watchSessionId.clear();
     setCurrentCamera(QStringLiteral("none"));
-    setGuideRegPhase(QStringLiteral("idle"));
+}
+
+void RobotController::resetGuidePhase() {
+    // 진행 중인 안내(`guiding`·`requesting`)는 건드리지 않는다 — 로봇은 가고 있는데
+    // 화면만 처음으로 돌아가면 둘이 어긋난다. 되감을 것은 **끝난 안내**뿐이다.
+    if (m_guidePhase == QLatin1String("guiding")
+            || m_guidePhase == QLatin1String("requesting")
+            || m_guidePhase == QLatin1String("requesterLost"))
+        return;
+    setGuidePhase(QStringLiteral("idle"));
 }
 
 void RobotController::setGuidePhase(const QString &p) {
     if (m_guidePhase == p) return;
     m_guidePhase = p; emit guidePhaseChanged();
+}
+
+void RobotController::finishGuideIfLeftWorking(const QString &state) {
+    if (m_guidePhase != QLatin1String("guiding")) return;
+    if (state == QLatin1String("WORKING")) {
+        // 안내가 실제로 시작된 것을 **한 번은 봐야** 끝을 판정할 수 있다.
+        m_guideSawWorking = true;
+        return;
+    }
+    // ⚠️ [2026-08-02] **WORKING 을 한 번도 못 봤으면 끝난 게 아니다.**
+    //
+    //   `fsm_state` 는 5Hz 로 계속 온다. FMS 가 WORKING 전이를 마치고 `granted` 를
+    //   돌려주는 사이에 **직전 상태(PATROL)를 실은 메시지가 이미 날아오고 있다.**
+    //   그게 `setGuidePhase("guiding")` **직후**에 도착하면, 여기서 곧바로
+    //   "WORKING 을 벗어났다" 로 읽어 안내를 시작하자마자 종료시킨다 —
+    //   화면은 홈으로 튕기고 로봇만 안내를 계속한다.
+    //
+    //   전이는 이미 성공했으므로 곧 WORKING 이 온다. 그때까지 기다린다.
+    //
+    // ⚠️ [2026-08-02] **다만 영원히 기다리면 안 된다 — 폴백을 같이 본다.**
+    //
+    //   WORKING 메시지를 한 번이라도 놓치면(브릿지 재연결·DDS 유실·패널이 늦게 붙음)
+    //   `m_guideSawWorking` 이 영영 false 로 남고, 그러면 아래 `resetGuidePhase()` 와
+    //   `setMode("home")` 이 **둘 다 건너뛰어져** 로봇은 안내를 끝냈는데 패널만
+    //   안내 화면에 갇힌다. 추종은 `kFollowGraceMs` 로 이미 막고 있던 부류다
+    //   (`attachRos` 의 `followGraceOver`). 길잡이만 안 막혀 있었다.
+    const bool guideGraceOver =
+        m_guideSince.isValid() && m_guideSince.hasExpired(m_guideGraceMs);
+    if (!m_guideSawWorking && !guideGraceOver) return;
+    // 이 문구는 **관리자 화면의 로그 목록**에만 뜬다(`AdminControlScreen.qml` 의
+    // `controller.logs`). 이용자 화면에는 안 나온다 — 그래도 사람이 읽는 줄이므로
+    // 내부 상태 이름(WORKING)이 아니라 무슨 일이 있었는지로 적는다.
+    if (!m_guideSawWorking)
+        log(QStringLiteral("안내 시작 신호를 못 받았습니다 — 20초가 지나 종료로 처리합니다 "
+                           "(로봇 상태: ") + state + QStringLiteral(")"));
+    // ⚠️ [2026-08-02] **`completed` 는 "도착했다" 가 아니라 "끝났다" 다.**
+    //
+    //   로봇은 성공과 실패를 **구별해서 알려주지 않는다.** `GuideExec._release` 가
+    //   도착이든 회복 실패든 `Status.SUCCESS` 로 닫고(그래야 WORKING 에 안 갇힌다),
+    //   결과를 실어 보내는 통로가 없다 — `/libi/fsm_state` 에는 상태·배터리·도킹뿐이고
+    //   `_give_up` 은 `error_code` 조차 안 쓴다(2026-08-02 전수 확인).
+    //
+    //   그래서 여기서 보는 것은 "로봇이 WORKING 을 벗어났다" 하나뿐이다. 도착·요청자
+    //   소실·관제 개입이 전부 같은 값으로 들어온다. 구별이 필요해지면 로봇 쪽에서
+    //   결과 신호를 새로 내야 한다 — 화면이 거리로 추측하게 두면 안 된다.
+    setGuidePhase(QStringLiteral("completed"));
+    setTaskStatus(QStringLiteral("명령 대기"));
+    m_guideTargetValid = false;
+    // 안내 종료는 화면도 종료다. guide 화면을 남기면 완료 직후의 탭이
+    // 전역 터치로 다시 ui_touch를 내 PATROL -> INTERACTING 을 만든다.
+    m_guideSawWorking = false;
+    m_guideSince.invalidate();      // 유예 타이머도 같이 끈다 (헤더 m_guideGraceMs)
+    m_guideEndedAt.start();
+    // ⚠️ [2026-08-02] **화면을 나가기 전에 단계를 되감는다.**
+    //
+    //   정상 종료는 뒤로가기를 안 거치므로(`GuideScreen.qml` 의 `onBack`) 여기서 안
+    //   되감으면 `guidePhase` 가 `completed` 로 남는다. 그 상태로 길잡이에 다시
+    //   들어오면 `GuideScreen.qml:108` 의 `guidePhase !== "completed"` 가 목적지
+    //   고르는 화면을 통째로 숨겨 **아무것도 못 고른다** — 길잡이를 두 번 못 쓴다.
+    //
+    //   순서가 중요하다. `setMode` 보다 **먼저** 되감아야 한다.
+    resetGuidePhase();
+    setMode(QStringLiteral("home"));
+    // 문구가 "완료" 라고 말하지 않는 것은 의도다 — 위 ⚠️ 주석대로 성공인지 모른다.
+    log(QStringLiteral("길잡이 종료(성공·실패 구별 없음) — 로봇이 WORKING 을 벗어남 (")
+        + state + QStringLiteral(")"));
 }
 
 void RobotController::setMode(const QString &m) {
@@ -203,6 +368,19 @@ void RobotController::setMode(const QString &m) {
     if (m == QLatin1String("home")) setEmotion(QStringLiteral("happy"));
     else if (m == QLatin1String("guide")) {
         setEmotion(QStringLiteral("interest"));
+        // ⚠️ [2026-08-02] **끝난 안내의 단계를 되감는다 — 안 되감으면 두 번 못 쓴다.**
+        //
+        //   `guidePhase` 는 안내가 끝나도 `"completed"`(또는 `failed`/`cancelled`)로
+        //   남는다. 그 상태로 길잡이 화면에 다시 들어오면 `GuideScreen.qml:108` 의
+        //   `guidePhase !== "completed"` 가 목적지 고르는 화면을 통째로 숨겨서
+        //   **아무것도 못 고른다**(실측 2026-08-02: 완료 화면에서 안 넘어감).
+        //
+        //   `guiding`/`requesting` 은 건드리지 않는다 — 진행 중인 안내를 화면 재진입
+        //   으로 지우면 로봇은 가고 있는데 화면만 처음으로 돌아간다.
+        if (m_guidePhase == QLatin1String("completed")
+                || m_guidePhase == QLatin1String("failed")
+                || m_guidePhase == QLatin1String("cancelled"))
+            setGuidePhase(QStringLiteral("idle"));
         if (m_robotState == QStringLiteral("대기") && m_rosConnected)
             requestTransition(QStringLiteral("PATROL"));   // IDLE→INTERACTING 직접 불가, PATROL 경유 (연결됐을 때만 — 목 모드서 HTTP 안 튀게)
     }
@@ -398,6 +576,7 @@ void RobotController::onFollowGrantReply(bool ok, const QJsonObject &body) {
 void RobotController::beginFollowing() {
     m_following = true;
     m_followSawWorking = false;   // 아직 WORKING 을 못 봤다 (헤더 주석 참고)
+    m_followSince.start();        // 시간 기반 폴백의 기준점 (헤더 kFollowGraceMs 참고)
     emit followingChanged();
     setRobotState(QStringLiteral("작업중"));
     setTaskStatus(QStringLiteral("관리자 추종 중"));
@@ -412,10 +591,20 @@ void RobotController::beginFollowing() {
 void RobotController::stopAdminFollow() {
     if (!m_isAdmin) { emit toast(QStringLiteral("관리자만 조작할 수 있습니다.")); return; }
     if (!m_following) return;
-    m_following = false; m_followSawWorking = false; emit followingChanged();
-    setRobotState(QStringLiteral("대기"));
+    m_following = false; m_followSawWorking = false;
+    m_followSince.invalidate();          // 유예 타이머도 같이 끈다 (헤더 kFollowGraceMs)
+    emit followingChanged();
+    // 추종을 끝낸 로봇은 **순찰로 돌아간다.** "대기"가 아니다 —
+    // `FollowExec._release` 가 성공·실패 상관없이 `NEXT_MODE=PATROL` 을 예약하므로
+    // (working_actions.py) 로봇은 어차피 순찰로 간다. 화면만 "대기"로 두면 다음
+    // /libi/fsm_state 가 도착하는 순간 어긋난다.
+    // requestTransition 도 같이 보낸다 — 안 보내면 로컬만 "순찰"이라 화면과 FSM 이
+    // 갈린다(startPatrol 의 같은 자리 주석 참고). IDLE→PATROL 은 정규 간선이다.
+    setRobotState(QStringLiteral("순찰"));
+    requestTransition(QStringLiteral("PATROL"));
+    if (!m_patrol) { m_patrol = true; emit patrolActiveChanged(); }
     setTaskStatus(QStringLiteral("명령 대기"));
-    log(QStringLiteral("관리자 추종 종료"));
+    log(QStringLiteral("관리자 추종 종료 — 순찰로 복귀"));
     emit toast(QStringLiteral("관리자 추종을 종료했습니다."));
     reportFollowRelease();
 }
@@ -527,6 +716,7 @@ void RobotController::startGuide(const QString &destination) {
     if (waypoint.isEmpty()) { emit toast(QStringLiteral("모르는 목적지입니다: ") + destination); return; }
 
     m_guideDest = destination; emit guideDestinationChanged();
+    m_guideEndedAt.invalidate();
     setGuidePhase(QStringLiteral("requesting"));
     setEmotion(QStringLiteral("interest"));
     if (m_mode != QLatin1String("guide")) setMode(QStringLiteral("guide"));
@@ -558,6 +748,14 @@ void RobotController::startGuide(const QString &destination) {
         m_guideTargetY = t.value("y").toDouble();
         m_guideTargetWaypoint = waypoint;
         m_guideTargetValid = true;
+        // 등록용 watch lease는 GUIDE 세션보다 약하다. 승인 뒤에도 남겨 두면 10초마다
+        // watch를 재발행해 GUIDE 감시/회복 루프를 교체할 수 있다. 여기서는 stop을
+        // 보내지 않는다: 현재 세션은 이미 GuideExec 소유일 수 있고, 패널은 자기
+        // session id만 알고 있다.
+        m_watchLease.stop();
+        m_watchSessionId.clear();
+        m_guideSawWorking = false;      // 이번 안내에서 WORKING 을 아직 못 봤다
+        m_guideSince.start();           // 시간 기반 폴백의 기준점 (헤더 m_guideGraceMs)
         setGuidePhase(QStringLiteral("guiding"));
         // 출발하면 로봇이 앞장서고 이용자는 뒤에 남는다 — 감시 캠이 뒤로 넘어간다.
         // (실제 전환은 로봇의 follow_node 가 한다. 여기는 화면 라벨만 맞춘다.)
@@ -592,8 +790,30 @@ void RobotController::cancelGuide() {
     setGuidePhase(QStringLiteral("cancelled"));
     setTaskStatus(QStringLiteral("명령 대기"));
     m_guideTargetValid = false;
+    m_guideSawWorking = false;
+    m_guideSince.invalidate();      // 취소했으면 유예도 없던 일이다 (헤더 m_guideGraceMs)
     m_guideTimer.stop();
     log(QStringLiteral("길잡이 취소 (사용자)"));
+    // ⚠️ [2026-08-02] **취소도 곧바로 되감는다.**
+    //
+    //   `cancelled` 로 두면 `GuideScreen.qml:8` 의 `guiding` 이 풀려 목적지 화면은
+    //   돌아오지만, 그 상태가 남은 채 화면을 나갔다 다시 들어오면 `completed` 와
+    //   같은 종류의 잔재가 된다. 취소 뒤에 이용자가 하려는 것은 **다시 고르는 것**이라
+    //   `idle` 이 맞는 상태다.
+    //
+    //   `setGuidePhase("cancelled")` 를 남겨 두는 이유: 그 전이가 한 번 나가야
+    //   `GuideScreen.qml:50` 의 `Connections` 가 `autoStarted` 가드를 푼다. 곧바로
+    //   `idle` 만 쓰면 그 신호가 안 나가는 경로가 생긴다.
+    resetGuidePhase();
+    // ⚠️ **등록 단계도 같이 되감는다.** 이걸 빼면 `guideRegPhase` 가 `ready` 로 남아
+    //    화면이 "등록 완료 — 제 뒤로 와 주세요!" 를 계속 띄운다. 취소했는데 등록은
+    //    살아 있는 셈이라, 목적지를 다시 골라도 그 패널이 위에 겹친다.
+    //    감시 세션도 여기서 닫는다 — 아무도 안 보는데 카메라가 켜져 있으면 안 된다.
+    cancelGuideRegistration();
+    // 정리가 **다 끝난 뒤에** 화면을 나간다. 순서를 뒤집으면 화면이 먼저 사라져
+    // `GuideScreen` 이 파괴되고, 거기 걸린 `Connections`(등록 감시·resetTarget)가
+    // 나머지 전이를 못 본다.
+    setMode(QStringLiteral("home"));
 }
 
 void RobotController::setEmotion(const QString &e) {
@@ -906,6 +1126,11 @@ void RobotController::attachRos(RosLink *ros) {
         emit poseChanged();
     });
 
+    connect(ros, &RosLink::odomReceived, this, [this](double linX, double angZ) {
+        m_odomLinVel = linX; m_odomAngVel = angZ;
+        emit odomChanged();
+    });
+
     connect(ros, &RosLink::fsmStateReceived, this,
         [this](QString state, double remaining, QString errorCode,
                double battery, bool docked) {
@@ -927,12 +1152,7 @@ void RobotController::attachRos(RosLink *ros) {
             // 화면이 따로 판정하면 BT 와 두 벌이 되어 반드시 어긋난다.
             // 실패(요청자 이탈·주행 실패)도 같은 경로로 WORKING 을 벗어나므로, 지금은
             // 둘을 구분하지 못한다 — 구분하려면 fsm_state 에 사유가 실려야 한다.
-            if (m_guidePhase == QLatin1String("guiding") && state != QLatin1String("WORKING")) {
-                setGuidePhase(QStringLiteral("completed"));
-                setTaskStatus(QStringLiteral("명령 대기"));
-                m_guideTargetValid = false;
-                log(QStringLiteral("길잡이 종료 — 로봇이 WORKING 을 벗어남 (") + state + QStringLiteral(")"));
-            }
+            finishGuideIfLeftWorking(state);
 
             // 관리자 추종도 같다 — **길잡이에만 있고 여기엔 없었다.**
             //
@@ -950,10 +1170,24 @@ void RobotController::attachRos(RosLink *ros) {
             // 그대로 두면 켜자마자 스스로 해제를 보내 FMS 가 로봇을 IDLE 로 되돌린다.
             // (실측 2026-07-28: FMS 를 직접 부르면 WORKING 이 18초+ 유지되는데 패널로
             //  켜면 몇 초 만에 IDLE. 차이는 이 감시뿐이었다.)
+            //
+            // ⚠️ [2026-08-02] **`m_followSawWorking` 하나로는 부족하다 — 폴백을 더했다.**
+            //    WORKING 메시지를 놓치면 이 값이 영영 false 라 종료 감시가 성립하지
+            //    않고, 그러면 홈 복귀와 `resetTarget()` 이 **둘 다** 안 돈다.
+            //    시작 후 kFollowGraceMs 가 지났으면 WORKING 을 못 봤어도 종료로 친다.
+            //    유예가 있으므로 "승인 직후 스스로 해제"(2026-07-28) 는 여전히 막힌다.
             if (m_following && state == QLatin1String("WORKING"))
                 m_followSawWorking = true;
-            if (m_following && m_followSawWorking && state != QLatin1String("WORKING")) {
-                m_following = false; m_followSawWorking = false; emit followingChanged();
+            const bool followGraceOver =
+                m_followSince.isValid() && m_followSince.hasExpired(kFollowGraceMs);
+            if (m_following && (m_followSawWorking || followGraceOver)
+                && state != QLatin1String("WORKING")) {
+                if (!m_followSawWorking)
+                    log(QStringLiteral("⚠️ WORKING 을 한 번도 못 봤지만 유예가 지나 종료로 봅니다 "
+                                       "(상태 수신 유실 의심) — 현재 ") + state);
+                m_following = false; m_followSawWorking = false;
+                m_followSince.invalidate();
+                emit followingChanged();
                 setTaskStatus(QStringLiteral("명령 대기"));
                 log(QStringLiteral("관리자 추종 종료 — 로봇이 WORKING 을 벗어남 (") + state + QStringLiteral(")"));
                 reportFollowRelease();
@@ -967,6 +1201,12 @@ void RobotController::attachRos(RosLink *ros) {
 // 순찰 중 첫 탭은 fleet_cmd ui_touch 로 INTERACTING 진입을 튕긴다.
 void RobotController::onScreenTouch() {
     if (!m_ros) return;
+    if (m_guideEndedAt.isValid()
+            && m_guideEndedAt.elapsed() < kGuideEndTouchDebounceMs) {
+        // 완료 화면을 닫은 탭/터치업이 홈으로 전달되는 것은 새 이용자 상호작용이 아니다.
+        // 여기서 ui_touch를 내면 로그처럼 1초 남짓 뒤 PATROL이 INTERACTING으로 되돌아간다.
+        return;
+    }
     m_ros->publishTouch();
     if (m_robotState == QStringLiteral("순찰")) {
         m_ros->publishFleetCmd(QStringLiteral("{\"action\":\"ui_touch\"}"));

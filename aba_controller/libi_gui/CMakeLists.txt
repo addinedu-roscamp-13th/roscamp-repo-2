@@ -19,6 +19,8 @@ find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 # 지도에 실제 로봇 위치를 찍는다 — /amcl_pose (PoseWithCovarianceStamped)
 find_package(geometry_msgs REQUIRED)
+# 실측 바퀴 속도 — odom (Odometry)
+find_package(nav_msgs REQUIRED)
 
 add_executable(libi_gui
     src/main.cpp
@@ -41,7 +43,16 @@ target_link_libraries(libi_gui PRIVATE
 )
 
 # 우선: rclcpp/std_msgs 가 제공하는 CMake 타깃 링크
-target_link_libraries(libi_gui PRIVATE rclcpp::rclcpp std_msgs::std_msgs geometry_msgs::geometry_msgs)
+#
+# ⚠️ `std_msgs::std_msgs` 별칭은 **패키지 버전을 탄다.** 노트북(5.3.8)엔 있고 로봇 Pi
+#    (5.3.6)엔 없어서 로봇에서만 "target was not found" 로 죽었다. `${<pkg>_TARGETS}` 는
+#    두 버전 모두에 있는 ament 표준 변수라 어디서든 링크된다.
+target_link_libraries(libi_gui PRIVATE
+    rclcpp::rclcpp
+    ${std_msgs_TARGETS}
+    ${geometry_msgs_TARGETS}
+    ${nav_msgs_TARGETS}
+)
 
 # 기본 OFF — 로봇에 올리는 빌드는 이 옵션 없이 돌리므로 산출물이 달라지지 않는다.
 # 켜면 FMS 추종 승인 클라이언트 테스트가 같이 빌드된다 (tests/ 주석의 실행법 참조).
@@ -63,7 +74,19 @@ if(LIBI_GUI_TESTS)
         src/RosLink.h
     )
     target_link_libraries(test_admin_follow_client PRIVATE
-        Qt5::Core Qt5::Network rclcpp::rclcpp std_msgs::std_msgs geometry_msgs::geometry_msgs)
+        Qt5::Core Qt5::Network rclcpp::rclcpp std_msgs::std_msgs geometry_msgs::geometry_msgs nav_msgs::nav_msgs)
+
+    # GuideExec가 WORKING을 벗어난 사실을 받은 패널은 완료 화면에 남지 않고 홈으로
+    # 돌아가야 한다. ROS 수신 콜백이 호출하는 RobotController 완료 분기를 단위로 본다.
+    add_executable(test_guide_completion_ui
+        tests/test_guide_completion_ui.cpp
+        src/RobotController.cpp
+        src/RobotController.h
+        src/RosLink.cpp
+        src/RosLink.h
+    )
+    target_link_libraries(test_guide_completion_ui PRIVATE
+        Qt5::Core Qt5::Network rclcpp::rclcpp std_msgs::std_msgs geometry_msgs::geometry_msgs nav_msgs::nav_msgs)
 
     # 패널 요청 통로(RosLink::panelRequest) — id 상관과 타임아웃만 본다. RobotController 는
     # 안 넣는다: 여기서 보려는 건 통로 자체지 화면 로직이 아니다.

@@ -46,8 +46,32 @@ def test_delivery_decomposes_into_four_legs():
         LegType.NAVIGATE, LegType.PERFORM_ACTION, LegType.NAVIGATE, LegType.PERFORM_ACTION,
     ]
     assert legs[0].params == {"waypoint": 7}
-    assert legs[1].params == {"action": "pick", "book": "B1", "at": 7}
-    assert legs[3].params == {"action": "place", "book": "B1", "at": 3}
+    # 팔 계약(2026-07-30): 정점 이름이 아니라 **장소 종류**로 움직인다.
+    assert legs[1].params == {
+        "action": "pick", "at": 7, "book": "B1", "object": "book",
+        "from_place": "서가", "to_place": "리비바구니",
+        "tier": 0, "row": 0, "slot": 1,
+    }
+    # ⚠️ `place` 의 `to_place` 는 **없다.** 목적지가 테이블인지 안내데스크인지는 정점의
+    #    정체를 알아야 정해지고 그 지식은 이 코어에 없다 — 로봇 중계가 `at` 에서 유도한다.
+    assert legs[3].params == {
+        "action": "place", "at": 3, "book": "B1", "object": "book",
+        "from_place": "리비바구니",
+        "tier": 0, "row": 0, "slot": 1,
+    }
+
+
+def test_delivery_carries_shelf_coordinates_only_on_pick():
+    """`tier`/`row` 는 도서 DB 값이고 **서가에 손을 뻗는 `pick` 에만** 뜻이 있다.
+
+    `place` 는 바구니에서 꺼내 테이블에 놓는다 — 층·줄을 실어 보내면 팔이 무시할지 따를지
+    모른다. 계약(신호 대응표)이 `place` 를 `0` 으로 못박은 이유다.
+    """
+    legs = decompose_delivery(book="B1", pickup=7, dropoff=3, tier=3, row=2)
+    assert (legs[1].params["tier"], legs[1].params["row"]) == (3, 2)
+    assert (legs[3].params["tier"], legs[3].params["row"]) == (0, 0)
+    # pick 에 넣은 칸과 place 에서 꺼낼 칸이 같아야 한다 — 팔은 상태를 갖지 않는다.
+    assert legs[1].params["slot"] == legs[3].params["slot"]
 
 
 def test_collection_decomposes_into_nav_plus_three_arm_legs():
@@ -58,10 +82,21 @@ def test_collection_decomposes_into_nav_plus_three_arm_legs():
         LegType.NAVIGATE, LegType.PERFORM_ACTION, LegType.PERFORM_ACTION, LegType.PERFORM_ACTION,
     ]
     assert legs[0].params == {"waypoint": COLLECTION_WAYPOINT}
-    # "book" 키를 그대로 쓴다 — real_dispatch() 가 그 키만 읽는다(다른 키는 사라진다).
-    assert legs[1].params == {"action": "unload_to_floor", "book": "바구니", "at": COLLECTION_WAYPOINT}
-    assert legs[2].params == {"action": "load_from_box", "book": "바구니", "at": COLLECTION_WAYPOINT}
-    assert legs[3].params == {"action": "refill_box", "book": "바구니", "at": COLLECTION_WAYPOINT}
+
+    # [2026-07-30] 대상 종류가 `object` 로 분리됐다. 예전에는 `book: "바구니"` 로
+    # **도서명 필드에 위장**해 넣었다 — 팔이 종류를 도서명으로 추측해야 했다.
+    # 바구니는 전체를 드니 `book`·`tier`·`row`·`slot` 이 전부 비어 있다.
+    common = {"book": "", "object": "basket", "at": COLLECTION_WAYPOINT,
+              "tier": 0, "row": 0, "slot": 0}
+    # 바닥을 임시 자리로 쓰는 3단 교대 — 모든 이동의 목적지가 비어 있어야 한다.
+    assert legs[1].params == {"action": "unload_to_floor",
+                              "from_place": "리비바구니", "to_place": "바닥", **common}
+    assert legs[2].params == {"action": "load_from_box",
+                              "from_place": "수거함", "to_place": "리비바구니", **common}
+    assert legs[3].params == {"action": "refill_box",
+                              "from_place": "바닥", "to_place": "수거함", **common}
+    for leg in legs[1:]:
+        assert leg.params["book"] == "", "바구니 작업에 도서명이 남으면 종류 위장이 부활한다"
 
 
 def test_collection_completes_after_all_four_legs_with_no_second_navigate():

@@ -14,6 +14,27 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # shellcheck disable=SC1091
 . "$REPO_ROOT/scripts/_load_env.sh"
 
+# ── 서버(관제) ROS 도메인 ────────────────────────────────────────────────────
+# ⚠️ 바로 위 `_load_env.sh` 가 루트 `.env` 의 `ROS_DOMAIN_ID=119` 를 실어 준다. 그건
+#    **실물 로봇 pinky-3 한 대의 값**이다. 2026-07-30 에 이 프로세스가 그 값을 그대로
+#    타서 관제 노드(`fastapi_ros_bridge`)가 로봇 도메인에 올라갔고, 로봇의 twist_mux
+#    중재를 우회해 `/cmd_vel` 을 직접 발행했다.
+#
+#    지금은 백엔드가 `app/ros_domains.py` 의 서버 도메인(기본 111)에 **명시적으로** 뜨므로
+#    셸 값이 무엇이든 안전하다. 아래 인자는 그 값을 덮고 싶을 때만 쓴다.
+#
+#      ./start.sh --domain-id 111
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --domain-id)
+      [ -n "${2:-}" ] || { echo "[start] --domain-id 뒤에 값이 필요합니다"; exit 1; }
+      export LIBI_SERVER_DOMAIN_ID="$2"; shift 2 ;;
+    *) echo "[start] 모르는 인자: $1
+  사용법: ./start.sh [--domain-id N]"; exit 1 ;;
+  esac
+done
+echo "[start] 서버 ROS 도메인 = ${LIBI_SERVER_DOMAIN_ID:-111} (셸 ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-미설정})"
+
 VENV="$SCRIPT_DIR/.venv"
 LOG="/tmp/pinky_api.log"
 PID_FILE="/tmp/pinky_api.pid"

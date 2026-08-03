@@ -62,7 +62,13 @@ bt_navigator:
     global_frame: map
     robot_base_frame: base_link
     odom_topic: odom
-    bt_loop_duration: 10
+    # [2026-07-30] 10 → 30 (ms). nav2 행동트리 tick 주기다. 기본 10ms = **초당 100번** 트리를
+    #   순회한다. 이 로봇은 0.06 m/s 로 1.26×2.16m 맵을 돌고 제어 루프는 10Hz 다 —
+    #   100Hz 로 트리를 볼 이유가 없다. 30ms(33Hz)도 제어 루프의 3배다.
+    #   실측 근거: Pi 4코어에서 nav2 컨테이너가 CPU 56%, 그중 bt_navigator 가 큰 몫이었고
+    #   `Control loop missed its desired rate of 10.0000 Hz` 가 찍혔다(순회가 20초씩 멈춤).
+    #   대가: 목표 취소·선점 반응이 최대 30ms 늦어진다(제어 주기 100ms 보다 작다).
+    bt_loop_duration: 30
     # ⚠️ nav2 기본값은 20(ms)다. 이 로봇에서는 **너무 짧다.**
     #
     # 2026-07-28 실측: Pi 4코어에 load 21 (camera_sender 44% + fleet_link 33%).
@@ -75,7 +81,42 @@ bt_navigator:
     #
     # 200ms 는 ack 만 기다리는 시간이지 계획 시간이 아니다 — 늘려도 주행이
     # 굼떠지지 않는다. 근본 해결은 CPU 부하를 줄이는 것이다(카메라 fps 등).
-    default_server_timeout: 200
+    #
+    # ── [2026-07-30] 200 → 500. **같은 부류가 다시 났다.** ──────────────────────
+    #
+    # 이번엔 재계획(compute_path_to_pose) 쪽이 아니라 **취소(halt)** 쪽이다.
+    # 웨이포인트마다 새 goal 이 이전 goal 을 preempt 하는데, 그때 BT 가 FollowPath 를
+    # halt 하면서 취소 결과를 기다린다. 그 대기에 쓰는 값이 **바로 이 파라미터**다
+    # (nav2 `BtActionNode::halt()` → `spin_until_future_complete(future_result,
+    #  server_timeout_)`, 실패 시 아래 문구):
+    #
+    #     [bt_navigator_navigate_to_pose_rclcpp_node]:
+    #         Failed to get result for follow_path in node halt!
+    #     [navigate_to_pose] [ActionServer] Aborting handle.
+    #
+    # 그 뒤에 일어나는 일이 사용자가 보는 "또 멈췄다"다:
+    #     abort → /cmd_vel 침묵 → 모터 워치독 0.5s 발동 → 약 20초 뒤 **같은 좌표** 재시도
+    #
+    # 실측(2026-07-30, 순회 중):
+    #     GOAL 781.66 (0.60,-0.68) →  802.43 **같은 좌표** (20.8s 뒤)
+    #     GOAL 808.21 (0.60,-0.36) →  828.82 **같은 좌표** (20.6s 뒤)
+    #     워치독 809.72 · 836.72   (각각 goal 1.5s 뒤)
+    #
+    # 왜 200ms 로도 모자란가: **처리량이 아니라 순간 지연**이다. 평균은 여유가 있는데
+    # (`id` 평균 18%) 2초 간격 연속 기록에서 순간 `id 3.8%` 까지 떨어지고,
+    # 38표본 중 29표본(76%)이 `throttled=0xe0008`(소프트 온도제한 활성, 82.7°C 평균)이었다.
+    # 클럭이 깎인 순간에 controller_server 가 취소 결과를 200ms 안에 못 돌려준다.
+    #
+    # ⚠️ 이건 **증상 완화지 근본 치료가 아니다.** 근본은 둘이다:
+    #     · 냉각 — 76% 시간 스로틀 중이면 코드로 할 수 있는 건 한계가 있다
+    #     · preempt 횟수 자체를 줄이기 — 웨이포인트마다 NavigateToPose 를 새로 던지는 대신
+    #       구간을 NavigateThroughPoses 하나로 묶으면 이 관문을 지나는 횟수가 1/N 이 된다
+    #       (교통 WAIT 게이트는 구간 경계에 남긴다. fleet_node 는 노드별 물리예약을 한다 —
+    #        cbs_traffic.hpp:20, 그래서 경로 전체를 통째로 넘기면 안 된다)
+    #
+    # ⚠️ 되돌림 신호: 이 값을 올렸는데도 위 ERROR 가 계속 나면 **내 인과가 틀린 것**이다.
+    #    그때는 200 으로 되돌리고 halt 가 아닌 다른 경로를 찾아라.
+    default_server_timeout: 500
     wait_for_service_timeout: 1000
     action_server_result_timeout: 900.0
     navigators: ["navigate_to_pose", "navigate_through_poses"]

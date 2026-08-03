@@ -3,6 +3,7 @@
     BT_Searching (Selector, memory=False)
     ├── CheckReacquired          owner visible again -> SUCCESS (interrupts any phase)
     └── SearchPhases (Sequence, memory=True)
+        ├── LkdPeek              turn ~90 deg toward the last-known direction (follow only)
         ├── Hold                 stay still, give the owner a moment to reappear
         ├── Scan1                sweep toward the last-known direction
         ├── Turn180              turn around
@@ -25,6 +26,8 @@ against search_planner.search_command() across the full timeline at the real 20 
 import py_trees
 from py_trees.common import Status
 
+from .search_planner import peek_sec
+
 
 class SearchContext:
     """Injected dependencies for the searching tree (no ROS).
@@ -35,12 +38,17 @@ class SearchContext:
     """
 
     def __init__(self, get_detection, publish, cfg, now, lkd=1.0,
-                 select_camera=None, peek_people=None, role="follow"):
+                 select_camera=None, peek_people=None, role="follow",
+                 initial_camera=None, peek=True):
         self.get_detection = get_detection
         self.publish = publish
         self.cfg = cfg
         self.now = now
         self.lkd = lkd
+        #: LKD peek(마지막 방향으로 90°)를 할지. 대상이 **화면 가운데에서** 사라졌으면
+        #: 호출자가 False 를 준다 — 어느 쪽으로 나갔다는 정보가 없어 추측이 되기 때문이다.
+        #: 근거는 `search_planner.peek_sec` 머리말.
+        self.peek = bool(peek)
         self.start = None
         #: 카메라를 바꿔 달라는 요청. 실제 발행은 follow_node 가 한다
         #: (camera_select 발행자는 하나뿐이라는 규칙).
@@ -49,10 +57,12 @@ class SearchContext:
         #: 달라 크로스카메라 재식별을 못 믿는다. 신원 확인은 회전 후 정위치 캠에서 한다.
         self.peek_people = peek_people or (lambda: 0)
         self.role = role
-        #: 지금 어느 캠을 보고 있나. `select_camera` 는 요청만 하고 실제 발행은
-        #: follow_node 가 하므로, 재획득 판정에 쓸 "지금 보는 캠"을 여기서 기억한다.
-        #: 이게 없으면 `CheckReacquired` 가 반대 캠 검출을 정면 재획득으로 오인한다.
-        self._camera_now = self.home_camera
+        #: 지금 어느 캠을 보고 있나. 새 탐색(재시작 아님)은 정위치 캠이 맞다.
+        #: 재시작이면 호출자가 **이전 탐색이 실제로 남겨 둔 캠**을 넘긴다 —
+        #: 안 넘기면 여기가 `home_camera` 라고 낙관적으로 가정하는데, 소진된
+        #: 회복은 보통 `peek` 캠에서 끝나므로 그 가정이 틀린다(2026-08-01 codex).
+        self._camera_now = (initial_camera if initial_camera in ("front", "back")
+                            else self.home_camera)
         #: 추종에서 반대 캠에 잡혔다 → 몸을 돌려야 제어가 된다.
         self.align_latched = False
         #: 이번 탐색에서 이미 한 번 돌았나. **탐색 1회당 정렬 1회**로 막는다 —
@@ -176,10 +186,13 @@ class PeekPhase(CameraPhase):
                     return super().update()
                 self.ctx.align_latched = True
             else:
-                # 길잡이는 회전하지 않는다. 목적지 방향이 사람 방향과 겹치면
-                # 회전 → 경로 재계획 → 다시 앞캠 포착 → 재회전으로 무한 진동한다.
-                self.ctx.peek_reacquired = True
-                self.ctx.peek_camera_locked = self.camera
+                # 길잡이가 앞캠에서 사람을 본 것은 "다시 뒤로 이동해 달라"고
+                # 화면에 알릴 상태이지 재획득이 아니다. 성공으로 끝내면 카메라가
+                # 앞에 고정되어 뒷캠으로 돌아온 사람을 다시 볼 수 없고, 그 True 가
+                # GuideExec 에 전달되면 nav2 도 재개한다. 탐색 타임라인은 계속해서
+                # 다음(뒷캠 포함) phase 로 진행한다.
+                self.ctx.publish(0.0, 0.0)
+                return super().update()
             self.ctx.publish(0.0, 0.0)
             return Status.RUNNING
         return super().update()
@@ -278,6 +291,9 @@ def create_searching_tree(ctx):
     hold = cfg.SEARCH_HOLD_SEC
     w = cfg.ANGULAR_Z_SWEEP
     leg = sweep_leg_sec(cfg)            # 중앙 → 한쪽 끝
+    # LKD 90° (추종 전용, 0 이면 구간이 빠진다). `ctx.peek` 는 '가운데에서
+    # 사라졌으면 끈다' — 근거는 `search_planner.peek_sec` 머리말.
+    peek_turn = peek_sec(cfg, ctx.role, getattr(ctx, 'peek', True))
     home, peek = ctx.home_camera, ctx.peek_camera
 
     def sweep(prefix, camera):
@@ -299,6 +315,10 @@ def create_searching_tree(ctx):
     spec = [
         # (이름, 길이, 각속도, 이 구간이 볼 카메라)
         #
+        # 사람이 나간 쪽부터 본다 — α-β coast 가 이미 유예를 줬으므로, 여기 왔다는 건
+        # "잠깐 가렸다"가 아니라 어딘가로 나갔다는 뜻이다. 근거는 config 주석 참고.
+        # 길잡이는 `peek_turn` 이 0 이라 이 구간이 통째로 빠진다(길이 0 → 트리에서 제외).
+        ('LkdPeek', peek_turn, lambda: cfg.ANGULAR_Z_SEARCH * ctx.lkd, home),
         # 앞을 보며 잠깐 기다린다 — 사람이 그냥 다시 나타나는 경우가 제일 흔하다.
         ('HoldFront', hold, lambda: 0.0, home),
         # 그 다음 **바로 뒤를 본다.** 캠 전환은 공짜라 돌 필요가 없다.

@@ -133,6 +133,28 @@ def resolve_vertex(name: str) -> int:
     return table[name]
 
 
+def vertex_name(value) -> str:
+    """팔 leg 의 `at` 을 **정점 이름**으로 만든다. 숫자 인덱스면 navgraph 에서 이름을 찾는다.
+
+    왜 필요한가: 로봇 쪽 중계가 `at` **이름**에서 장소 종류를 유도한다(`*서가`→서가,
+    `*테이블`→테이블). 숫자를 그대로 보내면 유도가 실패하고 팔 goal 이 아예 안 나간다.
+    상위가 이름을 주는 것이 정상 경로지만(`ops.py` 는 zone 이름을 준다), API 는 숫자도
+    받으므로 여기서 한 번 되돌린다.
+
+    못 찾으면 **원래 값을 그대로 돌려준다** — 여기서 이름을 지어내면 정본이 둘이 된다.
+    """
+    s = str(value or "").strip()
+    if not s.lstrip("-").isdigit():
+        return s
+    try:
+        for name, idx in _load_vertex_index().items():
+            if idx == int(s):
+                return name
+    except Exception:  # noqa: BLE001 — navgraph 를 못 읽어도 배차는 계속돼야 한다
+        log.warning("[dispatch] navgraph 를 못 읽어 정점 %s 의 이름을 못 찾았다", s)
+    return s
+
+
 def _orc():
     # 순환 import 를 피하려고 호출 시점에 가져온다.
     from app import fleet_orchestrator_service as svc
@@ -155,8 +177,40 @@ def _complete_arm_later(cmd_id: str) -> None:
     t.start()
 
 
+#: 팔 다리 하나가 도는 최대 시간. 이 안에 안 끝나면 fleet_node 가 붙잡기를 스스로 푼다
+#  (경고와 함께). 로봇이 영영 순회를 못 하는 것보다 낫다.
+HOLD_TTL_SEC = float(os.environ.get("LIBI_ARM_HOLD_TTL_SEC", "180"))
+
+#: 붙잡은 cmd_id → 로봇. 결과가 올 때 누구를 풀지 알아야 한다(결과에는 로봇이 없다).
+_held_by_cmd: dict[str, str] = {}
+
+
+def _robot_of_cmd(cmd_id: str) -> str:
+    return _held_by_cmd.pop(cmd_id, "")
+
+
+def _release_hold(robot: str) -> None:
+    """로봇의 붙잡기를 풀고 역인덱스도 정리한다."""
+    if not robot:
+        return
+    fleet_link.set_robot_hold(robot, False)
+    for k, v in list(_held_by_cmd.items()):
+        if v == robot:
+            _held_by_cmd.pop(k, None)
+
+
 def real_dispatch(task_id: str, robot: str, leg) -> str:
     """orchestrator 가 다리 하나를 내보낼 때 부른다. 반환값이 cmd_id."""
+    # ── 주행이 아닌 다리(팔) 동안은 로봇을 **붙잡는다** ────────────────────────
+    #
+    # fleet_node 는 주행 다리만 안다. 팔 다리는 여기서 로봇에 직접 쏘므로 fleet_node 는
+    # 그 로봇이 유휴라고 보고 **순회를 새로 걸어 버린다** — 실측으로 서가에 막 도착한
+    # 로봇이 150 ms 뒤 떠났다. 팔이 그 서가에서 집어야 하는데.
+    #
+    # 그동안 이걸 막은 것은 로봇 상태기계가 WORKING 이라 순회 조건이 안 맞았던 것뿐이라,
+    # 그 링크가 끊기면 그대로 사고가 난다. 붙잡기를 주문 계약으로 끌어올린다.
+    if robot and leg.type != LegType.NAVIGATE:
+        fleet_link.set_robot_hold(robot, True, HOLD_TTL_SEC)
     if leg.type == LegType.NAVIGATE:
         waypoint = str(leg.params.get("waypoint", ""))
         if not waypoint:
@@ -186,16 +240,34 @@ def real_dispatch(task_id: str, robot: str, leg) -> str:
 
     if leg.type == LegType.PERFORM_ACTION:
         action = leg.params.get("action", "?")
-        where = leg.params.get("at", "?")
+        # 숫자 인덱스로 온 정점도 이름으로 되돌린다 — 중계가 이름에서 장소를 유도한다.
+        where = vertex_name(leg.params.get("at", "")) or "?"
         if not ARM_STUB:
             raise RuntimeError("팔 배선 없음 (LIBI_ARM_STUB=0)")
         # ── 1순위: 로봇 BT 로 보낸다 ──────────────────────────────────────
         if ARM_VIA_BT:
+            # ⚠️ [2026-07-30] **키를 하나하나 명시적으로 옮긴다.** 예전에는
+            #    `action`·`book`·`at` 셋만 복사했고, orchestrator 가 leg 에 새 키를 넣어도
+            #    **여기서 조용히 사라졌다.** 팔 계약(`object`/`from_place`/`to_place`/
+            #    `tier`/`row`/`slot`)을 추가할 때 이 줄을 같이 고쳐야 하는 이유다.
+            #
+            #    `to_place` 는 `place` 다리에서 비어 있을 수 있다 — 목적지가 테이블인지
+            #    안내데스크인지는 정점의 정체를 알아야 정해지고, 그 지식은 orchestrator 에
+            #    없다. 로봇 쪽 중계(`libi_modes/arm_task_map.py`)가 `at` 에서 유도한다.
+            #    빈 값을 보내는 것이 맞다 — 여기서 추측해 채우면 정본이 둘이 된다.
+            arm_args = {"action": action, "at": where,
+                        "book": leg.params.get("book", ""),
+                        "object": leg.params.get("object", ""),
+                        "from_place": leg.params.get("from_place", ""),
+                        "to_place": leg.params.get("to_place", ""),
+                        "tier": int(leg.params.get("tier", 0) or 0),
+                        "row": int(leg.params.get("row", 0) or 0),
+                        "slot": int(leg.params.get("slot", 0) or 0)}
             cmd_id = fleet_telemetry.send_command_async(
-                robot, action="perform_action",
-                args={"action": action, "book": leg.params.get("book", ""), "at": where},
+                robot, action="perform_action", args=arm_args,
             )
             if cmd_id:
+                _held_by_cmd[str(cmd_id)] = robot
                 log.info(
                     "[arm] %s NAVIGATE→BT %s(%s) at %s robot=%s cmd=%s",
                     task_id, action, leg.params.get("book", ""), where, robot, cmd_id,
@@ -305,6 +377,47 @@ def _has_admin_follow(robot: str) -> bool:
         return False
 
 
+def _has_guide(robot: str) -> bool:
+    """길잡이가 nav2를 직접 소유하는 동안 fleet 경로를 BT에 내리지 않는다."""
+    try:
+        return fleet_link.has_guide_target(robot)
+    except Exception:       # noqa: BLE001 -- 상태 조회 실패는 기존 배차 동작을 보존한다
+        return False
+
+
+#: 길잡이 홉 id → 로봇. 소실 보고(`requester_lost`)가 어느 로봇 것인지 알려면 필요하다.
+#  `_held_by_cmd` 를 못 쓰는 이유: 그건 붙잡기를 건 팔 다리만 담는다(홉은 안 담긴다).
+#  ⚠️ 무한히 자라면 안 된다 — 결과가 유실된 홉이 남으므로 상한을 두고 오래된 것부터 버린다.
+_guide_hop_robot: dict[str, str] = {}
+_GUIDE_HOP_MAX = 256
+#: 요청자를 놓친 동안 순회 재배차를 막아 두는 시간(초).
+#  회복 BT 한 라운드(≈32.8초) + 대기(20초)보다 넉넉해야 회복 도중에 풀리지 않는다.
+GUIDE_RECOVER_HOLD_TTL = float(os.environ.get("LIBI_GUIDE_RECOVER_HOLD_TTL", "300"))
+#: 회복 중 fleet_node 에 다시 세울 모드. **로봇 FSM 과 같은 값**이어야 한다 —
+#  PATROL 을 밀면 fleet 쪽이 순회를 시작할 수 있다(`_pause_guide_reservation` 주석).
+GUIDE_PAUSE_MODE = "WORKING"
+
+
+def _remember_guide_hop(cmd_id: str, robot: str) -> None:
+    if not cmd_id or not robot:
+        return
+    _guide_hop_robot[cmd_id] = robot
+    while len(_guide_hop_robot) > _GUIDE_HOP_MAX:
+        _guide_hop_robot.pop(next(iter(_guide_hop_robot)), None)
+
+
+#: `GuideExec._report_lost` 가 싣는 문구. 양쪽이 같아야 한다 — 다르면 조용히 안 걸린다.
+GUIDE_LOST_MSG = "requester_lost"
+
+
+def _guide_target_name(robot: str) -> str:
+    """승인 때 등록해 둔 안내 목적지 이름. 없으면 빈 문자열."""
+    try:
+        return str((fleet_link.guide_target(robot) or {}).get("name", ""))
+    except Exception:       # noqa: BLE001 — 표시값이라 조회 실패로 주행을 막지 않는다
+        return ""
+
+
 def on_path_request(robot: str, points: list) -> None:
     """fleet_node 가 허가한 다음 노드를 로봇 BT 로 내려보낸다.
 
@@ -336,16 +449,38 @@ def on_path_request(robot: str, points: list) -> None:
     if _has_admin_follow(robot):
         log.info("[nav] %s 관리자 추종 중 — 주행 배차를 보류한다", robot)
         return
+    # ⚠️ [2026-08-02] **길잡이도 홉을 받는다 — 액션 이름만 다르다.**
+    #
+    #   예전엔 여기서 `return` 해 길잡이를 교통관제 밖에 뒀다. 그러면 `GuideExec` 이
+    #   최종 목적지까지 혼자 몰고 가서, 예약도 간선 잠금도 재할당도 걸 자리가 없었고
+    #   관제 지도에는 선이 **하나도** 안 그려졌다(계획 대상이 아니므로).
+    #
+    #   지금은 같은 홉을 `guide` 로 내려보낸다. 로봇 쪽은 이미 준비돼 있다 —
+    #   `providers._on_cmd` 가 `guide` 의 args 를 `NAV_TARGET` 에 넣고
+    #   `active_command` 는 `"guide"` 로 **유지**하므로(GuideExec.handles 와 같아야 한다),
+    #   `GuideExec` 이 NavigationExec 의 재조준 경로를 그대로 타면서 사람 감시 게이트를
+    #   유지한다.
+    #
+    #   ⚠️ **`navigate` 로 보내면 안 된다.** 그러면 `active_command` 가 "navigate" 가 돼
+    #      dispatch Selector 앞의 `NavigationExec` 이 가로채고, `GuideExec` 은 영영 안
+    #      돈다 — 요청자를 놓쳐도 아무도 멈추지 않는다.
+    action = "guide" if _has_guide(robot) else "navigate"
 
     x, y, yaw = points[-1]
     if not should_send_nav(robot, (round(x, 3), round(y, 3)), time.monotonic()):
         return
 
-    cmd_id = fleet_telemetry.send_command_async(
-        robot, action="navigate", args={"x": x, "y": y, "yaw": yaw},
-    )
+    args = {"x": x, "y": y, "yaw": yaw}
+    if action == "guide":
+        # 목적지 이름은 승인 때 등록해 둔 것을 그대로 싣는다 — 화면이 "어디로 안내 중"
+        # 을 그 값으로 띄운다. 없으면 빈 문자열이라 표시만 비고 주행은 정상이다.
+        args["name"] = _guide_target_name(robot)
+
+    cmd_id = fleet_telemetry.send_command_async(robot, action=action, args=args)
     if cmd_id:
-        log.info("[nav] %s → BT navigate (%.3f, %.3f) cmd=%s", robot, x, y, cmd_id)
+        if action == "guide":
+            _remember_guide_hop(cmd_id, robot)
+        log.info("[nav] %s → BT %s (%.3f, %.3f) cmd=%s", robot, action, x, y, cmd_id)
     else:
         log.warning("[nav] %s 주행 명령 전송 실패 (명령 링크 없음)", robot)
 
@@ -376,11 +511,105 @@ def real_lifecycle(robot: str, phase: str) -> None:
         # "이미 보낸 목적지"로 걸러져 로봇이 출발하지 않는다.
         with _nav_lock:
             _last_nav.pop(robot, None)
+        # 주문이 끝났으니 붙잡기도 확실히 푼다 — 마지막 다리가 팔이면 결과 훅이
+        # 먼저 풀지만, 결과가 유실됐을 때의 이중 안전망이다(중복 해제는 무해하다).
+        _release_hold(robot)
     cmd_id = fleet_telemetry.send_command_async(robot, action=action, args={})
     if cmd_id:
         log.info("[lifecycle] %s → %s (cmd=%s)", robot, action, cmd_id)
     else:
         log.warning("[lifecycle] %s → %s 전송 실패 (명령 링크 없음)", robot, action)
+
+
+#: 소실로 붙잡아 둔 로봇 → 그때의 안내 목적지 이름. 재획득하면 이걸로 태스크를 다시 낸다.
+_guide_paused: dict[str, str] = {}
+
+
+def on_requester_visible(robot: str, visible: bool) -> None:
+    """`/pinkyN/requester_visible` 훅 — **요청자를 다시 찾았다.**
+
+    소실은 로봇이 그 홉을 `requester_lost` 로 닫으며 알려 주지만, 재획득은 **닫을 홉이
+    없다**(이미 닫았다). 그래서 가시성 Bool 을 그대로 올려 받는다. 새 통로를 만드는
+    대신 이미 있는 신호를 브릿지에 얹었다 — `domain_bridge.template.yaml` 참고.
+
+    ⚠️ **상승 에지에서만** 움직인다. 이 토픽은 계속 오므로(감시가 도는 동안 매 프레임)
+       매번 태스크를 내면 fleet_node 에 같은 태스크가 쏟아진다.
+
+    ⚠️ 붙잡기는 태스크를 **다시 낸 뒤에** 푼다. 먼저 풀면 그 사이 `on_timer` 가 유휴로
+       보고 순회를 부여한다(fleet_node.cpp:1089 는 hold 만 본다).
+    """
+    if not visible or not robot:
+        return
+    waypoint = _guide_paused.pop(robot, "")
+    if not waypoint:
+        return                      # 소실로 멈춘 안내가 아니다 — 평소 가시성 신호다
+    # ⚠️ **그 안내가 아직 살아 있는지 확인한다.** 회복 중에 이용자가 취소했거나
+    #    회복이 소진돼(`guide_search_failed`) 안내가 끝났을 수 있다. 그때 남은 항목으로
+    #    재배차하면 **아무도 요청하지 않은 주행**이 시작된다 — 지나가던 사람이 뒷캠에
+    #    잡히기만 해도 로봇이 옛 목적지로 떠난다.
+    #    끝났으면 붙잡기도 같이 푼다. 안 그러면 TTL(120초) 동안 순회를 못 한다.
+    if not fleet_link.has_guide_target(robot):
+        log.info("[guide] %s 재획득했지만 안내가 이미 끝났다 — 붙잡기만 푼다", robot)
+        fleet_link.set_robot_hold(robot, False)
+        return
+    log.info("[guide] %s 요청자 재획득 — 경로를 다시 낸다 (%s)", robot, waypoint)
+    try:
+        from app.routers.guide import _submit_guide_task
+        task_id = _submit_guide_task(robot, waypoint)
+    except Exception:   # noqa: BLE001
+        log.exception("[guide] %s 재배차 실패", robot)
+        task_id = ""
+    if not task_id:
+        # 재배차가 안 되면 붙잡기를 **갱신**한다 — 그냥 두면 TTL 이 만료돼 회복이 아직
+        # 도는 중에 순회가 배차된다(codex 검토 P1). 갱신은 만료 시각을 미루는 것이라
+        # 영구 정지가 아니다 — 다음 가시성 에지에서 다시 시도한다.
+        _guide_paused[robot] = waypoint
+        fleet_link.set_robot_hold(robot, True, GUIDE_RECOVER_HOLD_TTL)
+        return
+    fleet_link.set_robot_hold(robot, False)
+
+
+def _pause_guide_reservation(robot: str) -> None:
+    """회복 중인 로봇의 fleet 예약을 놓되 **순찰로 떠나지 않게** 한다.
+
+    ⚠️ **`real_release()` 를 쓰지 않는다.** 그 함수는 두 가지를 같이 하는데 여기서는
+       둘 다 해롭다:
+         · `_release_hold()` — 방금 건 붙잡기를 **곧바로 푼다**(:192)
+         · `set_robot_mode(PATROL)` — fleet_node 의 `robot_mode_` 를 PATROL 로 바꿔
+           (fleet_node.cpp:1769) 다음 timer 에서 **순회를 시작할 수 있다**. 로봇 FSM 은
+           아직 WORKING 인데 fleet 쪽만 PATROL 인 창이 생긴다.
+       (2026-08-02 codex 검토 P0/P1 지적)
+
+    대신 **현재 상태(WORKING)로** 모드를 다시 세운다. fleet_node 는 `RETURNING` 이
+    아닌 모드 설정에서 현재 task 를 취소하고 점유 노드를 놓으므로(fleet_node.cpp:1523)
+    예약 해제라는 목적은 그대로 달성되고, `mode_of(robot)` 가 WORKING 이라
+    `start_patrol` 분기에 애초에 안 걸린다(fleet_node.cpp:1090).
+
+    붙잡기는 그래도 건다 — 로봇 FSM 이 어떤 이유로 WORKING 을 벗어나도 순회 재배차를
+    막는 이중 안전망이다.
+    """
+    fleet_link.set_robot_hold(robot, True, GUIDE_RECOVER_HOLD_TTL)
+    try:
+        res = fleet_link.set_robot_mode(robot, GUIDE_PAUSE_MODE)
+        if not res.get("ok"):
+            log.warning("[guide] %s 예약 해제 실패: %s", robot, res.get("reason"))
+    except Exception:   # noqa: BLE001 — 예약 해제 실패로 회복을 막지 않는다
+        log.exception("[guide] %s 예약 해제 실패", robot)
+
+
+def clear_guide_bookkeeping(robot: str) -> None:
+    """안내가 끝났다(취소·완료·실패) — 이 모듈이 들고 있던 안내 상태를 지운다.
+
+    ⚠️ 안 지우면 `_guide_paused` 가 남아, 나중에 지나가던 사람이 뒷캠에 잡히는 순간
+       **아무도 요청하지 않은 주행**이 시작된다(codex 검토 P1). `on_requester_visible`
+       의 `has_guide_target` 가드가 한 겹 더 막지만, 근원에서 지우는 쪽이 맞다.
+    """
+    if not robot:
+        return
+    _guide_paused.pop(robot, None)
+    for k, v in list(_guide_hop_robot.items()):
+        if v == robot:
+            _guide_hop_robot.pop(k, None)
 
 
 def on_cmd_result(res: dict) -> None:
@@ -393,7 +622,38 @@ def on_cmd_result(res: dict) -> None:
     if not cmd_id:
         return
     ok = bool(res.get("ok"))
+    msg = str(res.get("msg") or "")
+
+    # ⚠️ [2026-08-02] **길잡이 홉이 "요청자를 놓쳤다" 로 닫혔다 — 예약을 푼다.**
+    #
+    #   회복 BT 가 도는 동안 그 로봇은 제자리에 선다. 그런데 fleet_node 는 아직
+    #   "가는 중" 으로 알고 **그 로봇 몫으로 잡아 둔 노드·간선을 안 놓는다** — 다른
+    #   로봇이 그 길을 못 쓴다.
+    #
+    #   순서가 중요하다: **붙잡기(hold)를 먼저** 걸고 나서 태스크를 취소한다.
+    #   반대로 하면 취소와 hold 사이에 `fleet_node.on_timer` 가 그 로봇을 유휴로 보고
+    #   **순회를 새로 부여한다**(fleet_node.cpp:1089 가 hold 만 본다) — 사람을 찾는
+    #   중인 로봇이 순찰을 떠나 버린다.
+    #
+    #   ⚠️ `RobotHold` 만으로는 부족하다. 그건 **순회 재배차만** 막고 진행 중 태스크의
+    #      경로 요청은 계속 나간다. 점유를 실제로 놓는 건 태스크 취소(`real_release`)다.
+    if msg == GUIDE_LOST_MSG:
+        robot = _guide_hop_robot.pop(cmd_id, "")
+        if not robot:
+            log.warning("[guide] 소실 보고인데 어느 로봇인지 모른다 cmd=%s", cmd_id)
+            return
+        log.info("[guide] %s 요청자 소실 — 붙잡고 예약을 푼다 cmd=%s", robot, cmd_id)
+        # 재획득했을 때 어디로 다시 보낼지 — 목적지를 기억해 둔다.
+        _guide_paused[robot] = _guide_target_name(robot)
+        _pause_guide_reservation(robot)
+        return
+
     log.info("[arm] BT 결과 cmd=%s ok=%s status=%s", cmd_id, ok, res.get("status"))
+    # ⚠️ **결과가 오면 반드시 푼다.** 안 풀면 그 로봇은 TTL 이 만료될 때까지 순회를 못 한다.
+    #    다음 다리가 주행이면 fleet_node 가 곧바로 다시 몰고 가므로 여기서 풀어도 안전하다.
+    robot = _robot_of_cmd(cmd_id)
+    if robot:
+        fleet_link.set_robot_hold(robot, False)
     try:
         _orc().on_result(cmd_id, ok, str(res.get("msg") or ""))
     except Exception:  # noqa: BLE001
@@ -406,7 +666,7 @@ def on_cmd_result(res: dict) -> None:
 RELEASE_MODE = os.environ.get("LIBI_RELEASE_MODE", "PATROL")
 
 
-def real_release(robot: str) -> None:
+def real_release(robot: str) -> None:   # noqa: D401
     """주문이 취소·실패했을 때 로봇을 fleet_node 에서 놓아준다.
 
     ⚠️ **왜 set_robot_mode 인가**: fleet_node 에는 전용 취소 서비스가 없다. `cancel_task()`
@@ -438,6 +698,8 @@ def real_release(robot: str) -> None:
         return
     with _nav_lock:
         _last_nav.pop(robot, None)      # 놓아준 로봇의 목적지 기억도 지운다
+    # 주문이 끝났으니 붙잡기도 푼다. 안 풀면 취소된 주문 때문에 로봇이 TTL 동안 순회를 못 한다.
+    _release_hold(robot)
 
     try:
         cmd_id = fleet_telemetry.send_command_async(robot, action="mission_stop", args={})
@@ -626,17 +888,35 @@ _auto_assign_stop = threading.Event()
 _ACCEPTING_STATES = {"IDLE", "PATROL"}
 
 
+def _reject_reason(r: dict) -> str | None:
+    """이 로봇을 후보에서 뺀 이유. 넣어도 되면 None.
+
+    ## 왜 사유를 따로 내는가
+    예전에는 `ready()` 가 bool 만 냈다. 그래서 후보가 0이면 배차 루프가 **조용히** 0건을
+    반환하고 주문은 PENDING 에 그대로 남았다 — 화면에도 로그에도 아무것도 안 나온다.
+    실측: 로봇 3대가 멀쩡히 순회 중인데 주문이 영영 안 나갔다. 원인은 상태기계 링크가
+    없어 `state` 가 None 이었던 것뿐인데, 그 사실이 어디에도 안 드러났다.
+    """
+    if r.get("stale"):
+        return "위치 신호 끊김"
+    state = r.get("state")
+    on_fms_patrol = str(r.get("task_id") or "").startswith("P-")
+    if state is None:
+        # ⚠️ **좁게만 허용한다.** FMS 가 **자기가 배정한** 순회를 돌리고 있는 로봇이면,
+        #    적어도 움직일 수 있다는 것은 FMS 자신이 안다(그 순회를 자기가 걸었으므로).
+        #    그 근거가 없으면 모르는 상태에 일을 주는 것이라 거절한다 — ERROR·충전 중인
+        #    로봇에 배차하는 것보다 멈춰 서는 편이 낫다.
+        return None if on_fms_patrol else "상태 미상 (상태기계 링크 확인)"
+    if state not in _ACCEPTING_STATES:
+        return f"상태 {state}"
+    if r.get("busy") and not on_fms_patrol:
+        return "다른 작업 중"   # 순회(P-*)는 선점 가능, 그 외 작업 중은 후보 제외
+    return None
+
+
 def pick_robot(robots: list[dict]) -> str | None:
     """대기 중인 주문 하나에 배정할 로봇을 고른다. 근거: `dispatch-shared.ts:pickRobot`."""
-    def ready(r: dict) -> bool:
-        state = r.get("state")
-        if state not in _ACCEPTING_STATES or r.get("stale"):
-            return False
-        if r.get("busy") and not str(r.get("task_id") or "").startswith("P-"):
-            return False   # 순회(P-*)는 선점 가능, 그 외 작업 중은 후보 제외
-        return True
-
-    candidates = [r for r in robots if ready(r)]
+    candidates = [r for r in robots if _reject_reason(r) is None]
     if not candidates:
         return None
     candidates.sort(key=lambda r: (0 if r.get("state") == "PATROL" else 1,
@@ -655,6 +935,15 @@ def _auto_assign_once() -> int:
     for t in pending:
         robot = pick_robot(robots)
         if robot is None:
+            # ⚠️ **조용히 나가지 않는다.** 대기 주문이 있는데 후보가 0이면 그건 정상이
+            #    아니라 진단해야 할 상태다. 로봇별 거절 사유를 로그와 주문 사유에 남겨,
+            #    "왜 배차가 안 되지" 를 화면만 보고 알 수 있게 한다.
+            why = ", ".join(
+                f"{r.get('name')}: {_reject_reason(r)}" for r in robots
+            ) or "로봇 없음"
+            log.warning("[auto-assign] 대기 %d건인데 배차 가능한 로봇이 없습니다 — %s",
+                        len(pending), why)
+            _mark_stalled(pending, why)
             break   # 배차 가능한 로봇 소진 — 나머지는 다음 주기로
         try:
             orc.assign(t["id"], robot)
@@ -664,6 +953,16 @@ def _auto_assign_once() -> int:
         robots = [r for r in robots if r.get("name") != robot]   # 이번 주기엔 다시 안 고른다
         assigned += 1
     return assigned
+
+
+def _mark_stalled(pending: list[dict], why: str) -> None:
+    """대기 주문에 "왜 안 나가는지" 를 적는다. 화면이 그 사유를 그대로 보여 준다."""
+    orc = _orc()
+    for t in pending:
+        try:
+            orc.set_reason(t["id"], f"배차 대기 — {why}")
+        except (KeyError, AttributeError):
+            pass
 
 
 def _auto_assign_loop() -> None:
@@ -687,6 +986,8 @@ def install() -> None:
     fleet_link.add_task_state_hook(on_task_state)
     fleet_link.add_path_request_hook(on_path_request)
     fleet_telemetry.add_cmd_result_hook(on_cmd_result)
+    # 길잡이 재획득 → 경로 재할당 (`on_requester_visible` 주석 참고)
+    fleet_link.add_requester_visible_hook(on_requester_visible)
 
     # 고아 task 화해 — 백엔드만 재기동한 경우를 자동으로 되돌린다.
     if RECONCILE_SEC > 0:

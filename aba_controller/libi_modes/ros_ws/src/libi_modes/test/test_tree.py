@@ -9,7 +9,7 @@ from libi_modes.common.battery_check import BatteryCheck
 from libi_modes.common.command_listener import CommandListener
 from libi_modes.common.fault_detected import FaultDetected
 from libi_modes.common.request_transition import RequestTransition
-from test.fakes import PARAMS, FakeDriver, all_drivers, all_providers
+from test.fakes import PARAMS, all_drivers, all_providers
 
 
 def _walk(node):
@@ -200,7 +200,9 @@ def test_charging_only_exits_to_idle_or_error():
 def test_tree_boots_returning_then_charging_then_idle(seed, read):
     """[*] -> RETURNING -> (docked) CHARGING -> (battery >= 40) IDLE."""
     drivers = all_drivers()
-    drivers["return_dock"] = FakeDriver(["success"])
+    # [2026-07-30] 예전엔 `return_dock` 을 성공으로 밀어 줬다. 그 드라이버는
+    # `GoToParking` 과 함께 없어졌고, 어차피 `is_docked=True` 면 `AlreadyDocked` 가
+    # 5단계를 통째로 건너뛴다 — 이 시험이 보는 것은 도킹 절차가 아니라 부팅 전이다.
     root = tree.build_root(
         PARAMS, drivers,
         all_providers(is_docked=lambda: True, battery_percent=lambda: 55.0),

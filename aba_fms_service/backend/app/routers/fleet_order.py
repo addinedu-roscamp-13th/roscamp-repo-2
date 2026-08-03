@@ -14,8 +14,10 @@
 """
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,6 +47,18 @@ class OrderRequest(BaseModel):
     dropoff: str = ""
     requester: str = ""
     priority: int = 0
+    #: 서가 좌표 — 팔이 손을 뻗을 층·줄이다. `pickup` 정점은 "어느 서가"까지만 말해준다.
+    #
+    # 원본은 `aba_service` 의 `books.tier`/`books.row` 이고, 주문을 만드는 쪽이 조회해
+    # 실어 보낸다(`delivery.py` 가 이미 `pickup=book.zone` 을 그렇게 보낸다).
+    # `0` 은 "층·줄 정보 없음" — 팔이 시각으로 찾는다. 사서가 아직 입력하지 않은 도서가
+    # 그 상태다. 여기서 추측해 채우지 않는다(틀린 칸을 잡는 것보다 못 찾는 게 낫다).
+    #
+    # ⚠️ 범위를 여기서 막는다. 실물이 3층 × 3줄이라 `tier=99` 는 존재하지 않는 칸이고,
+    #    로봇 쪽 중계는 범위 밖 좌표를 받으면 goal 을 아예 안 만든다(`arm_task_map`).
+    #    그러면 원인이 주문 접수 시점이 아니라 주행 중 실패로 뒤늦게 드러난다 — 들어올 때 막는다.
+    tier: int = Field(0, ge=0, le=3)
+    row: int = Field(0, ge=0, le=3)
 
     @model_validator(mode="after")
     def _check_kind(self) -> "OrderRequest":
@@ -83,7 +97,8 @@ async def create_order(body: OrderRequest, _: Admin = Depends(get_current_admin)
     else:
         tid = svc.orchestrator().submit_delivery(
             book=body.book, pickup=body.pickup, dropoff=body.dropoff,
-            requester=body.requester, priority=body.priority)
+            requester=body.requester, priority=body.priority,
+            tier=body.tier, row=body.row)
     return {"ok": True, "task_id": tid}
 
 
@@ -100,10 +115,28 @@ async def list_books(
     `zone` 이 곧 waypoint 정점 이름이다(문학서가·예술서가·과학-인문학서가 — waypoint.yaml 과
     글자까지 같다). 그래서 프런트가 책을 고르면 출발지를 별도 매핑 없이 채울 수 있다.
     """
-    rows = await db.execute(text(
-        "SELECT id, title_kr, author, category, zone, shelf, in_stock, unavailable "
-        "FROM cb_books ORDER BY zone, title_kr"
-    ))
+    # ⚠️ [2026-08-02] **테이블이 없을 때 500 을 내면 안 된다.**
+    #
+    #   `cb_books` 는 aba_service 소유라 그 서비스를 안 띄운 배포·개발 DB 에는 **없다**.
+    #   그때 여기서 예외가 그대로 올라가면 FastAPI 가 500 을 내는데, **500 응답에는
+    #   CORS 헤더가 안 붙는다.** 그래서 브라우저 콘솔에는 진짜 원인 대신
+    #       "has been blocked by CORS policy"
+    #   가 찍힌다(실측 2026-08-02 — 이것 때문에 CORS 설정을 한참 뒤졌다).
+    #   화면은 "주문 화면이 CORS 때문에 안 된다" 고 거짓말하고, 진짜 원인인
+    #   `Table 'labi.cb_books' doesn't exist` 는 서버 로그에만 남는다.
+    #
+    #   그래서 **빈 목록 + 이유**를 정직하게 돌려준다. 주문 화면은 책 없이도 떠야 하고
+    #   (정점만 골라 배차할 수 있다), 사람은 왜 비었는지 화면에서 알 수 있어야 한다.
+    try:
+        rows = await db.execute(text(
+            "SELECT id, title_kr, author, category, zone, shelf, in_stock, unavailable "
+            "FROM cb_books ORDER BY zone, title_kr"
+        ))
+    except Exception as exc:                      # noqa: BLE001 — 원인을 그대로 전달한다
+        logging.getLogger(__name__).warning("cb_books 를 읽지 못했습니다: %s", exc)
+        return {"books": [], "reason":
+                "도서 목록을 읽지 못했습니다 — aba_service 의 cb_books 테이블이 없습니다. "
+                "회원/사서 웹(aba_service)을 먼저 띄우거나 DB 를 마이그레이션하세요."}
     return {"books": [dict(r) for r in rows.mappings()]}
 
 

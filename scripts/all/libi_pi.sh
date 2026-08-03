@@ -106,6 +106,35 @@ DYN_OBSTACLE_NEAR_AREA="${DYN_OBSTACLE_NEAR_AREA:-0}"   # 0 = 정책 자체가 �
 # 배터리 자동 전이. "" = 미지정 → 아래에서 물어본다. true/false = 플래그로 명시됨.
 BATTERY_AUTO=""
 DOMAIN_ID=""
+# ── 패널 화면 (로봇 LCD) ────────────────────────────────────────────────────
+#
+# 로봇 **LCD(240x240 SPI)** 에 정지 이미지 한 장을 띄운다. **기본 켜짐**이다.
+#   --panel <경로>  다른 이미지를 쓴다
+#   --no-panel      안 띄운다
+#
+# ⚠️ **X(DISPLAY)로 띄우면 LCD 에 안 나온다.** 처음에 `eog -f` 로 했다가 틀렸다:
+#   이 Pi 에는 물리 프레임버퍼가 없다(`/dev/fb*` 자체가 없고 `xrandr` 은 DUMMY0/1/2 뿐).
+#   X 로 그린 화면은 **VNC(:5900)로 붙어야만** 보이고 LCD 로는 한 픽셀도 안 간다.
+#   LCD 는 SPI 로 직접 그린다 — `lcd_ctrl.py` 가 그 통로다(root 필요).
+#   리사이즈는 그쪽이 알아서 한다(`_loop_static` 의 `resize((240,240))`).
+#
+# ⚠️ 왜 libi_gui 가 아니라 PNG 인가 — **실측이다(2026-07-31).**
+#   같은 Pi 에서 libi_gui 를 VNC 모드로 띄우니 **코어 하나의 30%**(4코어 중 7.5%)를
+#   상시 먹었다. 뷰어를 안 붙였는데도 그랬다. 원인은 두 가지가 겹친 것이다:
+#     · VNC QPA 는 GL 컨텍스트가 없어 `QT_QUICK_BACKEND=software` 가 강제 — 래스터가 전부 CPU
+#     · `qml/components/RobotFace.qml` 의 idleBob 이 `loops: Animation.Infinite` — 화면이
+#       멈추질 않으니 1280x800 프레임버퍼를 계속 다시 칠한다
+#   LCD 정지 이미지는 **코어의 6.5%**(기계 전체 1.6%)다. 0 은 아니지만 1/5 이다.
+#   주행·BT·추종이 이미 3코어를 쓰는 Pi 라 그 차이가 그대로 여유가 된다.
+#
+#   움직이는 패널이 정말 필요해지면 되돌리는 게 아니라 **idleBob 부터 끄고 다시 잰다.**
+#
+# ⚠️ 이 데몬은 **스택을 내려도 안 죽는다**(kill.sh 가 안 건드린다). 일부러 그렇다 —
+#    로봇을 세워 둬도 얼굴은 떠 있는 게 낫다. 끄려면:
+#      sudo python3 aba_controller/libi_drive_controller/robot_agent/app/hardware/lcd_ctrl.py stop
+#
+#: 빈 값 = 안 띄움(--no-panel). 아래 인자 처리에서 기본 경로가 채워진다.
+PANEL_IMAGE="__default__"
 
 # 값을 받는 플래그가 **다음 플래그를 값으로 먹지 않게** 막는다.
 #   `--ai --no-back`  →  AI_IP="--no-back" 이 비어 있지 않아 검증을 통과하고,
@@ -128,6 +157,12 @@ while [ $# -gt 0 ]; do
     --dyn-obstacle) WITH_DYN_OBSTACLE=true; shift ;;
     --no-battery)   BATTERY_AUTO=false; shift ;;
     --battery)      BATTERY_AUTO=true;  shift ;;
+    # 값 없이 쓰면 기본 이미지(config/panel/libi_panel.png) — 기본 동작과 같다.
+    --panel)    case "${2:-}" in
+                  ''|--*) PANEL_IMAGE="__default__"; shift ;;
+                  *)      PANEL_IMAGE="$(need_arg "$1" "${2:-}")"; shift 2 ;;
+                esac ;;
+    --no-panel) PANEL_IMAGE=""; shift ;;
     *)          ARGS+=("$1"); shift ;;     # --no-fsm 등은 pi.sh 로 그대로
   esac
 done
@@ -357,8 +392,98 @@ tmux new-window -t "$SESSION" -n follow \
 # `none` 이라 아무것도 안 나간다(캡처와 생프레임 탭은 계속 돈다).
 CAM_ARGS="--picamera"
 [ "$WITH_BACK" = true ] && CAM_ARGS="$CAM_ARGS --back-camera $BACK_CAM"
+# ⚠️ [2026-07-30] `nice -n 10` — **카메라 설정은 하나도 안 바꾼다.** 스케줄링 우선순위만 낮춘다.
+#
+# 왜: 실측(Pi 4코어) camera_sender 가 CPU **77%** 를 쓴다. 그 부하에서 nav2 가 제어 주기를
+# 놓쳤고(`Control loop missed its desired rate of 10.0000 Hz`) 순회가 20초씩 멈췄다.
+#
+# 총량이 부족한 것도 맞지만, **같은 우선순위로 경쟁하는 것**이 더 직접적인 원인이다.
+# 영상은 몇 프레임 늦어도 추종 품질이 조금 떨어질 뿐인데, 제어 루프가 늦으면 로봇이 선다.
+# 그래서 영상 쪽을 양보시킨다.
+#
+# 양수 nice 는 권한이 필요 없다(낮추는 것만 한다). 되돌리려면 `nice -n 10 ` 만 지운다.
+#
+# ── [2026-07-30 저녁] 위 주석의 "JPEG 인코딩이 원인"은 **틀렸다.** FPS=10 으로 내린 근거 ──
+#
+# 원래 여기 "JPEG 를 CPU 로 인코딩한다(udp_video.py:30 cv2.imencode)"라고 적혀 있었다.
+# 두 가지가 그 진단과 안 맞는다:
+#
+#   ① 순회 중에는 `cv2.imencode` 가 **한 번도 안 불린다.** camera_select 가 `none` 이면
+#      camera_sender.py:147 `if choice != "none":` 에서 걸러져 송출 경로 전체를 건너뛴다.
+#      그런데도 77% 를 쓴다 — 즉 인코딩은 범인일 수가 없다.
+#   ② 인코딩 비용 자체가 작다. 640x480 실측: q90 0.78ms · q70 0.67ms · q30 0.66ms.
+#      10fps 면 코어의 **0.7%** 다. 품질을 70→30 으로 내려도 바이트만 줄지 시간은 그대로다
+#      (DCT 는 품질과 무관하고 엔트로피 코딩만 줄어든다).
+#
+# 실제로 도는 것은 **캡처 두 벌 + 회전 + 탭 기록**이고, 이것들은 `none` 이어도 계속 돈다
+# (그래야 마커 도킹이 프레임을 얻는다 — camera_sender.py 머리말의 계약).
+# 셋 다 프레임 수에 **정비례**하므로 유일하게 공짜인 손잡이가 fps 다.
+#
+# ── [2026-07-30 2차] fps 15 복귀 + **앞캠만 480x360** ───────────────────────────
+#
+# 1차로 fps 15→10 을 했더니 77% → 62% 로 떨어지고 스로틀도 풀렸다(84.7°C·0xe0008 →
+# 76.9°C·0x0). 그런데 **추종 반응이 둔해졌다** — 실측 `cmd_vel_follow` 가 9.60Hz 였다.
+# 검출이 카메라 fps 에 묶여 있어서, fps 를 내리면 제어 출력이 그대로 따라 내려간다.
+#
+# 그래서 프레임 수 대신 **프레임 크기**를 줄인다. 480x360 은 640x480 대비 픽셀이 56% 다.
+#   순 효과: 0.56(픽셀) × 1.5(fps 10→15) = **0.84** — 지금보다도 싸고 반응은 15fps.
+#
+# ⚠️ **뒷캠은 640x480 그대로 둔다.** 같이 480 으로 내리려 했는데 이 USB 캠이 거부했다:
+#    실측 지원 4:3 모드가 **320x240 · 640x480 · 800x600 뿐**이라, 480x360 을 요청하면
+#    **640x360(16:9)** 으로 열린다 — 폭은 그대로고 세로만 잘려 **화각이 바뀐다.**
+#    그 상태로 YOLO·마커를 보면 조용히 다른 그림을 본다. 그래서 두 캠을 갈랐다
+#    (`--width` = 앞캠, `--back-width` = 뒷캠). 뒷캠도 줄이려면 `--back-width 320`
+#    인데 픽셀이 25% 라 검출 거리를 크게 잃는다 — 필요할 때 재고 결정할 것.
+#
+#    이 사실은 `_camera_frames` 가 설정 후 실제 값을 찍게 해서 잡았다
+#    (`[cam1] 캡처 해상도 요청 480x360 → 실제 640x360 ⚠️ 요청과 다름`).
+#    해상도를 손대면 **그 줄을 반드시 확인**할 것 — 조용히 어긋나는 종류다.
+#
+# 잃는 것: YOLO 가 `imgsz=640` 으로 레터박싱하므로(detector.py — imgsz 미전달, ultralytics
+# 기본값) 480 은 서버에서 도로 640 으로 늘어난다. **연산량은 그대로고 검출 거리가 준다.**
+# 뒷캠도 YOLO 를 탄다(follow_node `_peek_people` — 회복 트리가 반대 캠으로 사람을 찾는다).
+# 마커 도킹도 해상도가 인식 거리다. 도킹이나 검출 거리가 나빠지면 **여기부터 되돌려라.**
+#
+# 되돌리기: `--width 480` 을 지우면 640, `FPS='17'` 을 지우면 image-sender.sh:14 기본값 15.
+#
+# ## [2026-07-31] 15 → 17
+#
+# 아래 모델로 320px 17fps = 16.45 + 17×2.91 = **65.9%** 다(지금 60.1%, +5.8%p).
+# 스로틀이 걸렸던 지점은 640px 15fps 의 **85.0%**(84.7°C·0xe0008) 라 그것과는 거리가 있다.
+# 노트북 쪽도 여유가 있다 — `POSE_EVERY_N_FRAMES = 1` 이라 pose 가 매 프레임 도는데
+# 13.4ms × 17 = 228ms/s = 코어의 23% 다.
+#
+# ⚠️ **CPU% 가 아니라 온도를 봐라.** 지난번에 실제로 망가진 것은 점유율이 아니라
+#    스로틀이었다. 올린 뒤 **부하 상태에서** 한 번 확인할 것:
+#      vcgencmd measure_temp ; vcgencmd get_throttled     # 0x0 이 아니면 되돌린다
+# [2026-07-30 3차] **두 캠 다 320x240.** 뒷캠이 수용하는 유일한 저해상도 4:3 이다(실측).
+#
+# ## ⚠️ 비용은 픽셀에 단순 비례하지 않는다 — 앞선 두 예측이 다 틀렸다
+#
+# 1차에 "fps 33% 감소" 2차에 "픽셀 비례로 46%" 라고 적었는데 둘 다 빗나갔다.
+# 3점을 실측해서 모델을 세웠다 (camera_sender 단독, 15초 평균, 앞뒤 두 캠):
+#
+#     320px  5fps  ->  31.0%        640px 15fps  ->  85.0%
+#     320px 15fps  ->  60.1%
+#
+#     비용 ≈ 16.4%(고정) + 2.91%/fps(프레임당) + 1.66%/fps(픽셀분, 640 기준)
+#
+#   검산: 640@10fps 예측 62.1% / 실측 62.3%.  320@15fps 예측 60.0% / 실측 60.1%.
+#
+# 즉 **고정비 16% 가 있고, 프레임당 비용의 대부분이 픽셀과 무관**하다(V4L2·libcamera
+# 왕복, 파이썬 루프, 탭 파일 생성·rename). 해상도를 내려도 지우는 건 `1.66%/fps` 뿐이다.
+# **fps 가 해상도보다 두 배 가까이 센 손잡이다** — 더 줄여야 하면 fps 부터 만져라.
+#
+# ⚠️ 대가는 **검출 거리**다. YOLO 가 imgsz=640 으로 업스케일하므로(detector.py, imgsz
+#    미전달) 먼 사람과 작은 마커가 불리해진다. 추종이 멀리서 안 잡히거나 도킹이 마커를
+#    늦게 찾으면 **여기부터 되돌린다.**
+#
+# ⚠️ 뒷캠 실측 수용 모드: 320x240·640x480·800x600(4:3), 352x288, 640x360·1280x720(16:9).
+#    480x360 과 360x270 은 **거부**하고 각각 640x360·352x288 로 연다 — 화각이 바뀐다.
+#    그래서 두 캠을 같은 값으로 맞출 수 있는 저해상도는 320x240 뿐이다.
+CAM_ARGS="$CAM_ARGS --width 320 --back-width 320"
 tmux new-window -t "$SESSION" -n cam \
-  bash -c "cd '$REPO_ROOT' && echo '[cam] 앞/뒤 → $AI_IP:$VIDEO_PORT (BT 가 camera_select 로 고름)' && VIDEO_PORT='$VIDEO_PORT' CAM_ARGS='$CAM_ARGS' ./scripts/drive-pi/image-sender.sh '$AI_IP'; exec bash"
+  bash -c "cd '$REPO_ROOT' && echo '[cam] 앞/뒤 → $AI_IP:$VIDEO_PORT (BT 가 camera_select 로 고름, nice+10, 17fps, 320x240)' && VIDEO_PORT='$VIDEO_PORT' CAM_ARGS='$CAM_ARGS' FPS='17' nice -n 10 ./scripts/drive-pi/image-sender.sh '$AI_IP'; exec bash"
 
 # ── 4) 동적 장애물 (기본 꺼짐) ──────────────────────────────────────────────
 # 켜면 nav2 가 필터 포함 파라미터로 뜨고 마스크 발행 노드가 함께 돈다.
@@ -366,6 +491,28 @@ tmux new-window -t "$SESSION" -n cam \
 if [ "$WITH_DYN_OBSTACLE" = true ]; then
   tmux new-window -t "$SESSION" -n keepout \
     bash -c "cd '$REPO_ROOT' && echo '[keepout] 통행 금지 마스크 발행 (부채꼴 ${DYN_OBSTACLE_FAN_DEG}° / TTL ${DYN_OBSTACLE_TTL}s)' && source /opt/ros/jazzy/setup.bash && source '$REPO_ROOT/aba_controller/libi_modes/ros_ws/install/setup.bash' && ros2 run libi_perception keepout_node --ros-args -p fan_deg:=$DYN_OBSTACLE_FAN_DEG -p ttl_sec:=$DYN_OBSTACLE_TTL -p near_area_max:=$DYN_OBSTACLE_NEAR_AREA; exec bash"
+fi
+
+# ── 5) 패널 화면 — 로봇 LCD (기본 켜짐 · --no-panel 로 끈다) ─────────────────
+# 근거·수치는 PANEL_IMAGE 선언부 주석 참고 (X 로는 LCD 에 안 나온다 · 코어 6.5%).
+[ "$PANEL_IMAGE" = "__default__" ] && PANEL_IMAGE="$REPO_ROOT/config/panel/libi_panel.png"
+if [ -n "$PANEL_IMAGE" ]; then
+  LCD_CTRL="$REPO_ROOT/aba_controller/libi_drive_controller/robot_agent/app/hardware/lcd_ctrl.py"
+  # 어느 실패든 **경고만 하고 계속 간다.** 그림 한 장 때문에 주행 스택을 못 띄우면 손해가 크다.
+  if [ ! -f "$PANEL_IMAGE" ]; then
+    echo "[libi_pi] ⚠ 패널 이미지가 없습니다 — 건너뜁니다: $PANEL_IMAGE" >&2
+  elif [ ! -f "$LCD_CTRL" ]; then
+    echo "[libi_pi] ⚠ lcd_ctrl.py 가 없습니다 — 패널을 건너뜁니다: $LCD_CTRL" >&2
+  else
+    # ⚠️ `sudo -n`(비대화)로 준다. 비밀번호를 물으면 기동이 거기서 멈춘다
+    #    (kill.sh 의 LED 소등이 같은 이유로 `-n` 을 쓴다).
+    # lcd_ctrl.py 는 스스로 데몬화해서 즉시 반환한다 — tmux 창이 필요 없다.
+    if sudo -n python3 "$LCD_CTRL" image "$PANEL_IMAGE" 2>/dev/null | grep -q '^OK'; then
+      echo "[libi_pi] ── 패널 → LCD 240x240 ($(basename "$PANEL_IMAGE"))"
+    else
+      echo "[libi_pi] ⚠ LCD 표시 실패 — 건너뜁니다 (sudo -n 이 막혔거나 SPI 가 없다)" >&2
+    fi
+  fi
 fi
 
 echo "[libi_pi] 정리: $HERE/kill-libi_pi.sh"

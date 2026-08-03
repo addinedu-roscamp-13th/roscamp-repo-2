@@ -12,10 +12,14 @@ _KEY_BY_PROVIDER = {
     "active_command": Keys.ACTIVE_COMMAND,
     "command_received_at": Keys.COMMAND_RECEIVED_AT,
     "nav_target": Keys.NAV_TARGET,
+    "arm_args": Keys.ARM_ARGS,
+    "arm_cmd_id": Keys.ARM_CMD_ID,
     "robot_pose": Keys.ROBOT_POSE,
     "requester_visible": Keys.REQUESTER_VISIBLE,
     "requester_seen_at": Keys.REQUESTER_SEEN_AT,
     "requester_area": Keys.REQUESTER_AREA,
+    "guide_search_failed": Keys.GUIDE_SEARCH_FAILED,
+    "guide_cmd_id": Keys.GUIDE_CMD_ID,
 }
 
 

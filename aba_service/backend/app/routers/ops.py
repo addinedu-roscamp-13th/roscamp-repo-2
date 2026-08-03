@@ -13,7 +13,7 @@ import os
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
@@ -417,6 +417,16 @@ def create_task(
 
     # ── 주문(task) ────────────────────────────────────────────────────────
     target, pickup, dropoff = _resolve_order(spec, body, db)
+
+    # 로봇팔용 서가 좌표 — 대상이 카탈로그의 도서일 때만 있다. 짐꾼(`cargo`)·주행 지시는
+    # 집을 책이 없으니 0 이다. 못 찾아도 0 으로 보낸다(그때 팔이 시각으로 찾는다) —
+    # 여기서 400 을 올리면 좌표를 아직 안 넣은 도서로는 작업 지시가 아예 막힌다.
+    shelf_tier = shelf_row = 0
+    if target and ("book" in spec["fields"] or spec.get("auto_dropoff") == "book_zone"):
+        hit = db.scalars(select(Book).where(Book.title_kr == target).limit(1)).first()
+        if hit is not None:
+            shelf_tier, shelf_row = int(hit.tier or 0), int(hit.row or 0)
+
     ok, value = fms_client.submit_order(
         kind=spec["order_kind"],
         book=target,
@@ -424,6 +434,8 @@ def create_task(
         dropoff=dropoff,
         requester=f"사서:{body.kind}",
         priority=body.priority,
+        tier=shelf_tier,
+        row=shelf_row,
     )
     if not ok:
         raise HTTPException(status_code=503, detail=f"작업 지시 실패 — {value}")
@@ -469,6 +481,13 @@ class BookIn(BaseModel):
     color: str = "from-slate-200 to-slate-300"
     zone: str
     shelf: str = ""
+    #: 로봇팔용 서가 좌표. `tier` 층(아래부터 1) · `row` 줄(마주 봤을 때 왼쪽부터 1), 각 1~3.
+    #  `0` 은 "정보 없음" — 팔이 층·줄 없이 시각으로 찾는다. 자세한 건 `models.Book` 주석.
+    #
+    # ⚠️ 실물이 3층 × 3줄이다. 범위 밖 값을 저장하면 그 도서로 주문을 넣을 때마다 로봇 쪽
+    #    중계가 goal 을 못 만들어 실패한다(`arm_task_map`) — 입력 시점에 막는다.
+    tier: int = Field(0, ge=0, le=3)
+    row: int = Field(0, ge=0, le=3)
     in_stock: bool = True
     unavailable: bool = False
     summary_kr: str = ""
@@ -483,6 +502,9 @@ def _book_out(b: Book) -> dict:
         "cover": b.cover,
         "zone": b.zone,
         "shelf": b.shelf,
+        # 로봇팔이 손을 뻗을 층·줄. 화면이 이 값을 편집한다.
+        "tier": int(b.tier or 0),
+        "row": int(b.row or 0),
         "in_stock": bool(b.in_stock),
         "unavailable": bool(b.unavailable),
     }
@@ -519,6 +541,8 @@ def create_book(
         color=body.color,
         zone=body.zone,
         shelf=body.shelf,
+        tier=body.tier,
+        row=body.row,
         in_stock=body.in_stock,
         unavailable=body.unavailable,
         summary_kr=body.summary_kr,
@@ -546,6 +570,9 @@ def update_book(
         "cover",
         "zone",
         "shelf",
+        # 로봇팔용 서가 좌표 — 이 목록에 빠지면 화면에서 고쳐도 **조용히 반영되지 않는다**
+        "tier",
+        "row",
         "in_stock",
         "unavailable",
     ):

@@ -6,13 +6,13 @@
 #        python3 scripts/gen_domain_bridges.py --run     # 생성 + 기동
 #    생성물은 config/generated/ 에 나오며 이 파일은 참고용으로만 남긴다.
 #
-# 로봇3(Pinky-3, 192.168.0.2, ROS_DOMAIN_ID=87) ↔ 서버 도메인 86 중계.
-# [2026-07-08] 종전에는 서버도 87이라 브릿지가 없었지만, 서버 도메인을 86으로
+# 로봇3(Pinky-3, 192.168.0.2, ROS_DOMAIN_ID=87) ↔ 서버 도메인 111 중계.
+# [2026-07-08] 종전에는 서버도 87이라 브릿지가 없었지만, 서버 도메인을 111로
 # 옮기면서 로봇 3대를 동일 구조(/pinky{N}/* 접두)로 통일했다.
 # 로봇은 무수정 — 서버에서만 실행: ros2 run domain_bridge domain_bridge <이 파일>
 name: bridge_pinky3
 from_domain: 87
-to_domain: 86
+to_domain: 111
 topics:
   amcl_pose:
     type: geometry_msgs/msg/PoseWithCovarianceStamped
@@ -39,12 +39,12 @@ topics:
   fleet_cmd_result:
     type: std_msgs/msg/String
     remap: /pinky3/fleet_cmd_result
-  # 역방향 명령: 86의 /pinky3/fleet_cmd 구독 → 87에 /fleet_cmd 발행
+  # 역방향 명령: 서버 도메인(to_domain)의 /pinky3/fleet_cmd 구독 → 로봇 도메인(from_domain)에 /fleet_cmd 발행
   pinky3/fleet_cmd:
     type: std_msgs/msg/String
     reversed: True
     remap: /fleet_cmd
-  # 역방향 속도 명령: 86의 /pinky3/cmd_vel 발행 → 로봇 도메인의 /cmd_vel
+  # 역방향 속도 명령: 서버 도메인의 /pinky3/cmd_vel 발행 → 로봇 도메인의 /cmd_vel
   pinky3/cmd_vel:
     type: geometry_msgs/msg/Twist
     reversed: True
@@ -66,7 +66,7 @@ topics:
   libi/fsm_transition_result:
     type: std_msgs/msg/String
     remap: /libi/fsm_transition_result
-  # 역방향: 서버(86)의 전이 요청을 로봇 도메인으로. domain_bridge 는 서비스를 중계하지
+  # 역방향: 서버(111)의 전이 요청을 로봇 도메인으로. domain_bridge 는 서비스를 중계하지
   # 못하므로(YAML 에 services 키 없음) 상관 id 를 실은 요청/결과 토픽 쌍을 쓴다.
   libi/fsm_transition_request:
     type: std_msgs/msg/String

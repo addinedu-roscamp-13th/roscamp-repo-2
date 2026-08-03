@@ -75,18 +75,82 @@ class CbsTraffic : public TrafficBase
 public:
   // 기본값은 **실물 nav2 파라미터에서 그대로 가져왔다**
   // (pinky_navigation/params/nav2_params.yaml, RegulatedPurePursuit):
-  //     desired_linear_vel: 0.07            → speed_mps_
-  //     rotate_to_heading_angular_vel: 0.15 → turn_rad_s_
-  //     rotate_to_heading_min_angle: 0.35   → turn_min_rad_
+  //     desired_linear_vel: 0.07           → speed_mps_    (:190)
+  //     rotate_to_heading_angular_vel: 0.5 → turn_rad_s_   (:227)
+  //     rotate_to_heading_min_angle: 0.35  → turn_min_rad_ (:222)
   // 짐작이 아니라 로봇이 실제로 지시받는 값이다. 그 파일을 바꾸면 여기도 같이 바꿔야 한다.
+  //
+  // ⚠️ [2026-08-02] **`turn_rad_s_` 가 0.15 로 적혀 있었다 — 실물의 3.3배 느린 값이다.**
+  //    주석은 "실물에서 그대로 가져왔다" 고 단언했는데 회전 각속도만 틀렸다(다른 둘은 일치).
+  //    90° 회전을 **10.5초**로 잡았고 실제는 3.14초다. 그 오차가 간선 하나를 19틱으로
+  //    부풀렸다 — 실측은 5~8초다.
+  //    실측 근거(순회 1랩, `통과 vN` 로그 타임스탬프, arte2):
+  //        간선 실측 5~8초(중앙값 ~7초) · 회전+정지 몫 2~3초 · 유효 0.051 m/s
+  //    과대평가는 안전 쪽이지만 대가가 있다 — CBS 가 필요 이상으로 로봇을 벌려 놓아
+  //    통로가 비었는데도 못 들어가고, `slack_` 을 넘게 일찍 오면 WAIT 로 세워진다.
   CbsTraffic()
   : tick_seconds_(env_d("LIBI_CBS_TICK_SEC", 1.0)),
     speed_mps_(env_d("LIBI_CBS_SPEED_MPS", 0.07)),
-    turn_rad_s_(env_d("LIBI_CBS_TURN_RAD_S", 0.15)),
+    turn_rad_s_(env_d("LIBI_CBS_TURN_RAD_S", 0.5)),
     turn_min_rad_(env_d("LIBI_CBS_TURN_MIN_RAD", 0.35)),
     clearance_(env_i("LIBI_CBS_CLEARANCE", 1)),
-    slack_(env_i("LIBI_CBS_SLACK", 1)),
-    drift_limit_(env_i("LIBI_CBS_DRIFT_LIMIT", 10)),
+    // 예약 시각의 허용 오차는 **비대칭이다 — 일찍 10초, 늦게 5초**(tick_seconds_=1.0 기준).
+    //   slack_       = 일찍 온 쪽 — 계획보다 이만큼 빠르면 그냥 통과시킨다
+    //   drift_limit_ = 늦게 온 쪽 — 예약 시각을 **이만큼 넘기면** 그 자리에서 컷이다
+    //
+    // ## 한 간선에 할당되는 시간 (사용자 스펙 2026-08-02)
+    //
+    //     예약 = 직진(d / speed_mps_) + 회전(Δθ / turn_rad_s_) + node_stop_ticks_
+    //     컷   = 예약 + drift_limit_
+    //
+    //   예: 0.32 m · 90° 회전 → 4.6 + 3.1 + 1 = 약 9초 예약, +5초 = **14초에 컷**.
+    //   화면은 그 컷까지 남은 초를 카운트다운하고, 0 이 되는 순간 재계획이 걸린다.
+    //
+    // ## 왜 5 인가
+    //
+    // 하한은 **1** 이다. 틱이 1초라 0 으로 두면 0.1초 흔들림도 틱 경계를 넘는 순간
+    // 지연이 되어 재계획이 폭주한다(실측 2026-08-02: 2분에 16회, 전부 "초과 0.1s").
+    // 실측 오차가 0.1~0.3초이므로 5 면 17배 여유이고, 진짜 막힘은 5초에 잡는다.
+    //
+    // ⚠️ **관용은 계획이 넉넉할 때만 작아질 수 있다.** 계획이 실물보다 빠르면 로봇은
+    //    늘 늦고, 관용을 아무리 줄여도 재계획만 늘 뿐 아무것도 안 고쳐진다.
+    //    그 넉넉함은 패딩(`node_stop_ticks_`)이 아니라 **맞는 모델**에서 나와야 한다 —
+    //    같은 날 `turn_rad_s_` 를 실물 값으로 고치자 간선 19틱이 약 8틱이 됐고,
+    //    실측 5~8초와 맞아 패딩 없이도 여유가 생겼다.
+    //
+    // ⚠️ 0 이 처음에 멀쩡해 **보였던** 이유: 그때는 커밋 노드(지금 가고 있는 칸)에
+    //    마감 자체가 없어서 그 구간이 무감지였다. 그 구멍을 메우자(`commit_deadline_tick`)
+    //    0 의 대가가 곧바로 드러났다. 관용은 그 마감이 **실제로 도는 상태**에서 정해야 한다.
+    //
+    // 반대로 **일찍 온 것은 아무 약속도 깨지 않는다.** 빨리 온 로봇을 세우면 뒤만 밀린다.
+    //
+    // ⚠️ **화면도 같은 값을 쓴다** — `/fms/plan` 의 `drift_limit`(fleet_node.cpp
+    //    `plan_deadline_slack`). 화면의 카운트다운이 0 이 되는 순간과 재계획이 걸리는
+    //    순간이 같아야 하므로, 한쪽만 바꾸면 화면이 거짓말을 시작한다.
+    //
+    // ⚠️ 예전엔 slack_ 도 1 이라 **양쪽 다** 빡빡했다. 그때 계획보다 2초만 빨라도 :233 에서
+    //    WAIT 로 세웠고, 실물의 가감속·회전 흔들림이 전부 정지로 바뀌어 멈칫이 쌓였고,
+    //    그 멈칫이 반대쪽(지연) 문턱을 넘겨 재계획을 유발했다. 그 되먹임을 끊는 것은
+    //    **일찍 온 쪽을 열어 주는 것**이지 늦은 쪽을 봐주는 것이 아니다. slack_ 은 그대로 둔다.
+    //
+    // ⚠️ 관용 0 은 재계획이 잦아진다는 뜻이고, 그래서 **모델 보정이 선택이 아니라 전제가 된다.**
+    //    계획이 실물보다 빠르면(SPEED_MPS 과대·TURN_RAD_S 과대·NODE_STOP_TICKS 과소)
+    //    로봇은 늘 늦고 시간표는 늘 버려져 CBS 가 사실상 꺼진 채로 돈다. 재계획이 끊이지
+    //    않으면 문턱이 아니라 build_graph 의 소요 시간 모델을 먼저 의심한다(:280 머리말).
+    slack_(env_i("LIBI_CBS_SLACK", 10)),
+    drift_limit_(env_i("LIBI_CBS_DRIFT_LIMIT", 5)),
+    // 간선마다 무조건 더하는 여유(틱). 노드 진입 감속·정지·재출발에 실제로 드는 시간이자,
+    // **관용을 작게 유지하기 위한 밑천**이다.
+    //
+    // ⚠️ [2026-08-02] 1 → 3 으로 올렸다가 **다시 1 로 되돌렸다.**
+    //    올린 이유는 "계획이 실물보다 2% 빠르다" 였는데, 그 진단이 틀렸다 —
+    //    같은 날 `turn_rad_s_` 가 실물의 3.3배 느리게 박혀 있는 것을 찾았고, 그걸
+    //    고치자 계획이 오히려 **넉넉해졌다**(간선 19틱 → 약 8틱, 실측 5~8초).
+    //    모델이 맞으면 패딩으로 덮을 게 없다. 패딩은 모델 오차를 가리는 값이라,
+    //    남겨 두면 다음 사람이 진짜 오차를 못 본다.
+    //
+    //    1 은 노드 진입 감속·정지·재출발에 실제로 드는 최소 몫이다(실측 회전+정지 2~3초
+    //    중 회전이 3.14초를 차지하므로 나머지가 이 정도다).
     node_stop_ticks_(env_i("LIBI_CBS_NODE_STOP_TICKS", 1))
   {
   }
@@ -105,6 +169,7 @@ public:
   }
   double speed_mps() const { return speed_mps_; }
   int clearance() const { return clearance_; }
+  int drift_limit() const override { return drift_limit_; }
 
   // 시간표가 못 쓰게 됐다 → fleet_node 가 스냅샷을 다시 모아 replan() 을 부른다.
   bool needs_replan() const override
@@ -137,23 +202,41 @@ public:
     std::vector<int> starts, goals;
     std::vector<std::string> names;
     std::vector<Route> routes;
+    //: 커밋 간선(`committed_from → start`)의 예산(틱). `names` 와 같은 순서. -1 = 모른다.
+    //  **여기서 계산하는 것이 요점이다** — `build_graph` 가 이미 회전·정지·slow-edge 까지
+    //  넣은 값을 들고 있으므로, 호출자가 거리·속도로 다시 계산하면 모델이 갈라진다.
+    std::vector<int> commit_ticks;
 
     if (snap.graph && !snap.robots.empty()) {
-      const TimedGraph g = build_graph(*snap.graph, snap.blocked);
+      const TimedGraph g = build_graph(*snap.graph, snap.blocked, snap.slow_edges);
       const int n = static_cast<int>(g.size());
       bool ok = true;
       starts.reserve(snap.robots.size());
       goals.reserve(snap.robots.size());
       names.reserve(snap.robots.size());
+      commit_ticks.reserve(snap.robots.size());
       for (const auto & r : snap.robots) {
         if (r.start < 0 || r.goal < 0 || r.start >= n || r.goal >= n) { ok = false; break; }
         starts.push_back(r.start);
         goals.push_back(r.goal);
         names.push_back(r.robot);
+        commit_ticks.push_back(edge_cost_ticks(g, r.committed_from, r.start));
       }
       if (ok) {
         PlanOptions opt;
         opt.clearance = clearance_;
+        // ⚠️ [2026-08-02] **커밋 예산을 출발 시각으로 넘긴다 — 계획 자체가 그걸 알아야 한다.**
+        //
+        //   처음엔 `commit_deadline_tick` 으로 결과만 내보내고 계획은 `start` 에서 0틱
+        //   출발로 뒀다. 그러면 로봇이 실제로 그 칸을 6~7초 타고 도착해 **다음 간선을
+        //   요청하는 순간** `request_move` 가 `now - depart`(depart≈0)를 보고 무조건
+        //   지연으로 강등한다. 실기 실측(2026-08-02): 재계획 사유의 90%가 그것이었고
+        //   6~7초마다 시간표를 버렸다.
+        //
+        //   결과 배열만 사후에 밀면 안 된다 — 다른 로봇과의 **충돌 제약이 옛 시간축에
+        //   남아** 보장이 깨진다(codex 지적 P0). 출발 시각으로 넣으면 arrive/depart 와
+        //   제약이 한 시간축에서 같이 밀린다.
+        opt.start_ticks = commit_ticks;
         routes = cbs_plan_timed(g, starts, goals, opt);   // ← 긴 구간. 잠금 없음.
       }
     }
@@ -177,6 +260,9 @@ public:
       plan_[names[i]] = routes[i];
       PlannedRoute pr;
       pr.robot = names[i];
+      // 커밋 노드에 닿기까지 줄 예산. 호출자가 커밋 간선을 안 실어 보냈으면 -1 이다.
+      // (`commit_ticks` 는 `names` 와 같은 순서로만 채워진다 — 위 루프 참고.)
+      pr.commit_deadline_tick = (i < commit_ticks.size()) ? commit_ticks[i] : -1;
       for (const auto & s : routes[i]) {
         pr.path.push_back(s.v);
         pr.arrive_tick.push_back(s.arrive);
@@ -187,6 +273,14 @@ public:
   }
 
   // ── 실행 게이트 ─────────────────────────────────────────────────────────
+  // ⚠️ **fallback_ 에도 넘겨야 한다.** 물리 점유 판정은 그쪽이 한다(request_move 참고).
+  //    안 넘기면 CBS 모드에서 근접 규칙이 조용히 꺼진 채로 돈다 — 실제로 그랬다.
+  void set_min_separation(const Navgraph & g, double min_sep) override
+  {
+    TrafficBase::set_min_separation(g, min_sep);
+    fallback_.set_min_separation(g, min_sep);
+  }
+
   MoveDecision request_move(const std::string & robot, int from, int to, int priority) override
   {
     std::lock_guard<std::mutex> lk(mu_);
@@ -273,7 +367,22 @@ private:
   // 들어오는 방향이 여럿이면 평균을 쓴다.
   // ponytail: 진입방향 평균 근사. 정확히 하려면 (진입간선, 진출간선) 쌍으로 그래프를
   //   확장해야 한다(정점 수 ×평균차수). 교차로가 병목이 되면 그때 승급.
-  TimedGraph build_graph(const Navgraph & ng, const std::vector<int> & blocked) const
+  /// `from → to` 간선의 통과 비용(틱). 그 간선이 없으면 -1.
+  ///
+  /// `build_graph` 가 이미 넣어 둔 값을 그대로 읽는다 — 거리·회전·노드 정지·slow-edge
+  /// 벌점이 전부 반영돼 있다. 이 값을 밖에서 다시 계산하려 들면(예: 거리/속도) 모델이
+  /// 갈라지고, 갈라진 순간 화면·판정·플래너가 서로 다른 말을 하기 시작한다.
+  static int edge_cost_ticks(const TimedGraph & g, int from, int to)
+  {
+    if (from < 0 || to < 0 || from >= static_cast<int>(g.size())) { return -1; }
+    for (const auto & e : g[from]) {
+      if (e.first == to) { return e.second; }
+    }
+    return -1;
+  }
+
+  TimedGraph build_graph(const Navgraph & ng, const std::vector<int> & blocked,
+                         const std::vector<SlowEdge> & slow = {}) const
   {
     const int n = ng.size();
     // 역인접(진입 간선) — 회전각 평균에 필요하다.
@@ -292,7 +401,12 @@ private:
         const double travel = (speed_mps_ > 0.0) ? dist / speed_mps_ : 0.0;
         const double turn = turn_seconds(ng, preds[v], v, w);
         const int ticks = ticks_for(1.0, 1.0 / std::max(1e-9, travel + turn), tick_seconds_);
-        g[v].push_back({w, ticks + node_stop_ticks_});
+        // 반복해서 마감을 못 지킨 간선은 **비싸게** 만든다(막지 않는다 — SlowEdge 머리말).
+        int extra = 0;
+        for (const auto & e : slow) {
+          if (e.from == v && e.to == w) { extra = e.extra_ticks; break; }
+        }
+        g[v].push_back({w, ticks + node_stop_ticks_ + extra});
       }
     }
     return g;

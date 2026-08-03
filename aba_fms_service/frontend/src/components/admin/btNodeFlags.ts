@@ -46,32 +46,119 @@ import type { BtNodeFlag } from "@/components/admin/BtGraphView";
  * 이 목록에 플래그로 등록된 이름은 없어서 범례 숫자는 안 바뀐다 — 그래도 여기 적는
  * 이유는, 다음 사람이 옛 이름으로 플래그를 달면 **조용히 안 붙기 때문**이다.
  *
- * 새로 흐리게 표시하는 것은 복귀 5단계 중 **마커로 갈아끼울 두 자리**뿐이다.
+ * ## 2026-08-01 — `LkdPeek` 이 SearchPhases 맨 앞에 붙었다 (추종 전용)
+ *
+ *   LkdPeek → HoldFront → HoldBack → SweepFront{...} → SweepBack{...} → GiveUp
+ *
+ * 마지막 관측 방향(LKD)으로 ~90° 꺾는 4.5초짜리 구간이다. `aba_ai_service` 의
+ * `follower_BT/recovery.py` `DrivePolicy` 에 처음부터 있었는데(PEEK 상태), 그 상태기계의
+ * 각속도가 나가던 `--drive-host` 경로가 2026-07-28 에 폐기되면서 **화면에는 "PEEK" 이
+ * 뜨는데 바퀴는 안 도는** 상태였다. 실주행 트리로 옮긴 것이다.
+ *
+ * ⚠️ **길잡이에는 이 노드가 없다**(`peek_sec` 이 0 → 구간 제외). 관제 화면에서 길잡이
+ *    트리에 LkdPeek 이 안 보이는 것은 정상이며 누락이 아니다. `config.SEARCH_PEEK_ANGLE`
+ *    을 0 으로 두면 추종에서도 사라진다.
+ * 여기도 플래그로 등록된 이름은 없어 범례 숫자는 안 바뀐다.
+ *
+ * ## 2026-07-30 — 복귀 6단계 재편 (뒷캠 ArUco 정밀 주차)
+ *
+ * 노드 **넷이 사라지고 다섯이 생겼다.** 옛 이름으로 단 플래그는 조용히 안 붙는다.
+ *
+ *   사라짐  FaceParking · GoToParking · TurnAround · AlignDock
+ *   생김    FaceApproachYaw · ReleaseNav · ArucoApproach · DockNudge · DockSettle
+ *
+ * 새 순서: GoToParkingEntrance → FaceApproachYaw → ReleaseNav → ArucoApproach
+ *          → DockNudge → DockSettle
+ *
+ * ## 2026-07-30 (2) — 마커 도킹 이식 + 도킹 탈출
+ *
+ * 노드 **넷이 더 생겼다.**
+ *
+ *   BackCamOn                   ReturnAndWatch 의 첫 자식. 도킹 동안 뒷캠을 선택 상태로
+ *                               유지한다(대기 캠은 8틱에 한 번 = 1.9Hz 라 시각 서보가 못 돈다).
+ *                               절대 끝나지 않는다 — SUCCESS 를 내면 Parallel(SuccessOnOne)이
+ *                               복귀를 통째로 끝낸다.
+ *   UndockOrSkip                PATROL·WORKING·SECURITY_PATROL 의 주행 **앞**. Selector.
+ *   ├ UndockNotNeeded           도킹 아니거나 이미 나왔으면 통과(평소엔 여기서 끝)
+ *   └ Absorb[Undock]            6cm 전진 + **pose 로 실제 이동 확인**
+ *
+ * ⚠️ `UndockOrSkip` 은 **세 브랜치에 각각 별개 인스턴스**다(py_trees 노드는 부모를 하나만
+ *    갖는다). 스냅샷에 같은 이름이 세 번 나오는 것이 정상이다.
+ *
+ * ## 2026-07-31 — 복귀 플래그 **전부 해제**. 이 목록이 비었다.
+ *
+ * 실기에서 복귀 한 사이클이 끝까지 돌았다(사용자 확인). ArucoApproach·DockNudge·
+ * DockSettle·Undock 넷의 해제 조건은 아래에 하나씩 적는다 — 셋은 실기 근거로 풀렸고
+ * 하나는 **근거가 아니라 설계 결정으로** 풀렸다. 그 구분이 중요하다.
  */
 export const BT_NODE_FLAGS: Record<string, BtNodeFlag> = {
-  // ── 복귀 5단계 (2026-07-27 신설) ─────────────────────────────────────────
-  //   GoToParkingEntrance → FaceParking → GoToParking → TurnAround → AlignDock
+  // ── 복귀 6단계 (2026-07-27 신설 · 2026-07-30 재편) ────────────────────────
   //
-  // 주행 세 단계는 정상 동작한다. 아래 둘만 "나중에 ArUco 로 갈아끼울 자리"다.
+  // ① GoToParkingEntrance  nav2 로 주차장 입구까지        — 정상
+  // ② FaceApproachYaw      접근 자세로 회전(절대각)        — 정상 (플래그 없음)
+  //      [2026-07-30] 옛 `FaceParking` 의 partial 을 **해제**했다. 좌표로 atan2 를 내던
+  //      것이 "앞캠 ArUco 로 갈아끼울 자리"였는데, 재편으로 그 자리 자체가 없어졌다 —
+  //      이제 고정 절대각 한 번이고, 정밀도는 ④가 책임진다.
 
-  // 좌표만으로 각도를 낸다 — 현재 pose 와 주차장 좌표로 atan2. 동작은 하지만,
-  // 설계상 여기는 **앞캠 ArUco** 가 들어갈 자리다(마커가 붙으면 이 플래그를 지운다).
-  // nav2 가 방금 그 AMCL 로 입구까지 왔으므로 좌표 기반으로도 충분하다는 판단이라,
-  // 미구현이 아니라 "정밀도를 나중에 올릴 곳"이라는 뜻의 partial 이다.
-  //   return_steps.py FaceParking · _YawStep
-  FaceParking: "partial",
+  // ③ ReleaseNav  nav2 목표를 끊고 바퀴를 외부에 넘긴다 — 정상 (플래그 없음)
+  //      [2026-07-30, codex 리뷰] ①은 x·y 만 보고 성공하고 성공한 단계는 stop 을 안
+  //      보낸다. 예전엔 `GoToParking` 이 새 goal 로 선점해 줬는데 그 단계가 없어져,
+  //      입구 goal 이 살아 있는 채로 ArUco 접근이 시작될 수 있었다.
 
-  // 정렬을 위한 **미세 이동이 아직 없다.** 지금 하는 일은 `is_docked`(실제 도킹 확인)를
-  // 기다리는 것뿐이다. 그 확인까지 빼면 로봇이 충전소에 닿지도 않은 채 CHARGING 을
-  // 선언하므로 남겨 뒀다 — 화면은 멀쩡한데 배터리는 계속 떨어지는 상태가 된다.
-  // **뒷캠 ArUco** 가 들어갈 자리이며, 그때 트리 배선은 안 바뀐다.
+  // ④ 뒷캠 ArUco 로 6cm 까지. **구현이 이 저장소에 없다.**
+  //    `/fleet_cmd{dock_action}` 을 내고 `/fleet_cmd_result` 를 기다리는 통로는 있다
+  //    (main.py `return_aruco` · FleetCmdDriver). 그래서 unwired 가 아니라 partial 이다.
+  //    기본 액션 이름은 `aruco_dock` 이고 **아무도 답하지 않는다** — fleet_link 가 모르는
+  //    이름이라 `400 알 수 없는 action` 이 즉시 와서 재시도 끝에 ERROR 로 간다.
+  //    일부러 그렇게 뒀다: `"dock"` 이면 fleet_link 의 `park_dock`(라인 트레이싱, 실물
+  //    미검증)이 대신 로봇을 움직이고 성공까지 답한다 — 조용한 오작동보다 시끄러운
+  //    실패가 낫다.
+  //      main.py `dock_action` · fleet_link.py `if action == "dock"` · dock_runner.py
+  //    ⚠️ 외부 노드를 붙이는 날 **답하는 쪽을 하나로 만들어야 한다.** 둘이 답하면
+  //       먼저 온 결과로 ⑤가 시작된다(팔의 `LIBI_ARM_VIA_BT` 와 같은 함정).
+  //    ⚠️ 취소 계약도 없다 — timeout 뒤의 `stop` 은 nav2 만 끊는다.
+  //    [2026-07-31 해제] `marker_dock.py` 가 `aruco_dock` 에 답하고, 실기에서 마커를 잡아
+  //    6cm 까지 붙는 것을 확인했다. 해제 조건 그대로 충족.
+  //    (답하는 쪽은 여전히 **하나여야 한다** — 위 ⚠️ 는 유효하다.)
+
+  // ⑤ 마지막 3cm 를 개루프로 민다(cmd_vel_dock, twist_mux priority 120).
+  //    코드는 완결이고 단위시험도 있다(test_nudge_driver.py). partial 인 이유는 하나 —
+  //    **거리가 실측 보정 전이다.** 바퀴 슬립·모터 데드밴드 때문에 명령값과 실이동이
+  //    어긋나는데, 그 오차가 그대로 충전 단자 정렬 오차가 된다.
+  //      params.yaml returning.nudge_distance_m / nudge_speed_mps
+  //    [2026-07-31 해제] 실기에서 도킹이 완결됐다("완벽히 도킹") — 3cm 가 접점을 물리는
+  //    데 충분했다는 뜻이므로, 자로 잰 것과 같은 결론이다.
+
+  // ⑥ 안정화 대기 후 **도킹으로 친다.** 접촉을 확인하지 않는다.
+  //    ⚠️ 접점이 안 붙어도 CHARGING 이 선언된다. ChargingBranch 의 이탈 조건은 fault
+  //       또는 battery >= 40 뿐이라, 충전이 안 되면 방전까지 갇힌다(charging.py).
+  //    [2026-07-30] 옛 `AlignDock` 은 `is_docked` 를 기다렸는데, 그 신호는 주차장 정점
+  //    반경 0.12m 판정(dock_confirm.py)이라 ④⑤를 지난 뒤에는 이미 참이었다 — 검증하는
+  //    척만 했다. 그래서 사용자 결정으로 시간 대기로 바꿨다. 대기가 하는 일은 개루프
+  //    후진의 관성이 가라앉을 시간을 주는 것뿐이다.
+  //      return_steps.py DockSettle · params.yaml returning.settle_sec
+  //    [2026-07-31 해제] ⚠️ **이건 근거가 아니라 결정으로 푼 것이다.** 접촉 확인 신호는
+  //    지금도 없다 — 시간으로 넘긴다. 사용자가 그렇게 정했고 실기에서 그 방식으로
+  //    도킹이 성립했다. 위 ⚠️(접점이 안 붙어도 CHARGING 이 선언된다)는 **그대로 유효**하다.
+  //    전류·전압 신호가 생기면 그때 `DockSettle` 을 그 신호 대기로 바꾼다.
+
+  // ── 마커 도킹 이식 (2026-07-30) ───────────────────────────────────────────
   //
-  // [2026-07-28] `unwired` → `partial`. `unwired` 는 "부를 통로가 없다"는 뜻인데,
-  // 이 노드는 `create_return_steps` 에 들어가 `ReturningBranch` 가 **실제로 실행한다**
-  // (is_docked 대기 + timeout → AbsorbFailure 재시도 → 소진 시 fault). 통로는 있고
-  // 정렬 동작만 비어 있으니 `partial` 이 맞다 — `FaceParking` 과 같은 성격이다.
-  //   return_steps.py AlignDock · returning.py create_return_steps
-  AlignDock: "partial",
+  // ④ ArucoApproach 의 `partial` 은 **유지한다.** 구현이 붙었지만(robot_agent 의
+  // `marker_dock.py`, arte_aurcomaker_move 커밋 5002e60 에서 판단 로직 무수정 이식)
+  // **이 체인 전체가 실기에서 한 번도 안 돌았다.** 조각은 검증됐다 — approach.py 는
+  // 같은 로봇에서 실주행했고 단위시험 106개가 있다. 이음매가 처음이다.
+  //   robot_agent/app/core/marker_dock.py · app/marker/
+  //   해제 조건: 실기에서 복귀 한 사이클이 끝까지 성공한 뒤.
+
+  // 도킹 자세에서 빠져나온다. 코드는 완결이고 시험도 있다(test_undock.py).
+  // partial 인 이유: **거리(6cm)가 실측 전이다.** 이 값이 모자라면 nav2 가 시작 격자를
+  // 통행불가로 보고 경로를 못 낸다 — 증상이 도킹과 멀리 떨어져 나타난다.
+  //   근거·수치: libi_modes/common/undock.py 머리말
+  //   nav2_params.yaml: inscribed 0.088 < inflation_radius 0.09
+  //   [2026-07-31 해제] 사용자 지시로 함께 푼다. ⚠️ 다만 **이 노드만은 실기 근거가 아직
+  //   없다** — 도킹 뒤 CHARGING→IDLE(40%)→PATROL(80%) 로 나가는 첫 주행이 아직 안 돌았다.
+  //   nav2 가 "경로 없음"을 내면 여기가 첫 번째 의심 지점이다(undock.py 머리말의 수치).
 
   // ── 2026-07-27 해제 ───────────────────────────────────────────────────────
   // FollowExec: "unwired"  → fleet_link.BT_LAYER_ACTIONS 에 세션 명령 추가로 해제

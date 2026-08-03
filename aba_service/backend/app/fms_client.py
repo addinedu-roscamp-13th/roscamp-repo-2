@@ -113,12 +113,18 @@ def submit_order(
     requester: str = "",
     priority: int = 0,
     kind: str = "delivery",
+    tier: int = 0,
+    row: int = 0,
 ) -> tuple[bool, str]:
     """주문 접수. 성공하면 `(True, task_id)`, 실패하면 `(False, 사유)`.
 
     `kind` 가 다리 구성을 정한다 — `delivery`(주행→집기→주행→놓기 4다리) 또는
     `navigate`(주행 1다리). 주행만 하는 지시(정리·파견)를 배달로 내보내면 로봇이 있지도
     않은 책을 집으러 간다.
+
+    `tier`/`row` 는 **로봇팔용 서가 좌표**다(`books.tier`/`books.row`). `pickup` 정점은
+    "어느 서가"까지만 말해주고, 팔이 손을 뻗으려면 층·줄이 필요하다. `0` 은 "정보 없음"
+    이고 팔이 시각으로 찾는다 — 추측해서 채우지 않는다.
     """
     ok, text = _authed(
         "/api/fleet/order",
@@ -130,6 +136,8 @@ def submit_order(
             "dropoff": dropoff,
             "requester": requester,
             "priority": priority,
+            "tier": tier,
+            "row": row,
         },
     )
     if not ok:

@@ -72,11 +72,51 @@ ApplicationWindow {
     Connections {
         target: controller
         function onFollowingChanged() {
-            if (controller.following) controller.setMode("follow");
-            else if (controller.mode === "follow") controller.setMode("adminControl");
+            if (controller.following) {
+                // ⚠️ [2026-08-02] **시작할 때도 비운다 — 이게 진짜 보장이다.**
+                //
+                //   아래 종료 경로의 resetTarget() 은 종료를 **감지해야** 돈다. 그 감지가
+                //   상태 메시지 수신에 달려 있어서, 한 번 놓치면 옛 등록이 그대로 남고
+                //   다음 세션이 **등록도 안 했는데 옛 사람을 따라간다**(사용자 보고).
+                //   시작 시점에 비우면 이전 세션이 어떻게 끝났든 상관이 없다 —
+                //   "다시 누르면 다시 등록"이 어느 경로에서도 성립한다.
+                //   reset 은 멱등이라 종료 때와 두 번 돌아도 무해하다.
+                perception.resetTarget();
+                controller.setMode("follow");
+            } else {
+                // 추종이 끝났다 — 수동 「해제」(stopAdminFollow)든 로봇이 스스로 끝냈든
+                // 여기 한 곳으로 다 모인다. 등록된 타겟을 안 지우면 AI 서버가 이전 사람을
+                // 계속 등록된 상태로 들고 있어서, 다음 추종을 시작해도 새로 등록하기 전까진
+                // 옛 타겟이 남는다.
+                perception.resetTarget();
+                if (controller.mode === "follow") controller.setMode("adminControl");
+            }
         }
         function onFollowEndedByRobot() {
             controller.setMode("home");
+        }
+
+        // ⚠️ [2026-08-02] **길잡이도 같은 규칙을 따른다 — 시작할 때와 끝날 때 둘 다 비운다.**
+        //
+        //   길잡이에는 `resetTarget()` 이 **한 곳도 없었다.** 추종만 위 경로로 비우고
+        //   있었는데, 등록 템플릿(`matcher`)은 AI 서버에 **하나뿐**이라 길잡이가 남긴
+        //   주인이 그대로 남는다. 그 결과 두 가지가 같이 깨진다:
+        //
+        //     · 안내가 끝났는데(취소·회복 실패·도착) `isOwner` 가 계속 true 다.
+        //       화면·BT 가 "요청자가 아직 보인다" 로 읽는다.
+        //     · 다음 등록에서 **아무도 안 서 있어도** 옛 주인이 잡혀 `isOwner=true` 가
+        //       오므로, `reportRegistrationOwnerSeen()` 게이트가 그대로 통과한다 —
+        //       방금 넣은 "진짜 등록됐을 때만 넘어간다"가 무력화된다.
+        //
+        //   reset 은 멱등이라 두 경로가 겹쳐도 무해하다(추종 쪽 주석과 같은 근거).
+        function onGuideRegPhaseChanged() {
+            // 등록 화면에 들어왔다 = 새로 등록할 참이다. 옛 주인을 먼저 지운다.
+            if (controller.guideRegPhase === "registering") perception.resetTarget();
+        }
+        function onGuidePhaseChanged() {
+            var p = controller.guidePhase;
+            if (p === "completed" || p === "cancelled" || p === "failed")
+                perception.resetTarget();
         }
     }
 

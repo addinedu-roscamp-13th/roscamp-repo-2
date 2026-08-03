@@ -19,12 +19,13 @@ import time
 import uuid
 from typing import Any
 
+from app.ros_domains import domain_for
 from app.fsm_model import STATES
 
 # 미션 PC 는 자기 도메인을 쓰고, domain_bridge 가 FMS 쪽 도메인으로 중계한다.
-# 이 값은 'FMS 가 구독하는 쪽' 도메인이다 — fleet_telemetry 와 같은 86.
+# 이 값은 'FMS 가 구독하는 쪽' 도메인이다 — 서버 도메인(app/ros_domains.py, 기본 111).
 # 미션 PC 자체의 도메인 번호는 아직 미정이며, 그건 브릿지 설정에만 나타난다.
-FSM_DOMAIN_ID = int(os.environ.get("LIBI_FSM_DOMAIN_ID", "86"))
+FSM_DOMAIN_ID = domain_for("LIBI_FSM_DOMAIN_ID")
 
 STATE_TOPIC = os.environ.get("LIBI_FSM_STATE_TOPIC", "/libi/fsm_state")
 TREE_TOPIC = os.environ.get("LIBI_FSM_TREE_TOPIC", "/libi/bt_snapshot")

@@ -51,6 +51,27 @@ function screenPct(x: number, y: number): { x: number; y: number } {
   return { x: rx * 100, y: ry * 100 };
 }
 
+/** 화면상 진행 각도(rad). 지도가 회전돼 있어 월드 yaw 를 그대로 쓰면 안 된다.
+ *
+ * 좌표 변환을 **한 번 더 태워서** 각을 역산한다 — 회전·정규화 공식이 바뀌어도 따라온다.
+ * 노드·간선과 같은 변환을 쓰므로 화살표가 그려진 통로와 어긋나지 않는다. */
+function screenHeading(x: number, y: number, yaw: number): number {
+  const a = screenPct(x, y);
+  const b = screenPct(x + Math.cos(yaw) * 0.05, y + Math.sin(yaw) * 0.05);
+  return Math.atan2(b.y - a.y, b.x - a.x);
+}
+
+/** 로봇별 색 — **관제 UI(`WaypointEditor`)와 같은 규칙**이다. 끝 번호로 정하므로
+ *  `pinky-1` 과 `pinky-sim-1` 이 같은 색이 된다. 두 화면을 나란히 봐도 안 헷갈린다. */
+const ROBOT_HEX = ["#38bdf8", "#fbbf24", "#a78bfa", "#f472b6", "#a3e635"];
+function robotHex(name: string): string {
+  const m = name.match(/(\d+)\s*$/);
+  if (m) return ROBOT_HEX[(parseInt(m[1], 10) - 1 + ROBOT_HEX.length * 4) % ROBOT_HEX.length];
+  let h = 0;
+  for (let i = 0; i < name.length; i += 1) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  return ROBOT_HEX[h % ROBOT_HEX.length];
+}
+
 // 순회(patrol) 루프 간선 — 이 노드열의 연속쌍(닫힌 루프)을 빨강으로 그린다. 관제
 // WaypointEditor 와 같은 순서·CCW, fleet_node 의 patrol_route 와 동일. 순회 노드/간선은
 // 전용차선이 아니다 — 그 상태일 때만 로봇이 여기를 돌 뿐 다른 로봇도 통행한다.
@@ -252,8 +273,35 @@ function RobotsPage() {
                       style={{ left: `${rx * 100}%`, top: `${ry * 100}%` }}
                       className="absolute -translate-x-1/2 -translate-y-1/2"
                     >
-                      <span className="block size-3 rounded-full border-2 border-white bg-primary shadow ring-2 ring-primary/40" />
-                      <span className="absolute left-1/2 top-full mt-0.5 -translate-x-1/2 whitespace-nowrap rounded bg-primary px-1 py-0.5 text-[9px] font-bold text-primary-foreground">
+                      {/* 방향 화살표. yaw 가 없으면(아직 안 온 로봇) 점으로 떨어진다 —
+                          없는 방향을 지어내지 않는다. 색은 관제 UI 와 같은 규칙이다. */}
+                      {typeof r.yaw === "number" ? (
+                        <svg
+                          viewBox="-12 -12 24 24"
+                          className="block size-10 drop-shadow"
+                          style={{
+                            transform: `rotate(${screenHeading(r.x as number, r.y as number, r.yaw)}rad)`,
+                          }}
+                          aria-hidden
+                        >
+                          <polygon
+                            points="8,0 -5,7.5 -3,0 -5,-7.5"
+                            fill={robotHex(r.name)}
+                            stroke="#fff"
+                            strokeWidth="1.5"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                      ) : (
+                        <span
+                          className="block size-6 rounded-full border-2 border-white shadow"
+                          style={{ backgroundColor: robotHex(r.name) }}
+                        />
+                      )}
+                      <span
+                        className="absolute left-1/2 top-full mt-0.5 -translate-x-1/2 whitespace-nowrap rounded px-1 py-0.5 text-[9px] font-bold text-white"
+                        style={{ backgroundColor: robotHex(r.name) }}
+                      >
                         {r.name}
                       </span>
                     </span>

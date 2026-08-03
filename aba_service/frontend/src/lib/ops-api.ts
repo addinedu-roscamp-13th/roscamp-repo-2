@@ -71,6 +71,8 @@ export interface RobotRow {
   name: string;
   x: number | null;
   y: number | null;
+  /** 로봇이 바라보는 방향(rad). 점만 찍으면 어디를 보고 서 있는지 알 수 없다. */
+  yaw: number | null;
   state: string | null;
   battery: number | null;
   busy: boolean;
@@ -145,6 +147,9 @@ export interface AdminBook {
   cover: string;
   zone: string;
   shelf: string;
+  /** 로봇팔용 서가 좌표 — 층(아래부터 1) · 줄(마주 봤을 때 왼쪽부터 1), 각 1~3. 0 = 정보 없음 */
+  tier: number;
+  row: number;
   in_stock: boolean;
   unavailable: boolean;
 }

@@ -40,8 +40,22 @@ topics:
     type: std_msgs/msg/String
     reversed: True
     remap: /fleet_cmd
-  # 역방향 속도 명령: 86의 /pinky3/cmd_vel 발행 → 로봇 도메인의 /cmd_vel
-  pinky3/cmd_vel:
-    type: geometry_msgs/msg/Twist
-    reversed: True
-    remap: /cmd_vel
+  # ── [2026-07-30] 역방향 속도 명령 — 이것 때문에 버그가 너무 많아서 뺐다 ──────────
+  #
+  # 수동 제어(관제가 바퀴를 직접 미는 경로)를 위해 있던 다리다. 시나리오에 수동 조작이
+  # 없어서 2026-07-29 에 twist_mux 의 `manual`·`fleet` 입력을 지웠고, 그때 이 블록도
+  # 같이 지우기로 했는데(pinky_bringup/config/twist_mux.yaml:25-26 에 그렇게 적혀 있다)
+  # **실제로는 안 지워져 있었다.**
+  #
+  # 왜 위험한가: remap 대상이 `/cmd_vel` 인데 그건 **twist_mux 의 출력 토픽**이다.
+  # 즉 이 다리는 중재를 거치는 게 아니라 **중재 밖에서 바퀴로 바로 간다.** 우선순위도
+  # 잠금(fsm_motion_lock)도 비상정지도 적용되지 않고, 마지막에 도착한 메시지가 이긴다.
+  # 2026-07-28 에 몰아서 잡았던 버그 다섯 개가 전부 이 부류였다(twist_mux.yaml 머리말).
+  #
+  # 되살려야 한다면 `/cmd_vel` 이 아니라 **twist_mux 입력 토픽**으로 remap 하고,
+  # twist_mux.yaml 에 그 입력을 priority 와 함께 등록해야 한다. 그때까지는 닫아 둔다.
+  #
+  # pinky3/cmd_vel:
+  #   type: geometry_msgs/msg/Twist
+  #   reversed: True
+  #   remap: /cmd_vel

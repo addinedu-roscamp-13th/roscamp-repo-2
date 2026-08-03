@@ -36,7 +36,7 @@ yaw 는 맞고 **y 만** 틀렸다. arte2 는 평행한 긴 복도가 많아, �
 ## 실행
 
     ROS_DOMAIN_ID=90 python3 set_initial_pose.py                 # 스폰 자세 (0,0,0)
-    ROS_DOMAIN_ID=90 python3 set_initial_pose.py --dock 주차장    # navgraph 정점 이름으로
+    ROS_DOMAIN_ID=90 python3 set_initial_pose.py --dock 충전소    # navgraph 정점 이름으로
     ROS_DOMAIN_ID=90 python3 set_initial_pose.py --x 0.5 --y -1.2 --yaw 1.57
 """
 
