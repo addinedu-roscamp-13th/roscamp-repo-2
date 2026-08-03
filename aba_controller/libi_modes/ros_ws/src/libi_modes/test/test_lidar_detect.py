@@ -85,3 +85,23 @@ def test_sector_points_x_is_toward_the_dock():
     pts = detect.sector_points(make_scan(wall_m=0.30, notch=False),
                                ANGLE_MIN, ANGLE_INC, RANGE_MIN, RANGE_MAX, cfg)
     assert pts[:, 0].min() == pytest.approx(0.30, abs=0.01)
+
+
+def test_sector_points_sorted_across_the_0_360_wrap():
+    """RPLIDAR 류처럼 원본 스캔이 `angle_min=0` 으로 0..2π 를 보고하면, 후방(0 rad)
+    섹터는 배열의 시작(작은 인덱스, 작은 양의 각도)과 끝(큰 인덱스, 2π 에 가까워
+    래핑되면 작은 음의 각도) 경계에 걸쳐 나뉜다. 정렬이 없으면 두 조각이 원본
+    인덱스 순서 그대로(양수 뭉치 다음 음수 뭉치)로 이어져 각도가 거꾸로 뛴다 —
+    Task 1 `scan_dump` 의 wrap 시험(`test_rows_sorted_across_the_0_360_wrap`)과
+    같은 부류의 경계 사례이며, 브리프의 `ANGLE_MIN=-pi` 고정 스캔에서는 이 경계가
+    섹터 밖(±60° 밖)이라 드러나지 않는다.
+    """
+    cfg = LidarDockConfig(sector_half_deg=60.0)
+    n = 360
+    angle_min = 0.0
+    angle_inc = 2 * math.pi / n
+    ranges = [0.5] * n
+    pts = detect.sector_points(ranges, angle_min, angle_inc, RANGE_MIN, RANGE_MAX, cfg)
+    assert len(pts) > 0
+    angles = np.arctan2(pts[:, 1], pts[:, 0])
+    assert np.all(np.diff(angles) >= -1e-9)
