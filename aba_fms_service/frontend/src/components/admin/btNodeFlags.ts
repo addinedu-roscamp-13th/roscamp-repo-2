@@ -90,6 +90,28 @@ import type { BtNodeFlag } from "@/components/admin/BtGraphView";
  * 실기에서 복귀 한 사이클이 끝까지 돌았다(사용자 확인). ArucoApproach·DockNudge·
  * DockSettle·Undock 넷의 해제 조건은 아래에 하나씩 적는다 — 셋은 실기 근거로 풀렸고
  * 하나는 **근거가 아니라 설계 결정으로** 풀렸다. 그 구분이 중요하다.
+ *
+ * ## 2026-08-03 — 야간 침입 추종 배선. 플래그 없음
+ *
+ * `SECURITY_PATROL` 에 `IntruderChase`·`CameraSelectRenew` 가 새로 붙고, 그 위에
+ * `Selector("PatrolOrChase")` 가 얹혔다(`libi_modes/branches/security_patrol.py:83-100`).
+ * 셋 다 이 병합 트리에서 배선·도달 가능성을 코드로 확인했다 — `registry.py:132` 가
+ * `security_patrol.create()` 를 호출하고, `IntruderChase` 는 `follow_driver`/
+ * `nav_stop_driver` 를 실제로 받아 추종 세션을 열고 닫으며(`intruder_chase.py:137-140`),
+ * `CameraSelectRenew` 는 매 tick `camera_driver` 를 재발행한다(`intruder_chase.py:221-223`).
+ * "정상 동작하는 노드는 여기 적지 않는다" 원칙 그대로, **셋 다 키를 추가하지 않는다.**
+ *
+ * (원래 작업 지시서는 `IntruderChase: {}` 처럼 빈 객체를 키 값으로 넣는 예시를 들었지만,
+ * 이 파일의 `BtNodeFlag` 는 `"unwired" | "partial" | "unreachable"` 문자열 유니언이라
+ * (`BtGraphView.tsx:74`) 애초에 `{}` 를 대입할 수 없다 — 값 없는 항목을 추가하는 대신
+ * 위 원칙대로 항목 자체를 넣지 않는 쪽을 택했다.)
+ *
+ * `PersonBlockGuard` 는 이 파일에 원래 키가 없었다(정상 동작 노드라 등록될 이유가 없었다)
+ * — 야간에서 빠지면서 지울 키도 없다. 작업 지시서는 "주간 순찰·배달에서 여전히 쓴다"고
+ * 전제했지만, 이 병합 트리를 전수 검색하면 `patrol.py`·`working.py` 어디에도 참조가 없고
+ * `person_block.py` 자체가 레포 역사에 존재한 적이 없다(`git log --all` 로 확인). 남은
+ * 것은 `intruder_chase.py`/`security_patrol.py` 주석의 `person_block.py:142/241` 같은
+ * 과거 설계 근거 인용뿐이다 — 지금 이 파일에서 지울 키가 없다는 결론에는 영향이 없다.
  */
 export const BT_NODE_FLAGS: Record<string, BtNodeFlag> = {
   // ── 복귀 6단계 (2026-07-27 신설 · 2026-07-30 재편) ────────────────────────

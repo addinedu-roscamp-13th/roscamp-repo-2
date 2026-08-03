@@ -428,6 +428,33 @@ SecurityPatrolBranch (Sequence, memory=False)
 
 **신규 leaf: `SecurityPatrolNavigation`**
 
+### SECURITY_PATROL — 야간 순찰 (2026-08-03 개정)
+
+낮 순찰과 달리 **`PersonBlockGuard` 가 없다.** 침입자를 만나면 서는 게 아니라 **따라간다.**
+
+```
+Parallel(SuccessOnOne)
+  ├ Selector("PatrolOrChase", memory=False)
+  │   ├ IntruderChase        ← 사람이 1.5초 보이면 nav2 취소 후 follow_admin 세션
+  │   └ PatrolNavigation     ← 평소
+  ├ exit_watchdog(...)       ← 정지·고장·저전력 (추종 중에도 계속 tick 된다)
+  └ CameraSelectRenew        ← 앞캠 유지. **없으면 프레임이 아예 안 온다**
+```
+
+⚠️ `CameraSelectRenew` 는 장식이 아니다. `PersonBlockGuard._request_camera` 가 야간에
+앞캠을 켜 두던 **유일한 통로**였다. 빼면 감지·녹화·추종이 전부 조용히 죽는다.
+
+⚠️ `IntruderChase` 는 `CommandDrivenAction` 이 아니라 `terminate` 에서 `follow_stop` 을
+**직접** 낸다. 안 그러면 관제 「정지」로 브랜치가 빠져도 `/cmd_vel` 이 계속 나간다.
+
+숫자와 근거: `config/params.yaml` 의 `security_patrol:` 블록 주석 · 설계문서
+`docs/superpowers/specs/2026-08-03-night-patrol-security-design.md`
+
+⚠️ 위 트리는 실제 `branches/security_patrol.py` 의 현재 구현이다. 이 섹션 바로 위의
+"### 4. SECURITY_PATROL" 항목(`SecurityPatrolNavigation`·`SetNextMode("IDLE")`·1회
+순찰 후 종료)은 이 개정 이전의 옛 구조를 그대로 남긴 것이라 지금 코드와 다르다 — 이번
+작업 범위 밖이라 고치지 않았다.
+
 ### 5. INTERACTING
 
 ```
