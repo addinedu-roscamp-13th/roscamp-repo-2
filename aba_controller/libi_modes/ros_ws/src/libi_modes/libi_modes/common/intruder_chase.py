@@ -24,7 +24,7 @@ class CameraSelectRenew(py_trees.behaviour.Behaviour):
     를 내므로 결과가 같다**(길잡이는 뒷캠이라 겹치면 문제지만 여기는 아니다).
     """
 
-    def __init__(self, camera_driver=None, renew_sec=2.0,
+    def __init__(self, camera_driver=None, renew_sec=1.0,
                  now_fn=time.monotonic, name="CameraSelectRenew"):
         super().__init__(name=name)
         self.camera_driver = camera_driver
