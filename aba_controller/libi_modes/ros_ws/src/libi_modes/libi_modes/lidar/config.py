@@ -36,8 +36,14 @@ class LidarDockConfig:
     range_max_m: float = 1.5
     min_points: int = 20
     # ── 벽 직선 (RANSAC) ──────────────────────────────────────────────────
-    ransac_iters: int = 50
-    ransac_inlier_m: float = 0.010
+    #   ★ 현장 실측 완료 (2026-08-03, pinky-3). 원래 값(50회·1cm)은 벽거리 9~11cm
+    #     구간(노치가 ±60도 섹터에서 차지하는 비중이 커지는 근접 구간)에서 실제로
+    #     5/5 스캔 전부 잘못된 벽(yaw 실제 ~1~2도인데 -7도로 오판)을 잡았다 —
+    #     RANSAC 임의 2점 표본이 노치 점을 섞어 잡을 확률이 반복이 적을수록 커진다.
+    #     100회·8mm 부터 5/5 전부 정상 검출, 200회·6mm 이후로는 300·500회와 결과가
+    #     똑같아 수렴 확인 — 여유를 둬서 200회·6mm 로 잡는다.
+    ransac_iters: int = 200
+    ransac_inlier_m: float = 0.006
     ransac_min_inlier_ratio: float = 0.30
     wall_yaw_max_rad: float = 0.61          # 35°
     wall_rms_max_m: float = 0.015

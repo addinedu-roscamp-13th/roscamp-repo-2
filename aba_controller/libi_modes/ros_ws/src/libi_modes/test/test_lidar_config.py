@@ -65,7 +65,10 @@ def test_shipped_params_yaml_builds_a_valid_config():
     seen = []
     cfg = LidarDockConfig.from_params(ret["lidar_dock"], on_unknown=seen.append)
     assert seen == [], f"params.yaml 에 모르는 키가 있다(오타?): {seen}"
-    assert cfg.stop_m > 0.05, "C1 min range 아래는 측정 불가다"
+    # ⚠️ `>` 가 아니라 `>=` 다 — 현장 실측값이 정확히 C1 min range(5cm)와 같다
+    #    (라이다 원점↔로봇 뒷면 4.5cm + 여유 0.5cm = 5.0cm, 2026-08-03 pinky-3 실측).
+    #    엄격한 `>` 였으면 이 값 자체가 시험을 통과 못 했을 것이다.
+    assert cfg.stop_m >= 0.05, "C1 min range 아래는 측정 불가다"
     assert cfg.v_near_mps == 0.05
     assert cfg.ema_coef == 0.5
 
