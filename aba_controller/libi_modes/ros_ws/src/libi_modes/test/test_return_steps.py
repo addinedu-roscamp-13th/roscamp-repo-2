@@ -34,7 +34,7 @@ class _Clock:
 def _steps(clock=None, **drivers):
     d = dict(entrance_driver=FakeDriver(), rotate_driver=FakeYawDriver(),
              nav_release_driver=FakeDoneDriver(),
-             aruco_driver=FakeDoneDriver(), nudge_driver=FakeDoneDriver())
+             dock_driver=FakeDoneDriver(), nudge_driver=FakeDoneDriver())
     d.update(drivers)
     return create_return_steps(
         entrance_xy=ENTRANCE, approach_yaw=APPROACH_YAW,
@@ -54,15 +54,15 @@ def _tick(node):
 def test_six_steps_in_order():
     names = [s.decorated.name for s in _steps()]
     assert names == ["GoToParkingEntrance", "FaceApproachYaw", "ReleaseNav",
-                     "ArucoApproach", "DockNudge", "DockSettle"]
+                     "DockApproach", "DockNudge", "DockSettle"]
 
 
 def test_nav_is_released_before_the_external_docker_takes_over():
     """①은 x·y 만 보고 성공하고 성공한 단계는 stop 을 안 보낸다 — 입구 nav2 목표가 살아
-    있는 채로 ArUco 접근이 시작될 수 있다. 예전엔 `GoToParking` 이 새 goal 로 선점해
+    있는 채로 정밀 도킹 접근이 시작될 수 있다. 예전엔 `GoToParking` 이 새 goal 로 선점해
     줬는데 그 단계가 없어졌다. 그래서 넘기기 **직전에** 놓는 단계가 있어야 한다."""
     names = [s.decorated.name for s in _steps()]
-    assert names.index("ReleaseNav") < names.index("ArucoApproach")
+    assert names.index("ReleaseNav") < names.index("DockApproach")
 
 
 def test_every_step_is_failure_absorbing():
@@ -70,9 +70,9 @@ def test_every_step_is_failure_absorbing():
     assert all(isinstance(s, AbsorbFailure) for s in _steps())
 
 
-def test_aruco_and_nudge_are_separate_leaves():
-    """④는 다른 저장소가, ⑤는 여기가 한다. 한 leaf 로 합치면 어느 쪽이 실패했는지
-    화면에서 안 보이고, 외부 구현을 갈아끼울 자리도 사라진다."""
+def test_dock_and_nudge_are_separate_leaves():
+    """④는 `dock_sensor` 가 고른 드라이버가, ⑤는 여기가 한다. 한 leaf 로 합치면 어느
+    쪽이 실패했는지 화면에서 안 보이고, 구현을 갈아끼울 자리도 사라진다."""
     steps = _steps()
     assert steps[3].decorated is not steps[4].decorated
 

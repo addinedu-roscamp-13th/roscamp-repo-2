@@ -15,7 +15,7 @@ from libi_modes.common.watchdog import exit_watchdog
 
 
 def create(params: dict, *, entrance_driver, rotate_driver, nav_release_driver,
-           aruco_driver, nudge_driver, back_cam_driver,
+           dock_driver, nudge_driver, back_cam_driver,
            entrance_xy, entrance_yaw, dock_xy=None, clock=time.monotonic) -> py_trees.behaviour.Behaviour:
     """ReturningBranch — 충전소로 돌아간다. 부팅 직후 가장 먼저 도는 브랜치이기도 하다.
 
@@ -27,8 +27,8 @@ def create(params: dict, *, entrance_driver, rotate_driver, nav_release_driver,
         1 GoToParkingEntrance   주차장 입구로 주행
         2 FaceApproachYaw       접근 자세로 회전 (절대각 — 충전 단자가 뒤로 온다)
         3 ReleaseNav            nav2 목표를 끊는다 (바퀴를 외부에 넘기기 전)
-        4 ArucoApproach         뒷캠 ArUco 로 6cm 까지   ← **다른 저장소가 수행**
-        5 DockNudge             정속 개루프로 3cm 후진
+        4 DockApproach          정밀 도킹 6cm 까지        ← **`dock_sensor` 가 정한다**
+        5 DockNudge             정속 개루프로 후진 (라이다면 0)
         6 DockSettle            안정화 대기 후 도킹으로 침
 
     각 단계는 `AbsorbFailure` 로 감싼다. `Parallel` 은 자식 하나가 FAILURE 를 내면
@@ -39,8 +39,8 @@ def create(params: dict, *, entrance_driver, rotate_driver, nav_release_driver,
 
     2단계가 이제 "주차장을 바라본다"가 아니라 **접근 자세로 돌린다**(절대각). 그러면
     충전 단자가 뒤를 향하므로 180° 를 따로 돌 필요가 없고, 주차장 정점까지 nav2 로 가는
-    구간은 3단계의 ArUco 접근이 대신한다. AMCL 오차가 충전 단자 폭보다 큰 구간을
-    nav2 로 밀어 넣지 않는 것이 이 재편의 요점이다.
+    구간은 4단계의 정밀 도킹(ArUco 또는 라이다, `dock_sensor` 가 정한다)이 대신한다.
+    AMCL 오차가 충전 단자 폭보다 큰 구간을 nav2 로 밀어 넣지 않는 것이 이 재편의 요점이다.
 
     ## 로봇팔 홈 복귀는 없앴다 (사용자 결정, 2026-07-27)
 
@@ -58,7 +58,7 @@ def create(params: dict, *, entrance_driver, rotate_driver, nav_release_driver,
         entrance_driver=entrance_driver,
         rotate_driver=rotate_driver,
         nav_release_driver=nav_release_driver,
-        aruco_driver=aruco_driver,
+        dock_driver=dock_driver,
         nudge_driver=nudge_driver,
         entrance_xy=entrance_xy,
         dock_xy=dock_xy,

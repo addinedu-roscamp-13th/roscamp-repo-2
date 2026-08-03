@@ -29,10 +29,11 @@ class FakeDriver:
 
 
 class FakeDoneDriver(FakeDriver):
-    """언제 물어도 성공. 이 저장소 **밖**에서 끝나는 단계를 통과시킬 때 쓴다.
+    """언제 물어도 성공. 실제 구현을 여기서 시험하지 않는 단계를 통과시킬 때 쓴다.
 
-    `ArucoApproach`(다른 저장소) · `DockNudge`(드라이버가 자기 타이머로 민다) 둘 다
-    내용은 여기서 시험할 수 없다 — 시험하는 것은 **그 단계들이 순서대로 불리는가**다.
+    `DockApproach`(dock_sensor 가 고른 드라이버 — ArUco 는 다른 저장소, 라이다는
+    이 저장소) · `DockNudge`(드라이버가 자기 타이머로 민다) 둘 다 내용은 여기서
+    시험할 수 없다 — 시험하는 것은 **그 단계들이 순서대로 불리는가**다.
     """
 
     def poll(self):
@@ -76,12 +77,14 @@ def all_drivers():
         "guide": FakeDriver(),
         "guide_stop": FakeDriver(),
         # 복귀 5단계. `return_arm` 은 없앴다(이 로봇에 팔이 없다).
-        # [2026-07-30] `return_dock`(GoToParking)·`return_parking_xy` 는 없앴다 —
-        #   nav2 로 주차장 정점까지 가던 단계가 ArUco 접근으로 바뀌었다.
+        # [2026-07-30] 옛 `return_dock`(GoToParking, nav2 로 주차장 정점까지 가던
+        #   단계)·`return_parking_xy` 는 없앴다 — 그 구간이 ArUco 접근으로 바뀌었다.
+        # [2026-08-03] `return_dock` 이름을 **재사용한다** — 이번엔 다른 뜻이다.
+        #   ④ 정밀 도킹 드라이버(ArUco 또는 라이다, `dock_sensor` 가 고른다).
         "return_entrance": FakeDriver(),
         "return_rotate": FakeYawDriver(),
         "return_nav_release": FakeDoneDriver(),
-        "return_aruco": FakeDoneDriver(),
+        "return_dock": FakeDoneDriver(),
         "return_back_cam": FakeDriver(),      # 절대 안 끝나는 leaf 가 쓴다
         "undock": FakeDriver(),
         "return_nudge": FakeDoneDriver(),

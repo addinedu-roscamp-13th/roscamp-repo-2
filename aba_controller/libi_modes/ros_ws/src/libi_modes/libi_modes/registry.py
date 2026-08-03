@@ -114,7 +114,7 @@ def build_branches(params: dict, drivers: dict) -> dict:
             entrance_driver=drivers["return_entrance"],
             rotate_driver=drivers["return_rotate"],
             nav_release_driver=drivers["return_nav_release"],
-            aruco_driver=drivers["return_aruco"],
+            dock_driver=drivers["return_dock"],
             nudge_driver=drivers["return_nudge"],
             back_cam_driver=drivers["return_back_cam"],
             entrance_xy=drivers["return_entrance_xy"],
