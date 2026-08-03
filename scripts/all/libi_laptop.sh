@@ -5,10 +5,11 @@
 #   ./libi_laptop.sh --robot pinky-3 --domain-id 119
 #   ./libi_laptop.sh --robot pinky-1 --domain-id 117 --no-gui   # 패널 없이 추종만
 #   ./libi_laptop.sh --robot pinky-3 --domain-id 119 --window   # 패널을 이 PC 에 창으로
-#   ./libi_laptop.sh --robot pinky-3 --domain-id 119 --secview   # 야간 감시 더미 뷰어까지
+#   ./libi_laptop.sh --robot pinky-3 --domain-id 119 --no-secview   # 관리자 추종 패널 데모용
 #
-# ⚠️ `--secview` 는 **야간 보안 전용**이다. 인지 서버는 뷰어를 한 번에 하나만 받으므로,
-#    이걸 켜면 **패널의 추종 화면이 검게 나온다.** 관리자 추종을 쓸 때는 켜지 않는다.
+# ⚠️ 야간 감시 더미 뷰어(`--secview`)는 [2026-08-04] **기본으로 켜짐**으로 바뀌었다.
+#    인지 서버는 뷰어를 한 번에 하나만 받으므로, 이게 켜져 있으면 **패널의 추종 화면이
+#    검게 나온다.** 관리자 추종을 시연/테스트할 때는 반드시 `--no-secview` 를 붙인다.
 #
 # `--window` 는 VNC 대신이다 — **둘 다는 안 된다**(Qt 플랫폼 플러그인이 하나뿐).
 # 창을 켜면 :590x VNC 는 안 열리므로, 태블릿에서도 봐야 하면 붙이지 마라.
@@ -55,9 +56,11 @@ WITH_GUI=true
 #: 패널을 이 PC 에 **창으로** 띄운다. 기본은 VNC(태블릿/로봇 패널이 붙는 쪽)이고,
 #  Qt 플랫폼 플러그인은 한 번에 하나라 **둘 다는 안 된다** — 창을 켜면 VNC :590x 는 안 열린다.
 WITH_WINDOW=false
-#: 야간 감시 더미 뷰어(security_viewer.py)를 같이 띄운다. 기본은 꺼짐 — 켜면 인지 서버가
-#  뷰어를 하나만 받으므로 패널의 추종 화면이 검게 나온다.
-WITH_SECVIEW=false
+#: 야간 감시 더미 뷰어(security_viewer.py)를 같이 띄운다. [2026-08-04] 기본을 켬으로
+#  바꿨다 — 매번 --secview 를 잊어서 야간모드가 켜져도 녹화/추종이 조용히 비활성인 채로
+#  넘어가는 사고가 있었다. 대신 패널 추종 화면(주간 데모)을 쓸 때는 --no-secview 로 끈다
+#  (뷰어가 인지 서버 자리를 하나만 받아 겹치면 패널이 검게 나온다).
+WITH_SECVIEW=true
 #: AI 서버에 그대로 넘길 추가 인자. `--pose` 같은 스위치용이다.
 AI_EXTRA=""
 while [ $# -gt 0 ]; do
@@ -67,7 +70,8 @@ while [ $# -gt 0 ]; do
     --no-ai)     WITH_AI=false; shift ;;
     --no-gui)    WITH_GUI=false; shift ;;
     --window)    WITH_WINDOW=true; shift ;;
-    --secview)   WITH_SECVIEW=true; shift ;;
+    --secview)    WITH_SECVIEW=true; shift ;;
+    --no-secview) WITH_SECVIEW=false; shift ;;
     # 자세(pose) 판정을 **켠다**. [2026-07-30] 기본이 꺼짐으로 바뀌었다
     # (perception_server 의 `--pose` 옵트인). 꺼져 있으면 PostureGate 가 주행을 항상
     # 허용한다(posture_gate.py — "판정 소스가 아예 없다" 분기): Calibrating 정지도,
@@ -75,7 +79,7 @@ while [ $# -gt 0 ]; do
     # 켜면 그 판정이 돌아오는 대신 프레임당 2차 추론이 붙어 추종 주기가 느려진다.
     --pose)      AI_EXTRA="$AI_EXTRA --pose"; shift ;;
     *) die "모르는 인자: $1
-  사용법: ./libi_laptop.sh --robot <이름> [--no-ai] [--no-gui] [--window] [--pose] [--secview] [--domain-id <n>]" ;;
+  사용법: ./libi_laptop.sh --robot <이름> [--no-ai] [--no-gui] [--window] [--pose] [--no-secview] [--domain-id <n>]" ;;
   esac
 done
 
