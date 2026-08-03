@@ -5,6 +5,10 @@
 #   ./libi_laptop.sh --robot pinky-3 --domain-id 119
 #   ./libi_laptop.sh --robot pinky-1 --domain-id 117 --no-gui   # 패널 없이 추종만
 #   ./libi_laptop.sh --robot pinky-3 --domain-id 119 --window   # 패널을 이 PC 에 창으로
+#   ./libi_laptop.sh --robot pinky-3 --domain-id 119 --secview   # 야간 감시 더미 뷰어까지
+#
+# ⚠️ `--secview` 는 **야간 보안 전용**이다. 인지 서버는 뷰어를 한 번에 하나만 받으므로,
+#    이걸 켜면 **패널의 추종 화면이 검게 나온다.** 관리자 추종을 쓸 때는 켜지 않는다.
 #
 # `--window` 는 VNC 대신이다 — **둘 다는 안 된다**(Qt 플랫폼 플러그인이 하나뿐).
 # 창을 켜면 :590x VNC 는 안 열리므로, 태블릿에서도 봐야 하면 붙이지 마라.
@@ -51,6 +55,9 @@ WITH_GUI=true
 #: 패널을 이 PC 에 **창으로** 띄운다. 기본은 VNC(태블릿/로봇 패널이 붙는 쪽)이고,
 #  Qt 플랫폼 플러그인은 한 번에 하나라 **둘 다는 안 된다** — 창을 켜면 VNC :590x 는 안 열린다.
 WITH_WINDOW=false
+#: 야간 감시 더미 뷰어(security_viewer.py)를 같이 띄운다. 기본은 꺼짐 — 켜면 인지 서버가
+#  뷰어를 하나만 받으므로 패널의 추종 화면이 검게 나온다.
+WITH_SECVIEW=false
 #: AI 서버에 그대로 넘길 추가 인자. `--pose` 같은 스위치용이다.
 AI_EXTRA=""
 while [ $# -gt 0 ]; do
@@ -60,6 +67,7 @@ while [ $# -gt 0 ]; do
     --no-ai)     WITH_AI=false; shift ;;
     --no-gui)    WITH_GUI=false; shift ;;
     --window)    WITH_WINDOW=true; shift ;;
+    --secview)   WITH_SECVIEW=true; shift ;;
     # 자세(pose) 판정을 **켠다**. [2026-07-30] 기본이 꺼짐으로 바뀌었다
     # (perception_server 의 `--pose` 옵트인). 꺼져 있으면 PostureGate 가 주행을 항상
     # 허용한다(posture_gate.py — "판정 소스가 아예 없다" 분기): Calibrating 정지도,
@@ -67,7 +75,7 @@ while [ $# -gt 0 ]; do
     # 켜면 그 판정이 돌아오는 대신 프레임당 2차 추론이 붙어 추종 주기가 느려진다.
     --pose)      AI_EXTRA="$AI_EXTRA --pose"; shift ;;
     *) die "모르는 인자: $1
-  사용법: ./libi_laptop.sh --robot <이름> [--no-ai] [--no-gui] [--window] [--pose] [--domain-id <n>]" ;;
+  사용법: ./libi_laptop.sh --robot <이름> [--no-ai] [--no-gui] [--window] [--pose] [--secview] [--domain-id <n>]" ;;
   esac
 done
 
@@ -149,6 +157,9 @@ tmux new-session -d -s "$SESSION" -n urls \
   관제 콘솔   http://localhost:9002/
   도서관 웹   http://localhost:3000/'; exec bash"
 
+# 야간 감시 옵트인 — AI 서버에 --security 를 넘겨 SecurityRecorder/OpsSink 를 태운다.
+[ "$WITH_SECVIEW" = true ] && AI_EXTRA="$AI_EXTRA --security --security-robot '$ROBOT'"
+
 # ── 1) AI 추종 서버 ────────────────────────────────────────────────────────
 if [ "$WITH_AI" = true ]; then
   echo "[libi_laptop] ── AI 추종 서버 (앞캠 UDP:$VIDEO_PORT → 뷰어 :$VIEWER_PORT → $ROBOT 주행)"
@@ -163,6 +174,20 @@ if [ "$WITH_AI" = true ]; then
   #    못 붙어도 죽지 않는다 — perception_server 가 경고만 찍고 예전대로 돈다.
   tmux new-window -t "$SESSION" -n ai \
     bash -c "cd '$REPO_ROOT' && [ -f /opt/ros/jazzy/setup.bash ] && . /opt/ros/jazzy/setup.bash; ROS_DOMAIN_ID='$DOMAIN_ID' VIDEO_PORT='$VIDEO_PORT' VIEWER_PORT='$VIEWER_PORT' ./scripts/laptop/ai_follower_service.sh '$ROBOT' --camera-topic /libi/camera_select$AI_EXTRA; exec bash"
+fi
+
+if [ "$WITH_SECVIEW" = true ]; then
+  echo "[libi_laptop] ── 야간 감시 더미 뷰어 (뷰어 :$VIEWER_PORT)"
+  echo "[libi_laptop]    ⚠️ 이게 붙어 있는 동안 패널 추종 화면은 검게 나옵니다"
+  # 셸 루프로 감싼다 — 프로세스가 죽어도 되살아난다. 파이썬 안의 재접속 루프는
+  # 프로세스가 살아 있을 때만 돌기 때문이다.
+  tmux new-window -t "$SESSION" -n secview \
+    bash -c "cd '$REPO_ROOT/aba_ai_service/follower_perception' && \
+             while true; do \
+               '$REPO_ROOT/.venv/bin/python' scripts/security_viewer.py \
+                 --host '$LAPTOP_IP' --port '$VIEWER_PORT'; \
+               sleep 1; \
+             done; exec bash"
 fi
 
 # [2026-07-29] 뒷캠 **수신 창을 없앴다.** 받을 게 없었다.
