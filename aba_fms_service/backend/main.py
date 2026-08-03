@@ -85,6 +85,17 @@ async def health():
     return {"status": "ok"}
 
 
+#: 이름 → (.env IP 변수, robot_type, 기본 설명). LAPTOP_IP/PINKY*_IP 가 바뀌면
+#: 여기 로봇들의 ip_address 는 **재기동만 하면** 자동으로 따라온다 — 더 이상 DB를
+#: 손으로 고칠 필요가 없다. 새 로봇을 env 로 관리하려면 이 표에 한 줄만 추가한다.
+_ENV_MANAGED_ROBOTS = {
+    "CentralServer": ("LAPTOP_IP", "server", "중앙 AI 서버"),
+    "pinky-1": ("PINKY1_IP", "pinky", "PinkyPro 주행 로봇"),
+    "pinky-2": ("PINKY2_IP", "pinky", "PinkyPro 주행 로봇"),
+    "pinky-3": ("PINKY3_IP", "pinky", "PinkyPro 주행 로봇"),
+}
+
+
 async def _seed():
     from sqlalchemy import func, select
     from app.models import Robot
@@ -109,46 +120,57 @@ async def _seed():
             await db.execute(select(func.count()).select_from(Robot))
         ).scalar_one()
         if robot_count == 0:
-            db.add_all([
-                Robot(
-                    name="CentralServer",
-                    robot_type="server",
-                    ip_address="192.168.1.4",
-                    port=9001,
-                    description="중앙 AI 서버",
-                    is_active=True,
-                ),
+            # 새 DB 최초 기동 — JetCobot 처럼 env 로 안 관리하는 로봇만 여기서 시드한다.
+            # CentralServer/pinky-1~3 은 아래 env 동기화 블록이 매번 만들거나 갱신한다.
+            db.add(
                 Robot(
                     name="JetCobot-1",
                     robot_type="arm",
-                    ip_address="192.168.0.70",
+                    ip_address=os.environ.get("JETCOBOT1_IP", "192.168.0.70"),
                     port=9001,
-                    ai_server_url="http://192.168.1.4:9001",
                     description="로봇팔 JetCobot",
                     is_active=True,
-                ),
-                Robot(
-                    name="pinky-1",
-                    robot_type="pinky",
-                    ip_address="192.168.0.71",
-                    port=9001,
-                    description="PinkyPro 주행 로봇",
-                    is_active=True,
-                ),
-            ])
+                )
+            )
             await db.commit()
-        else:
-            # 기존 레코드도 업데이트
+
+        # ── env 기반 로봇 IP 동기화 — 매 기동마다 실행 ──────────────────────────
+        # `_ENV_MANAGED_ROBOTS` 에 있는 이름은 .env 값으로 없으면 만들고, 있으면
+        # ip_address 가 다를 때만 갱신한다(불필요한 updated_at 갱신 방지).
+        laptop_ip = os.environ.get("LAPTOP_IP")
+        by_name = {
+            r.name: r
+            for r in (await db.execute(
+                select(Robot).where(Robot.name.in_(_ENV_MANAGED_ROBOTS.keys()))
+            )).scalars().all()
+        }
+        changed = False
+        for name, (env_key, robot_type, desc) in _ENV_MANAGED_ROBOTS.items():
+            ip = os.environ.get(env_key)
+            if not ip:
+                continue  # .env 에 없으면 손대지 않는다 — 실수로 빈 값 채우지 않는다
+            row = by_name.get(name)
+            if row is None:
+                db.add(Robot(name=name, robot_type=robot_type, ip_address=ip,
+                              port=9001, description=desc, is_active=True))
+                changed = True
+            elif row.ip_address != ip:
+                row.ip_address = ip
+                changed = True
+
+        # arm 로봇의 ai_server_url 도 LAPTOP_IP 를 따라간다(하드코딩 금지).
+        if laptop_ip:
+            ai_server_url = f"http://{laptop_ip}:9001"
             arms = (await db.execute(
                 select(Robot).where(Robot.robot_type == "arm")
             )).scalars().all()
-            updated = False
             for arm in arms:
-                if arm.ai_server_url != "http://192.168.1.4:9001":
-                    arm.ai_server_url = "http://192.168.1.4:9001"
-                    updated = True
-            if updated:
-                await db.commit()
+                if arm.ai_server_url != ai_server_url:
+                    arm.ai_server_url = ai_server_url
+                    changed = True
+
+        if changed:
+            await db.commit()
 
 
 
