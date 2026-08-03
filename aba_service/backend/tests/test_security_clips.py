@@ -38,8 +38,27 @@ def test_없는_이벤트에_붙이면_404(client):
 
 
 def test_clip_파일명이_uuid_형식이_아니면_거부한다(client):
-    for bad in ["../../etc/passwd", "a.mp4", "0123abcd-0123-0123-0123-0123456789ab.exe"]:
-        assert client.get(f"/api/admin/ops/security/clips/{bad}").status_code in (400, 404)
+    from app.routers import ops_extra
+
+    # 파일이 실제로 있어도 형식이 틀리면 열어보지도 않고 거부해야 한다 — 그래야
+    # "파일이 없어서 404"와 "형식이 틀려서 400"이 구분 안 되는 헛도는 검증을 막는다.
+    ops_extra.SECURITY_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+    real_bad_file = ops_extra.SECURITY_MEDIA_DIR / "not-a-uuid.mp4"
+    real_bad_file.write_bytes(b"fake")
+    try:
+        r = client.get(f"/api/admin/ops/security/clips/{real_bad_file.name}")
+        assert r.status_code == 400
+    finally:
+        real_bad_file.unlink(missing_ok=True)
+
+    # 경로 탈출 — Starlette 라우팅 자체가 `{name}` 에 `/` 를 안 태워 우리 코드까지
+    # 오지도 않는다(404). 500 이나 유출 없이 안전하게 막히는지만 느슨히 확인한다.
+    assert client.get("/api/admin/ops/security/clips/../../etc/passwd").status_code in (400, 404)
+
+    # 확장자 불일치 — 둘 다 안전한 결과라 느슨하게 확인.
+    assert client.get(
+        "/api/admin/ops/security/clips/0123abcd-0123-0123-0123-0123456789ab.exe"
+    ).status_code in (400, 404)
 
 
 def test_clip_이_없으면_404(client):
@@ -77,9 +96,13 @@ def test_FMS_가_죽어도_이벤트는_저장된다(client, admin_auth, fms, mo
 
 
 def test_ai_alive_는_mode_를_읽기_전엔_False(client, admin_auth):
+    from app.routers import ops_extra
+    ops_extra._ai_seen_at = 0.0  # reset: 앞선 시험이 이미 mode 를 읽었어도 격리한다
     assert client.get("/api/admin/ops/security", headers=admin_auth).json()["ai_alive"] is False
 
 
 def test_ai_alive_는_mode_를_읽은_뒤_True(client, admin_auth):
+    from app.routers import ops_extra
+    ops_extra._ai_seen_at = 0.0  # reset: 실행 순서에 기대지 않고 이 시험 안에서 다시 채운다
     client.get("/api/admin/ops/security/mode")
     assert client.get("/api/admin/ops/security", headers=admin_auth).json()["ai_alive"] is True
