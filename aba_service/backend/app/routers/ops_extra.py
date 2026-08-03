@@ -313,7 +313,12 @@ class ClipPatch(BaseModel):
 
 #: `<video src>` 가 읽을 파일명 — uuid4 + `.mp4` 만 허용한다.
 #: 느슨하게 두면 `../../etc/passwd` 같은 경로 탈출이 그대로 통한다.
-_CLIP_NAME = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.mp4$")
+#: `\A`/`\Z` 를 쓴다 — `^`/`$` 는 문자열 끝의 `\n` 하나를 허용해 검증이 새는 지점이 된다.
+_CLIP_NAME = re.compile(r"\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.mp4\Z")
+
+#: attach_clip 이 받아들이는 clip_path 의 유일한 형태 — 우리 자신이 서빙하는
+#: /security/clips/{uuid}.mp4 상대경로뿐이다.
+_CLIP_PATH_PREFIX = "/api/admin/ops/security/clips/"
 
 #: 클립 저장 위치. AI 서버(같은 노트북)가 여기에 쓰고 이 라우터가 서빙한다.
 SECURITY_MEDIA_DIR = Path(
@@ -570,7 +575,15 @@ def attach_clip(event_id: int, body: ClipPatch, db: Session = Depends(get_db)):
     왜 이벤트 생성과 나눴나: 클립은 30초 넘게 걸린다. 완성 후 한 번에 보내면 알림이
     그만큼 늦어 알림 구실을 못 한다. 반대로 경로를 미리 박으면 `<video>` 가 404 를
     물고 마운트되어 **같은 src 로는 재마운트되지 않아 영영 깨진 채 남는다.**
+
+    무인증 엔드포인트가 clip_path 를 검증 없이 저장하면 임의의 호출자가 기존
+    이벤트의 clip_path 를 외부 URL로 바꿔치기할 수 있다 — _CLIP_PATH_PREFIX 로
+    우리 자신이 서빙하는 경로 형태만 허용해 막는다.
     """
+    if not body.clip_path.startswith(_CLIP_PATH_PREFIX) or not _CLIP_NAME.match(
+        body.clip_path[len(_CLIP_PATH_PREFIX):]
+    ):
+        raise HTTPException(status_code=400, detail="잘못된 clip_path 형식입니다")
     e = db.get(IntrusionEvent, event_id)
     if e is None:
         raise HTTPException(status_code=404, detail="이벤트를 찾을 수 없습니다")
