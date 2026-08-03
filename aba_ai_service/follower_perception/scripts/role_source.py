@@ -29,7 +29,10 @@ import threading
 class RoleSource:
     """마지막으로 받은 세션 역할. 못 받았으면 None."""
 
-    VALUES = ("follow", "guide", "watch", "none")
+    #: [2026-08-04] "security" 추가 — 야간순찰 추종(IntruderChase). follow 와 주행
+    #: 로직은 같지만 pipeline.POSE_ROLES 에 없어 자세 게이트를 안 받는다(요구사항:
+    #: 옆모습이어도 bbox 크기만으로 판단). session.py 머리말 참고.
+    VALUES = ("follow", "guide", "watch", "security", "none")
 
     def __init__(self, topic="/libi/perception_role"):
         import rclpy

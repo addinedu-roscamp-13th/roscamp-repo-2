@@ -53,11 +53,22 @@ def test_지속시간_미만이면_아직_시작하지_않는다():
     assert follow.start_count == 0
 
 
+def test_추종_시작시_session_kind_security_태그를_싣는다():
+    """[2026-08-04 요구사항] 관리자 추종(패널 버튼)과 같은 follow_admin 액션을 쓰지만,
+    이 태그가 있어야 follow_node 가 role=security 를 붙여 자세(옆모습) 게이트를
+    빼고 bbox 크기만으로 판단한다(session.py 머리말). 태그가 없으면 관리자 추종과
+    구분이 안 돼 게이트가 계속 걸린다."""
+    follow = FakeDriver()
+    leaf, clock = _leaf(follow=follow)
+    _size(140.0); leaf.tick_once(); clock.t += 1.6; leaf.tick_once()
+    assert follow.last_args == {"session_kind": "security"}
+
+
 def test_트리거하면_주행취소_다음_추종_순서로_불린다():
     """nav2 가 /cmd_vel 을 놓기 전에 추종이 시작되면 둘이 싸운다."""
     order = []
     follow, nav_stop = FakeDriver(), FakeDriver()
-    follow.start = lambda: order.append("follow")
+    follow.start = lambda args=None: order.append("follow")
     nav_stop.start = lambda: order.append("nav_stop")
 
     leaf, clock = _leaf(follow=follow, nav_stop=nav_stop)
@@ -174,3 +185,44 @@ def test_트리에서_빠질_때_세션을_닫는다():
     _size(140.0); leaf.tick_once(); clock.t += 1.6; leaf.tick_once()
     leaf.stop(Status.INVALID)
     assert follow.stop_count == 1
+
+
+def _active_command():
+    bb = py_trees.blackboard.Client(name="test-read")
+    bb.register_key(key=Keys.ACTIVE_COMMAND, access=py_trees.common.Access.READ)
+    return bb.get(Keys.ACTIVE_COMMAND)
+
+
+def test_추종이_release로_끝나면_active_command를_비운다():
+    """실기 재현 2026-08-04: `follow_driver.start()` 가 내는 `/fleet_cmd{follow_admin}`
+    을 이 노드 자신이 도로 구독해 `active_command="follow_admin"` 을 찍는다
+    (providers.py `_on_cmd`). `CommandDrivenAction._release()` 만 이 값을 지우는데,
+    이 잎은 그 클래스가 아니라서 지운 적이 없었다 — 추종이 끝나도 값이 영원히 박제돼
+    `PatrolNavigation` 이 "실행 중인 follow_admin 를 선점하지 않는다"로 순찰 재진입을
+    영구히 막았다(실측 로그: 21초마다 반복, `max_chase_sec` 지나도 안 풀림)."""
+    bb = py_trees.blackboard.Client(name="test-write")
+    bb.register_key(key=Keys.ACTIVE_COMMAND, access=py_trees.common.Access.WRITE)
+    bb.set(Keys.ACTIVE_COMMAND, "follow_admin")   # /fleet_cmd 자기 메아리를 흉내낸다
+
+    follow = FakeDriver()
+    leaf, clock = _leaf(follow=follow)
+    _size(140.0); leaf.tick_once(); clock.t += 1.6; leaf.tick_once()
+    assert _active_command() == "follow_admin"    # 추종 중에는 그대로 있어야 한다
+
+    _size(0.0)
+    clock.t += 5.5; leaf.tick_once()               # lose_sec 경과 → _release()
+    assert _active_command() is None
+
+
+def test_트리에서_빠질_때도_active_command를_비운다():
+    """추종 도중 관제 「정지」·배터리 저하로 통째로 끌려가는 경우 — _release() 를
+    거치지 않으므로 terminate(INVALID) 에서도 똑같이 비워야 한다."""
+    bb = py_trees.blackboard.Client(name="test-write2")
+    bb.register_key(key=Keys.ACTIVE_COMMAND, access=py_trees.common.Access.WRITE)
+    bb.set(Keys.ACTIVE_COMMAND, "follow_admin")
+
+    follow = FakeDriver()
+    leaf, clock = _leaf(follow=follow)
+    _size(140.0); leaf.tick_once(); clock.t += 1.6; leaf.tick_once()
+    leaf.stop(Status.INVALID)
+    assert _active_command() is None

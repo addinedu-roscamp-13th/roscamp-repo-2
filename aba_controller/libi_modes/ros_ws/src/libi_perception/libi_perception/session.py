@@ -1,8 +1,13 @@
 """추종·길잡이·감시 세션의 수명. ROS 를 모른다.
 
-## 세 가지 역할
+## 네 가지 역할
 
-    follow   관리자 추종. 앞캠. 제어 루프가 /cmd_vel 을 만든다
+    follow   관리자 추종. 앞캠. 제어 루프가 /cmd_vel 을 만든다. 자세(옆모습) 정지 적용
+    security 야간 순찰 추종(IntruderChase). 앞캠. follow 와 주행 로직은 완전히 같지만
+             자세 게이트를 안 받는다 — bbox 크기만으로 판단한다(2026-08-04 요구사항).
+             follow 와 별개 role 인 이유는 `pipeline.POSE_ROLES`(AI 서버)가 role 하나로
+             자세 추정 여부를 가르기 때문 — 같은 role 이면 follow_admin 액션을 공유하는
+             관리자 추종까지 같이 꺼진다.
     guide    길잡이 감시. 뒷캠. 주행은 nav2 가 하고 여기는 눈만 된다
     watch    등록 화면 감시. 패널이 직접 연다. 주행 없음
 
@@ -23,14 +28,14 @@
 """
 from dataclasses import dataclass
 
-FOLLOW, GUIDE, WATCH = "follow", "guide", "watch"
+FOLLOW, GUIDE, WATCH, SECURITY = "follow", "guide", "watch", "security"
 NONE = "none"
 
-#: 역할별 정위치 카메라. 추종은 앞(제어 입력), 길잡이는 뒤(따라오는 사람).
-ROLE_CAMERA = {FOLLOW: "front", GUIDE: "back"}
+#: 역할별 정위치 카메라. 추종·야간순찰은 앞(제어 입력), 길잡이는 뒤(따라오는 사람).
+ROLE_CAMERA = {FOLLOW: "front", GUIDE: "back", SECURITY: "front"}
 
 #: 주행을 만드는 역할. `watch` 는 눈만 되므로 제어 루프를 켜지 않는다.
-DRIVING_ROLES = (FOLLOW,)
+DRIVING_ROLES = (FOLLOW, SECURITY)
 
 
 @dataclass

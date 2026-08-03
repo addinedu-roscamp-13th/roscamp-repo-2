@@ -261,6 +261,15 @@ class RemoteControl:
         now = self._now()
 
         role = self.START_ACTIONS.get(action)
+        # ⚠️ [2026-08-04] `follow_admin` 은 관리자 추종(패널 버튼)과 야간순찰 추종
+        # (IntruderChase)이 **같은 액션을 공유한다**(같은 FleetCmdDriver, 우회할
+        # 새 채널을 안 만들려고 — 위 클래스 머리말). 근데 자세(옆모습) 정지는 관리자
+        # 추종에만 필요하고 야간순찰은 bbox 크기만으로 판단해야 한다(요구사항). role
+        # 하나로 AI 서버가 자세 추정 여부를 가르므로(`pipeline.POSE_ROLES`), args 에
+        # 실린 태그로 둘을 갈라 다른 role 을 붙인다 — 액션·드라이버·타임아웃은 전부
+        # 그대로 공유하고 role 만 다르다.
+        if role == sess.FOLLOW and args.get('session_kind') == sess.SECURITY:
+            role = sess.SECURITY
         if role is not None:
             # 주행 중인 세션은 감시 요청에 밀리지 않는다.
             #

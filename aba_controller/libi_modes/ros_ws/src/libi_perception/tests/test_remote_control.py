@@ -195,6 +195,24 @@ def test_follow_does_not_reply_until_it_ends(rc):
     assert rc.result() == []
 
 
+# ── 2026-08-04 요구사항 — 야간순찰 추종은 관리자 추종과 같은 follow_admin
+#    액션을 쓰지만, session_kind 태그로 role 을 갈라 자세 게이트를 뺀다 ───────
+
+def test_session_kind_security_태그가_role을_security로_바꾼다(rc):
+    """AI 서버의 pipeline.POSE_ROLES 가 role 문자열 하나로 자세 게이트 여부를
+    가른다 — 태그 없이는 관리자 추종과 구분이 안 돼 같이 게이트가 걸린다."""
+    rc.send(action='follow_admin', id='f1', args={'session_kind': 'security'})
+    assert rc.ctl._sessions.role == 'security'
+    assert rc.cam()[-1] == 'front'
+
+
+def test_태그_없는_관리자_추종은_그대로_follow다(rc):
+    """회귀 방지 — 패널 버튼(관리자 추종)은 이 태그를 안 실어 보내므로 자세
+    게이트가 계속 걸려야 한다."""
+    rc.send(action='follow_admin', id='f1')
+    assert rc.ctl._sessions.role == 'follow'
+
+
 # ── stop id 규약 ─────────────────────────────────────────────────────────────
 
 def test_stop_with_prefixed_id_closes_bt_session(rc):

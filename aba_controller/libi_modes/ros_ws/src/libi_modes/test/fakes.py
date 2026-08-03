@@ -9,6 +9,9 @@ class FakeDriver:
         self._poll_sequence = list(poll_sequence)
         self.start_count = 0
         self.stop_count = 0
+        #: `FleetCmdDriver.start(args=None)` 과 같은 시그니처 — 마지막으로 받은
+        #: args 를 기록해 둔다(예: IntruderChase 의 `session_kind` 태그 확인용).
+        self.last_args = None
 
     @property
     def started(self):
@@ -18,8 +21,9 @@ class FakeDriver:
     def stopped(self):
         return self.stop_count > 0
 
-    def start(self):
+    def start(self, args=None):
         self.start_count += 1
+        self.last_args = args
 
     def poll(self):
         return self._poll_sequence.pop(0) if self._poll_sequence else "running"

@@ -145,3 +145,21 @@ def test_only_watch_expires():
     m = SessionManager(lease_sec=10)
     m.start("w1", "watch", now=0.0, camera="front")
     assert m.expired(now=11.0) is True
+
+
+# ── 2026-08-04 요구사항 — security(야간순찰 추종)는 follow 와 주행은 같고
+#    자세 게이트만 안 받는다(role 값만 다르다, session.py 머리말) ─────────────
+
+def test_security도_앞캠에서_주행한다():
+    """follow 와 카메라·주행 여부가 완전히 같다 — 다른 건 role 문자열뿐이고,
+    자세 게이트 여부는 AI 서버의 POSE_ROLES 가 이 role 문자열로 가른다."""
+    m = SessionManager(lease_sec=60)
+    m.start("s", "security", now=0.0)
+    assert m.camera_for() == "front"
+    assert m.driving is True
+
+
+def test_security_세션도_follow처럼_lease가_없다():
+    m = SessionManager(lease_sec=10)
+    m.start("s1", "security", now=0.0)
+    assert m.expired(now=10_000.0) is False

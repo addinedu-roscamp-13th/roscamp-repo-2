@@ -67,6 +67,16 @@ class IntruderChase(py_trees.behaviour.Behaviour):
     def setup(self, **kwargs):
         self.blackboard = self.attach_blackboard_client(name=self.name)
         self.blackboard.register_key(key=Keys.FRONT_PERSON_SIZE, access=Access.READ)
+        # ⚠️ 실측 2026-08-04: 이 잎이 `CommandDrivenAction` 이 아니라서(위 클래스
+        # 독스트링) `Keys.ACTIVE_COMMAND` 를 안 건드리는데, `follow_driver.start()` 가
+        # 내는 `/fleet_cmd{follow_admin}` 을 **같은 노드가 자기 구독으로 되받아**
+        # (providers.py `_on_cmd`) active_command 를 "follow_admin" 으로 찍는다.
+        # `CommandDrivenAction._release()` 만 이 값을 지우는데 이 잎은 그 경로를 안 타
+        # 지운 적이 없다 — 추종이 끝나도 값이 영원히 박제돼 `PatrolNavigation` 이
+        # "실행 중인 follow_admin 를 선점하지 않는다"로 순찰 재진입을 영구히 막는다
+        # (실기 재현: 순찰 복귀가 안 됨). `_release()`/`terminate(INVALID)` 에서 직접
+        # 비운다 — CommandDrivenAction 이 하던 일을 그대로 흉내낸다.
+        self.blackboard.register_key(key=Keys.ACTIVE_COMMAND, access=Access.WRITE)
 
     def initialise(self):
         """⚠️ **아무것도 지우지 않는다.**
@@ -125,6 +135,7 @@ class IntruderChase(py_trees.behaviour.Behaviour):
             return
         if self._state in (_CHASING, _RELEASE):
             self._stop_follow()
+        self._clear_active_command()
         self._state = _IDLE
         self._seen_since = None
         self._backoff_until = 0.0
@@ -137,7 +148,13 @@ class IntruderChase(py_trees.behaviour.Behaviour):
         if self.nav_stop_driver is not None:
             self.nav_stop_driver.start()
         if self.follow_driver is not None:
-            self.follow_driver.start()
+            # ⚠️ [2026-08-04 요구사항] 관리자 추종(패널 버튼)과 같은 follow_admin
+            # 액션을 쓰지만, 야간순찰은 자세(옆모습) 정지 없이 bbox 크기만으로
+            # 판단해야 한다. session_kind 태그로 follow_node 가 role=security 를
+            # 붙이게 하면(session.py 머리말), AI 서버의 POSE_ROLES 가 "follow" 만
+            # 자세 게이트 대상으로 보므로 이 세션은 자동으로 빠진다 — 관리자
+            # 추종은 이 태그 없이 오므로 그대로 role=follow 로 게이트가 유지된다.
+            self.follow_driver.start(args={"session_kind": "security"})
         self._state = _CHASING
         self._chase_start = now
         self._last_seen = now
@@ -167,6 +184,7 @@ class IntruderChase(py_trees.behaviour.Behaviour):
         BT 5Hz · follow_node 20Hz 라 1초면 충분하다.
         """
         self._stop_follow()
+        self._clear_active_command()
         self._state = _RELEASE
         self._release_at = now
         if backoff:
@@ -177,6 +195,11 @@ class IntruderChase(py_trees.behaviour.Behaviour):
     def _stop_follow(self):
         if self.follow_driver is not None:
             self.follow_driver.stop()
+
+    def _clear_active_command(self):
+        """`CommandDrivenAction._release()` 가 하던 일을 그대로 흉내낸다 — 안 지우면
+        `follow_admin` 이 `active_command` 에 영원히 박제돼 순찰 재진입이 막힌다."""
+        self.blackboard.set(Keys.ACTIVE_COMMAND, None)
 
 
 class CameraSelectRenew(py_trees.behaviour.Behaviour):
