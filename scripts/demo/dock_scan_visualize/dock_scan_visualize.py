@@ -349,6 +349,7 @@ def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockCon
             _save_snapshot(latest["msg"], fig)
         elif event.key == "r":
             state["machine"] = LidarApproach(cfg)
+            state["last_terminal_reason"] = None
             print(f"[{robot}] 국면 재시작 — SETTLE 부터 다시(로봇을 새로 놓고 눌렀다면 맞다)")
         elif event.key == "0":
             view["xlim"] = None
@@ -393,7 +394,7 @@ def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockCon
     #   못 보여준다 — 여기서도 그 클래스를 그대로 쓴다.
     search_cfg = replace(cfg, sector_half_deg=cfg.search_half_deg,
                         wall_yaw_max_rad=cfg.search_wall_yaw_max_rad)
-    state = {"machine": LidarApproach(cfg)}
+    state = {"machine": LidarApproach(cfg), "last_terminal_reason": None}
     was_arrived = {"v": False}
     stopped = {"v": False}
 
@@ -435,10 +436,22 @@ def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockCon
                                   msg.range_min, msg.range_max, cfg)
             cmd = machine.step(mobs, time.monotonic())
 
+        # ⚠️ 실기: DONE/ABORT 로 끝난 뒤엔 `step()` 이 매 tick 그냥
+        # `Cmd(..., "finished")` 를 낸다(approach.py 맨 위 "이미 끝났으면
+        # 그대로 반환" 분기) — **원래 멈춘 이유(timeout/overshoot/... )가
+        # "finished" 로 덮어써져 사라진다.** 실기에서 위 제목엔 "[성공] 검출
+        # 성공"이 뜨는데 오른쪽엔 "ABORT/finished"만 보여 헷갈렸다 — 실제로는
+        # 이 도구가 로봇을 안 움직이면서 계속 반복 판정만 하다 보니(정적
+        # 재생) 90초 전체 타임아웃에 걸린 것뿐이었다. 진짜 사유를 기억해 둔다.
+        if cmd.reason != "finished":
+            state["last_terminal_reason"] = cmd.reason
+        shown_reason = (state.get("last_terminal_reason") or cmd.reason
+                       if cmd.phase in ("DONE", "ABORT") else cmd.reason)
+
         cmd_text = (f"국면 {cmd.phase}\n"
                    f"linear  {cmd.linear:+.3f} m/s\n"
                    f"angular {cmd.angular:+.3f} rad/s\n"
-                   f"사유 {cmd.reason}\n"
+                   f"사유 {shown_reason}\n"
                    f"('r' 로 재시작)")
         # ⚠️ `family="monospace"` 를 쓰면 안 된다 — 그 폰트엔 한글 글리프가 없어서
         #    "국면"·"사유" 가 네모로 깨진다(실기로 확인). 전역으로 맞춘 한글
