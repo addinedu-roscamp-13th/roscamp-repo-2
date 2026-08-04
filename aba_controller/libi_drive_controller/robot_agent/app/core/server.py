@@ -98,12 +98,13 @@ def create_app() -> FastAPI:
         # nav_router(Nav2 대시보드)는 로봇 온보드에서 제거됨(FastAPI/ROS2 역할 분리, main).
         # driving.py 에 더 이상 nav_router 가 없어 마운트하지 않는다.
         import logging as _logging
-        # 2026-08-04 실측: 세 도킹 라우터 전부 존재하지 않는 driving._motor_send 등을
+        # 2026-08-04 실측: 도킹 라우터들이 존재하지 않는 driving._motor_send 등을
         # 임포트해 기동 실패한다 — 다른 세션이 진행 중인 리팩터(driving_driver.py 로
         # 모터 제어 이동)가 아직 이 파일들에 안 미친 상태로 보인다. 남의 진행 중인
         # 리팩터를 추측해서 고치지 않고, night-patrol 검증에 불필요한 이 라우터들만
         # 건너뛴다 — camera/common/driving(move·rotate)은 영향 없다.
-        for _name in ("aruco_dock", "line_dock", "park_dock"):
+        # parkp도 같은 driving._motor_send를 임포트해 같은 이유로 걸린다(2026-08-05 확인).
+        for _name in ("aruco_dock", "line_dock", "park_dock", "parkp"):
             try:
                 _mod = __import__(f"app.routers.{_name}", fromlist=[_name])
                 api.include_router(_mod.router, prefix="/robot", tags=[_name.replace("_", "-")])

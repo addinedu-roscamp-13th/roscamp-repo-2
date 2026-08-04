@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     seed_admin_password: str = ""
     # 배포 타임존 계약 — 아래 _pin_process_timezone / database.py 세션 tz 가 이 값을 쓴다.
     app_timezone: str = "Asia/Seoul"
+    # OpenAI Realtime (회원 음성 대화) — routers/voice.py 가 쓴다. 비어 있으면
+    # /api/voice/session 이 503 을 내고, 프론트 마이크 버튼은 안내만 띄운다.
+    openai_api_key: str = ""
+    openai_realtime_model: str = "gpt-realtime"
+    openai_realtime_voice: str = "alloy"
 
     @property
     def cors_origin_list(self) -> list[str]:

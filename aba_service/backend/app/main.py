@@ -17,6 +17,7 @@ from .routers import (
     ops_extra,
     robot_control,
     users,
+    voice,
 )
 
 settings = get_settings()
@@ -53,6 +54,7 @@ app.include_router(circulation.router)
 app.include_router(ops.router)
 app.include_router(ops_extra.router)
 app.include_router(approvals.router)
+app.include_router(voice.router)
 
 
 @app.on_event("startup")

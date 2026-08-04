@@ -123,10 +123,64 @@ def _pose(corners: np.ndarray, calib: tuple[np.ndarray, np.ndarray], marker_len_
     return {"x_m": float(tvec[0]), "z_m": float(tvec[2]), "yaw_deg": yaw}
 
 
-def _detect(dict_name: str, marker_len_m: float | None) -> dict[str, Any]:
-    frame = _grab_frame()
-    if frame is None:
-        raise HTTPException(503, "카메라 프레임 없음 — 먼저 카메라 스트림을 시작하세요.")
+# ── 색 판별: 마커 주변 pad 색을 한국어 이름으로 추정 ───────────────────────────
+def _hue_to_name(hue: int) -> str:
+    """OpenCV Hue(0~179) → 한국어 색 이름."""
+    if hue < 10 or hue >= 160:
+        return "빨강"
+    if hue < 20:
+        return "주황"
+    if hue < 33:
+        return "노랑"
+    if hue < 78:
+        return "초록"
+    if hue < 100:
+        return "청록"
+    if hue < 130:
+        return "파랑"
+    if hue < 150:
+        return "보라"
+    return "분홍"
+
+
+def _region_color(frame: np.ndarray, corners: np.ndarray) -> dict[str, Any] | None:
+    """마커 주변(확장 ROI)의 대표 색을 추정한다.
+
+    아르코 마커 자체는 흑백이라, 마커 bbox 를 약 60% 확장한 영역에서 채도 높은
+    화소만 골라 우세 색상(Hue)을 뽑는다 → 주차면/라벨의 색을 잡는다.
+    """
+    h, w = frame.shape[:2]
+    pts = corners.reshape(4, 2).astype(np.float32)
+    x0, y0 = float(pts[:, 0].min()), float(pts[:, 1].min())
+    x1, y1 = float(pts[:, 0].max()), float(pts[:, 1].max())
+    side = max(x1 - x0, y1 - y0, 1.0)
+    mgn = side * 0.6
+    rx0, ry0 = int(max(0, x0 - mgn)), int(max(0, y0 - mgn))
+    rx1, ry1 = int(min(w, x1 + mgn)), int(min(h, y1 + mgn))
+    if rx1 - rx0 < 3 or ry1 - ry0 < 3:
+        return None
+    roi = frame[ry0:ry1, rx0:rx1]
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    H, S, V = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+    sat_mask = (S > 70) & (V > 40) & (V < 245)
+    total = int(roi.shape[0] * roi.shape[1])
+    n = int(sat_mask.sum())
+    if total == 0:
+        return None
+    ratio = round(n / total, 3)
+    if n < max(30, total * 0.04):  # 채도 높은 화소가 적음 → 무채색
+        meanv = float(V.mean())
+        name = "흰색" if meanv > 180 else ("검정" if meanv < 60 else "회색")
+        return {"name": name, "chromatic": False, "ratio": ratio}
+    hist = np.bincount(H[sat_mask].astype(np.int64), minlength=180)
+    dom = int(hist.argmax())
+    return {"name": _hue_to_name(dom), "chromatic": True, "hue": dom,
+            "sat": int(S[sat_mask].mean()), "ratio": ratio}
+
+
+def _detect_in_frame(frame: np.ndarray, dict_name: str, marker_len_m: float | None,
+                     with_color: bool = False) -> dict[str, Any]:
+    """주어진 BGR 프레임에서 마커(+선택적으로 주변 색)를 검출한다."""
     h, w = frame.shape[:2]
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     corners, ids, _ = _detector(dict_name).detectMarkers(gray)
@@ -139,9 +193,28 @@ def _detect(dict_name: str, marker_len_m: float | None) -> dict[str, Any]:
                 p = _pose(c, calib, marker_len_m, h)
                 if p:
                     m["pose"] = p
+            if with_color:
+                m["color"] = _region_color(frame, c)
             markers.append(m)
     markers.sort(key=lambda m: m["size_frac"], reverse=True)  # 큰(가까운) 마커 우선
     return {"frame": {"width": w, "height": h}, "calibrated": calib is not None, "markers": markers}
+
+
+def _detect(dict_name: str, marker_len_m: float | None, with_color: bool = False) -> dict[str, Any]:
+    frame = _grab_frame()
+    if frame is None:
+        raise HTTPException(503, "카메라 프레임 없음 — 먼저 카메라 스트림을 시작하세요.")
+    return _detect_in_frame(frame, dict_name, marker_len_m, with_color)
+
+
+def detect_from_jpeg(jpeg: bytes, dict_name: str = "DICT_4X4_50",
+                     marker_len_m: float | None = None, with_color: bool = True) -> dict[str, Any] | None:
+    """JPEG 바이트(로봇 스냅샷)에서 마커+색을 검출한다. 중앙 서버가 로봇 프레임을 받아 쓴다."""
+    arr = np.frombuffer(jpeg, np.uint8)
+    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if frame is None:
+        return None
+    return _detect_in_frame(frame, dict_name, marker_len_m, with_color)
 
 
 # ── 도킹 설정/상태 ────────────────────────────────────────────────────────────

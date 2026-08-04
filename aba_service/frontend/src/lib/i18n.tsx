@@ -43,11 +43,12 @@ export const t: Dict = {
     ZH: "请先选择您的语言",
     VI: "Vui lòng chọn ngôn ngữ",
   },
+  // 키 이름은 store* 지만 가리키는 곳은 서점이 아니라 도서관이다(초기 스캐폴드 잔재).
   storeNow: {
-    KR: "현재 지점",
-    EN: "Current branch",
+    KR: "현재 도서관",
+    EN: "Current library",
     ZH: "当前分馆",
-    VI: "Chi nhánh hiện tại",
+    VI: "Thư viện hiện tại",
   },
   tapToTalk: {
     KR: "탭하여 말하기",
@@ -77,8 +78,9 @@ export const t: Dict = {
     ZH: "书名、作者或'科学新书'",
     VI: "Tên sách, tác giả hoặc chủ đề",
   },
-  inStock: { KR: "재고 있음", EN: "In stock", ZH: "有货", VI: "Còn hàng" },
-  soldOut: { KR: "품절", EN: "Sold out", ZH: "售罄", VI: "Hết hàng" },
+  // 도서관이라 재고(retail)가 아니라 대출 가능 여부다 — 매입/품절 어휘를 쓰지 않는다.
+  inStock: { KR: "대출 가능", EN: "Available", ZH: "可借阅", VI: "Có thể mượn" },
+  soldOut: { KR: "대출 중", EN: "On loan", ZH: "已借出", VI: "Đang được mượn" },
   showOnMap: { KR: "🗺️ 위치 지도로 보기", EN: "🗺️ Show on map", ZH: "🗺️ 在地图上查看", VI: "🗺️ Xem trên bản đồ" },
   hotTitle: {
     KR: "지금 도서관에서 가장 핫한 책",

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import threading
 import time
 import uuid
@@ -45,6 +46,10 @@ from app import panel_bridge
 #    이름에서 유도한 브릿지 키를 쓴다.
 FLEET_ROBOTS: dict[str, dict[str, Any]] = {}
 
+# ROS 토픽 이름으로 쓸 수 있는 토큰: 영문으로 시작하는 영숫자/'_' (숫자 시작 불가).
+_VALID_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
 def bridge_key(name: str) -> str:
     """로봇 이름 -> 브릿지 키 (토픽 접두사로 쓰는 이름).
 
@@ -56,9 +61,24 @@ def bridge_key(name: str) -> str:
 
     scripts/gen_domain_bridges.py 가 브릿지 설정을 만들 때 쓰는 규칙과 같아야 한다 —
     다르면 토픽 접두사와 조회 키가 어긋나 상태가 안 보인다.
+
+    ⚠️ 키는 그대로 **ROS 토픽 이름**(`/<key>/scan`)이 된다. 토픽 이름에는 영숫자와 '_'
+    만 쓸 수 있으므로, 화면 표기용 한글 이름(`주행로봇 2`)을 그대로 키로 쓰면
+    `Invalid topic name` 이 나고 텔레메트리 스레드가 통째로 죽는다 — 실제로 그래서
+    스캔·명령 링크가 모두 끊겼고 relative_move 가 계속 503("라이다 스캔 없음")을 냈다.
+    그래서 토큰으로 못 쓰는 이름은 **끝의 번호로 `pinky<N>`** 를 만든다
+    (`주행로봇 2` → `pinky2`) — 도메인 브릿지 설정(config/domain_bridge_pinky2.yaml)이
+    쓰는 접두사와 같아진다. 번호조차 없으면 빈 문자열을 돌려주고, 호출측이 그 로봇만
+    건너뛴다(나머지 로봇은 살린다).
     """
     s = name.replace("-", "").replace("_", "").replace(" ", "")
-    return s[:1].lower() + s[1:] if s else s
+    if not s:
+        return ""
+    s = s[:1].lower() + s[1:]
+    if _VALID_KEY_RE.fullmatch(s):
+        return s
+    digits = "".join(ch for ch in s if ch.isdigit())
+    return f"pinky{digits}" if digits else ""
 
 
 def _load_fleet_robots() -> dict[str, dict[str, Any]]:
@@ -84,7 +104,9 @@ def _load_fleet_robots() -> dict[str, dict[str, Any]]:
                 for name, ip in cur.fetchall():
                     key = bridge_key(name)
                     if not key:
-                        print(f"[fleet_telemetry] 이름이 비어 있는 로봇을 건너뜀 (ip={ip})", flush=True)
+                        # 이름이 비었거나, 토픽으로 못 쓰는 이름인데 번호도 없는 경우.
+                        print(f"[fleet_telemetry] 브릿지 키를 만들 수 없어 건너뜀 "
+                              f"(name={name!r}, ip={ip}) — 이름에 번호를 넣어 주세요", flush=True)
                         continue
                     result[key] = {"key": key, "prefix": f"/{key}", "name": name, "ip": ip}
                 # IP 를 나눠 쓰는 로봇이 있으면 알려 준다. 명령은 브릿지 키로 가므로
@@ -574,7 +596,7 @@ def _telemetry_thread() -> None:
             # entry 유무와 무관하게 훅을 돌린다.
             _fire_cmd_result_hooks(res)
 
-        for cfg in FLEET_ROBOTS.values():
+        def _subscribe_robot(cfg: dict[str, Any]) -> None:
             pre = cfg["prefix"]
             key = cfg["key"]
             (on_pose, on_map, on_plan, on_pct, on_volt,
@@ -594,10 +616,20 @@ def _telemetry_thread() -> None:
                 LaserScan, f"{pre}/scan", on_scan,
                 QoSProfile(depth=5, reliability=ReliabilityPolicy.BEST_EFFORT),
             )
-            _cmd_pubs[cfg["key"]] = node.create_publisher(String, f"{pre}/fleet_cmd", 10)
+            _cmd_pubs[key] = node.create_publisher(String, f"{pre}/fleet_cmd", 10)
             _cmd_vel_pubs[key] = node.create_publisher(Twist, f"{pre}/cmd_vel", 10)
             # 패널(libi_gui) 요청 통로 — 방향이 위와 반대다(로봇이 요청, 서버가 승인).
             panel_bridge.attach(node, String, pre)
+
+        # 로봇 단위로 막는다 — 하나가 실패해도 나머지는 살린다. 예전엔 접두사가 토픽으로
+        # 못 쓰는 값이면(한글 이름 등) 여기서 예외가 나 스레드가 통째로 멈췄고, 스캔·명령
+        # 링크가 전부 끊겨 relative_move 가 계속 503("라이다 스캔 없음")을 냈다.
+        for cfg in FLEET_ROBOTS.values():
+            try:
+                _subscribe_robot(cfg)
+            except Exception as e:  # noqa: BLE001
+                print(f"[fleet_telemetry] ⚠️ '{cfg.get('name')}' 구독 실패 — 이 로봇만 "
+                      f"건너뜁니다 (prefix={cfg.get('prefix')}): {e}", flush=True)
 
         print(f"[fleet_telemetry] ROS 구독+명령링크 시작 (domain {TELEMETRY_DOMAIN_ID}, robots {list(FLEET_ROBOTS)})", flush=True)
         executor = SingleThreadedExecutor(context=ctx)

@@ -68,7 +68,7 @@ class AdminUser(Base):
 
 
 class Book(Base):
-    """Bookstore catalog — customer-facing search & recommendation source."""
+    """Library catalog — member-facing search & recommendation source."""
 
     __tablename__ = "cb_books"
     # Convention: every MariaDB table/column carries a COMMENT (see CLAUDE.md).

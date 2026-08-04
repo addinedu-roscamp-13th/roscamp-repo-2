@@ -24,9 +24,13 @@ export const Route = createFileRoute("/admin/_authed/robots")({
  * 그대로 따른다 — 새로 유도하면 로봇 점이 벽 안쪽에 찍히는 사고가 난다.
  */
 
-/** 월드 좌표 → 지도 이미지 안의 정규화 좌표(세로 원본 기준, 0~1). */
-const ORIGIN_X = -0.184;
-const ORIGIN_Y = -1.949;
+/**
+ * 월드 좌표 → 지도 이미지 안의 정규화 좌표(세로 원본 기준, 0~1).
+ * ⚠️ `pinky_navigation/map/arte3.yaml` 의 origin/resolution/dims 와 반드시 같아야 한다 —
+ * 어긋나면 로봇 점이 통째로 밀려 찍힌다(origin 이 arte2 값에 묶여 있어 실제로 겪은 버그).
+ */
+const ORIGIN_X = -0.248;
+const ORIGIN_Y = -1.958;
 const RES = 0.02;
 const W = 63;
 const H = 108;

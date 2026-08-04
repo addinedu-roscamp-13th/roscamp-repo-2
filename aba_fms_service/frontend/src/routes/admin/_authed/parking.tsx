@@ -35,12 +35,72 @@ const APPROACH_YAW_TIMEOUT = 9_000;
 const DEFAULT_PARKING_ZONE = "E";
 const DEFAULT_LINE_ENTRY_ZONE = "D";
 const DEFAULT_PARKING_APPROACH_ZONE = "C";
-const PARKING_TAPE_GUIDE_MARKER_ID = 2;
-const PARKING_DOCK_MARKER_ID = 1;
-// 유도마커 → 도킹마커(id=1) 진입 회전. 값은 "예상 회전량(도)"이며 실제 정지는
-// id=1이 카메라에 잡히는 순간이다(개루프 타이머 오차 보정). 방향은 항상 우회전(시계방향).
-//   id 2·3 → 우측 약 45°   /   id 4·5 → 반대편 약 180°
-const GUIDE_TURN_TO_DOCK: Record<number, number> = { 2: 45, 3: 45, 4: 180, 5: 180 };
+// ── 마커 ID 는 현장에서 바뀔 수 있으므로 코드에 고정하지 않는다. ─────────────────
+// 실제 값은 사이트(아래 '마커 역할 설정' 패널)에서 지정하고 DB `rc_marker_actions.params`
+// 에 저장된다:  params.dock_marker = true   → 도킹 대상 마커(마커 ID 입력이 비었을 때의 기본값)
+//               params.guide_turn_deg = 45  → 유도 마커 + 도킹마커 방향 회전량(도, 양수=우회전)
+// 아래 상수는 DB 에 아무것도 지정돼 있지 않을 때만 쓰는 폴백이다.
+const DEFAULT_DOCK_MARKER_ID = 1;
+// 유도마커 → 도킹마커 진입 회전. 값은 "예상 회전량(도)"이며 실제 정지는
+// 도킹마커가 카메라에 잡히는 순간이다(개루프 타이머 오차 보정). 방향은 항상 우회전(시계방향).
+const DEFAULT_GUIDE_TURN_TO_DOCK: Record<number, number> = { 2: 45, 3: 45, 4: 180, 5: 180 };
+// 유도마커 회전량이 이 값 이상이면 "반대편(180°)" 유도로 본다 — 라인 주차 진입 분기에 쓰임.
+const GUIDE_TURN_REVERSE_DEG = 90;
+// 직접 주차: 접근 전 제자리 회전을 걸지 말지는 ex 가 아니라 **실제 방위각**(markerBearingDeg)으로 판단한다.
+// 이 카메라는 fx=471 / 480px 프레임 → 수평 반화각이 atan(240/471) ≈ 27° 뿐인 좁은 화각이라
+// ex 가 금방 포화된다. 실측(2026-07-29): 물리적으로 19° 밖에 안 틀어진 마커가 ex -0.81 로 찍혔고,
+// ex 만 보고 제자리 회전을 걸었더니 바로 앞 마커를 두고 헛돌았다(yaw 9.9°→33.9°, 마커 80회 로스트).
+// 이 각도 미만이면 회전 없이 곧장 P 제어 조향으로 접근한다.
+// 12°로 잡은 근거: 이 구동계는 바퀴 하나라도 PWM 32 밑이면 멈춰서 '저속 곡선'이 불가능하다.
+// 안쪽 바퀴를 살리려면 |ang| ≤ lin/7 이라 곡률이 κ≈0.14 rad/m — 0.8m 이동 중 약 6.5° 밖에 못 꺾는다.
+// 그보다 크게 틀어져 있으면 곡선으로는 절대 못 붙으므로, 짧게 제자리 회전으로 각을 지운 뒤 직진한다.
+const PRE_ROTATE_BEARING_DEG = 12;
+// 조향 P 이득을 키우는 기준 중심오차. 이 값을 넘어도 주차를 막지는 않는다.
+const DIRECT_PARK_EX_WARN = 0.5;
+
+// ── pose 기반 기하 주차 (POSE DOCK) ──────────────────────────────────────────
+// ex(이미지 중심오차)만 쓰는 제어는 근본적으로 부족하다. ex 는 "마커가 화면 어디에 있나"만
+// 알려줄 뿐, "마커가 어느 방향을 보고 있나"를 모른다. 실측(2026-07-29):
+//   ex -0.015 (완벽 정면) 인데 marker yaw +19° → axis_lat -0.262m
+//   즉 마커는 정면에 보이지만 로봇은 마커 정면축에서 26cm 옆으로 벗어나 있었다.
+//   ex 만 보고 직진하면 19° 비뚤어진 채로 처박는다.
+// 그래서 solvePnP 가 주는 6-DOF(x, z, yaw, 법선 nx/nz)로 기하를 직접 푼다:
+//   axis_lat = x·nz − z·nx                      (마커 정면축에서 옆으로 벗어난 거리)
+//   W        = (x + nx·d_hold, z + nz·d_hold)   (마커 정면축 위 진입 경유점)
+//   θ        = atan2(W.x, W.z)                  (경유점 방위각, + = 오른쪽)
+// 이 식은 현재 자세에 맞춘 튜닝이 아니라 일반식이라 어느 위치에서든 성립한다.
+//
+// 실행은 '제자리 회전 → 직진' 프리미티브만 쓴다. 이 구동계는 바퀴 하나라도 PWM≈32 밑이면
+// 멈춰서 저속 곡선 주행이 물리적으로 불가능한데, 두 프리미티브는 양 바퀴를 대칭으로 굴려
+// 항상 정지마찰을 넘긴다. 대신 로봇 쪽 move/rotate 는 시간 기반 개루프(duration = 거리/가정속도)
+// 라 오차가 쌓이므로, 한 스텝을 짧게 끊고 매번 pose 를 다시 재서 재계획한다(플래너 레벨 폐루프).
+const POSE_DOCK = {
+  targetDistM: 0.20,     // 마커 앞 최종 정지 거리
+  standoffM: 0.40,       // 진입 경유점을 마커 앞 최대 이만큼 띄운다
+  axisTolM: 0.05,        // 이 안쪽이면 '정면축에 올라탔다'고 보고 최종 접근으로 전환
+  bearingTolDeg: 6,      // 최종 접근 전 마커를 이 각도 안으로 맞춘다
+  minTurnDeg: 4,         // 개루프 오차보다 작은 회전은 건너뛴다
+  maxLegM: 0.30,         // 한 번에 직진하는 최대 거리 — 짧게 끊어야 개루프 오차가 안 쌓인다
+  minLegM: 0.06,
+  turnSpeed: 0.4,        // /api/robot/rotate speed (노드 테스트에서 쓰는 값과 동일)
+  moveSpeed: 0.35,       // /api/robot/move speed → 실제 약 0.0875 m/s
+  maxSteps: 24,          // 무한루프 방지. 회전량을 화각 안으로 잘라 쓰므로 스텝 수가 늘어난다.
+  // ★ 한 번에 도는 각도를 제한해 마커가 화각 밖으로 나가지 않게 한다.
+  //   이 카메라 수평 반화각은 atan(240/471) ≈ 27°. 여유를 둬 20° 안쪽에 남긴다.
+  //   제한 없이 계획대로 돌리면 실행 중 최대 방위각이 85°까지 튀어 196케이스 중 143개에서
+  //   마커를 놓쳤다(시뮬레이션, 2026-07-29). 잘라 돌면 스텝이 늘 뿐 궤적은 같다.
+  keepInViewDeg: 20,
+  // 직진도 같은 이유로 제한한다. 마커를 비껴 지나가면 방위각이 벌어져 화각 밖으로 나간다.
+  //   이동 후 방위각 = atan2(|x|, z−d) ≤ keepMoveDeg  →  d ≤ z − |x|/tan(keepMoveDeg)
+  // 단 minLegM 은 항상 보장한다(전진을 아예 못 해 못 붙는 것보다, 놓치고 복구하는 편이 낫다).
+  // 시뮬레이션 567케이스 튜닝 결과(2026-07-29): 회전20°/직진26° → 수렴 100%, 평균 9.1스텝,
+  // 평균 복구 0.26회. 직진을 20°로 더 조이면 전진을 못 해 수렴이 93.7%로 떨어지고,
+  // 제한을 아예 빼면 57.3%까지 붕괴한다.
+  keepMoveDeg: 26,
+  // 그래도 놓쳤을 때: 마지막으로 본 방위각 + 그 뒤 명령한 회전량으로 현재 방위각을 추정해 되돌린다.
+  lostRetries: 3,
+  lostScanDeg: 15,       // 추정으로도 못 찾으면 이만큼씩 좌우로 훑는다
+} as const;
 const GUIDE_TURN_PULSE = { left: 45, right: -45, duration: 0.24 }; // 우회전 1펄스(개루프) — 크고 빠르게
 const GUIDE_TURN_DEG_PER_PULSE = 15; // 1펄스당 대략 회전량(실주행 튜닝값) — 클수록 펄스 수↓ 속도↑
 // 노드 테스트: 마커 트리거 → 로봇 내장 POST /api/robot/rotate 로 정밀 회전(odom yaw 폐루프, 자동 정지).
@@ -48,7 +108,7 @@ const GUIDE_TURN_DEG_PER_PULSE = 15; // 1펄스당 대략 회전량(실주행 �
 const NODE_TURN_SPEED = 0.4;
 const MARKER_GUIDED_RIGHT_SCAN_PULSES: Array<{ left: number; right: number; duration: number; label: string }> = Array.from(
   { length: 24 },
-  (_, i) => ({ left: 32, right: -32, duration: 0.22, label: `마커 ${PARKING_TAPE_GUIDE_MARKER_ID} 기준 빠른 우측 탐색 ${i + 1}` }),
+  (_, i) => ({ left: 32, right: -32, duration: 0.22, label: `유도 마커 기준 빠른 우측 탐색 ${i + 1}` }),
 );
 const MARKER_GUIDE_DETECT_ATTEMPTS = 8;
 const NAV_READY_TIMEOUT = 45_000;
@@ -89,6 +149,17 @@ const LINE_ACQUIRE_PULSES: Array<{ left: number; right: number; duration: number
   { left: 18, right: 18, duration: 0.35, label: "마지막 전진 확인" },
 ];
 const DICTS = ["DICT_4X4_50", "DICT_4X4_100", "DICT_5X5_50", "DICT_6X6_50", "DICT_7X7_50"];
+// 색 주차: 색 이름 → 표시 색. 마커별 색은 marker_actions.params.park_color 에 저장한다.
+const PARK_COLORS = [
+  { name: "빨강", hex: "#ef4444" },
+  { name: "주황", hex: "#f97316" },
+  { name: "노랑", hex: "#eab308" },
+  { name: "초록", hex: "#22c55e" },
+  { name: "청록", hex: "#14b8a6" },
+  { name: "파랑", hex: "#3b82f6" },
+  { name: "보라", hex: "#8b5cf6" },
+  { name: "분홍", hex: "#ec4899" },
+];
 const TERMINAL_DOCK_PHASES = new Set(["done", "timeout", "lost", "error", "stopped", "idle"]);
 
 type ParkingMode = "front" | "rear";
@@ -192,7 +263,7 @@ function ParkingPage() {
 
   const [zone, setZone] = useState(DEFAULT_PARKING_ZONE);
   const [mode, setMode] = useState<ParkingMode>("front");
-  const [precisionMode, setPrecisionMode] = useState<PrecisionMode>("line");
+  const [precisionMode, setPrecisionMode] = useState<PrecisionMode>("aruco");
   const [testBusy, setTestBusy] = useState(false); // 노드 테스트 버튼 실행 중 표시(FSM과 분리)
   const [dictionary, setDictionary] = useState("DICT_6X6_50");
   const [markerId, setMarkerId] = useState("1");
@@ -215,6 +286,16 @@ function ParkingPage() {
   const [camEpoch, setCamEpoch] = useState(0);
   const [directNavPose, setDirectNavPose] = useState<{ x: number; y: number; yaw?: number } | null>(null);
   const [directNavMissionStatus, setDirectNavMissionStatus] = useState<string | null>(null);
+  // 색 주차: 색↔마커 매핑(marker_actions.params.park_color)
+  const [colorMap, setColorMap] = useState<Array<{ marker_id: number; color: string }>>([]);
+  // 마커 역할(사이트 설정값): 유도마커 id→회전각, 기본 도킹마커 id. 둘 다 DB marker_actions 에서 로드.
+  const [guideTurnMap, setGuideTurnMap] = useState<Record<number, number> | null>(null);
+  const [dockMarkerCfgId, setDockMarkerCfgId] = useState<number | null>(null);
+  // 유도마커 설정 입력 폼
+  const [guideFormId, setGuideFormId] = useState("");
+  const [guideFormDeg, setGuideFormDeg] = useState("45");
+  // 실시간 색 인식: 마커별로 카메라가 지금 감지한 색 이름 (perceive 폴링 결과)
+  const [liveColors, setLiveColors] = useState<Record<number, string>>({});
 
   const dockStartedRef = useRef(false);
   const lineQueuedRef = useRef(false);
@@ -329,6 +410,20 @@ function ParkingPage() {
   const navGoalStopped = navMissionStatus === "idle";
   const activeTarget = mode === "front" ? frontTarget : rearTarget;
   const targetMarkerId = markerId.trim() === "" ? null : Number(markerId);
+  // 사이트 설정값 우선, 없으면 폴백 상수. (마커 id 는 현장에서 바뀔 수 있어 코드에 박지 않는다)
+  const guideTurns = guideTurnMap && Object.keys(guideTurnMap).length > 0 ? guideTurnMap : DEFAULT_GUIDE_TURN_TO_DOCK;
+  const dockFallbackId = dockMarkerCfgId ?? DEFAULT_DOCK_MARKER_ID;
+  const guideTurnRef = useRef(guideTurns);
+  guideTurnRef.current = guideTurns;
+  const dockFallbackRef = useRef(dockFallbackId);
+  dockFallbackRef.current = dockFallbackId;
+  // 유도마커를 회전량으로 분류: 반대편(≥90°) 진입용 / C 방향(<90°) 진입용. UI 버튼 라벨·동작에 사용.
+  const guideIdsAll = Object.keys(guideTurns).map(Number).sort((a, b) => a - b);
+  const reverseGuideIds = guideIdsAll.filter((id) => Math.abs(guideTurns[id]) >= GUIDE_TURN_REVERSE_DEG);
+  const forwardGuideIds = guideIdsAll.filter((id) => Math.abs(guideTurns[id]) < GUIDE_TURN_REVERSE_DEG);
+  const reverseGuideDeg = reverseGuideIds.length ? Math.abs(guideTurns[reverseGuideIds[0]]) : 180;
+  const forwardGuideDeg = forwardGuideIds.length ? Math.abs(guideTurns[forwardGuideIds[0]]) : 45;
+  const guideLabel = (ids: number[]) => (ids.length ? `마커 ${ids.join("·")}` : "유도 마커 미설정");
   const targetMarker = (detect?.markers ?? []).find((m) => targetMarkerId == null || m.id === targetMarkerId) ?? null;
   const activeStatus = phase === "docking" || lineStatus?.running === true || arucoStatus?.running === true
     ? (lineStatus?.running ? lineStatus : arucoStatus)
@@ -533,6 +628,8 @@ function ParkingPage() {
       fetch(`${dockBase}/api/robot/motor/stop`, { method: "POST" }),
       fetch(`${dockBase}${LINE_BASE}/stop`, { method: "POST" }),
       fetch(`${dockBase}${DOCK_BASE}/stop`, { method: "POST" }),
+      // 로봇 온보드 pose 주차(parkp)도 같이 정지 — 안 그러면 정지 버튼이 안 먹는다.
+      fetch(dockBase + "/api/robot/parkp/stop", { method: "POST" }),
     ]);
   }, [dockBase, robotId]);
 
@@ -582,7 +679,7 @@ function ParkingPage() {
         approach_yaw_deg: (targetYaw * 180) / Math.PI,
         rotate_tol_deg: (APPROACH_YAW_TOL * 180) / Math.PI,
         rotate_timeout_s: APPROACH_YAW_TIMEOUT / 1000,
-        manage_nav2: true,
+        manage_nav2: false,
       },
       APPROACH_YAW_TIMEOUT + 4000,
     );
@@ -642,6 +739,10 @@ function ParkingPage() {
     const W = frame.width;
     const H = frame.height;
     ctx.clearRect(0, 0, W, H);
+    // 카메라가 180° 돌려 장착돼 있어 영상에 rotate(180deg) 를 건다.
+    // 오버레이는 CSS 변환을 안 받으므로(글자가 뒤집히면 안 되니까) 좌표를 직접 뒤집어
+    // 영상과 같은 '표시 공간'에 그린다:  가로 MX(u)=W-u,  세로 H-cy.
+    const MX = (u: number) => W - u;
 
     // 로봇 진행축(화면 중앙 세로 기준선)
     ctx.strokeStyle = "rgba(255,255,255,0.35)";
@@ -653,18 +754,33 @@ function ParkingPage() {
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // 검출된 모든 마커 박스
+    // 검출된 모든 마커 박스 — 색이 지정된 마커는 그 색으로 칠하고 색 이름을 라벨에 붙인다.
     for (const m of detect.markers ?? []) {
       const side = m.side_px;
-      const x = m.cx - side / 2;
+      const x = MX(m.cx) - side / 2;
       const y = H - m.cy - side / 2;
       const selected = targetMarkerId == null || m.id === targetMarkerId;
-      ctx.strokeStyle = selected ? "#22c55e" : "#f59e0b";
+      // 실시간 감지 색(liveColors) 우선, 없으면 지정 매핑(colorMap)
+      const liveColor = liveColors[m.id];
+      const mappedColor = colorMap.find((c) => c.marker_id === m.id)?.color;
+      const shownColor = liveColor ?? mappedColor;
+      const shownHex = shownColor ? PARK_COLORS.find((c) => c.name === shownColor)?.hex : undefined;
+      ctx.strokeStyle = shownHex ?? (selected ? "#22c55e" : "#f59e0b");
       ctx.lineWidth = selected ? 4 : 2;
       ctx.strokeRect(x, y, side, side);
+      // 색이 감지/지정된 마커: 반투명 채움으로 강조
+      if (shownHex) {
+        ctx.save();
+        ctx.globalAlpha = 0.18;
+        ctx.fillStyle = shownHex;
+        ctx.fillRect(x, y, side, side);
+        ctx.restore();
+      }
       ctx.fillStyle = ctx.strokeStyle;
       ctx.font = "bold 18px monospace";
-      ctx.fillText("id " + m.id, x, Math.max(18, y - 8));
+      // 실시간 감지 색은 "색명↻", 지정 매핑만 있으면 "색명" 으로 표시
+      const colorLabel = liveColor ? ` · ${liveColor}↻` : mappedColor ? ` · ${mappedColor}` : "";
+      ctx.fillText("id " + m.id + colorLabel, x, Math.max(18, y - 8));
     }
 
     // 4-1) 라인 주차 가이드 — 간결판 (복잡하다는 피드백으로 재설계)
@@ -683,7 +799,7 @@ function ParkingPage() {
       const zNear = Bg / (H - 2 - Ag); // 화면 최하단이 보는 가장 가까운 바닥 (≈14cm)
       const zWall = wallCm != null ? Math.max(wallCm / 100, zNear + 0.03) : 0.6;
       const fx = CAM_FX_PX * (W / 480); // fx 캘리브레이션은 480px 프레임 기준
-      const uOf = (x: number, z: number) => W / 2 + (fx * x) / z;
+      const uOf = (x: number, z: number) => W / 2 - (fx * x) / z;   // MX 와 동일한 가로 반전
       const vOf = (z: number) => Ag + Bg / z;
       const railX = PINKY_WIDTH_M / 2;
       // 근접도에 따라 전체 톤 하나로: 여유 초록 / 20cm 이내 노랑 / 10cm 이내 빨강
@@ -753,7 +869,7 @@ function ParkingPage() {
     let distCm: number | null, latCm: number | null, bearing: number, yawDeg: number | null;
     if (tele && (typeof tele.ex === "number" || typeof tele.offset === "number")) {
       ex = (typeof tele.ex === "number" ? tele.ex : tele.offset) as number;
-      mx = (W / 2) * (1 + ex);
+      mx = MX((W / 2) * (1 + ex));
       my = H * 0.4; // 텔레메트리에는 세로 좌표가 없어 화면 40% 높이에 가상 배치
       sidePx = typeof tele.dist === "number" && (tele.dist as number) < 1 ? (tele.dist as number) * W : 30;
       distCm = typeof tele.wall_cm === "number" ? (tele.wall_cm as number)
@@ -763,7 +879,7 @@ function ParkingPage() {
       yawDeg = typeof tele.yaw_deg === "number" ? (tele.yaw_deg as number) : null;
     } else if (targetMarker) {
       // 대기 중이거나(폴링 detect) 도킹 초기라 텔레메트리에 아직 ex가 없을 때
-      mx = targetMarker.cx;
+      mx = MX(targetMarker.cx);
       my = H - targetMarker.cy;
       sidePx = targetMarker.side_px;
       ex = targetMarker.ex;
@@ -780,8 +896,10 @@ function ParkingPage() {
     const centered = Math.abs(ex) <= 0.10;
     const guideColor = centered ? "#22c55e" : Math.abs(ex) <= 0.35 ? "#eab308" : "#ef4444";
 
-    // 1) 마커 중심축 — 이 세로선 위에 로봇 진행축을 맞추면 정면 주차
-    ctx.strokeStyle = "rgba(34,211,238,0.9)";
+    // 1) 마커 중심축(가이드 선) — 이 세로선 위에 로봇 진행축을 맞추면 정면 주차.
+    //    색 지정 마커면 그 색으로 가이드 선을 그린다("색상 인식" 시각화).
+    const _axisColorName = colorMap.find((c) => c.marker_id === targetMarkerId)?.color;
+    ctx.strokeStyle = (_axisColorName && PARK_COLORS.find((c) => c.name === _axisColorName)?.hex) || "rgba(34,211,238,0.9)";
     ctx.lineWidth = 2;
     ctx.setLineDash([8, 5]);
     ctx.beginPath();
@@ -900,7 +1018,7 @@ function ParkingPage() {
       W / 2, H - 12,
     );
     ctx.textAlign = "left";
-  }, [activeStatus, detect, lineDetect, lineStatus, phase, targetMarkerId, targetMarker, running]);
+  }, [activeStatus, detect, lineDetect, lineStatus, phase, targetMarkerId, targetMarker, running, colorMap, liveColors]);
 
   // 도킹마커(id=dockId)가 보일 때까지 회전 — 브라우저 개루프 펄스 제거, 로봇 park_dock 마커 회전에 위임.
   // park_dock._rotate_to_marker: 마커가 안 보이면 스캔 회전, 보이면 정면 정렬 후 자동 정지(로봇 로컬 폐루프).
@@ -917,7 +1035,7 @@ function ParkingPage() {
         marker_dict: dictionary,
         marker_len_m: MARKER_LEN_M,
         rotate_timeout_s: 20,
-        manage_nav2: true,
+        manage_nav2: false,
       },
       24000,
     );
@@ -931,7 +1049,241 @@ function ParkingPage() {
     return ok;
   }, [runParkPrimitive, fetchDetect, dictionary]);
 
-  const startDock = useCallback(async (markerIdOverride?: number | null) => {
+  // ── pose 기반 기하 주차 ────────────────────────────────────────────────────
+  // 한 스텝 분량의 행동을 pose 로부터 계산한다. 순수 함수 — 모터를 건드리지 않는다.
+  // 반환: {kind:"done"} | {kind:"turn", deg} | {kind:"move", m}  (+ 표시용 계측값)
+  const planPoseDockStep = useCallback((p: MarkerPose) => {
+    const { x_m: x, z_m: z } = p;
+    // 법선(nx,nz)이 없으면 마커가 어느 쪽을 보는지 알 수 없다 → 축 보정은 포기하고
+    // '마커 정면 정렬 + 직진'만 수행한다(axisLat=0 으로 두면 아래 ① 분기로 간다).
+    const hasNormal = typeof p.nx === "number" && typeof p.nz === "number";
+    const nx = p.nx ?? 0;
+    const nz = p.nz ?? -1;
+    const axisLat = hasNormal ? x * nz - z * nx : 0;        // 마커 정면축 횡오프셋(+ = 축의 오른쪽)
+    const markerBearing = Math.atan2(x, Math.max(z, 1e-3)); // 마커 방위각(+ = 오른쪽)
+    // ★ 마커까지의 거리는 z(전방 성분)가 아니라 range = hypot(x,z) 를 써야 한다.
+    //   z 는 로봇이 제자리 회전만 해도 값이 변해서(물리 거리는 그대로인데) 경유점 W 가 따라 움직이고,
+    //   그 결과 turn -22° → +12° → -6° 처럼 좌우로 진동한다(시뮬레이션에서 확인, 2026-07-29).
+    //   range 는 회전 불변이라 W 가 고정되고 계획이 수렴한다.
+    const range = Math.hypot(x, z);
+    // 직진 거리 상한 — 이동 후에도 마커가 화각 안에 남도록. minLegM 은 항상 보장한다.
+    const legLimit = (m: number) =>
+      Math.max(POSE_DOCK.minLegM, Math.min(m, z - Math.abs(x) / Math.tan((POSE_DOCK.keepMoveDeg * Math.PI) / 180)));
+    const info = {
+      axisLat,
+      markerBearingDeg: (markerBearing * 180) / Math.PI,
+      distM: range,
+      markerYawDeg: p.yaw_deg,
+    };
+    // ① 정면축 위에 올라와 있으면 → 마커를 정면으로 맞춘 뒤 직진 접근
+    if (Math.abs(axisLat) <= POSE_DOCK.axisTolM) {
+      const bearingDeg = info.markerBearingDeg;
+      if (Math.abs(bearingDeg) > POSE_DOCK.bearingTolDeg && Math.abs(bearingDeg) >= POSE_DOCK.minTurnDeg) {
+        return { kind: "turn" as const, deg: bearingDeg, reason: "마커 정면 정렬", info };
+      }
+      const remain = range - POSE_DOCK.targetDistM;
+      if (remain <= POSE_DOCK.minLegM) return { kind: "done" as const, reason: "목표 거리 도달", info };
+      return { kind: "move" as const, m: legLimit(Math.min(remain, POSE_DOCK.maxLegM)), reason: "정면축 직진 접근", info };
+    }
+    // ② 축에서 벗어나 있으면 → 마커 정면축 위 경유점 W 로 향한다
+    const dHold = Math.max(0, Math.min(range - POSE_DOCK.targetDistM, POSE_DOCK.standoffM));
+    const wx = x + nx * dHold;
+    const wz = z + nz * dHold;
+    const th1raw = (Math.atan2(wx, Math.max(wz, 1e-3)) * 180) / Math.PI;
+    const wRange = Math.hypot(wx, wz);
+    // 회전 후 마커 방위각은 (markerBearingDeg − 회전량) 이 된다. 이 값이 ±keepInViewDeg 안에
+    // 남도록 회전량을 자른다 → 마커가 화각 밖으로 나가지 않는다. 잘린 만큼은 다음 스텝에서 이어 돈다.
+    const keep = POSE_DOCK.keepInViewDeg;
+    const mb = info.markerBearingDeg;
+    const th1 = Math.max(mb - keep, Math.min(mb + keep, th1raw));
+    if (Math.abs(th1) >= POSE_DOCK.minTurnDeg) {
+      const clipped = Math.abs(th1 - th1raw) > 0.5;
+      return {
+        kind: "turn" as const,
+        deg: th1,
+        reason: clipped ? `경유점 W 방향으로(화각 유지로 ${th1raw.toFixed(0)}°→${th1.toFixed(0)}° 제한)` : "경유점 W 방향으로",
+        info: { ...info, wx, wz, wRange },
+      };
+    }
+    return {
+      kind: "move" as const,
+      m: legLimit(Math.min(wRange, POSE_DOCK.maxLegM)),
+      reason: "경유점 W 로 직진",
+      info: { ...info, wx, wz, wRange },
+    };
+  }, []);
+
+  // 회전/직진 프리미티브. 둘 다 블로킹(완료 후 status:"done")이며 양 바퀴 대칭 구동이라
+  // 정지마찰 문제가 없다. angle 음수 = 우회전(시계방향) — 방위각이 +(오른쪽)면 부호를 뒤집는다.
+  const robotRotate = useCallback(async (bearingDeg: number) => {
+    const res = await fetch(dockBase + "/api/robot/rotate", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ angle: -bearingDeg, speed: POSE_DOCK.turnSpeed }),
+    });
+    if (!res.ok) throw new Error(`회전 실패: HTTP ${res.status}`);
+    await fetch(dockBase + "/api/robot/motor/stop", { method: "POST" }).catch(() => undefined);
+    await new Promise((r) => window.setTimeout(r, 350)); // 관성 정지 + 카메라 프레임 갱신 대기
+  }, [dockBase]);
+
+  const robotForward = useCallback(async (meters: number) => {
+    const res = await fetch(dockBase + "/api/robot/move", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ direction: "forward", distance: meters, speed: POSE_DOCK.moveSpeed }),
+    });
+    if (!res.ok) throw new Error(`직진 실패: HTTP ${res.status}`);
+    await fetch(dockBase + "/api/robot/motor/stop", { method: "POST" }).catch(() => undefined);
+    await new Promise((r) => window.setTimeout(r, 350));
+  }, [dockBase]);
+
+  // ── 로봇 온보드 pose 주차(parkp) — 권장 경로 ────────────────────────────────
+  // 배포된 로봇에만 있다(2026-07-29 기준 로봇2). 없으면 404 → 폴백 판단에 쓴다.
+  const parkPAvailable = useCallback(async () => {
+    try {
+      const res = await fetch(dockBase + "/api/robot/parkp/status");
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }, [dockBase]);
+
+  // 시작만 하고, 진행 상황은 로봇 /parkp/status 를 폴링해 화면에 옮긴다.
+  // 브라우저가 죽어도 로봇이 자기 타임아웃(timeout_s)으로 스스로 멈춘다.
+  const startParkP = useCallback(async (markerIdOverride?: number | null) => {
+    const id = markerIdOverride ?? targetMarkerId ?? dockFallbackRef.current;
+    setPhase("docking");
+    dockStartedRef.current = true;
+    setMessage(`id ${id} 마커 · 로봇 온보드 pose 기하 주차 시작`);
+    const res = await fetch(dockBase + "/api/robot/parkp/start", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        marker_id: id,
+        dictionary,
+        marker_len_m: MARKER_LEN_M,
+        target_distance_m: POSE_DOCK.targetDistM,
+        standoff_m: POSE_DOCK.standoffM,
+        // ★ UI '벽 정지거리(cm)' 를 반드시 넘긴다. 안 넘기면 로봇 기본값 8cm 가 쓰여
+        //   화면에 3cm 로 설정해 놓고 8cm 에서 서 버린다(2026-07-29 실측).
+        //   로봇 ParkPConfig 제약: target_wall_cm 3~80, slow_wall_cm 5~120 이고
+        //   감속 시작점은 정지 거리보다 확실히 커야 한다.
+        use_wall_sensor: true,
+        target_wall_cm: Math.max(3, wallTargetCm),
+        slow_wall_cm: Math.max(5, Math.max(3, wallTargetCm) + 8),
+        // UI '전진/후진 상한' 도 그대로 전달 (로봇 제약 0.02~1.0)
+        lin_max: Math.min(1.0, Math.max(0.02, linMax)),
+        // UI '전면/후면 목표' 는 마커 크기 비율 기준값 — 카메라 미캘리브레이션 시의
+        // 대체 제어(target_size)에만 쓰인다. 캘리브레이션이 있으면 target_distance_m 이 우선.
+        target_size: Math.min(0.95, Math.max(0.05, activeTarget)),
+        // min_drive / stall_pwm / bearing_limit_deg / turn_pulse_s 는 로봇 기본값을 쓴다.
+        // 실측 근거는 parkp.py 의 _drive 주석 참고.
+      }),
+    });
+    if (!res.ok) {
+      let detail = "";
+      try {
+        const body = await res.json();
+        detail = typeof body?.detail === "string" ? ` · ${body.detail}` : "";
+      } catch { /* 본문 없음 */ }
+      throw new Error(`parkp 시작 실패: HTTP ${res.status}${detail}`);
+    }
+    // 상태 폴링 — 로봇이 끝내거나(running=false) 사용자가 정지할 때까지
+    for (let i = 0; i < 600; i += 1) {
+      await new Promise((r) => window.setTimeout(r, 400));
+      type ParkPState = { running?: boolean; phase?: string; message?: string; telemetry?: Record<string, unknown> };
+      let st: ParkPState | null = null;
+      try {
+        // /parkp/status 는 상태를 평평하게 돌려준다({running, phase, ...}).
+        // /dock/status 처럼 {state:{...}} 로 감싸는 형태도 있어 둘 다 받는다.
+        const body = await (await fetch(dockBase + "/api/robot/parkp/status")).json();
+        st = (body?.state ?? body ?? null) as ParkPState | null;
+      } catch { continue; }
+      if (!st) continue;
+      const t = st.telemetry ?? {};
+      const bits = [
+        typeof t.dist === "number" ? `거리 ${t.dist.toFixed(2)}m` : null,
+        typeof t.axis_lat === "number" ? `축이탈 ${t.axis_lat.toFixed(3)}m` : null,
+        typeof t.bearing_deg === "number" ? `방위 ${t.bearing_deg.toFixed(1)}°` : null,
+        typeof t.left === "number" && typeof t.right === "number" ? `L${t.left}/R${t.right}` : null,
+      ].filter(Boolean).join(" · ");
+      setMessage(`[${st.phase}] ${st.message}${bits ? " · " + bits : ""}`);
+      if (st.running === false) {
+        setPhase(st.phase === "done" ? "done" : "error");
+        return;
+      }
+    }
+    throw new Error("parkp 상태 폴링 시간 초과");
+  }, [activeTarget, dockBase, dictionary, linMax, targetMarkerId, wallTargetCm]);
+
+  // pose 기하 주차 본체(브라우저 폴백). 매 스텝 pose 를 다시 재서 재계획한다.
+  const startPoseDock = useCallback(async (markerIdOverride?: number | null) => {
+    const wantId = markerIdOverride ?? targetMarkerId;
+    setPhase("docking");
+    dockStartedRef.current = true;
+    // 마커 기억: 마지막으로 본 방위각과, 그 뒤로 우리가 명령한 회전량의 합.
+    // 놓쳤을 때 현재 방위각 ≈ (마지막 방위각 − 그 뒤 회전량) 으로 추정해 되돌린다.
+    // 우리가 회전을 직접 명령하므로 odom 없이도 추정이 된다.
+    let lastSeenBearingDeg: number | null = null;
+    let turnedSinceSeenDeg = 0;
+
+    const findMarker = async (): Promise<Marker> => {
+      const det = await fetchDetect();
+      const hit = (det?.markers ?? []).find((m) => wantId == null || m.id === wantId) ?? null;
+      if (hit) return hit;
+      if (lastSeenBearingDeg == null) {
+        throw new Error(wantId == null ? "마커가 보이지 않습니다." : `id ${wantId} 마커가 보이지 않습니다.`);
+      }
+      // 기억을 이용한 복구: 추정 방위각으로 되돌린 뒤, 안 되면 좌우로 조금씩 훑는다.
+      for (let t = 0; t < POSE_DOCK.lostRetries; t += 1) {
+        const guess = lastSeenBearingDeg - turnedSinceSeenDeg;
+        const scan = t === 0 ? 0 : (t % 2 === 1 ? 1 : -1) * POSE_DOCK.lostScanDeg * Math.ceil(t / 2);
+        const back = guess + scan;
+        setMessage(`마커 놓침 — 마지막으로 본 방향(추정 ${guess.toFixed(0)}°)으로 ${back >= 0 ? "우" : "좌"} ${Math.abs(back).toFixed(0)}° 되돌리는 중 (${t + 1}/${POSE_DOCK.lostRetries})`);
+        if (Math.abs(back) >= 1) {
+          await robotRotate(back);
+          turnedSinceSeenDeg += back;
+        }
+        const again = await fetchDetect();
+        const found = (again?.markers ?? []).find((m) => wantId == null || m.id === wantId) ?? null;
+        if (found) {
+          setMessage(`마커 재획득 (방위 ${((Math.atan2(found.pose?.x_m ?? 0, Math.max(found.pose?.z_m ?? 1, 1e-3)) * 180) / Math.PI).toFixed(1)}°)`);
+          return found;
+        }
+      }
+      throw new Error(`마커를 놓쳤고 마지막으로 본 방향(추정 ${(lastSeenBearingDeg - turnedSinceSeenDeg).toFixed(0)}°)으로 되돌려도 못 찾았습니다.`);
+    };
+
+    for (let step = 1; step <= POSE_DOCK.maxSteps; step += 1) {
+      const marker = await findMarker();
+      if (!marker.pose) {
+        // 카메라 캘리브레이션이 없으면 6-DOF 를 못 구한다 → 기존 ex 기반 도킹으로 넘긴다.
+        throw new Error("카메라 캘리브레이션이 없어 pose(x,z,yaw)를 못 구합니다. '아르코만' 대신 기존 도킹을 쓰세요.");
+      }
+      const plan = planPoseDockStep(marker.pose);
+      const i = plan.info;
+      // 마커를 봤으니 기억 갱신 — 이후 놓치면 이 방위각에서 명령한 회전량을 빼서 되돌린다.
+      lastSeenBearingDeg = i.markerBearingDeg;
+      turnedSinceSeenDeg = 0;
+      const head = `[${step}/${POSE_DOCK.maxSteps}] 거리 ${i.distM.toFixed(2)}m · 축이탈 ${i.axisLat.toFixed(3)}m · 마커방위 ${i.markerBearingDeg.toFixed(1)}° · 마커yaw ${i.markerYawDeg.toFixed(1)}°`;
+      if (plan.kind === "done") {
+        setPhase("done");
+        setMessage(`${head} → 주차 완료 (${plan.reason})`);
+        return;
+      }
+      if (plan.kind === "turn") {
+        setMessage(`${head} → 제자리 회전 ${plan.deg > 0 ? "우" : "좌"} ${Math.abs(plan.deg).toFixed(1)}° (${plan.reason})`);
+        await robotRotate(plan.deg);
+        turnedSinceSeenDeg += plan.deg;
+      } else {
+        setMessage(`${head} → 직진 ${plan.m.toFixed(2)}m (${plan.reason})`);
+        await robotForward(plan.m);
+      }
+    }
+    throw new Error(`${POSE_DOCK.maxSteps}스텝 안에 수렴하지 못했습니다. 마커/조명 상태를 확인하세요.`);
+  }, [fetchDetect, planPoseDockStep, robotForward, robotRotate, targetMarkerId]);
+
+  const startDock = useCallback(async (markerIdOverride?: number | null, opts?: { skipGuide?: boolean }) => {
     const dockMarkerId = markerIdOverride ?? targetMarkerId;
     const cfg: Record<string, unknown> = {
       dictionary,
@@ -949,7 +1301,11 @@ function ParkingPage() {
       steer_kd: 0,
       steer_deadband: 0.012,
       steer_ang_min: 0.025,
-      min_drive: 22,
+      // ★ 정지마찰 하한(peak 기준). _scale_min_drive 가 peak 만 올리므로, 안쪽 바퀴(= peak * r)까지
+      //   정지마찰(≈32)을 넘기려면 peak 에 여유가 필요하다. r≥0.75 조합 기준 45*0.75≈34 로 둘 다 넘긴다.
+      //   (22 → 아예 안 움직임 / 32 + r=0.2 → 안쪽 6 으로 stall, 둘 다 2026-07-29 실측 확인)
+      //   속도가 과해지는 건 move_pulse_s/move_pause_s 의 펄스 듀티로 억제한다.
+      min_drive: 45,
       ex_lpf_alpha: 0.45,
       wall_lpf_alpha: 0.35,
       move_pulse_s: 0.10,
@@ -981,15 +1337,43 @@ function ParkingPage() {
       rear_turn_min_drive: 24,
       approach: mode,
       use_wall_sensor: true,
+      manage_nav2: false,   // 기본값: 어떤 도킹이든 nav2 를 끄지 않는다(AMCL 유지)
     };
-    // 도킹 가능한 마커: id를 지정했으면 그 id, 아니면 유도마커(2~5)를 제외한 마커(= 도킹마커 1).
+    // 색 주차(skipGuide): 옆으로 벗어난 마커도 "제자리 회전(turn-and-stop)" 없이
+    // 곡선으로 곧장 접근하도록 조향 허용범위를 넓히고 정렬-회전 구간을 사실상 제거한다.
+    if (opts?.skipGuide) {
+      Object.assign(cfg, {
+        steer_ex_tol: 0.9,    // 로봇 허용 최대. 이 범위 안이면 강조향/회전 대신 곡선 조향
+        align_ex_tol: 0.98,   // 로봇 허용 최대. 정렬(turn-and-stop) 구간 최소화
+        // ★★ 이 로봇의 하드웨어 제약 — 바퀴 하나라도 PWM 이 정지마찰(≈32) 밑이면 로봇이 안 움직인다.
+        //    로봇: left=(lin-ang)*MAX, right=(lin+ang)*MAX 이고 _scale_min_drive 는 **peak 만**
+        //    min_drive 로 끌어올린다. 안쪽 바퀴 비율 r=(lin-|ang|)/(lin+|ang|) 는 그대로 남으므로
+        //    안쪽 = min_drive * r 이 stall 밑이면 그냥 정지한다.
+        //    실측(2026-07-29): lin 0.045 / ang 0.03 → r=0.2 → L=32,R=6 → 12초간 완전 정지.
+        //    r ≥ 0.75 를 만족하려면 |ang| ≤ lin/7 ≈ 0.006 (lin 0.045 기준).
+        steer_ang_max: 0.006,
+        steer_ang_min: 0,     // 최소 조향은 0 → 중앙일 땐 강제 회전 안 함(살짝 우회전 방지)
+        lin_max: 0.13,        // 전진을 조향보다 우세하게(제자리 회전 방지) + 진전 없음(blocked) 방지
+        move_pulse_s: 0.25,   // 전진 펄스 / 정지 → 실측 가능한 만큼 앞으로 이동
+        move_pause_s: 0.3,
+        slow_wall_cm: 12,     // 근접 감속 시작점을 25→12cm 로 낮춰 20cm 대에서 정상 접근(기어감 방지)
+        search: false,               // 마커 상실 시 회전 탐색 금지
+        lost_reacquire_turn_speed: 0, // 마커 놓쳐도 '재획득 회전' 안 함 → 제자리 정지(회전 없음)
+        pose_center_enable: false,   // ★ ㄱ자 주차(마커 정면까지 제자리 회전) 끔 → ex 조향으로 전진하며 접근
+        pose_axis_enable: false,
+        manage_nav2: false,          // ★★ nav2 를 껐다 켜지 않는다 → AMCL/위치추정 유지 → 주차 후 목표주행 정상
+      });
+    }
+    // 도킹 가능한 마커: id를 지정했으면 그 id, 아니면 사이트에서 유도마커로 설정한 id 를 제외한 마커.
     // 유도마커는 방향 안내용일 뿐 절대 도킹 대상이 아니다.
-    const isDockable = (m: { id: number }) => (dockMarkerId != null ? m.id === dockMarkerId : GUIDE_TURN_TO_DOCK[m.id] == null);
+    const guideMap = guideTurnRef.current;
+    const isDockable = (m: { id: number }) => (dockMarkerId != null ? m.id === dockMarkerId : guideMap[m.id] == null);
     let freshDetect = await fetchDetect();
     let freshMarker = (freshDetect?.markers ?? []).find(isDockable) ?? null;
-    // 도킹마커가 안 보이고 유도마커(2~5)가 보이면: 우측 회전으로 도킹마커를 시야에 넣는다
-    if (!freshMarker && (freshDetect?.markers ?? []).some((m) => GUIDE_TURN_TO_DOCK[m.id] != null)) {
-      const oriented = await orientToDockViaGuide(dockMarkerId ?? PARKING_DOCK_MARKER_ID);
+    // 도킹마커가 안 보이고 유도마커가 보이면: 우측 회전으로 도킹마커를 시야에 넣는다.
+    // 단 skipGuide(색 주차 등)면 회전 없이 발견한 그 마커로 바로 접근한다.
+    if (!opts?.skipGuide && !freshMarker && (freshDetect?.markers ?? []).some((m) => guideMap[m.id] != null)) {
+      const oriented = await orientToDockViaGuide(dockMarkerId ?? dockFallbackRef.current);
       if (oriented) {
         freshDetect = await fetchDetect();
         freshMarker = (freshDetect?.markers ?? []).find(isDockable) ?? null;
@@ -997,6 +1381,59 @@ function ParkingPage() {
     }
     if (!freshMarker) {
       throw new Error(dockMarkerId == null ? "ArUco 마커가 감지되지 않습니다." : `ArUco id ${dockMarkerId} 마커가 감지되지 않습니다.`);
+    }
+    // 마커가 화면 끝에 있어도 에러로 막지 않는다 — 마커를 보고 P 제어로 붙인다.
+    //
+    // ⚠️ 회전 여부는 ex 가 아니라 '실제 방위각'(markerBearingDeg: pose 의 atan2, 없으면 fx=471 환산)
+    //    으로 판단한다. 수평 반화각이 27° 뿐인 좁은 화각이라 ex 는 금방 포화된다 — 2026-07-29 실측에서
+    //    19° 밖에 안 틀어진 마커가 ex -0.81 로 찍혔고, ex 로 판단해 제자리 회전을 걸었더니
+    //    바로 앞 마커를 두고 헛돌았다(yaw 9.9°→33.9°, 마커 80회 로스트).
+    const bearingDeg = Math.abs(markerBearingDeg(freshMarker));
+    // 진짜로 크게 틀어져 있을 때만(≥ PRE_ROTATE_BEARING_DEG) 제자리 회전으로 중앙에 넣는다.
+    // 그 미만이면 회전 없이 곧장 P 제어 조향으로 접근한다 — 앞에 있는데 도는 일이 없도록.
+    if (opts?.skipGuide && bearingDeg >= PRE_ROTATE_BEARING_DEG) {
+      const alignId = freshMarker.id;
+      setMessage(`방위각 ${bearingDeg.toFixed(0)}° (ex ${freshMarker.ex.toFixed(2)}) · id ${alignId} 마커 쪽으로 P 회전 중(전진 없음)`);
+      // ⚠️ 값은 로봇 ParkConfig 의 pydantic 범위 안이어야 한다(넘기면 HTTP 422):
+      //    rotate_speed 0.03~0.5 / rotate_timeout_s 1~60 / marker_center_tol 0.01~0.3
+      await runParkPrimitive(
+        "rotate",
+        {
+          rotate_ref: "marker",
+          marker_id: alignId,
+          marker_dict: dictionary,
+          marker_len_m: MARKER_LEN_M,
+          marker_center_tol: 0.15,  // 완전 정면까지 안 돌려도 됨 — 조향 구간에 들어오면 충분
+          rotate_speed: 0.12,       // 화면 끝 마커를 놓치지 않게 천천히
+          // ★ 정지마찰. 로봇 park_dock 기본값 26 으로는 20초 내내 ex 가 안 변했다(실측 2026-07-29).
+          //   로봇 aruco_dock._MIN_DRIVE = 32 가 코드가 선언한 하한이고, 제자리 회전은 직진보다
+          //   토크가 더 필요하므로 여유를 둬 40 으로 보낸다. (허용 범위 0~70)
+          rotate_min_drive: 45,   // 제자리 회전은 양 바퀴 ±45 → 둘 다 정지마찰(≈32) 초과
+          rotate_timeout_s: 20,
+          manage_nav2: false,
+        },
+        24000,
+      );
+      freshDetect = await fetchDetect();
+      freshMarker = (freshDetect?.markers ?? []).find((m) => m.id === alignId) ?? null;
+      if (!freshMarker) {
+        throw new Error(`정렬 회전 중 id ${alignId} 마커를 놓쳤습니다. 로봇을 마커 쪽으로 조금 돌려 두고 다시 시작하세요.`);
+      }
+      setMessage(`정렬 완료 (ex ${freshMarker.ex.toFixed(2)}) · P 제어 주행으로 접근합니다`);
+    }
+    // 회전을 안 걸고 그대로 접근하는 경우, 중심오차가 크면 조향 P 이득만 키워 준다.
+    // (전진하는 동안 마커가 프레임 밖으로 나가 로스트되는 걸 막는다 — 실측에서 lost 80회 발생)
+    // 중심오차가 작을 때는 기존의 '살살 곡선 접근' 튜닝을 그대로 둔다.
+    // ⚠️ 로봇 ParkConfig 상한: steer_ex_tol ≤ 0.9 / align_ex_tol ≤ 0.98 / steer_ang_max ≤ 0.3
+    if (opts?.skipGuide && Math.abs(freshMarker.ex) > DIRECT_PARK_EX_WARN) {
+      Object.assign(cfg, {
+        steer_ex_tol: 0.9,    // 로봇 허용 최대 — 옆으로 벗어난 마커도 '곡선 조향' 구간으로 처리
+        steer_kp: 0.30,       // 중심오차를 빨리 줄이도록 P 이득 상향(기본 0.22). 상한은 아래 ang_max.
+        // 위와 같은 이유로 조향 상한은 lin/7 을 넘기지 않는다. 크게 틀어진 건 조향이 아니라
+        // 접근 전 제자리 회전(PRE_ROTATE_BEARING_DEG)으로 처리한다 — 이 구동계는 저속 곡선이 안 된다.
+        steer_ang_max: 0.006,
+      });
+      setMessage(`방위각 ${bearingDeg.toFixed(0)}° · 회전 없이 P 제어 조향으로 접근합니다 (ex ${freshMarker.ex.toFixed(2)})`);
     }
     const depthText = typeof freshMarker.pose?.z_m === "number" ? ` · 거리 ${freshMarker.pose.z_m.toFixed(2)} m` : "";
     setPhase("docking");
@@ -1013,7 +1450,14 @@ function ParkingPage() {
       let detail = "";
       try {
         const body = await res.json();
-        detail = typeof body?.detail === "string" ? ` · ${body.detail}` : "";
+        if (typeof body?.detail === "string") {
+          detail = ` · ${body.detail}`;
+        } else if (Array.isArray(body?.detail)) {
+          // FastAPI 422: detail 은 문자열이 아니라 배열 → 어떤 필드가 왜 튕겼는지 보여준다.
+          detail = " · " + body.detail
+            .map((d: { loc?: unknown[]; msg?: string }) => `${(d.loc ?? []).slice(1).join(".")}: ${d.msg ?? ""}`)
+            .join(", ");
+        }
       } catch {
         try {
           const raw = await res.text();
@@ -1025,35 +1469,35 @@ function ParkingPage() {
       throw new Error(`ArUco 주차 시작 실패: HTTP ${res.status}${detail}`);
     }
     setArucoStatus((prev) => ({ ...(prev ?? { telemetry: {} }), running: true, phase: "starting", message: "ArUco 정밀 주차 시작 중" }));
-  }, [activeTarget, dictionary, dockBase, fetchDetect, linMax, mode, orientToDockViaGuide, targetMarkerId, wallTargetCm]);
+  }, [activeTarget, dictionary, dockBase, fetchDetect, linMax, mode, orientToDockViaGuide, runParkPrimitive, targetMarkerId, wallTargetCm]);
 
   const startLineDock = useCallback(async (wallOverrideCm?: number) => {
     const first = await fetchDetect();
-    const guide45 = (first?.markers ?? []).find((m) => m.id === 4 || m.id === 5) ?? null;
-    const guide2 = (first?.markers ?? []).find((m) => m.id === 2) ?? null;
+    const guideMap = guideTurnRef.current;
+    // 유도마커 id 는 사이트 설정값(marker_actions.params.guide_turn_deg)에서 온다.
+    // 회전각이 큰(≥90°) 유도마커 = 반대편 진입, 작은 유도마커 = C 방향 진입.
+    const guideSeen = (first?.markers ?? [])
+      .filter((m) => guideMap[m.id] != null)
+      .sort((a, b) => Math.abs(guideMap[b.id]) - Math.abs(guideMap[a.id]))[0] ?? null;
+    const guideDeg = guideSeen ? guideMap[guideSeen.id] : null;
     let wall = Math.max(2, wallOverrideCm ?? wallTargetCm);
 
-    if (guide45) {
-      wall = 3;
-      setMessage("id 4·5 감지 · 180° 우회전 후 라인 주차 시작");
+    if (guideSeen && guideDeg != null) {
+      const reverse = Math.abs(guideDeg) >= GUIDE_TURN_REVERSE_DEG;
+      if (reverse) wall = 3;
+      setMessage(
+        reverse
+          ? `id ${guideSeen.id} 감지 · ${Math.abs(guideDeg)}° 우회전 후 라인 주차 시작`
+          : `id ${guideSeen.id} 감지 · C 방향 ${Math.abs(guideDeg)}° 우회전 후 라인 주차 시작`,
+      );
       const rot = await fetch(dockBase + "/api/robot/rotate", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ angle: -180, speed: NODE_TURN_SPEED }),
+        body: JSON.stringify({ angle: -Math.abs(guideDeg), speed: NODE_TURN_SPEED }),
       });
-      if (!rot.ok) throw new Error("가이드 회전 실패: HTTP " + rot.status);
+      if (!rot.ok) throw new Error((reverse ? "가이드 회전 실패: HTTP " : "C방향 회전 실패: HTTP ") + rot.status);
       await fetch(dockBase + "/api/robot/motor/stop", { method: "POST" }).catch(() => undefined);
-      await new Promise((r) => window.setTimeout(r, 220));
-    } else if (guide2) {
-      setMessage("id 2 감지 · C 방향 45° 우회전 후 라인 주차 시작");
-      const rot = await fetch(dockBase + "/api/robot/rotate", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ angle: -45, speed: NODE_TURN_SPEED }),
-      });
-      if (!rot.ok) throw new Error("C방향 회전 실패: HTTP " + rot.status);
-      await fetch(dockBase + "/api/robot/motor/stop", { method: "POST" }).catch(() => undefined);
-      await new Promise((r) => window.setTimeout(r, 180));
+      await new Promise((r) => window.setTimeout(r, reverse ? 220 : 180));
     }
 
     if (!(await ensureLineVisible())) return;
@@ -1079,7 +1523,7 @@ function ParkingPage() {
       line_end_done_wall_cm: Math.max(5, wall + 2),
       max_lost_s: 8,
       timeout_s: 90,
-      manage_nav2: true,
+      manage_nav2: false,   // nav2 유지 (라인 주차도 nav2 안 끔)
       // IR 3센서 조향 라인트레이싱: 테이프가 좌/우 센서에 걸리면 그쪽으로 보정 조향
       straight_only: false,
       steer_soft: 0.02,
@@ -1111,7 +1555,14 @@ function ParkingPage() {
       let detail = "";
       try {
         const body = await res.json();
-        detail = typeof body?.detail === "string" ? ` · ${body.detail}` : "";
+        if (typeof body?.detail === "string") {
+          detail = ` · ${body.detail}`;
+        } else if (Array.isArray(body?.detail)) {
+          // FastAPI 422: detail 은 문자열이 아니라 배열 → 어떤 필드가 왜 튕겼는지 보여준다.
+          detail = " · " + body.detail
+            .map((d: { loc?: unknown[]; msg?: string }) => `${(d.loc ?? []).slice(1).join(".")}: ${d.msg ?? ""}`)
+            .join(", ");
+        }
       } catch {
         try {
           const raw = await res.text();
@@ -1135,8 +1586,21 @@ function ParkingPage() {
       setMessage("라인 확인 후 마커 감시를 시작합니다.");
       return startLineDock();
     }
-    return startDock();
-  }, [precisionMode, startDock, startLineDock]);
+    // 아르코 직접 주차: pose(6-DOF) 기하 주차.
+    // ★ 판단(검출→기하→제어)은 전부 로봇 온보드 parkp 라우터에서 돈다. 브라우저는 start/stop/status 만.
+    //   제어 루프를 브라우저에 두면 탭을 닫거나 WiFi 가 끊겼을 때 정지를 보장할 수 없고,
+    //   스텝마다 HTTP 왕복이 붙는다. 센서와 모터가 있는 로봇이 판단해야 맞다.
+    // parkp 가 없는 로봇(미배포)이면 브라우저 pose 루프 → 그것도 안 되면 기존 ex 도킹으로 폴백.
+    if (await parkPAvailable()) return startParkP(null);
+    const det = await fetchDetect();
+    const hasPose = (det?.markers ?? []).some((m) => (targetMarkerId == null || m.id === targetMarkerId) && m.pose);
+    if (hasPose) {
+      setMessage("이 로봇엔 parkp 가 없어 브라우저에서 pose 기하로 진행합니다.");
+      return startPoseDock(null);
+    }
+    setMessage("카메라 캘리브레이션 없음 — 기존 ex 기반 도킹으로 진행합니다.");
+    return startDock(null, { skipGuide: true });
+  }, [fetchDetect, parkPAvailable, precisionMode, startDock, startLineDock, startParkP, startPoseDock, targetMarkerId]);
 
   // ── 노드 테스트: 마커 트리거 → 시계방향 정밀 회전 → 회전 완료 후 라인 검출 확인 ──
   // (독립 실행, FSM 미연동) 회전은 로봇 내장 /rotate(odom 폐루프)로 정확히 돌고 자동 정지.
@@ -1226,7 +1690,7 @@ function ParkingPage() {
         slow_wall_cm: Math.max(18, wall + 12),
         line_end_done_wall_cm: Math.max(5, wall + 2),
         max_lost_s: 8, timeout_s: 90,
-        manage_nav2: true,
+        manage_nav2: false,
         rear_finish: false,          // 벽 도달 시 그냥 정지(추가 회전·후진 없음)
       };
       setMessage(`라인 쫓아가기 시작 — 바닥 IR 추종, 벽 ${wall}cm에서 정지`);
@@ -1286,7 +1750,18 @@ function ParkingPage() {
     }
 
     const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
-    const markerIds = [2, 3];
+    // 접근 유도에 쓸 마커 id — 사이트 설정값(유도마커) 중 회전각이 작은(=C 방향) 것들.
+    const guideMap = guideTurnRef.current;
+    const markerIds = Object.keys(guideMap)
+      .map(Number)
+      .filter((id) => Math.abs(guideMap[id]) < GUIDE_TURN_REVERSE_DEG)
+      .sort((a, b) => a - b);
+    const markerLabel = markerIds.length ? `id ${markerIds.join("·")}` : "미설정";
+    if (markerIds.length === 0) {
+      setPhase("error");
+      setMessage("유도 마커가 설정돼 있지 않습니다. '마커 역할 설정'에서 유도 마커 ID를 먼저 지정하세요.");
+      return;
+    }
     let lineStarted = false;
     let markerSeen = false;
     let markerGoalAt = 0;
@@ -1355,7 +1830,7 @@ function ParkingPage() {
         slow_wall_cm: Math.max(18, wall + 12),
         line_end_done_wall_cm: Math.max(5, wall + 2),
         max_lost_s: 8, timeout_s: 90,
-        manage_nav2: true,
+        manage_nav2: false,
         rear_finish: false,
       };
       const res = await fetch(`${dockBase}${LINE_BASE}/start`, {
@@ -1381,7 +1856,7 @@ function ParkingPage() {
     setLineDetect(null);
 
     try {
-      setMessage("로봇2 특수 주차 · E 구역 이동 시작, id 2·3 감시");
+      setMessage(`로봇2 특수 주차 · E 구역 이동 시작, 유도마커(${markerLabel}) 감시`);
       const eRes = await fetch(dockBase + "/api/goto", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -1446,13 +1921,13 @@ function ParkingPage() {
         const eDist = eDistNow;
         const missionIdle = state?.mission?.status === "idle";
         if (!markerSeen && missionIdle && eDist != null && eDist <= LINE_DETECT_GATE_DIST) {
-          setMessage("E 근처 도착 · id 2·3 마커 탐색 중");
+          setMessage(`E 근처 도착 · 유도마커(${markerLabel}) 탐색 중`);
         }
         await sleep(260);
       }
 
       setPhase("error");
-      setMessage(markerSeen ? "id 2·3 접근 중 라인을 찾지 못했습니다." : "E 이동 중 id 2·3 마커를 찾지 못했습니다.");
+      setMessage(markerSeen ? `유도마커(${markerLabel}) 접근 중 라인을 찾지 못했습니다.` : `E 이동 중 유도마커(${markerLabel})를 찾지 못했습니다.`);
     } catch (e) {
       if (!lineStarted) {
         await fetch(dockBase + "/api/robot/motor/stop", { method: "POST" }).catch(() => undefined);
@@ -1817,8 +2292,231 @@ function ParkingPage() {
       fetch(dockBase + "/api/mission/stop", { method: "POST" }),
       fetch(`${dockBase}${DOCK_BASE}/stop`, { method: "POST" }),
       fetch(`${dockBase}${LINE_BASE}/stop`, { method: "POST" }),
+      fetch(dockBase + "/api/robot/parkp/stop", { method: "POST" }),
     ]);
     await recoverNavigation();
+  }
+
+  // ── 색 주차: 색↔마커 매핑 로드/지정 + 색으로 주차(기존 startDock 재사용) ──────────
+  const loadColorMap = useCallback(async () => {
+    try {
+      const list = await adminApi.listMarkerActions();
+      const m = list
+        .map((a) => ({ marker_id: a.marker_id, color: String((a.params as Record<string, unknown> | null)?.park_color ?? "") }))
+        .filter((x) => x.color);
+      setColorMap(m);
+      // 마커 역할(사이트 설정값): 유도마커 회전각 / 기본 도킹마커
+      const guides: Record<number, number> = {};
+      let dockId: number | null = null;
+      for (const a of list) {
+        const p = (a.params ?? {}) as Record<string, unknown>;
+        const deg = Number(p.guide_turn_deg);
+        if (a.enabled !== false && Number.isFinite(deg) && p.guide_turn_deg !== null && p.guide_turn_deg !== "") {
+          guides[a.marker_id] = deg;
+        }
+        if (dockId == null && p.dock_marker === true) dockId = a.marker_id;
+      }
+      setGuideTurnMap(guides);
+      setDockMarkerCfgId(dockId);
+    } catch {
+      /* 매핑 로드 실패 — 무시 */
+    }
+  }, []);
+
+  useEffect(() => {
+    if (canControl) void loadColorMap();
+  }, [canControl, loadColorMap]);
+
+  // 실시간 색 인식: 주행 중이 아닐 때 perceive 를 주기적으로 호출해 마커별 감지 색을 갱신.
+  useEffect(() => {
+    if (!canControl || robotId == null || running) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await adminApi.parkPerceive(robotId);
+        if (cancelled) return;
+        const m: Record<number, string> = {};
+        for (const mk of res.markers ?? []) if (mk.color?.name) m[mk.id] = mk.color.name;
+        setLiveColors(m);
+      } catch {
+        /* perceive 실패 — 무시 */
+      }
+    };
+    void poll();
+    const t = window.setInterval(() => void poll(), 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(t);
+    };
+  }, [canControl, robotId, running]);
+
+  async function assignParkColor(color: string) {
+    const id = markerId.trim() === "" ? null : Number(markerId);
+    if (id == null) {
+      setMessage("먼저 '마커 ID'를 입력한 뒤 색을 지정하세요.");
+      return;
+    }
+    try {
+      const list = await adminApi.listMarkerActions();
+      const cur = list.find((a) => a.marker_id === id);
+      const params: Record<string, unknown> = { ...(cur?.params ?? {}) };
+      if (color) params.park_color = color;
+      else delete params.park_color;
+      await adminApi.upsertMarkerAction(id, {
+        label: cur?.label ?? null,
+        action_type: cur?.action_type && cur.action_type !== "none" ? cur.action_type : "dock",
+        params,
+        enabled: cur?.enabled ?? true,
+      });
+      await loadColorMap();
+      setMessage(`${id}번 마커를 '${color || "색 없음"}'(으)로 지정했어요.`);
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  // ── 마커 역할 설정(사이트에서 지정) ────────────────────────────────────────────
+  // 마커 id 는 현장에서 바뀌므로 코드가 아니라 여기서 지정한 값을 쓴다.
+  // params.guide_turn_deg = 회전각(도) → 유도 마커 / params.dock_marker = true → 기본 도킹 마커
+  const saveMarkerParams = useCallback(async (id: number, patch: Record<string, unknown>) => {
+    const list = await adminApi.listMarkerActions();
+    const cur = list.find((a) => a.marker_id === id);
+    const params: Record<string, unknown> = { ...(cur?.params ?? {}) };
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === undefined || v === null) delete params[k];
+      else params[k] = v;
+    }
+    await adminApi.upsertMarkerAction(id, {
+      label: cur?.label ?? null,
+      action_type: cur?.action_type && cur.action_type !== "none" ? cur.action_type : "dock",
+      params,
+      enabled: cur?.enabled ?? true,
+    });
+    await loadColorMap();
+  }, [loadColorMap]);
+
+  async function saveGuideMarker() {
+    const id = guideFormId.trim() === "" ? null : Number(guideFormId);
+    const deg = Number(guideFormDeg);
+    if (id == null || !Number.isFinite(deg) || deg === 0) {
+      setMessage("유도 마커 ID 와 회전각(도)을 입력하세요.");
+      return;
+    }
+    try {
+      await saveMarkerParams(id, { guide_turn_deg: Math.abs(deg) });
+      setGuideFormId("");
+      setMessage(`${id}번 마커를 유도 마커(회전 ${Math.abs(deg)}°)로 지정했어요.`);
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function removeGuideMarker(id: number) {
+    try {
+      await saveMarkerParams(id, { guide_turn_deg: null });
+      setMessage(`${id}번 마커의 유도 지정을 해제했어요.`);
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function saveDockMarker() {
+    const id = markerId.trim() === "" ? null : Number(markerId);
+    if (id == null) {
+      setMessage("먼저 '마커 ID' 를 입력한 뒤 기본 도킹 마커로 지정하세요.");
+      return;
+    }
+    try {
+      // 기존 기본 도킹 마커는 해제하고 하나만 유지
+      if (dockMarkerCfgId != null && dockMarkerCfgId !== id) {
+        await saveMarkerParams(dockMarkerCfgId, { dock_marker: null });
+      }
+      await saveMarkerParams(id, { dock_marker: true });
+      setMessage(`${id}번 마커를 기본 도킹 마커로 지정했어요.`);
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  // 색 버튼 = 대상 마커 '선택'만. 실제 주차는 '직접 주차' 버튼으로(회전 없이).
+  function parkByColor(color: string) {
+    const hit = colorMap.find((x) => x.color === color);
+    if (!hit) {
+      setMessage(`'${color}'에 지정된 마커가 없어요. 마커 ID 입력 후 색을 지정하세요.`);
+      return;
+    }
+    setMarkerId(String(hit.marker_id));
+    setMessage(`${color} = ${hit.marker_id}번 마커 선택됨. '직접 주차' 또는 '구역이동+주차'를 누르세요.`);
+  }
+
+  // 선택 구역으로 nav2 주행 → 도착하면 nav2 를 끄지 않고(미션만 정지, AMCL 보존)
+  // 이어서 마커+색 정밀 도킹. 사용자 요청 흐름: "A 이동 후 마커+색으로 정밀 주행".
+  async function startColorParkFlow() {
+    const id = markerId.trim() === "" ? null : Number(markerId);
+    if (robotId == null) return;
+    if (id == null) {
+      setMessage("먼저 색 버튼으로 마커를 선택하세요(또는 마커 ID 입력).");
+      return;
+    }
+    const zoneName = zone || DEFAULT_PARKING_ZONE;
+    try {
+      setPhase("navigating");
+      setMessage(`${zoneName} 구역으로 이동 중 (nav2 유지)`);
+      await adminApi.controlGoto(robotId, zoneName, NAV_PORT);
+      // 도착 대기: '목표 근처 실제 도달' 만 도착으로 인정한다.
+      // 미션 idle 은 '완료'일 수도 '주행 실패/미시작'일 수도 있으므로, idle 이어도 목표 근처가
+      // 아니면 도착이 아니다(초반 3.5초는 미션이 아직 시작 전일 수 있어 idle 무시).
+      // 도착 판정: mission.status 는 주행 중에도 idle 로 나와 신뢰 불가 → 실제 pose 로 판단.
+      //  · 목표 근처 도달 → 도착
+      //  · pose 가 바뀌는 동안(주행 중)엔 계속 대기
+      //  · 초반(5초) 이후 로봇이 ~7초간 전혀 안 움직이고 목표도 아니면 → 주행 실패
+      const target = locations[zoneName];
+      const t0 = Date.now();
+      let arrived = false;
+      let lastPose: { x: number; y: number } | null = null;
+      let stuck = 0;
+      while (Date.now() - t0 < ARRIVE_TIMEOUT) {
+        await new Promise((r) => window.setTimeout(r, 700));
+        const st = await adminApi.controlState(robotId, NAV_PORT).catch(() => null);
+        const p = st?.pose;
+        if (p && target && Math.hypot(p.x - target.x, p.y - target.y) <= NAV_ARRIVE_DIST) { arrived = true; break; }
+        if (p) {
+          if (lastPose && Math.hypot(p.x - lastPose.x, p.y - lastPose.y) < 0.008) stuck += 1;
+          else stuck = 0;
+          lastPose = { x: p.x, y: p.y };
+        }
+        if (stuck >= 10 && Date.now() - t0 > 5000) break; // ~7초간 안 움직임 + 목표 아님 → 실패
+      }
+      if (!arrived) {
+        setPhase("error");
+        setMessage(`${zoneName} 로 주행하지 못했어요(로봇이 멈춰 있음). 위치추정·맵·목표를 확인하세요.`);
+        return;
+      }
+      // 목표(미션)만 정지 → nav2 노드는 유지(재시작 X → AMCL 리셋 없음)
+      await adminApi.controlMissionStop(robotId, NAV_PORT).catch(() => undefined);
+      // 도착 직후엔 로봇이 아직 정지·정렬 중이라 마커가 안 잡힐 수 있다.
+      // 잠깐 안정화 대기 후, 넉넉히(약 25초) 재검출하며 기다린다(너무 빨리 포기 방지).
+      setMessage(`${zoneName} 도착 · 자리 잡는 중…`);
+      await new Promise((r) => window.setTimeout(r, 2500));
+      setMessage(`${zoneName} 도착 · 마커 ${id} 탐지 중… (정면에 보이게 두세요)`);
+      let seen = false;
+      for (let i = 0; i < 25; i += 1) {
+        const det = await fetchDetect();
+        if ((det?.markers ?? []).some((m) => m.id === id)) { seen = true; break; }
+        setMessage(`${zoneName} 도착 · 마커 ${id} 탐지 중… (${i + 1}/25)`);
+        await new Promise((r) => window.setTimeout(r, 1000));
+      }
+      if (!seen) {
+        setPhase("error");
+        setMessage(`${zoneName} 근처에서 ${id}번 마커가 아직 안 보여요. 로봇이 마커를 바라보게 둔 뒤 다시 시도하세요.`);
+        return;
+      }
+      setMessage(`${zoneName} 도착 · 마커 ${id} 감지됨 · 정밀 주차 시작 (nav2 유지)`);
+      await startDock(id, { skipGuide: true });
+    } catch (e) {
+      setPhase("error");
+      setMessage(e instanceof Error ? e.message : "색 주차(구역이동) 실패");
+    }
   }
 
   const tele = activeStatus?.telemetry ?? {};
@@ -1887,7 +2585,7 @@ function ParkingPage() {
                 muted
                 playsInline
                 className="absolute inset-0 h-full w-full object-contain"
-                style={{ transform: "scaleY(-1)", opacity: webRtcReady ? 1 : 0.25 }}
+                style={{ transform: "rotate(180deg)", opacity: webRtcReady ? 1 : 0.25 }}
               />
             )}
             {webRtcFailed && (
@@ -1896,7 +2594,7 @@ function ParkingPage() {
                 src={dockBase + CAM_STREAM + "?w=320&q=35&fps=10&e=" + camEpoch}
                 alt="로봇 카메라"
                 className="absolute inset-0 h-full w-full object-contain"
-                style={{ transform: "scaleY(-1)" }}
+                style={{ transform: "rotate(180deg)" }}
                 onError={() => setTimeout(() => setCamEpoch((v) => v + 1), 1000)}
               />
             )}
@@ -2010,6 +2708,135 @@ function ParkingPage() {
                 </Label>
               </div>
 
+              {/* 마커 역할 설정 — 마커 ID 는 현장에서 바뀌므로 코드가 아니라 여기 값을 쓴다 */}
+              <div className="rounded-lg border border-slate-200 bg-white p-3">
+                <div className="mb-2 text-xs font-bold text-slate-600">
+                  마커 역할 설정 <span className="font-normal text-slate-400">— 현장에서 마커 ID 가 바뀌면 여기서 바꾼다</span>
+                </div>
+
+                <div className="mb-2 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500">
+                  <span>기본 도킹 마커: <b className="text-slate-700">{dockMarkerCfgId ?? `${DEFAULT_DOCK_MARKER_ID} (미설정 기본값)`}</b></span>
+                  <button
+                    type="button"
+                    disabled={!canControl || running || markerId.trim() === ""}
+                    onClick={() => void saveDockMarker()}
+                    className="rounded border border-slate-300 px-1.5 py-0.5 text-[10px] text-slate-600 transition hover:bg-slate-50 disabled:opacity-40"
+                  >
+                    마커 {markerId || "?"}번으로 지정
+                  </button>
+                </div>
+
+                <div className="mb-1.5 text-[11px] text-slate-500">
+                  유도 마커 <span className="text-slate-400">(도킹마커 방향 우회전 각도 · {GUIDE_TURN_REVERSE_DEG}° 이상이면 반대편 진입)</span>
+                </div>
+                <div className="mb-2 flex flex-wrap gap-1.5">
+                  {guideIdsAll.length === 0 ? (
+                    <span className="text-[11px] text-amber-600">
+                      설정 없음 — 폴백값 사용 ({Object.entries(DEFAULT_GUIDE_TURN_TO_DOCK).map(([k, v]) => `${k}:${v}°`).join(", ")})
+                    </span>
+                  ) : guideIdsAll.map((id) => (
+                    <span
+                      key={id}
+                      className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-700"
+                    >
+                      id {id} · {Math.abs(guideTurns[id])}°
+                      <button
+                        type="button"
+                        disabled={!canControl || running}
+                        onClick={() => void removeGuideMarker(id)}
+                        className="ml-0.5 rounded px-1 text-[10px] text-slate-400 transition hover:text-rose-600 disabled:opacity-40"
+                        title="유도 지정 해제"
+                      >
+                        ✕
+                      </button>
+                    </span>
+                  ))}
+                </div>
+                <div className="flex items-center gap-1.5 text-[11px] text-slate-500">
+                  <span>마커</span>
+                  <input
+                    className="h-7 w-14 rounded-md border border-slate-300 px-2 text-[11px]"
+                    value={guideFormId}
+                    onChange={(e) => setGuideFormId(e.target.value.replace(/[^\d]/g, ""))}
+                    placeholder="id"
+                    disabled={!canControl || running}
+                  />
+                  <span>번, 회전</span>
+                  <input
+                    className="h-7 w-16 rounded-md border border-slate-300 px-2 text-[11px]"
+                    value={guideFormDeg}
+                    onChange={(e) => setGuideFormDeg(e.target.value.replace(/[^\d]/g, ""))}
+                    placeholder="45"
+                    disabled={!canControl || running}
+                  />
+                  <span>도</span>
+                  <button
+                    type="button"
+                    disabled={!canControl || running || guideFormId.trim() === ""}
+                    onClick={() => void saveGuideMarker()}
+                    className="rounded border border-slate-300 px-1.5 py-0.5 text-[10px] text-slate-600 transition hover:bg-slate-50 disabled:opacity-40"
+                  >
+                    유도 마커로 저장
+                  </button>
+                </div>
+              </div>
+
+              {/* 색 주차 — 색 → 지정된 마커로 도킹(기존 정밀 도킹 재사용) */}
+              <div className="rounded-lg border border-slate-200 bg-white p-3">
+                <div className="mb-2 text-xs font-bold text-slate-600">색 주차 <span className="font-normal text-slate-400">— 색 = 마커 선택, 실행은 '직접 주차'</span></div>
+                <div className="mb-2 flex flex-wrap gap-1.5">
+                  {PARK_COLORS.map((c) => {
+                    const mapped = colorMap.find((x) => x.color === c.name);
+                    return (
+                      <button
+                        key={c.name}
+                        type="button"
+                        disabled={!canControl || running || !mapped}
+                        onClick={() => void parkByColor(c.name)}
+                        className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-semibold transition hover:opacity-90 disabled:opacity-40"
+                        style={{ borderColor: c.hex }}
+                        title={mapped ? `${c.name} → ${mapped.marker_id}번 마커로 주차` : `${c.name}: 지정된 마커 없음`}
+                      >
+                        <span className="inline-block h-3 w-3 rounded-full" style={{ background: c.hex }} />
+                        {c.name}
+                        {mapped ? <span className="text-slate-400">({mapped.marker_id})</span> : null}
+                      </button>
+                    );
+                  })}
+                </div>
+                {/* 선택 구역으로 nav2 이동 → 도착 후 nav2 유지한 채 마커+색 정밀 주차 */}
+                <button
+                  type="button"
+                  disabled={!canControl || running || markerId.trim() === ""}
+                  onClick={() => void startColorParkFlow()}
+                  className="mb-2 inline-flex w-full items-center justify-center gap-1.5 rounded-md bg-sky-600 px-3 py-2 text-[12px] font-semibold text-white shadow-sm transition hover:bg-sky-700 disabled:opacity-40"
+                >
+                  <Navigation className="h-3.5 w-3.5" /> {zone || DEFAULT_PARKING_ZONE} 구역 이동 후 주차 (nav2 유지)
+                </button>
+                <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500">
+                  <span>마커 <b>{markerId || "?"}</b>번에 색 지정:</span>
+                  {PARK_COLORS.map((c) => (
+                    <button
+                      key={c.name}
+                      type="button"
+                      disabled={!canControl || running || markerId.trim() === ""}
+                      onClick={() => void assignParkColor(c.name)}
+                      title={c.name}
+                      className="h-4 w-4 rounded-full border border-slate-300 transition hover:scale-110 disabled:opacity-40"
+                      style={{ background: c.hex }}
+                    />
+                  ))}
+                  <button
+                    type="button"
+                    disabled={!canControl || running || markerId.trim() === ""}
+                    onClick={() => void assignParkColor("")}
+                    className="ml-1 rounded border border-slate-300 px-1.5 text-[10px] text-slate-500 disabled:opacity-40"
+                  >
+                    해제
+                  </button>
+                </div>
+              </div>
+
               <div className="grid grid-cols-2 gap-3">
                 <NumberField title="전면 목표" value={frontTarget} onChange={setFrontTarget} min={0.05} max={0.9} step={0.01} disabled={running} />
                 <NumberField title="후면 목표" value={rearTarget} onChange={setRearTarget} min={0.05} max={0.9} step={0.01} disabled={running} />
@@ -2100,33 +2927,33 @@ function ParkingPage() {
               </div>
 
               <div className="mt-2 rounded-lg border border-dashed border-amber-300 bg-amber-50/60 p-2">
-                <div className="mb-1 text-[11px] font-bold text-amber-700">노드 테스트 (하드코딩 · 단계별 검증)</div>
+                <div className="mb-1 text-[11px] font-bold text-amber-700">노드 테스트 (설정값 기반 · 단계별 검증)</div>
                 <Button
                   variant="outline"
                   className="mb-2 h-10 w-full gap-2 border-emerald-400 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
                   disabled={!canControl || testBusy || running}
                   onClick={() => void runEZoneMarker23LineWall3()}
                 >
-                  로봇2 E+마커2·3+라인+3cm
+                  로봇2 E+{guideLabel(forwardGuideIds)}+라인+3cm
                 </Button>
                 <div className="flex gap-2">
                   <Button
                     variant="outline"
                     className="h-9 flex-1 gap-2 border-amber-300 text-amber-800 hover:bg-amber-100"
-                    disabled={!canControl || testBusy || running}
-                    onClick={() => void runTurnFindLine([4, 5], -180, "마커 4·5")}
+                    disabled={!canControl || testBusy || running || reverseGuideIds.length === 0}
+                    onClick={() => void runTurnFindLine(reverseGuideIds, -reverseGuideDeg, guideLabel(reverseGuideIds))}
                   >
                     {testBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Crosshair className="h-4 w-4" />}
-                    마커 4·5 → 180° 회전+라인
+                    {guideLabel(reverseGuideIds)} → {reverseGuideDeg}° 회전+라인
                   </Button>
                   <Button
                     variant="outline"
                     className="h-9 flex-1 gap-2 border-amber-300 text-amber-800 hover:bg-amber-100"
-                    disabled={!canControl || testBusy || running}
-                    onClick={() => void runTurnFindLine([2, 3], -45, "마커 2·3")}
+                    disabled={!canControl || testBusy || running || forwardGuideIds.length === 0}
+                    onClick={() => void runTurnFindLine(forwardGuideIds, -forwardGuideDeg, guideLabel(forwardGuideIds))}
                   >
                     {testBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Crosshair className="h-4 w-4" />}
-                    마커 2·3 → 45° 회전+라인
+                    {guideLabel(forwardGuideIds)} → {forwardGuideDeg}° 회전+라인
                   </Button>
                 </div>
                 <Button

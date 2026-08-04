@@ -214,6 +214,18 @@ export const LIBI_TOOLS = TOOL_DEFS.map((d) => ({
   },
 }));
 
+/**
+ * 같은 도구를 OpenAI **Realtime** 스키마로 — Realtime 은 Chat Completions 와 달리
+ * `function` 으로 한 겹 감싸지 않고 name/description/parameters 를 평평하게 받는다.
+ * 음성 세션(`use-realtime-voice.ts`)이 접속 직후 session.update 로 올린다.
+ */
+export const LIBI_REALTIME_TOOLS = TOOL_DEFS.map((d) => ({
+  type: "function",
+  name: d.name,
+  description: d.description,
+  parameters: toJsonSchema(d),
+}));
+
 const BY_NAME = new Map(TOOL_DEFS.map((d) => [d.name, d]));
 
 // ── 제목 → 도서 해석 (모호하면 실행하지 않는다) ──────────────

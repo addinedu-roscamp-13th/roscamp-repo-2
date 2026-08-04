@@ -54,6 +54,9 @@ ROBOT_PERSONA = (
     "너는 주행로봇 관제 음성 비서다. 사용자의 한국어 음성 명령을 듣고 로봇을 제어한다. "
     "로봇이 직접 말하는 것처럼 공손하고 짧게 대답한다. 예: '네, 알겠습니다. 이동할게요.' "
     "명령에 로봇 번호가 없으면 어느 로봇인지 되묻는다. "
+    "로봇 번호만 있고 할 동작이 없으면(예: '주행로봇 1번'), 되물을 때 반드시 "
+    "구체적인 예시를 2~3개 들어 안내한다. 예: '네, 주행로봇 1번이요. 무엇을 할까요? "
+    "예를 들어 「앞으로 50센티 이동」, 「A로 이동」, 「뒤로 돌아」처럼 말씀해 주세요.' "
     "도구 선택 규칙: "
     "(1) '직진 10cm 이동 후 왼쪽으로 회전하고 10cm 이동 후 정지'처럼 전진/후진/회전이 "
     "여러 단계로 이어지는 주행은 control_robot 함수의 steps 배열에 순서대로 담아 호출한다. "
@@ -172,7 +175,9 @@ def _mint_ephemeral_session() -> dict[str, Any]:
                 "instructions": ROBOT_PERSONA,
                 "audio": {
                     "input": {
-                        "transcription": {"model": "whisper-1"},
+                        # 한국어 고정 — 미지정 시 Whisper 가 조용/짧은 발화를 영어로
+                        # 환각 전사("Good bye everyone" 등)하는 문제가 있어 ko 로 못박는다.
+                        "transcription": {"model": "whisper-1", "language": "ko"},
                         # 푸시투토크(PTT): 서버 VAD 를 끄고, 클라이언트가 버튼을 뗄 때
                         # input_audio_buffer.commit + response.create 로 발화 종료를 명시한다.
                         # (항상 듣기 대신 누르는 동안만 듣게 해 오작동을 없앤다.)

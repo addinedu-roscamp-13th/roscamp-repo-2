@@ -10,7 +10,7 @@ from typing import Any
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
-from app.hardware.camera_stream import camera
+from app.hardware.camera_stream import CAPTURE_H, CAPTURE_W, camera
 from app.routers.driving import _motor_send
 
 router = APIRouter()
@@ -78,13 +78,17 @@ def _best_target(detections: list[dict[str, Any]], labels: set[str]) -> dict[str
     return max(candidates, key=lambda d: float(d.get("confidence") or 0.0), default=None)
 
 
-def _command_for_detection(det: dict[str, Any], cfg: HumanFollowConfig) -> tuple[int, int, dict[str, Any]]:
+def _command_for_detection(det: dict[str, Any], cfg: HumanFollowConfig,
+                           frame_wh: tuple[int, int] | None = None) -> tuple[int, int, dict[str, Any]]:
+    # box 는 우리가 보낸 JPEG 의 픽셀 좌표다. 캡처 해상도는 camera_stream.CAPTURE_W/H 에서
+    # 바뀌므로 640x480 을 상수로 박으면 안 된다 — ex(조향)와 area(거리)가 함께 어긋난다.
+    fw, fh = frame_wh if frame_wh else (CAPTURE_W, CAPTURE_H)
     x1, y1, x2, y2 = [float(v) for v in det.get("box", [0, 0, 0, 0])]
     cx = (x1 + x2) / 2.0
     w = max(1.0, x2 - x1)
     h = max(1.0, y2 - y1)
-    ex = (cx - 320.0) / 320.0
-    area = (w * h) / (640.0 * 480.0)
+    ex = (cx - fw / 2.0) / (fw / 2.0)
+    area = (w * h) / float(fw * fh)
     centered = abs(ex) < cfg.deadband
     too_close = area >= cfg.target_area
     steer_dir = -1.0 if cfg.invert_steering else 1.0
