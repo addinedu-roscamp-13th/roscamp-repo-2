@@ -81,38 +81,37 @@ def render_scan(ax, ranges, angle_min: float, angle_increment: float,
     obs = detect(ranges, angle_min, angle_increment, range_min, range_max, cfg)
 
     if len(pts):
-        ax.scatter(pts[:, 0], pts[:, 1], s=8, c="#999", label=f"라이다 점 {len(pts)}개", zorder=2)
-    ax.scatter([0], [0], marker="s", s=140, c="black", zorder=5, label="로봇(라이다 원점)")
-    ax.annotate("뒤(0°, 도킹 진행 방향) →", (0, 0), xytext=(0.03, -0.05),
-               fontsize=8, color="#555")
+        ax.scatter(pts[:, 0], pts[:, 1], s=6, c="#999", label=f"라이다 점 {len(pts)}개", zorder=2)
+    ax.scatter([0], [0], marker="s", s=40, c="black", zorder=5, label="로봇(라이다 원점)")
 
     if wall is not None:
         inl = pts[wall.inliers]
-        ax.scatter(inl[:, 0], inl[:, 1], s=12, c="tab:blue",
+        ax.scatter(inl[:, 0], inl[:, 1], s=8, c="tab:blue",
                   label=f"벽 inlier {len(inl)}/{len(pts)}", zorder=3)
         wvec = np.array([-wall.normal[1], wall.normal[0]])
         centre = wall.normal * wall.offset
         p1, p2 = centre - wvec * 0.4, centre + wvec * 0.4
-        ax.plot([p1[0], p2[0]], [p1[1], p2[1]], c="tab:blue", lw=2,
+        ax.plot([p1[0], p2[0]], [p1[1], p2[1]], c="tab:blue", lw=1,
                label=f"벽 fit (yaw={math.degrees(wall.yaw):+.1f}°, rms={wall.rms*1000:.1f}mm)")
 
     # ── 목표 지점(정지선) — 로직이 "여기로 가야 한다"고 보는 자리 ─────────────
     #   y=0(벽에 정렬), x=stop_m(그 이상 못 들어간다, C1 min range 바닥). 검출
     #   여부와 무관하게 항상 찍는다 — 지금 얼마나 남았는지 눈으로 바로 비교되게.
-    ax.scatter([cfg.stop_m], [0], marker="X", s=200, c="tab:green", zorder=7,
+    ax.scatter([cfg.stop_m], [0], marker="X", s=60, c="tab:green", zorder=7,
               label=f"정지 목표(stop_m={cfg.stop_m*1000:.0f}mm, y=0)")
-    ax.axvline(cfg.stop_m, color="tab:green", lw=1, ls=":", alpha=0.5)
+    ax.axvline(cfg.stop_m, color="tab:green", lw=0.6, ls=":", alpha=0.5)
 
     if obs is not None:
-        ax.scatter([obs.d], [obs.y], marker="*", s=350, c="tab:red", zorder=6,
+        ax.scatter([obs.d], [obs.y], marker="*", s=90, c="tab:red", zorder=6,
                   label=f"노치 검출 d={obs.d*1000:.0f}mm y={obs.y*1000:+.0f}mm")
         # 검출 지점 → 목표 지점. 이 화살표 길이가 "얼마나 더 가야 하는지"다.
         ax.annotate("", xy=(cfg.stop_m, 0.0), xytext=(obs.d, obs.y),
-                   arrowprops=dict(arrowstyle="->", color="tab:orange", lw=1.5, alpha=0.8))
+                   arrowprops=dict(arrowstyle="->", color="tab:orange", lw=1, alpha=0.8))
         remain_d = (obs.d - cfg.stop_m) * 1000
-        ax.annotate(f"남은 거리 {remain_d:.0f}mm · 좌우 {obs.y*1000:+.0f}mm",
-                   ((obs.d + cfg.stop_m) / 2, obs.y / 2), fontsize=7, color="tab:orange",
-                   ha="center", va="bottom")
+        ax.annotate(f"{remain_d:.0f}mm · {obs.y*1000:+.0f}mm",
+                   ((obs.d + cfg.stop_m) / 2, obs.y / 2), fontsize=6, color="tab:orange",
+                   ha="center", va="bottom",
+                   xytext=(0, 4), textcoords="offset points")
 
     if obs is not None:
         status = (f"[성공] 검출 성공 — d={obs.d*1000:.0f}mm  y={obs.y*1000:+.0f}mm  "
