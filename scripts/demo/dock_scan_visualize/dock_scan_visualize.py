@@ -6,8 +6,13 @@
 
     python3 scripts/demo/dock_scan_visualize/dock_scan_visualize.py --robot pinky-3
 
-창 안에서 `s` 키 — 지금 프레임을 `/tmp/aba_dockviz_<시각>.{csv,png}` 로 저장한다
-(이상해 보이는 순간을 잡아 나중에 원본 숫자로 확인할 때 쓴다).
+창 안에서:
+  `s`        지금 프레임을 `/tmp/aba_dockviz_<시각>.{csv,png}` 로 저장
+             (이상해 보이는 순간을 원본 숫자로 확인할 때)
+  `v`        녹화 시작/정지 — 프레임을 낱장 PNG 로 계속 쌓다가 정지하면
+             ffmpeg 로 mp4 까지 만든다(`/tmp/aba_dockviz_rec_<시각>/`, `.mp4`)
+  `r`        국면(SETTLE→SEARCH→ACQUIRE→...) 재시작 — 로봇을 새로 놓고 누른다
+  스크롤휠    확대/축소, `0` 확대 초기화
 창을 닫거나 Ctrl+C 로 끝낸다.
 
 ## Pi 에 부담을 안 주는 이유
@@ -29,7 +34,9 @@ import argparse
 import math
 import os
 import shlex
+import shutil
 import signal
+import subprocess
 import time
 import sys
 from dataclasses import replace
@@ -108,10 +115,14 @@ ROBOT_DEFAULTS = {
 
 def render_scan(ax, ranges, angle_min: float, angle_increment: float,
                 range_min: float, range_max: float,
-                cfg: LidarDockConfig, title: str = "") -> tuple[bool, bool]:
+                cfg: LidarDockConfig, title: str = "",
+                xlim: tuple[float, float] | None = None,
+                ylim: tuple[float, float] | None = None) -> tuple[bool, bool]:
     """스캔 한 장(원시 `LaserScan` 필드 그대로)을 그린다.
 
-    `(검출 성공했는가, 도착 판정인가)` 를 돌려준다.
+    `xlim`/`ylim` 을 안 주면 `cfg.range_max_m` 기준 기본값을 쓴다. 라이브 뷰가
+    확대 상태를 프레임마다 넘겨줄 자리 — `ax.clear()` 를 매 프레임 부르므로
+    (아래) 이 함수가 매번 기본 범위로 되돌리면 툴바/스크롤 확대가 무의미해진다.
     """
     ax.clear()
     pts = sector_points(ranges, angle_min, angle_increment, range_min, cfg.range_max_m, cfg)
@@ -175,8 +186,8 @@ def render_scan(ax, ranges, angle_min: float, angle_increment: float,
                bbox=dict(facecolor="tab:green", edgecolor="none", pad=4))
     ax.set_xlabel("x (m) — 로봇 뒤(도킹 진행축). 작을수록 벽에 가깝다, 초록 X 가 정지선")
     ax.set_ylabel("y (m) — 좌우(벽 방향). 0 이 정렬된 상태")
-    ax.set_xlim(-0.05, cfg.range_max_m)
-    ax.set_ylim(-cfg.range_max_m * 0.7, cfg.range_max_m * 0.7)
+    ax.set_xlim(xlim if xlim is not None else (-0.05, cfg.range_max_m))
+    ax.set_ylim(ylim if ylim is not None else (-cfg.range_max_m * 0.7, cfg.range_max_m * 0.7))
     ax.set_aspect("equal")
     ax.grid(alpha=0.3)
     ax.legend(loc="upper right", fontsize=7)
@@ -238,6 +249,32 @@ def _save_snapshot(msg, fig) -> None:
     print(f"저장: {csv_path} , {png_path}")
 
 
+def _stop_recording(rec_dir: Path, fps: float) -> None:
+    """녹화 프레임들을 mp4 로 합친다. `ffmpeg` 없으면 PNG 들만 남긴다.
+
+    프레임을 낱장 PNG 로도 남기는 이유 — 창을 못 보는 쪽(코드로 확인하는 쪽)이
+    특정 순간만 골라 열어볼 수 있어야 한다. mp4 는 사람이 훑어보기 편한 결과물,
+    PNG 시퀀스는 그 원본이다.
+    """
+    n = len(list(rec_dir.glob("frame_*.png")))
+    if n == 0:
+        print(f"녹화 프레임이 없다 — {rec_dir} 지운다")
+        rec_dir.rmdir()
+        return
+    mp4_path = rec_dir.with_suffix(".mp4")
+    if shutil.which("ffmpeg") is None:
+        print(f"녹화 종료: 프레임 {n}장 → {rec_dir} (ffmpeg 없어서 mp4 변환은 건너뜀)")
+        return
+    proc = subprocess.run(
+        ["ffmpeg", "-y", "-framerate", str(fps), "-i", str(rec_dir / "frame_%05d.png"),
+         "-pix_fmt", "yuv420p", str(mp4_path)],
+        capture_output=True, text=True)
+    if proc.returncode != 0:
+        print(f"녹화 종료: 프레임 {n}장 → {rec_dir} (ffmpeg 변환 실패, 로그: {proc.stderr[-300:]})")
+    else:
+        print(f"녹화 종료: {mp4_path} ({n}프레임) — 낱장은 {rec_dir} 에 그대로 있다")
+
+
 def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockConfig) -> None:
     """`/scan` 을 직접 구독해 창 하나에 실시간으로 그린다.
 
@@ -274,7 +311,8 @@ def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockCon
         latest["n"] += 1
 
     node.create_subscription(LaserScan, "/scan", on_scan, qos_profile_sensor_data)
-    print(f"[{robot}] /scan 구독 중 — 's' 저장, 'r' 국면 재시작, 창을 닫으면 끝난다(Ctrl+C 도 됨)")
+    print(f"[{robot}] /scan 구독 중 — 's' 한 장 저장, 'v' 녹화 시작/정지, 'r' 국면 재시작, "
+         "스크롤휠 확대, '0' 확대 초기화, 창을 닫으면 끝난다(Ctrl+C 도 됨)")
 
     fig, ax = plt.subplots(figsize=(7, 7))
 
@@ -290,6 +328,10 @@ def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockCon
 
     signal.signal(signal.SIGINT, _on_sigint)
 
+    #: `v` 로 토글하는 녹화 상태. `dir=None` 이면 꺼진 것.
+    recording = {"dir": None, "n": 0}
+    REC_FPS = 10.0  # update() 주기(interval=100ms)와 맞춘다
+
     def on_key(event) -> None:
         if event.key == "s":
             if latest["msg"] is None:
@@ -299,8 +341,41 @@ def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockCon
         elif event.key == "r":
             state["machine"] = LidarApproach(cfg)
             print(f"[{robot}] 국면 재시작 — SETTLE 부터 다시(로봇을 새로 놓고 눌렀다면 맞다)")
+        elif event.key == "0":
+            view["xlim"] = None
+            view["ylim"] = None
+            print(f"[{robot}] 확대 초기화")
+        elif event.key == "v":
+            if recording["dir"] is None:
+                rec_dir = Path(f"/tmp/aba_dockviz_rec_{time.strftime('%Y%m%d_%H%M%S')}")
+                rec_dir.mkdir(parents=True, exist_ok=True)
+                recording["dir"] = rec_dir
+                recording["n"] = 0
+                print(f"[{robot}] 녹화 시작 → {rec_dir}")
+            else:
+                rec_dir = recording["dir"]
+                recording["dir"] = None
+                _stop_recording(rec_dir, REC_FPS)
 
     fig.canvas.mpl_connect("key_press_event", on_key)
+
+    # ── 확대 — 스크롤 휠. `None` 이면 `render_scan` 기본 범위를 쓴다. ──────────
+    #   툴바/드래그 확대를 안 쓰는 이유: `render_scan` 이 매 프레임 `ax.clear()`
+    #   를 부르므로(위 docstring) 그쪽 확대 상태는 다음 프레임에 그냥 지워진다.
+    #   확대 값을 직접 들고 있다가 매 프레임 `render_scan` 에 넘겨야 유지된다.
+    view = {"xlim": None, "ylim": None}
+
+    def on_scroll(event) -> None:
+        if event.inaxes != ax or event.xdata is None or event.ydata is None:
+            return
+        xlim0 = view["xlim"] if view["xlim"] is not None else ax.get_xlim()
+        ylim0 = view["ylim"] if view["ylim"] is not None else ax.get_ylim()
+        scale = 0.85 if event.button == "up" else 1 / 0.85
+        xc, yc = event.xdata, event.ydata
+        view["xlim"] = (xc - (xc - xlim0[0]) * scale, xc + (xlim0[1] - xc) * scale)
+        view["ylim"] = (yc - (yc - ylim0[0]) * scale, yc + (ylim0[1] - yc) * scale)
+
+    fig.canvas.mpl_connect("scroll_event", on_scroll)
 
     # ── 실제 상태기계까지 같이 돌린다 — "지금 국면에서 얼마로 움직일 것인가" ──
     #   `render_scan` 은 이 프레임 하나의 검출만 보여준다. 실제로 로봇이
@@ -324,7 +399,8 @@ def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockCon
             return
         _found, arrived = render_scan(ax, msg.ranges, msg.angle_min, msg.angle_increment,
                                       msg.range_min, msg.range_max, cfg,
-                                      title=f"[{robot}] 스캔 #{latest['n']}")
+                                      title=f"[{robot}] 스캔 #{latest['n']}",
+                                      xlim=view["xlim"], ylim=view["ylim"])
         # 도착 순간에만 한 번 알린다 — 매 프레임(10Hz) 찍으면 로그가 안 읽힌다.
         if arrived and not was_arrived["v"]:
             print(f"[{robot}] 도착 — 정지 트리거 조건 만족 (스캔 #{latest['n']})")
@@ -353,6 +429,11 @@ def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockCon
                fontsize=8,
                bbox=dict(facecolor="white", edgecolor="#888", alpha=0.85, pad=4))
 
+        if recording["dir"] is not None:
+            frame_path = recording["dir"] / f"frame_{recording['n']:05d}.png"
+            fig.savefig(frame_path, dpi=100)
+            recording["n"] += 1
+
     anim = FuncAnimation(fig, update, interval=100, cache_frame_data=False)
     try:
         plt.show()
@@ -363,6 +444,8 @@ def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockCon
         stopped["v"] = True
         if anim.event_source is not None:
             anim.event_source.stop()
+        if recording["dir"] is not None:  # 녹화 중에 창을 그냥 닫은 경우도 mp4 로 마무리
+            _stop_recording(recording["dir"], REC_FPS)
         if rclpy.ok():
             node.destroy_node()
             rclpy.shutdown()
