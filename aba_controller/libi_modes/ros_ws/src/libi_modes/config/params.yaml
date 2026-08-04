@@ -153,13 +153,122 @@ libi_modes:
     #   유도가 맞는 이유: 정점 yaw 가 충전소를 바라보므로 반 바퀴 = 뒷캠이 충전소를 봄.
     #   하드코딩하면 정점을 옮겼을 때 조용히 어긋난다 — 실제로 `충전소입구`(0.6005) 에서
     #   `충전소통로`(0.384) 로 옮겼고, 둘 다 yaw 가 π 라 우연히 0.0 이 계속 맞았다.
-    approach_yaw_rad: null
+    # ★ 현장 실측 (2026-08-03, pinky-3) — 상대 180도 유도가 이 입구에서는 틀렸다.
+    #   실측: ①②를 거친 뒤 로봇 **정면**이 도크를 보고 있었다(사용자 확인, AMCL yaw
+    #   174.9도). 사용자가 절대각 0.0(맵 위쪽 기준, 주차장 정점 yaw 와 같은 방향)을
+    #   목표로 지정 — 뒷캠/뒷라이다가 도크를 보는 방향이 0.0 이라는 판단.
+    #   ⚠️ 입구 좌표(`return_x`/`return_y`)를 옮기면 이 값도 다시 확인해야 한다.
+    approach_yaw_rad: 0.0
     # ④ 외부 저장소의 ArUco 정밀 접근(6cm 까지) 응답 상한(초).
     #   마커 탐색·정렬·저속 접근을 다 포함하므로 넉넉해야 한다.
     #   ⚠️ 이 시간이 지나 실패로 처리해도 **상대가 멈춘다는 보장은 없다.** `stop` 은
     #      fleet_link 에서 nav2 만 끊는다. 재시도가 이전 접근과 겹칠 수 있으니, 외부
     #      노드를 붙일 때 취소 계약(cancel + ack)을 같이 정할 것.
     aruco_timeout_sec: 180.0
+    # ④ 정밀 도킹을 무엇으로 하는가 — **되돌리기 스위치는 이것 하나뿐이다.**
+    #   aruco : 뒷캠 ArUco (robot_agent 의 marker_dock 이 수행. 2026-07-31 실기 성공)
+    #   lidar : 라이다 노치 (libi_modes/lidar/. 이 저장소가 수행)
+    #
+    #   ⑤ `nudge_distance_m` 은 여기서 유도한다 — lidar 면 main.py 가 0 을 강제한다.
+    #   라이다는 마지막까지 노치를 보므로 눈 감고 미는 구간이 없다. 0 이면 `NudgeDriver`
+    #   가 첫 tick 에 곧장 0 구간으로 가 0 을 6번 내고 success 다
+    #   (`fleet_cmd_driver.py:265-278`). **노드를 지우지 않고 무해화**하므로 BT 트리
+    #   모양이 그대로고 관제 화면이 안 바뀐다.
+    dock_sensor: lidar
+
+    # 라이다 노치 도킹 — 값의 근거는 docs/superpowers/specs/2026-08-03-*-design.md
+    lidar_dock:
+      # ── 섹터 ──
+      sector_half_deg: 60.0
+      range_max_m: 1.5
+      min_points: 20
+      # ── 벽 직선 (RANSAC) ──
+      #   ★ 현장 실측 완료 (2026-08-03, pinky-3). 벽거리 9~11cm 구간에서 원래 값
+      #     (50회·1cm)은 5/5 스캔 전부 벽을 잘못 잡았다(yaw 실제 ~1~2도인데 -7도로
+      #     오판) — 200회·6mm 부터 5/5 정상 검출, 300·500회와 결과 동일해 수렴 확인.
+      ransac_iters: 200
+      ransac_inlier_m: 0.006
+      ransac_min_inlier_ratio: 0.30
+      wall_yaw_max_rad: 0.61
+      wall_rms_max_m: 0.015
+      # ── 탐색 (SEARCH, 임의 자세에서 벽·노치 찾기) ──
+      #   ★ 현장 실측 (2026-08-03, pinky-3) — 접근 전 회전이 목표각 못 미친 채
+      #     넘어와 벽 yaw -40.7도(위 wall_yaw_max_rad 35도 초과)로 반복 실패했다.
+      #     nav2 회전 정밀도에 안 기대고 라이다가 넓은 창으로 스스로 찾아 정렬한다.
+      search_half_deg: 175.0
+      search_wall_yaw_max_rad: 3.2
+      search_align_tol_rad: 0.4
+      search_rot_rad_s: 0.25
+      search_timeout_s: 30.0
+      # ── 노치 (실측: 폭 6cm · 깊이 2.5cm) ──
+      smooth_rays: 5
+      notch_thresh_m: 0.012
+      notch_depth_min_m: 0.015
+      notch_depth_max_m: 0.040
+      notch_width_min_m: 0.03
+      notch_width_max_m: 0.10
+      # ── NEAR 모드 (벽이 min range 아래로 사라진 뒤 인수인계) ──
+      near_half_deg: 35.0
+      near_gap_m: 0.02
+      near_width_min_m: 0.02
+      near_width_max_m: 0.10
+      # ── 필터 ──
+      #   0.3 이 아니라 0.5 다 — 지연 시뮬레이션에서 0.3 은 과주행 중단 6/60,
+      #   1.0 은 산포 4.4mm. 편향은 stop_m 이 흡수하고 분산은 안 지워진다.
+      ema_coef: 0.5
+      #   튐 게이트는 경과 시간에 비례한다(고정값이면 스캔 결손 뒤 정상 관측을 버린다).
+      jump_speed_max_mps: 0.5
+      jump_gate_y_m: 0.03
+      jump_gate_yaw_rad: 0.17
+      confirm_frames: 3
+      lost_frames_max: 10
+      # ── 국면 ──
+      #   벽면이 C1 min range(5cm) 아래로 가기 전에 yaw 보정을 끝내야 한다.
+      wall_alive_min_m: 0.08
+      #   FAR 가 살아 있는 동안 이만큼 안에 들어와야 FINAL 로 넘어간다.
+      y_max_enter_final_m: 0.015
+      #   ★ 현장 실측 완료 (2026-08-03, pinky-3, 도크 앞). 실제 충전 접촉 핀은 아직
+      #     없다 — "라이다가 홈 끝점 0.5cm 앞까지 들어가면 도킹"으로 판정하기로
+      #     사용자가 정했다(사용자 결정, 실제 전기 접촉 테스트 아님).
+      #     로봇 뒷면(라이다 있는 자리)에 손을 대고 스캔 뜬 실측값이 4.4~4.6cm —
+      #     라이다 원점 ↔ 로봇 뒷면 표면 오프셋이다. 여기에 목표 여유 0.5cm 를 더해
+      #     stop_m = 4.5 + 0.5 ≈ 5.0cm 로 잡았다(사용자 확정, "5cm 로 하면 딱이네").
+      #   ⚠️ C1 min range(5cm) 바로 위 경계값이다 — 실측으로 4.4cm 까지도 값이
+      #      잡히는 걸 확인했으니 5cm 는 여유 있는 쪽이다.
+      stop_m: 0.05
+      overshoot_margin_m: 0.010
+      y_max_final_m: 0.030
+      # ── 속도 ──
+      #   ⚠️ v_near_mps 는 **실측 모터 데드밴드**다. 더 낮게 적으면 명령은 나가는데
+      #      바퀴가 안 돈다. 감속은 속도가 아니라 펄스 듀티로 한다.
+      v_far_mps: 0.10
+      v_near_mps: 0.05
+      v_far_dist_m: 0.30
+      pulse_dist_m: 0.15
+      pulse_min_s: 0.10
+      pulse_max_s: 0.40
+      pulse_pause_s: 0.30
+      # ── 조향 ──
+      #   ★ 현장 실측 완료 (2026-08-03, pinky-3). rplidar_link 가 z축 π 회전이라
+      #     좌우가 로봇 기준과 뒤집힌다 — 기존 ArUco 도킹도 `_STEER_SIGN` 을 같은
+      #     이유로 현장에서 정했다.
+      #     실측 방법: cmd_vel_dock 에 양의 각속도(+0.2 rad/s)를 실제로 넣어 로봇
+      #     정면(LCD) 기준 자기 왼쪽으로 도는 것을 확인 → 180도 회전 관계(y_lidar =
+      #     -Y_body)로 역산 → steer_sign=+1.0. 기존 ArUco `_STEER_SIGN=+1` 과
+      #     교차검증됨(같은 뒷면 마운트 조건, 다른 센서, 같은 부호).
+      steer_sign: 1.0
+      k_y: 1.2
+      k_yaw_align: 0.8
+      k_yaw_approach: 0.4
+      k_yaw_final: 0.0
+      ang_max_rad_s: 0.08
+      # ── 시간 ──
+      #   설계 시뮬레이션이 가정한 3초 — nav2 잔여 감속이 완전히 죽을 시간을 준다.
+      settle_sec: 3.0
+      acquire_timeout_s: 3.0
+      timeout_s: 90.0
+      scan_timeout_s: 0.5
+      loop_hz: 10.0
     # ⑤ 마커가 화각을 벗어난 마지막 구간. 개루프로 민다.
     #   부호가 방향이다 — **음수 = 후진**(충전 단자가 뒤).
     #   지금 값: 3cm 를 0.08m/s 로 → **0.375초**.

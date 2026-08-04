@@ -283,6 +283,9 @@ docs/agents/
 # 측정 환경이 이 노트북이 아니라 현장(Pi + picam + USB 웹캠)이라 결과·로그가
 # 머신마다 다르고, 프로덕션 코드 변경은 0줄이다. 저장소에 남길 것이 아니다.
 demo/
+# `scripts/demo`는 일회용 측정 결과가 아니라 재사용하는 ROS 시연 도구다.
+!scripts/demo/
+!scripts/demo/**
 
 # subagent-driven-development manual worktrees (isolated task chains)
 .worktrees/

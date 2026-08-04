@@ -26,18 +26,22 @@
     ① GoToParkingEntrance   주차장 입구로 주행           (그대로)
     ② FaceApproachYaw       접근 자세로 회전 (절대각)     ← 좌표 계산 → 고정각
     ③ ReleaseNav            nav2 목표를 끊어 바퀴를 놓는다
-    ④ ArucoApproach         뒷캠 ArUco 로 6cm 까지        ← **다른 저장소가 수행**
-    ⑤ DockNudge             정속 개루프로 3cm 후진
+    ④ DockApproach          정밀 도킹(6cm 까지)           ← **`dock_sensor` 가 정한다**
+    ⑤ DockNudge             정속 개루프로 후진 (라이다면 0)
     ⑥ DockSettle            멈춰 서서 안정화 후 도킹으로 침
 
 **없앤 것: `GoToParking` · `TurnAround`.** ②가 이제 "주차장 쪽"이 아니라
 **접근 자세**(충전 단자가 뒤에 오는 각도)로 돌리므로, 180° 를 따로 돌 필요가 없고
-nav2 로 주차장 정점까지 가는 구간도 ArUco 접근이 대신한다.
+nav2 로 주차장 정점까지 가는 구간도 ④ 정밀 도킹이 대신한다.
 
-⚠️ **④는 이 저장소에 없다.** `/fleet_cmd{action}` 왕복으로 넘긴다(드라이버 주입).
-   답하는 쪽이 **하나여야 한다** — 둘이 답하면 먼저 온 결과로 다음 단계가 시작되고,
-   아무도 안 답하면 timeout 까지 서 있는다. 팔(`LIBI_ARM_VIA_BT`)에서 같은 함정을
-   이미 밟았다. CLAUDE.md 참고.
+⚠️ **④의 실제 구현은 주입된 드라이버가 정한다** — `dock_sensor: aruco` 면
+   `/fleet_cmd{action}` 왕복으로 다른 저장소(robot_agent)에 넘기고, `lidar` 면 이
+   저장소의 `LidarDockDriver` 가 직접 몬다(`main.py` 가 고른다). leaf 이름을
+   센서 중립(`DockApproach`)으로 두는 이유: 라이다가 도는데 화면에 "ArucoApproach"
+   가 뜨면 조용한 거짓말이 된다.
+   ArUco 경로는 답하는 쪽이 **하나여야 한다** — 둘이 답하면 먼저 온 결과로 다음
+   단계가 시작되고, 아무도 안 답하면 timeout 까지 서 있는다. 팔(`LIBI_ARM_VIA_BT`)
+   에서 같은 함정을 이미 밟았다. CLAUDE.md 참고.
 
 ## ⚠️ ③ ReleaseNav 가 왜 필요한가 (2026-07-30, codex 리뷰에서 나왔다)
 
@@ -348,7 +352,7 @@ class DockSettle(py_trees.behaviour.Behaviour):
 
 
 def create_return_steps(*, entrance_driver, rotate_driver, nav_release_driver,
-                        aruco_driver, nudge_driver,
+                        dock_driver, nudge_driver,
                         entrance_xy, approach_yaw=None, dock_xy=None, tolerance, resend_sec, timeout_sec,
                         yaw_tolerance_rad, retry_max, settle_sec=1.0,
                         now_fn=time.monotonic):
@@ -388,8 +392,12 @@ def create_return_steps(*, entrance_driver, rotate_driver, nav_release_driver,
         # ③ 바퀴를 외부에 넘기기 전에 nav2 목표를 명시적으로 끊는다 (위 주석 참고).
         #    취소할 목표가 없으면 아무 일도 안 일어난다 — 멈추는 것은 중복돼도 안전하다.
         DriverAction(nav_release_driver, "ReleaseNav"),
-        # ④ 다른 저장소가 수행한다. 여기서는 명령을 내고 결과를 기다릴 뿐이다.
-        DriverAction(aruco_driver, "ArucoApproach"),
+        # ④ 정밀 도킹. **어떤 센서로 하는지는 주입된 드라이버가 정한다** —
+        #    `dock_sensor: aruco` 면 다른 저장소(robot_agent)의 뒷캠 ArUco 가,
+        #    `lidar` 면 이 저장소의 `LidarDockDriver` 가 수행한다. leaf 이름을
+        #    센서 중립으로 두는 이유: 라이다가 도는데 화면에 "ArucoApproach" 가
+        #    뜨면 조용한 거짓말이 된다.
+        DriverAction(dock_driver, "DockApproach"),
         # ⑤ 개루프. 드라이버가 자기 타이머로 정속을 밀고 시간이 되면 스스로 멈춘다.
         DriverAction(nudge_driver, "DockNudge"),
         DockSettle(settle_sec, now_fn),

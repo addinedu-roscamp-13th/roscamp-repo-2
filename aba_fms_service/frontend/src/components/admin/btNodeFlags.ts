@@ -65,10 +65,13 @@ import type { BtNodeFlag } from "@/components/admin/BtGraphView";
  * 노드 **넷이 사라지고 다섯이 생겼다.** 옛 이름으로 단 플래그는 조용히 안 붙는다.
  *
  *   사라짐  FaceParking · GoToParking · TurnAround · AlignDock
- *   생김    FaceApproachYaw · ReleaseNav · ArucoApproach · DockNudge · DockSettle
+ *   생김    FaceApproachYaw · ReleaseNav · DockApproach · DockNudge · DockSettle
  *
- * 새 순서: GoToParkingEntrance → FaceApproachYaw → ReleaseNav → ArucoApproach
+ * 새 순서: GoToParkingEntrance → FaceApproachYaw → ReleaseNav → DockApproach
  *          → DockNudge → DockSettle
+ *
+ *   [2026-08-03] ArucoApproach → DockApproach 로 개명. 센서는 dock_sensor 파라미터가
+ *   고른다(aruco = robot_agent 뒷캠, lidar = libi_modes 라이다 노치). 트리 모양은 불변.
  *
  * ## 2026-07-30 (2) — 마커 도킹 이식 + 도킹 탈출
  *
@@ -87,7 +90,7 @@ import type { BtNodeFlag } from "@/components/admin/BtGraphView";
  *
  * ## 2026-07-31 — 복귀 플래그 **전부 해제**. 이 목록이 비었다.
  *
- * 실기에서 복귀 한 사이클이 끝까지 돌았다(사용자 확인). ArucoApproach·DockNudge·
+ * 실기에서 복귀 한 사이클이 끝까지 돌았다(사용자 확인). DockApproach·DockNudge·
  * DockSettle·Undock 넷의 해제 조건은 아래에 하나씩 적는다 — 셋은 실기 근거로 풀렸고
  * 하나는 **근거가 아니라 설계 결정으로** 풀렸다. 그 구분이 중요하다.
  *
@@ -197,7 +200,7 @@ export const BT_NODE_FLAGS: Record<string, BtNodeFlag> = {
 
   // ── 마커 도킹 이식 (2026-07-30) ───────────────────────────────────────────
   //
-  // ④ ArucoApproach 의 `partial` 은 **유지한다.** 구현이 붙었지만(robot_agent 의
+  // ④ DockApproach(dock_sensor: aruco 경로) 의 `partial` 은 **유지한다.** 구현이 붙었지만(robot_agent 의
   // `marker_dock.py`, arte_aurcomaker_move 커밋 5002e60 에서 판단 로직 무수정 이식)
   // **이 체인 전체가 실기에서 한 번도 안 돌았다.** 조각은 검증됐다 — approach.py 는
   // 같은 로봇에서 실주행했고 단위시험 106개가 있다. 이음매가 처음이다.

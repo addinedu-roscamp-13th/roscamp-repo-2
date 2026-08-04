@@ -351,7 +351,8 @@ def test_working_clears_active_command_when_done(seed, read, tick):
 # ── RETURNING ─────────────────────────────────────────────────────────────────
 # [2026-07-27] 한 leaf(ReturnNavigation) → 5단계 시퀀스로 바뀌었다.
 # [2026-07-30] 뒷캠 ArUco 정밀 주차로 재편했다.
-#   GoToParkingEntrance → FaceApproachYaw → ReleaseNav → ArucoApproach → DockNudge → DockSettle
+# [2026-08-03] ④가 센서 중립이 됐다 — `dock_sensor` 가 ArUco/라이다 중 고른다.
+#   GoToParkingEntrance → FaceApproachYaw → ReleaseNav → DockApproach → DockNudge → DockSettle
 #   없앤 것: GoToParking(nav2 로 주차장 정점) · TurnAround(180°)
 # 팔 홈복귀는 없앴다(이 로봇에 팔이 없다 — 사용자 결정).
 
@@ -375,7 +376,7 @@ def _returning(clock=None, **over):
         entrance_driver=d["return_entrance"],
         rotate_driver=d["return_rotate"],
         nav_release_driver=d["return_nav_release"],
-        aruco_driver=d["return_aruco"],
+        dock_driver=d["return_dock"],
         back_cam_driver=d["return_back_cam"],
         nudge_driver=d["return_nudge"],
         entrance_xy=d["return_entrance_xy"],
@@ -397,7 +398,7 @@ def _walk_the_steps(root, tick, clock):
     도착 판정이 **실좌표 거리**라, pose 를 안 옮기면 첫 단계에서 영원히 RUNNING 이다
     (그게 이 설계의 요점이다 — 명령 수락을 도착으로 치지 않는다).
 
-    ③ReleaseNav·④ArucoApproach·⑤DockNudge 는 대역 드라이버가 즉시 성공하므로 pose
+    ③ReleaseNav·④DockApproach·⑤DockNudge 는 대역 드라이버가 즉시 성공하므로 pose
     조작이 없다. ⑥DockSettle 만 시계를 요구한다."""
     entrance = (0.6, 0.0)
     poses = [
@@ -439,32 +440,32 @@ def test_returning_holds_through_the_settle(seed, read, tick):
     assert read(Keys.CURRENT_MODE) == "RETURNING"
 
 
-def test_returning_runs_aruco_then_nudge_in_order(seed, tick):
+def test_returning_runs_dock_then_nudge_in_order(seed, tick):
     """④가 성공하기 전에는 ⑤가 시작되지 않는다.
 
-    두 단계가 겹치면 로봇이 아직 마커를 보고 접근하는 중에 개루프 후진이 겹쳐
+    두 단계가 겹치면 로봇이 아직 정밀 도킹 접근 중인데 개루프 후진이 겹쳐
     거리가 통째로 틀어진다. 순서가 이 재편의 전부다."""
-    aruco, nudge = FakeDriver(["running", "success"]), FakeDoneDriver()
+    dock, nudge = FakeDriver(["running", "success"]), FakeDoneDriver()
     clock = _Clock()
     seed(**{Keys.CURRENT_MODE: "RETURNING", Keys.IS_DOCKED: False})
-    root = _returning(clock=clock, return_aruco=aruco, return_nudge=nudge)
+    root = _returning(clock=clock, return_dock=dock, return_nudge=nudge)
     _walk_the_steps(root, tick, clock)
-    assert aruco.started is True
-    assert nudge.started is False, "ArUco 접근이 끝나기 전에 후진이 시작됐다"
+    assert dock.started is True
+    assert nudge.started is False, "정밀 도킹 접근이 끝나기 전에 후진이 시작됐다"
     tick(root)                       # ④ success → ⑤ 시작
     assert nudge.started is True
 
 
-def test_returning_releases_nav_before_the_aruco_approach(seed, tick):
-    """nav2 목표를 놓기 전에 외부 도킹이 시작되면, 죽은 입구 goal 이 ArUco 접근과
+def test_returning_releases_nav_before_the_dock_approach(seed, tick):
+    """nav2 목표를 놓기 전에 정밀 도킹이 시작되면, 죽은 입구 goal 이 그 접근과
     바퀴를 두고 다툰다(codex 리뷰 2026-07-30)."""
-    release, aruco = FakeDriver(["running", "success"]), FakeDriver()
+    release, dock = FakeDriver(["running", "success"]), FakeDriver()
     clock = _Clock()
     seed(**{Keys.CURRENT_MODE: "RETURNING", Keys.IS_DOCKED: False})
-    root = _returning(clock=clock, return_nav_release=release, return_aruco=aruco)
+    root = _returning(clock=clock, return_nav_release=release, return_dock=dock)
     _walk_the_steps(root, tick, clock)
     assert release.started is True
-    assert aruco.started is False, "nav2 를 놓기 전에 ArUco 접근이 시작됐다"
+    assert dock.started is False, "nav2 를 놓기 전에 정밀 도킹 접근이 시작됐다"
 
 
 def test_returning_step_failure_never_returns_failure(seed, tick):
@@ -525,3 +526,78 @@ def test_error_does_not_self_rescue_on_low_battery(seed, read, tick):
     seed(**{Keys.CURRENT_MODE: "ERROR", Keys.BATTERY_PERCENT: 5.0, Keys.IS_DOCKED: False})
     assert tick(error.create(PARAMS)) == Status.FAILURE
     assert read(Keys.CURRENT_MODE) == "ERROR"
+
+
+# ── dock_sensor 전환 (2026-08-03) ──────────────────────────────────────────────
+
+import pytest
+
+
+@pytest.mark.parametrize("sensor,expect_nudge", [("lidar", 0.0), ("aruco", 0.03)])
+def test_rollback_is_a_single_parameter(sensor, expect_nudge):
+    """두 값을 같이 바꿔야 하는 계약은 조용한 실패의 씨앗이다.
+    ⑤의 거리는 `dock_sensor` 하나에서 유도돼야 한다."""
+    ret = {"nudge_distance_m": 0.03}
+    nudge = 0.0 if sensor == "lidar" else float(ret.get("nudge_distance_m", 0.03))
+    assert nudge == expect_nudge
+
+
+def test_main_derives_nudge_distance_from_dock_sensor_in_source():
+    """위 시험은 유도 **공식**만 시험 대상과 별개로 다시 계산해 맞춰 본다 —
+    `main.py` 의 실제 코드는 한 글자도 보지 않는다. `main.py` 는 rclpy 없이 인스턴스화할
+    수 없어(`FsmNode.__init__` 이 노드 생성자를 바로 부른다) 여기서 그 값을 계산해
+    보는 시험을 못 쓴다. 그래서 실제 배선이 두 값으로 되돌아가도(거부된 설계) 이
+    시험만 봐서는 초록이다 — 소스를 직접 대조해 그 간극을 메운다.
+
+    브리프의 지적대로("Step 3b 의 코드를 눈으로 대조할 것") 눈이 아니라 AST 로 본다:
+    `nudge_distance` 대입이 `dock_sensor == "lidar"` 삼항식이고, 참 분기가 정확히
+    `0.0` 이며, `NudgeDriver(distance_m=...)` 가 그 변수를 그대로 받는지 확인한다.
+    """
+    import ast
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "libi_modes" / "main.py").read_text()
+    tree = ast.parse(src)
+
+    assign = next(
+        (n for n in ast.walk(tree) if isinstance(n, ast.Assign)
+         and any(isinstance(t, ast.Name) and t.id == "nudge_distance" for t in n.targets)),
+        None)
+    assert assign is not None, "main.py 에 nudge_distance 대입이 없다"
+    assert isinstance(assign.value, ast.IfExp), (
+        "nudge_distance 가 dock_sensor 삼항식으로 유도되지 않는다 — "
+        "params.yaml 에 별도 값을 또 둔 것은 아닌지 확인할 것")
+
+    cond = ast.unparse(assign.value.test)
+    assert "dock_sensor" in cond and "lidar" in cond, \
+        f"조건이 dock_sensor == 'lidar' 가 아니다: {cond}"
+    assert ast.literal_eval(assign.value.body) == 0.0, \
+        "라이다 분기가 정확히 0.0 이 아니다 — 되돌리기 트랩의 핵심 값"
+
+    nudge_driver_kw = next(
+        (kw.value for n in ast.walk(tree)
+         if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+         and n.func.id == "NudgeDriver"
+         for kw in n.keywords if kw.arg == "distance_m"),
+        None)
+    assert nudge_driver_kw is not None, "return_nudge 드라이버 생성부를 못 찾았다"
+    assert (isinstance(nudge_driver_kw, ast.Name)
+            and nudge_driver_kw.id == "nudge_distance"), (
+        "NudgeDriver(distance_m=...) 가 위에서 유도한 nudge_distance 변수를 그대로 "
+        "쓰지 않는다 — 다시 계산하면 유도가 두 갈래로 갈라진다")
+
+
+def test_dock_leaf_is_sensor_neutral():
+    """leaf 이름이 센서를 박아 두면, 라이다가 도는데 화면엔 ArUco 라고 뜬다."""
+    from libi_modes.common.return_steps import create_return_steps
+    from .fakes import FakeDoneDriver, FakeDriver, FakeYawDriver
+
+    steps = create_return_steps(
+        entrance_driver=FakeDriver(), rotate_driver=FakeYawDriver(),
+        nav_release_driver=FakeDoneDriver(), dock_driver=FakeDoneDriver(),
+        nudge_driver=FakeDoneDriver(), entrance_xy=(0.6, 0.0),
+        tolerance=0.1, resend_sec=1.0, timeout_sec=30.0,
+        yaw_tolerance_rad=0.15, retry_max=3)
+    names = [s.decorated.name for s in steps]
+    assert "DockApproach" in names
+    assert not any("Aruco" in n for n in names)

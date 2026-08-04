@@ -679,8 +679,8 @@ ReturningBranch (Sequence, memory=False)
 │   │   │       ├── Absorb[GoToParkingEntrance] # ① 충전소통로 정점으로 주행
 │   │   │       ├── Absorb[FaceApproachYaw]     # ② 지금 헤딩에서 180° 회전
 │   │   │       ├── Absorb[ReleaseNav]          # ③ nav2 목표 해제 (바퀴를 넘기기 전)
-│   │   │       ├── Absorb[ArucoApproach]       # ④ 뒷캠 ArUco 로 6cm ← **다른 저장소**
-│   │   │       ├── Absorb[DockNudge]           # ⑤ 개루프 3cm 후진
+│   │   │       ├── Absorb[DockApproach]        # ④ 정밀 도킹 (dock_sensor 로 센서 선택)
+│   │   │       ├── Absorb[DockNudge]           # ⑤ 개루프 후진 (라이다 경로에서는 0 = 무동작)
 │   │   │       └── Absorb[DockSettle]          # ⑥ 안정화 → is_docked 선언
 │   │   └── SetNextMode("CHARGING")
 │   └── exit_watchdog([FaultDetected])
@@ -809,8 +809,8 @@ ERROR 전이로 바꿀 tick 조차 없이 브랜치가 죽는다. 재시도를 �
 |---|---|---|
 | ② `FaceApproachYaw` | 상대 180° 회전. 자세를 모르면 시작 안 함 | timeout(60s) → 흡수·재시도 |
 | ③ `ReleaseNav` | `/fleet_cmd{stop}` → `cancel_nav()`. 끊을 목표 없으면 무동작 | fleet_link 무응답 |
-| ④ `ArucoApproach` | `/fleet_cmd{dock_action}` 왕복. **구현은 다른 저장소** | `aruco_timeout_sec`(180s) |
-| ⑤ `DockNudge` | `cmd_vel_dock` 정속 발행 (거리÷속도 초) | 드라이버가 스스로 끝냄 |
+| ④ `DockApproach` | `dock_sensor: aruco` → `/fleet_cmd{dock_action}` 왕복(구현은 robot_agent). `lidar` → 이 저장소 `LidarDockDriver` 가 `/scan` 을 보고 직접 몬다 | `aruco_timeout_sec` / `lidar_dock.timeout_s` |
+| ⑤ `DockNudge` | `cmd_vel_dock` 정속 발행 (거리÷속도 초). **라이다 경로에서는 `nudge_distance_m: 0.0` 이라 0 만 내고 통과** | 드라이버가 스스로 끝냄 |
 | ⑥ `DockSettle` | `settle_sec`(1s) 대기 후 SUCCESS | 없음 (시간뿐) |
 
 ⚠️ **③ ReleaseNav 를 빼면 안 된다** (codex 리뷰 2026-07-30). `_GoalStep` 은 **x·y 거리만**
@@ -825,6 +825,33 @@ goal 은 살아 있다. 예전엔 바로 뒤 `GoToParking` 이 새 goal 로 **�
 돌고 성공까지 답한다 — 뒷캠 ArUco 인 줄 알고 있는데 다른 알고리즘이 도는, 가장 나쁜 종류의
 조용한 실패다. 둘이 동시에 답하면 먼저 온 결과로 ⑤가 시작된다 — 팔에서 이미 밟은 함정이다
 (CLAUDE.md `LIBI_ARM_VIA_BT`).
+
+### [2026-08-03] 라이다 노치 정밀 도킹을 나란히 붙였다
+
+④를 센서 중립(`DockApproach`)으로 바꾸고 `returning.dock_sensor` 로 고른다.
+
+`nudge_distance_m` 은 params.yaml 에 값이 하나뿐이고(ArUco 용 `0.03`, 절대 손대지 않는다),
+아래 ⑤ 열은 그 값을 `dock_sensor` 가 **런타임에 어떻게 쓰는지**를 보여줄 뿐이다 — YAML 에서
+따로 고르는 설정이 아니다.
+
+| 값 | 누가 수행하나 | ⑤ 실효 후진 거리 (런타임 파생) |
+|---|---|---|
+| `aruco` | `robot_agent` 의 `marker_dock` (다른 저장소) | `nudge_distance_m` 그대로 = `0.03` |
+| `lidar` | 이 저장소 `libi_modes/lidar/` + `ros/lidar_dock_driver.py` | `main.py` 가 **`0.0`** 으로 강제 |
+
+라이다는 마지막까지 노치를 보므로 눈 감고 미는 구간이 없다 — 그래서 ⑤가 0 이다.
+**노드를 지우지 않고 무해화**하므로 BT 트리 모양이 그대로고 관제 화면이 안 바뀐다.
+`BackCamOn` 도 라이다 경로에서는 `NoopDriver` 를 받아 아무 일도 하지 않는다(뒷캠이
+필요 없는데 켜 두면 `camera_sender` 가 1.9Hz → 15fps 로 올려 Pi CPU 를 태운다).
+
+⚠️ **되돌리기는 `dock_sensor` 파라미터 하나뿐이다.** `nudge_distance_m` 은 건드리지 않는다 —
+`aruco` 로 되돌려도 그 값은 이미 `0.03` 그대로 params.yaml 에 있고, 라이다일 때 `0.0` 으로
+바뀌는 것은 `main.py` 코드가 매번 유도하는 것이지 YAML 값이 아니기 때문이다. 여기서
+`nudge_distance_m` 을 손으로 고치면(예: 되돌리며 "같이 0.03 으로" 편집) 다음에 다시
+`lidar` 로 바꿀 때 그 편집이 조용히 남아 있는 상태가 된다 — 정확히 이 설계가 없애려던
+그 실패다.
+
+설계·근거: `docs/superpowers/specs/2026-08-03-lidar-notch-docking-design.md`
 
 ### [2026-07-31] `/is_docked` 를 **BT 가 선언한다**
 

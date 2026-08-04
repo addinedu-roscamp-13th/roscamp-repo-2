@@ -216,8 +216,8 @@ class FsmNode(Node):
         #   ① 주차장 입구 이동   nav2 주행                    GoToParkingEntrance
         #   ② 접근 자세 회전     절대각(approach_yaw_rad)      FaceApproachYaw
         #   ③ nav2 목표 해제     바퀴를 외부에 넘기기 전       ReleaseNav
-        #   ④ ArUco 접근 6cm     **다른 저장소가 수행**        ArucoApproach
-        #   ⑤ 3cm 개루프 후진    cmd_vel_dock 정속 발행        DockNudge
+        #   ④ 정밀 도킹 6cm      **`dock_sensor` 가 정한다**    DockApproach
+        #   ⑤ 개루프 후진        cmd_vel_dock 정속 발행        DockNudge
         #   ⑥ 안정화 대기        시간으로 넘긴다               DockSettle
         #
         # 없앤 것: `GoToParking`(nav2 로 주차장 정점까지) · `TurnAround`(180°).
@@ -403,38 +403,77 @@ class FsmNode(Node):
         # `stop` 은 fleet_link 에서 `ros_bridge.cancel_nav()` 로 간다 — 취소할 목표가
         # 없으면 아무 일도 안 일어난다.
         self._drivers["return_nav_release"] = FleetCmdDriver(self, "stop").bind(cmd_pub)
-        # ④ 뒷캠 ArUco 정밀 접근 — **이 저장소에 구현이 없다.** `/fleet_cmd` 로 넘기고
-        #    `/fleet_cmd_result` 를 기다릴 뿐이다.
+        # ④ 정밀 도킹 — **센서를 파라미터로 고른다.** 되돌리기가 배포 없이 되게 하려고
+        #    ArUco 경로 코드를 한 줄도 지우지 않았다.
         #
-        # ⚠️ **답하는 쪽이 하나여야 한다.** 둘이 답하면 **먼저 온 결과로 ⑤가 시작된다** —
-        #    즉 로봇이 아직 접근 중인데 3cm 후진이 겹친다. 팔에서 이미 밟은 함정이다
-        #    (CLAUDE.md `LIBI_ARM_VIA_BT`).
+        #      aruco : `/fleet_cmd{aruco_dock}` 로 robot_agent 의 marker_dock 에 위임
+        #              (2026-07-31 실기 성공). 이 저장소에는 구현이 없다
+        #      lidar : 이 저장소의 `LidarDockDriver` 가 /scan 을 보고 직접 몬다
         #
-        # ⚠️ 기본값이 `"dock"` 이 **아닌** 이유: 그 이름은 fleet_link 가 이미 잡아
-        #    `park_dock`(라인 트레이싱, **실물 미검증**)을 실제로 돌린다. 즉 외부 노드가
-        #    없어도 로봇이 움직이고 성공 결과까지 낸다 — 뒷캠 ArUco 인 줄 알고 있는데
-        #    다른 알고리즘이 도는, 가장 나쁜 종류의 조용한 실패다.
-        #    `aruco_dock` 은 fleet_link 가 모르는 이름이라 `400 알 수 없는 action` 이
-        #    **즉시** 돌아온다 → 재시도 소진 → fault → ERROR. 시끄럽게 실패한다.
-        #    외부 노드를 붙이는 날: 그 노드가 이 이름을 듣게 하면 끝이다.
-        #    (`park_dock` 을 쓰고 싶으면 `-p dock_action:=dock` 로 되돌린다)
-        dock_action = self.declare_parameter("dock_action", "aruco_dock").value
-        self._drivers["return_aruco"] = FleetCmdDriver(
-            self, str(dock_action),
-            timeout_sec=float(ret.get("aruco_timeout_sec", 180.0)),
-        ).bind(cmd_pub)
-        # 도킹 동안 **뒷캠을 선택 상태로** 만든다. 안 하면 대기 캠이라 8틱에 한 번
-        # (STANDBY_EVERY=8, 15fps → 1.9Hz)만 갱신돼 시각 서보가 못 돈다.
-        # `camera_select` 발행자는 follow_node 하나라는 규칙이 있어(follow_node.py) 그쪽에
-        # 요청하는 통로를 쓴다 — GuideExec 이 이미 쓰는 액션이다.
-        # stop_action 은 `follow_stop`: 세션만 닫고 주행은 안 끊는다.
-        self._drivers["return_back_cam"] = FleetCmdDriver(
-            self, "guide_watch", args_fn=lambda: {"camera": "back"},
-            timeout_sec=3600.0, stop_action="follow_stop").bind(cmd_pub)
+        # ⚠️ `nudge_distance_m` 은 ArUco 용 값이다. **손대지 않는다.** 라이다일 때
+        #    0 은 여기 코드(아래 `nudge_distance`)가 강제한다. 되돌리기는
+        #    `dock_sensor` 파라미터 하나뿐이다.
+        dock_sensor = str(self.declare_parameter(
+            "dock_sensor", str(ret.get("dock_sensor", "aruco"))).value).lower()
+        if dock_sensor == "lidar":
+            from libi_modes.lidar.config import LidarDockConfig
+            from libi_modes.ros.lidar_dock_driver import LidarDockDriver, NoopDriver
+
+            lidar_cfg = LidarDockConfig.from_params(
+                ret.get("lidar_dock"),
+                on_unknown=lambda keys: self.get_logger().warning(
+                    f"params.yaml lidar_dock 에 모르는 키가 있다(오타?): {keys}"))
+            scan_topic = self.declare_parameter("dock_scan_topic", "/scan").value
+            self._drivers["return_dock"] = LidarDockDriver(
+                self, str(scan_topic), dock_nudge_topic.lstrip("/"),
+                lidar_cfg, rate_hz=lidar_cfg.loop_hz)
+            # 라이다 도킹에 뒷캠은 필요 없다. 그대로 두면 camera_sender 가 뒷캠을
+            # 1.9Hz → 15fps 로 올려 놓는다 — 쓰지도 않는 캠에 Pi CPU 를 태운다.
+            # 노드는 남기고 드라이버만 무해화한다(⑤와 같은 수법, BT 모양 보존).
+            self._drivers["return_back_cam"] = NoopDriver()
+            self.get_logger().info(
+                f"정밀 도킹: 라이다 (stop={lidar_cfg.stop_m:.3f}m "
+                f"steer_sign={lidar_cfg.steer_sign:+.0f})")
+        else:
+            # ⚠️ **답하는 쪽이 하나여야 한다.** 둘이 답하면 **먼저 온 결과로 ⑤가 시작된다** —
+            #    즉 로봇이 아직 접근 중인데 후진이 겹친다. 팔에서 이미 밟은 함정이다
+            #    (CLAUDE.md `LIBI_ARM_VIA_BT`).
+            #
+            # ⚠️ 기본값이 `"dock"` 이 **아닌** 이유: 그 이름은 fleet_link 가 이미 잡아
+            #    `park_dock`(라인 트레이싱, **실물 미검증**)을 실제로 돌린다. 즉 외부 노드가
+            #    없어도 로봇이 움직이고 성공 결과까지 낸다 — 뒷캠 ArUco 인 줄 알고 있는데
+            #    다른 알고리즘이 도는, 가장 나쁜 종류의 조용한 실패다.
+            #    `aruco_dock` 은 fleet_link 가 모르는 이름이라 `400 알 수 없는 action` 이
+            #    **즉시** 돌아온다 → 재시도 소진 → fault → ERROR. 시끄럽게 실패한다.
+            #    외부 노드를 붙이는 날: 그 노드가 이 이름을 듣게 하면 끝이다.
+            #    (`park_dock` 을 쓰고 싶으면 `-p dock_action:=dock` 로 되돌린다)
+            dock_action = self.declare_parameter("dock_action", "aruco_dock").value
+            self._drivers["return_dock"] = FleetCmdDriver(
+                self, str(dock_action),
+                timeout_sec=float(ret.get("aruco_timeout_sec", 180.0)),
+            ).bind(cmd_pub)
+            # 도킹 동안 **뒷캠을 선택 상태로** 만든다. 안 하면 대기 캠이라 8틱에 한 번
+            # (STANDBY_EVERY=8, 15fps → 1.9Hz)만 갱신돼 시각 서보가 못 돈다.
+            # `camera_select` 발행자는 follow_node 하나라는 규칙이 있어(follow_node.py) 그쪽에
+            # 요청하는 통로를 쓴다 — GuideExec 이 이미 쓰는 액션이다.
+            # stop_action 은 `follow_stop`: 세션만 닫고 주행은 안 끊는다.
+            self._drivers["return_back_cam"] = FleetCmdDriver(
+                self, "guide_watch", args_fn=lambda: {"camera": "back"},
+                timeout_sec=3600.0, stop_action="follow_stop").bind(cmd_pub)
+            self.get_logger().info(f"정밀 도킹: ArUco ({dock_action})")
         # ⑤ 마지막 몇 cm — 마커가 화각을 벗어나는 구간이라 시간으로 민다.
+        #
+        # ⚠️ **거리를 `dock_sensor` 에서 유도한다.** params.yaml 에 두 값을 두고
+        #    "같이 바꿔라"라고 하면 한쪽만 바꾼 상태가 조용히 만들어진다:
+        #      · aruco 인데 0     → 마지막 3cm 를 아무도 안 민다 (접촉 실패)
+        #      · lidar 인데 0.03  → 정밀 도킹이 끝난 뒤 또 밀어 도크를 과주행
+        #    둘 다 로그도 예외도 없다. 그래서 되돌리기를 파라미터 **하나**로 만든다.
+        #    라이다는 마지막까지 노치를 보므로 눈 감고 미는 구간이 없다.
+        nudge_distance = (0.0 if dock_sensor == "lidar"
+                          else float(ret.get("nudge_distance_m", 0.03)))
         self._drivers["return_nudge"] = NudgeDriver(
             self, dock_nudge_topic,
-            distance_m=float(ret.get("nudge_distance_m", 0.03)),
+            distance_m=nudge_distance,
             speed_mps=float(ret.get("nudge_speed_mps", -0.08)))
 
         # 도킹 탈출 — 나갈 때 **앞으로** 민다(부호가 양수인 것 말고는 ⑤와 같은 드라이버).
