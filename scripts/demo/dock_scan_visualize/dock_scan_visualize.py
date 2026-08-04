@@ -29,6 +29,7 @@ import argparse
 import math
 import os
 import shlex
+import signal
 import time
 import sys
 from dataclasses import replace
@@ -277,6 +278,18 @@ def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockCon
 
     fig, ax = plt.subplots(figsize=(7, 7))
 
+    # ⚠️ 실기: Ctrl+C 가 안 먹었다 — TkAgg 의 `plt.show()` 는 C 레벨 블로킹
+    #    루프라 파이썬 시그널을 즉시 못 받는다. 그 상태에서 `update()` 가
+    #    계속 도니, 이미 `rclpy.shutdown()` 이 불린(다른 경로로 살짝 죽다 만)
+    #    뒤에도 `spin_once` 가 또 불려 "context is not valid" 를 반복 찍으며
+    #    창이 안 닫혔다. SIGINT 핸들러를 직접 걸어 `plt.close()` 로 확실히
+    #    깨운다 — 이게 Tk 블로킹 루프를 Ctrl+C 로 끊는 표준 우회다.
+    def _on_sigint(_sig, _frame) -> None:
+        stopped["v"] = True
+        plt.close(fig)
+
+    signal.signal(signal.SIGINT, _on_sigint)
+
     def on_key(event) -> None:
         if event.key == "s":
             if latest["msg"] is None:
@@ -298,8 +311,11 @@ def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockCon
                         wall_yaw_max_rad=cfg.search_wall_yaw_max_rad)
     state = {"machine": LidarApproach(cfg)}
     was_arrived = {"v": False}
+    stopped = {"v": False}
 
     def update(_frame):
+        if stopped["v"] or not rclpy.ok():
+            return
         rclpy.spin_once(node, timeout_sec=0.05)
         msg = latest["msg"]
         if msg is None:
@@ -330,16 +346,26 @@ def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockCon
                    f"angular {cmd.angular:+.3f} rad/s\n"
                    f"사유 {cmd.reason}\n"
                    f"('r' 로 재시작)")
+        # ⚠️ `family="monospace"` 를 쓰면 안 된다 — 그 폰트엔 한글 글리프가 없어서
+        #    "국면"·"사유" 가 네모로 깨진다(실기로 확인). 전역으로 맞춘 한글
+        #    폰트(위 rcParams)를 그대로 상속하게 둔다.
         ax.text(0.98, 0.98, cmd_text, transform=ax.transAxes, ha="right", va="top",
-               fontsize=8, family="monospace",
+               fontsize=8,
                bbox=dict(facecolor="white", edgecolor="#888", alpha=0.85, pad=4))
 
     anim = FuncAnimation(fig, update, interval=100, cache_frame_data=False)
     try:
         plt.show()
     finally:
-        node.destroy_node()
-        rclpy.shutdown()
+        # ⚠️ 순서가 중요하다 — 타이머를 먼저 멈춰야 `rclpy.shutdown()` 뒤에
+        #    큐에 남은 `update()` 호출이 죽은 컨텍스트로 `spin_once` 를
+        #    부르지 않는다(바로 위 SIGINT 핸들러 주석의 그 재현 경로).
+        stopped["v"] = True
+        if anim.event_source is not None:
+            anim.event_source.stop()
+        if rclpy.ok():
+            node.destroy_node()
+            rclpy.shutdown()
 
 
 def main() -> None:
