@@ -17,29 +17,33 @@ for session in $(tmux ls -F "#{session_name}" 2>/dev/null | grep -E "^pinky_sim"
   fi
 done
 
-# 패턴에 매칭되는 프로세스를 (기본 SIGTERM) → 대기 → SIGKILL 순으로 종료한다.
+# 매칭되는 패턴 여러 개를 한 신호로, 정규식 `|` 로 합쳐 **pgrep/pkill 호출 자체를
+# 패턴 개수와 무관하게 tick당 1번**으로 종료한다.
+# 실측(pinky-3, 2026-08-04): `pgrep -f` 한 번이 ~0.27초 걸린다(약한 CPU). 패턴마다
+# 따로 pgrep 하면 8 tick × N패턴이 전부 그 값을 물어 N=13이면 대기만 수 초가 샌다 —
+# 신호를 한 번에 보내는 것만으론 부족했다. 합쳐서 호출 수 자체를 줄인다.
 # 정상 종료 신호를 먼저 줘야 rclpy 가 DDS 에서 노드를 정상 탈퇴(deregister)하고,
 # 그래야 `ros2 node list` 에 유령 노드가 남지 않는다. 곧바로 -9 로 죽이면 유령이 생긴다.
-# 두 번째 인자로 첫 신호를 바꿀 수 있다(launch 부모는 INT 로 자식까지 정상 종료).
-kill_pattern() {
-  local pattern="$1"
-  local sig="${2:-TERM}"
-  pgrep -f "$pattern" >/dev/null 2>&1 || return 0
+# 첫 인자가 신호(launch 부모는 INT 로 자식까지 정상 종료, 나머지는 TERM).
+kill_patterns_batch() {
+  local sig="$1"; shift
+  local combined
+  combined="$(IFS='|'; echo "$*")"
+  pgrep -f "$combined" >/dev/null 2>&1 || return 0   # 아무것도 안 살아있으면 바로 끝
 
-  pkill -"$sig" -f "$pattern" 2>/dev/null
-  echo "SIG$sig: $pattern"
+  pkill -"$sig" -f "$combined" 2>/dev/null
+  printf 'SIG%s: %s\n' "$sig" "$*"
 
-  # 최대 4초까지 정상 종료를 기다린다.
-  for _ in $(seq 1 8); do
-    pgrep -f "$pattern" >/dev/null 2>&1 || return 0
+  # 최대 4초까지 정상 종료를 기다린다 — 합친 패턴 하나로 매 tick 확인한다.
+  local _tick
+  for _tick in $(seq 1 8); do
+    pgrep -f "$combined" >/dev/null 2>&1 || return 0
     sleep 0.5
   done
 
-  # 아직 살아있으면 강제 종료.
-  if pgrep -f "$pattern" >/dev/null 2>&1; then
-    pkill -KILL -f "$pattern" 2>/dev/null
-    echo "SIGKILL(잔여): $pattern"
-  fi
+  # 4초 뒤에도 살아있으면 강제 종료.
+  pkill -KILL -f "$combined" 2>/dev/null
+  echo "SIGKILL(잔여): $combined"
 }
 
 # 1) launch 부모: SIGINT(=Ctrl+C)를 주면 ros2 launch 가 자기 자식 노드들을
@@ -51,9 +55,7 @@ LAUNCH_PATTERNS=(
   "ros2 launch pinky_navigation gz_bringup_launch"
   "ros2 launch pinky_navigation gz_nav2_view"
 )
-for pattern in "${LAUNCH_PATTERNS[@]}"; do
-  kill_pattern "$pattern" INT
-done
+kill_patterns_batch INT "${LAUNCH_PATTERNS[@]}"
 
 # 2) 개별 프로세스 및 launch 가 남긴 고아 노드 정리(SIGTERM → SIGKILL).
 #    경로 패턴으로 실물 hw/nav2 의 자식 노드(amcl·controller·lidar·battery 등)까지
@@ -99,9 +101,7 @@ if command -v curl >/dev/null 2>&1; then
   curl -s -m 3 -X POST "http://127.0.0.1:9001/api/park/stop" -d '{}' \
     -H 'Content-Type: application/json' >/dev/null 2>&1 && echo "park/stop 요청함"
 fi
-for pattern in "${PATTERNS[@]}"; do
-  kill_pattern "$pattern"
-done
+kill_patterns_batch TERM "${PATTERNS[@]}"
 
 # 3) DDS 유령 노드 정리: 프로세스를 죽여도 ros2 daemon 이 그래프 캐시를 들고 있어
 #    `ros2 node list` 에 죽은 노드가 계속 보일 수 있다. daemon 을 멈춰 캐시를 비운다

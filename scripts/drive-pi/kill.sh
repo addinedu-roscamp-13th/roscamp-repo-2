@@ -72,37 +72,25 @@ if pgrep -f "[f]sm_node" >/dev/null 2>&1; then
     #    (실측 2026-08-02 — 이것 때문에 정지 명령이 통째로 안 나갔다).
     #    파일에 써서 `--file`... 은 없으므로, **작은따옴표 없는 형태**로 만든다:
     #    `-p` 대신 `{data: "…"}` 를 홑따옴표로 감싸고 JSON 안에는 \" 만 쓴다.
-    _pub() {   # <topic> <type> <yaml>
-      timeout 20 env ROS_DOMAIN_ID="$KILL_DOMAIN" \
-        bash -c 'source /opt/ros/jazzy/setup.bash; exec ros2 topic pub --once "$0" "$1" "$2"' \
-        "$1" "$2" "$3" >/dev/null 2>&1
-    }
-    # ① 바퀴부터 세운다. IDLE 전이만으로는 nav2 goal 이 살아 있어 계속 굴러간다
-    #    (실측 2026-08-02). `mission_stop` 이 robot_agent 에서 인라인 cancel_nav() 를 부른다.
-    _pub /fleet_cmd std_msgs/msg/String \
-         "{data: '{\"action\":\"mission_stop\",\"id\":\"kill-stop\"}'}" \
-      || echo "[kill] ⚠ mission_stop 을 못 보냈다"
-    # ② mux 의 최우선 정지 입력(cmd_vel_stop, priority 255)에 0 을 박는다.
-    for _ in 1 2 3; do
-      _pub /cmd_vel_stop geometry_msgs/msg/Twist \
-           "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}"
-      sleep 0.2
-    done
-    # ③ 그다음 상태를 되돌린다. 먼저 IDLE 로 가면 BT 가 분기를 갈아타는 동안에도 바퀴가 돈다.
-    _pub /libi/fsm_transition_request std_msgs/msg/String \
-         "{data: '{\"robot_id\":\"$ROBOT_ID\",\"id\":\"kill-idle\",\"target_state\":\"IDLE\",\"force\":true}'}" \
+    # ⚠️ [2026-08-04] IDLE 전이 한 방으로 줄였다. 예전엔 mission_stop(nav 취소) +
+    #    cmd_vel_stop(속도 override) 을 IDLE 전이 앞뒤로 따로 쐈다 — `ros2 topic pub`
+    #    콜드스타트가 이 Pi 에서 콜당 ~4.3초(실측)라 그거 4번이 kill 시간 대부분이었다.
+    #    이제 안 그래도 된다: `state_io.py` `MOTION_LOCKED_STATES` 에 IDLE 이 들면
+    #    `_locked=True` 가 되어 `/cmd_vel_hold` 를 20Hz 로 계속 낸다(priority 160,
+    #    잠금 150 위·비상정지 255 아래 — nav2/follow 보다 우선). 그래서 **IDLE 전이
+    #    자체가 실제로 바퀴를 세운다**(실측 2026-08-04, pinky-3, 풀스택 기동 중).
+    #    ⚠️ 이 메커니즘 자체는 2026-07-30 부터 있었는데 옛 주석(2026-08-02 실측)은
+    #    "IDLE 만으론 안 멈춘다" 였다 — 그 사이 어딘가 고쳐진 걸로 보인다. 다시 이
+    #    증상이 보이면(전이 보냈는데 계속 구르면) mission_stop/cmd_vel_stop 을
+    #    되살리는 게 맞다(git log 이 커밋 이전 버전 참고).
+    timeout 12 env ROS_DOMAIN_ID="$KILL_DOMAIN" \
+      bash -c 'source /opt/ros/jazzy/setup.bash; exec ros2 topic pub --once "$0" "$1" "$2"' \
+      /libi/fsm_transition_request std_msgs/msg/String \
+      "{data: '{\"robot_id\":\"$ROBOT_ID\",\"id\":\"kill-idle\",\"target_state\":\"IDLE\",\"force\":true}'}" \
+      >/dev/null 2>&1 \
       || echo "[kill] ⚠ IDLE 전이를 못 보냈다"
 
-    sleep 1     # fsm_node 가 tick 에서 apply_pending() 할 틈
-
-    # ④ **마지막 한 번 더.** 위에서 BT 가 IDLE 로 전이하며 형제 leaf 가 goal 을 새로
-    #    낼 수 있다(전이 tick 에 `terminate(INVALID)` 가 도는 순서 때문). 세션을
-    #    죽이기 직전에 0 을 한 번 더 박아 그 잔여를 지운다.
-    # ⚠️ timeout 을 넉넉히 준다. `ros2 topic pub` 은 rclpy 초기화 + 도메인 discovery 가
-    #    먼저인데 그게 느린 날이 있다. 여기서 잘리면 **정지 명령이 안 나간 채** 세션이
-    #    죽어 바퀴가 관성으로 더 간다(mux stop timeout 0.5s + 모터 watchdog 0.5s).
-    _pub /cmd_vel_stop geometry_msgs/msg/Twist \
-         "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}" || true
+    sleep 0.3   # fsm_node 가 tick 에서 락을 걸고 cmd_vel_hold 를 시작할 틈
   else
     echo "[kill] ⚠ 도메인을 못 정해 IDLE 전이를 건너뛴다 (ROS_DOMAIN_ID 를 주면 보낸다)"
   fi
