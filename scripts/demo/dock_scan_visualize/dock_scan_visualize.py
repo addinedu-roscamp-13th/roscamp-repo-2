@@ -31,11 +31,13 @@ import os
 import shlex
 import time
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
+import yaml
 
 # 한글이 네모로 깨지는 것 방지. ⚠️ Noto Sans CJK 는 한 .ttc 파일에 JP/KR/SC/TC/HK
 # 여러 서체가 들어있는데, matplotlib 폰트매니저는 파일당 이름을 하나만 잡는다 —
@@ -57,8 +59,37 @@ _LIBI_MODES_SRC = (Path(__file__).resolve().parents[3]
                     / "aba_controller/libi_modes/ros_ws/src/libi_modes")
 sys.path.insert(0, str(_LIBI_MODES_SRC))
 
+from libi_modes.lidar.approach import LidarApproach  # noqa: E402
 from libi_modes.lidar.config import LidarDockConfig  # noqa: E402
-from libi_modes.lidar.detect import detect, fit_wall, sector_points  # noqa: E402
+from libi_modes.lidar.detect import detect, detect_near, fit_wall, sector_points  # noqa: E402
+
+_PARAMS_YAML = _LIBI_MODES_SRC / "config/params.yaml"
+
+
+def load_cfg() -> LidarDockConfig:
+    """실제 로봇이 쓰는 `config/params.yaml` 값으로 만든다.
+
+    `LidarDockConfig()` 맨 기본값만 쓰면 안 된다 — 클래스 기본값 중 일부는
+    아직 현장 실측 전 자리표시자다(실기: `stop_m` 기본 0.065 인데 현장 실측값은
+    0.05, 이 도구가 그 차이를 숨기면 신뢰가 깨진다). params.yaml 최상위 키가
+    `libi_modes:` 그대로라 `/**`/`ros__parameters` 감싸기가 없다
+    (`test_lidar_config.py` 의 같은 경로 탐색 참고).
+    """
+    if not _PARAMS_YAML.exists():
+        print(f"경고: {_PARAMS_YAML} 없음 — LidarDockConfig 기본값을 쓴다"
+             "(현장 실측값과 다를 수 있다)", file=sys.stderr)
+        return LidarDockConfig()
+    doc = yaml.safe_load(_PARAMS_YAML.read_text(encoding="utf-8"))
+    node = doc.get("libi_modes", doc)
+    node = node.get("/**", node)
+    params = node.get("ros__parameters", node)
+    lidar_dock = params.get("returning", {}).get("lidar_dock", {})
+    seen = []
+    cfg = LidarDockConfig.from_params(lidar_dock, on_unknown=seen.append)
+    if seen:
+        print(f"경고: params.yaml 에 모르는 lidar_dock 키가 있다(오타?): {seen}",
+             file=sys.stderr)
+    return cfg
 
 #: `domain_id` **만** 로봇마다 다르다(도메인 = 로봇). `CYCLONEDDS_URI` 는 여기
 #: 안 둔다 — 그건 로봇 몫이 아니라 **이 노트북**의 피어 목록이라 어느 로봇을
@@ -76,8 +107,11 @@ ROBOT_DEFAULTS = {
 
 def render_scan(ax, ranges, angle_min: float, angle_increment: float,
                 range_min: float, range_max: float,
-                cfg: LidarDockConfig, title: str = "") -> bool:
-    """스캔 한 장(원시 `LaserScan` 필드 그대로)을 그린다. 노치를 찾았으면 `True`."""
+                cfg: LidarDockConfig, title: str = "") -> tuple[bool, bool]:
+    """스캔 한 장(원시 `LaserScan` 필드 그대로)을 그린다.
+
+    `(검출 성공했는가, 도착 판정인가)` 를 돌려준다.
+    """
     ax.clear()
     pts = sector_points(ranges, angle_min, angle_increment, range_min, cfg.range_max_m, cfg)
     wall = fit_wall(pts, cfg) if len(pts) else None
@@ -116,6 +150,14 @@ def render_scan(ax, ranges, angle_min: float, angle_increment: float,
                    ha="center", va="bottom",
                    xytext=(0, 4), textcoords="offset points")
 
+    # ── 도착 판정 — 실제 DockApproach 가 DONE(=정지 트리거)을 내는 바로 그 조건 ──
+    #   `approach.py` 의 `step()` 그대로다: `d <= stop_m` 이 아니라 "한 걸음
+    #   (min_step)보다 적게 남았나" — 불감시간을 감안해도 못 지나치게 하는 그
+    #   조건이다. 여기선 EMA 필터 없는 단일 프레임 판정이라 실제 로봇보다 프레임
+    #   마다 살짝 더 튈 수 있다(참고용 — 실제 정지는 로봇 쪽 상태기계가 낸다).
+    min_step = cfg.pulse_min_s * cfg.v_near_mps
+    arrived = obs is not None and (obs.d - cfg.stop_m) < min_step
+
     if obs is not None:
         status = (f"[성공] 검출 성공 — d={obs.d*1000:.0f}mm  y={obs.y*1000:+.0f}mm  "
                  f"yaw={math.degrees(obs.yaw):+.1f}°  depth={obs.depth*1000:.0f}mm")
@@ -126,6 +168,10 @@ def render_scan(ax, ranges, angle_min: float, angle_increment: float,
                  f"노치 신호(깊이·폭)가 기준에 안 맞음")
 
     ax.set_title(f"{title}\n{status}" if title else status, fontsize=10)
+    if arrived:
+        ax.text(0.5, 1.14, "도착 — 정지 트리거 조건 만족 (실제 로봇이라면 여기서 DONE)",
+               transform=ax.transAxes, ha="center", fontsize=9, color="white",
+               bbox=dict(facecolor="tab:green", edgecolor="none", pad=4))
     ax.set_xlabel("x (m) — 로봇 뒤(도킹 진행축). 작을수록 벽에 가깝다, 초록 X 가 정지선")
     ax.set_ylabel("y (m) — 좌우(벽 방향). 0 이 정렬된 상태")
     ax.set_xlim(-0.05, cfg.range_max_m)
@@ -133,7 +179,7 @@ def render_scan(ax, ranges, angle_min: float, angle_increment: float,
     ax.set_aspect("equal")
     ax.grid(alpha=0.3)
     ax.legend(loc="upper right", fontsize=7)
-    return obs is not None
+    return obs is not None, arrived
 
 
 #: `source /opt/ros/jazzy/setup.bash` 를 손으로 안 쳐도 되게 — 이미 소싱돼 있으면
@@ -227,19 +273,31 @@ def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockCon
         latest["n"] += 1
 
     node.create_subscription(LaserScan, "/scan", on_scan, qos_profile_sensor_data)
-    print(f"[{robot}] /scan 구독 중 — 's' 로 지금 프레임 저장, 창을 닫으면 끝난다(Ctrl+C 도 됨)")
+    print(f"[{robot}] /scan 구독 중 — 's' 저장, 'r' 국면 재시작, 창을 닫으면 끝난다(Ctrl+C 도 됨)")
 
     fig, ax = plt.subplots(figsize=(7, 7))
 
     def on_key(event) -> None:
-        if event.key != "s":
-            return
-        if latest["msg"] is None:
-            print("아직 스캔을 못 받았다 — 저장할 게 없다")
-            return
-        _save_snapshot(latest["msg"], fig)
+        if event.key == "s":
+            if latest["msg"] is None:
+                print("아직 스캔을 못 받았다 — 저장할 게 없다")
+                return
+            _save_snapshot(latest["msg"], fig)
+        elif event.key == "r":
+            state["machine"] = LidarApproach(cfg)
+            print(f"[{robot}] 국면 재시작 — SETTLE 부터 다시(로봇을 새로 놓고 눌렀다면 맞다)")
 
     fig.canvas.mpl_connect("key_press_event", on_key)
+
+    # ── 실제 상태기계까지 같이 돌린다 — "지금 국면에서 얼마로 움직일 것인가" ──
+    #   `render_scan` 은 이 프레임 하나의 검출만 보여준다. 실제로 로봇이
+    #   낼 명령(선속도·각속도)은 국면(SETTLE→SEARCH→ACQUIRE→...)과 이전
+    #   프레임들의 EMA 필터에 달려 있어 `LidarApproach` 를 통째로 안 돌리면
+    #   못 보여준다 — 여기서도 그 클래스를 그대로 쓴다.
+    search_cfg = replace(cfg, sector_half_deg=cfg.search_half_deg,
+                        wall_yaw_max_rad=cfg.search_wall_yaw_max_rad)
+    state = {"machine": LidarApproach(cfg)}
+    was_arrived = {"v": False}
 
     def update(_frame):
         rclpy.spin_once(node, timeout_sec=0.05)
@@ -248,9 +306,33 @@ def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockCon
             ax.clear()
             ax.set_title(f"[{robot}] /scan 대기 중... (라이다·bringup 켜져 있나?)")
             return
-        render_scan(ax, msg.ranges, msg.angle_min, msg.angle_increment,
-                   msg.range_min, msg.range_max, cfg,
-                   title=f"[{robot}] 스캔 #{latest['n']}")
+        _found, arrived = render_scan(ax, msg.ranges, msg.angle_min, msg.angle_increment,
+                                      msg.range_min, msg.range_max, cfg,
+                                      title=f"[{robot}] 스캔 #{latest['n']}")
+        # 도착 순간에만 한 번 알린다 — 매 프레임(10Hz) 찍으면 로그가 안 읽힌다.
+        if arrived and not was_arrived["v"]:
+            print(f"[{robot}] 도착 — 정지 트리거 조건 만족 (스캔 #{latest['n']})")
+        was_arrived["v"] = arrived
+
+        # 드라이버(`lidar_dock_driver.py`)와 같은 규칙: SEARCH 국면일 때만
+        # 넓힌 cfg 로 찾고, FINAL 인데 FAR 가 실패하면 NEAR 로 인수인계한다.
+        machine = state["machine"]
+        detect_cfg = search_cfg if machine.phase == "SEARCH" else cfg
+        mobs = detect(msg.ranges, msg.angle_min, msg.angle_increment,
+                      msg.range_min, msg.range_max, detect_cfg)
+        if mobs is None and machine.phase == "FINAL":
+            mobs = detect_near(msg.ranges, msg.angle_min, msg.angle_increment,
+                              msg.range_min, msg.range_max, cfg)
+        cmd = machine.step(mobs, time.monotonic())
+
+        cmd_text = (f"국면 {cmd.phase}\n"
+                   f"linear  {cmd.linear:+.3f} m/s\n"
+                   f"angular {cmd.angular:+.3f} rad/s\n"
+                   f"사유 {cmd.reason}\n"
+                   f"('r' 로 재시작)")
+        ax.text(0.98, 0.98, cmd_text, transform=ax.transAxes, ha="right", va="top",
+               fontsize=8, family="monospace",
+               bbox=dict(facecolor="white", edgecolor="#888", alpha=0.85, pad=4))
 
     anim = FuncAnimation(fig, update, interval=100, cache_frame_data=False)
     try:
@@ -276,7 +358,7 @@ def main() -> None:
     if domain_id is None:
         ap.error(f"{args.robot} 은 실측 도메인이 없다 — --domain-id 를 직접 넘길 것")
 
-    live_view(args.robot, domain_id, args.cyclonedds_uri, LidarDockConfig())
+    live_view(args.robot, domain_id, args.cyclonedds_uri, load_cfg())
 
 
 if __name__ == "__main__":
