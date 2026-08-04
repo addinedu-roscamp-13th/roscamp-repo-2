@@ -6,6 +6,8 @@
 
     python3 scripts/demo/dock_scan_visualize/dock_scan_visualize.py --robot pinky-3
 
+창 안에서 `s` 키 — 지금 프레임을 `/tmp/aba_dockviz_<시각>.{csv,png}` 로 저장한다
+(이상해 보이는 순간을 잡아 나중에 원본 숫자로 확인할 때 쓴다).
 창을 닫거나 Ctrl+C 로 끝낸다.
 
 ## Pi 에 부담을 안 주는 이유
@@ -27,6 +29,7 @@ import argparse
 import math
 import os
 import shlex
+import time
 import sys
 from pathlib import Path
 
@@ -161,6 +164,33 @@ def _ensure_ros_env(setup_bash: str = ROS_SETUP_BASH) -> None:
     os.execvp("bash", ["bash", "-c", cmd])
 
 
+def _save_snapshot(msg, fig) -> None:
+    """지금 프레임을 CSV(`angle_deg,range_m`)+PNG 로 `/tmp` 에 남긴다.
+
+    검출이 이상해 보이는 순간을 잡아 나중에(또는 다른 사람에게) 원본 숫자로
+    확인시키기 위한 것 — 화면만으로는 RANSAC 이 어느 점을 골랐는지 정확히
+    안 보인다.
+    """
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    rows = []
+    for i, r in enumerate(msg.ranges):
+        a = math.atan2(math.sin(msg.angle_min + i * msg.angle_increment),
+                       math.cos(msg.angle_min + i * msg.angle_increment))
+        dist = r if (isinstance(r, float) and math.isfinite(r) and r > 0.0) else 0.0
+        rows.append((math.degrees(a), dist))
+    rows.sort(key=lambda row: row[0])
+
+    csv_path = f"/tmp/aba_dockviz_{ts}.csv"
+    with open(csv_path, "w", encoding="utf-8") as f:
+        f.write("angle_deg,range_m\n")
+        for deg, dist in rows:
+            f.write(f"{deg:.3f},{dist:.4f}\n")
+
+    png_path = f"/tmp/aba_dockviz_{ts}.png"
+    fig.savefig(png_path, dpi=120)
+    print(f"저장: {csv_path} , {png_path}")
+
+
 def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockConfig) -> None:
     """`/scan` 을 직접 구독해 창 하나에 실시간으로 그린다.
 
@@ -197,9 +227,19 @@ def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockCon
         latest["n"] += 1
 
     node.create_subscription(LaserScan, "/scan", on_scan, qos_profile_sensor_data)
-    print(f"[{robot}] /scan 구독 중 — 창을 닫으면 끝난다 (Ctrl+C 도 됨)")
+    print(f"[{robot}] /scan 구독 중 — 's' 로 지금 프레임 저장, 창을 닫으면 끝난다(Ctrl+C 도 됨)")
 
     fig, ax = plt.subplots(figsize=(7, 7))
+
+    def on_key(event) -> None:
+        if event.key != "s":
+            return
+        if latest["msg"] is None:
+            print("아직 스캔을 못 받았다 — 저장할 게 없다")
+            return
+        _save_snapshot(latest["msg"], fig)
+
+    fig.canvas.mpl_connect("key_press_event", on_key)
 
     def update(_frame):
         rclpy.spin_once(node, timeout_sec=0.05)
