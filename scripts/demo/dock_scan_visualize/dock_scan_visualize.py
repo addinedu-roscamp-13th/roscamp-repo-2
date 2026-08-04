@@ -1,21 +1,19 @@
 #!/usr/bin/env python3
-"""라이다 도킹 검출 시각화 — 실제 `detect()` 가 스캔에서 무엇을 보고 어떻게
-판단했는지 그림 한 장(또는 여러 장 → gif, 또는 실시간 창)으로 보여준다.
+"""라이다 도킹 검출 실시간 시각화 — 실제 `detect()` 가 지금 이 순간 무엇을 보고
+어떻게 판단하는지 창 하나로 계속 보여준다.
 
 ## 쓰는 법
 
-    python3 scripts/demo/dock_scan_visualize.py SCAN.csv -o out.png
-    python3 scripts/demo/dock_scan_visualize.py scan_dir/*.csv -o approach.gif   # 여러 장 → 애니메이션
-    python3 scripts/demo/dock_scan_visualize.py --robot pinky-3 --live            # 실시간 창
+    python3 scripts/demo/dock_scan_visualize/dock_scan_visualize.py --robot pinky-3
 
-CSV 형식은 `scan_dump.py` 가 찍는 것과 같다: `angle_deg,range_m` 두 열, 0 도 =
-로봇 물리적 뒤(`pinky.urdf.xacro:201`, z축 π 회전 장착). 거리 0.0 은 "측정 실패".
+창을 닫거나 Ctrl+C 로 끝낸다.
 
-## `--live` 가 Pi 에 부담을 안 주는 이유
+## Pi 에 부담을 안 주는 이유
 
 `/scan` 구독은 참조만 받는다 — 계산(RANSAC·노치 검출)은 전부 **이 노트북에서** 돈다.
 Pi 쪽은 이미 하고 있던 발행 그대로다(구독자가 하나 더 붙는 것뿐). SSH 로 로봇에
-들어가지도 않는다 — 노트북이 같은 CycloneDDS 망의 피어라 DDS 로 바로 구독한다.
+들어가지도 않는다 — 노트북이 같은 CycloneDDS 정적 피어 목록에 있어 DDS 로 바로
+구독한다(`.env` 의 `LAPTOP_IP`, `~/.bashrc` 의 `CYCLONEDDS_URI`).
 
 ## 왜 판정 로직을 다시 안 짜나
 
@@ -26,18 +24,12 @@ Pi 쪽은 이미 하고 있던 발행 그대로다(구독자가 하나 더 붙�
 from __future__ import annotations
 
 import argparse
-import csv
 import math
 import os
 import sys
 from pathlib import Path
 
 import matplotlib
-# ⚠️ `--live` 는 화면에 띄우는 창이 필요해 인터랙티브 백엔드(TkAgg 등)가 있어야
-#    한다. 파일 저장(png/gif)만 할 때는 디스플레이가 없어도(SSH 세션 등) 돌아야
-#    하니 그때만 Agg 로 강제한다 — sys.argv 를 matplotlib import 전에 미리 본다.
-if "--live" not in sys.argv:
-    matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -64,18 +56,13 @@ sys.path.insert(0, str(_LIBI_MODES_SRC))
 from libi_modes.lidar.config import LidarDockConfig  # noqa: E402
 from libi_modes.lidar.detect import detect, fit_wall, sector_points  # noqa: E402
 
-#: RPLIDAR C1 최소 거리(m). CSV 는 range_min/range_max 를 안 들고 있어 여기서 고정한다
-#: (config.py 의 stop_m 실측 근거와 같은 값).
-ASSUMED_RANGE_MIN_M = 0.05
-
-#: `--robot` 라이브 캡처용. **여기 값은 실측 확인된 것만 적는다** — 추측 금지
+#: **여기 값은 실측 확인된 것만 적는다** — 추측 금지
 #: (CLAUDE.md: "도메인은 실행 명령을 보고 판단하고, 추측으로 쓰지 않는다").
 #: pinky-1·pinky-2 는 도메인이 문서마다 달라 실측 전엔 못 채운다 — 그 로봇에서
 #: `pgrep -af fsm_node`(또는 bringup) 로 실행 명령의 `--domain-id`/env 를 직접
 #: 확인한 뒤 `--domain-id`·`--cyclonedds-uri` 로 넘겨서 쓴다.
 ROBOT_DEFAULTS = {
     "pinky-3": {
-        "ssh_host": "pinky3_ip",
         "domain_id": 119,
         "cyclonedds_uri": ("file:///home/leekt/aba_controller/"
                            "libi_drive_controller/ros_ws/cyclonedds.xml"),
@@ -83,46 +70,14 @@ ROBOT_DEFAULTS = {
 }
 
 
-def load_csv(path: str) -> list[tuple[float, float]]:
-    with open(path, encoding="utf-8") as f:
-        r = csv.reader(f)
-        next(r)  # 머리글
-        return [(float(deg), float(dist)) for deg, dist in r]
-
-
-def to_detect_args(rows: list[tuple[float, float]]):
-    """(각도_도, 거리) 목록 → `detect()` 가 받는 (ranges, angle_min, angle_increment).
-
-    ⚠️ 정렬·균등 간격을 전제한다 — `scan_dump.py` 출력이 그 전제를 만족한다.
-    """
-    rows = sorted(rows, key=lambda row: row[0])
-    angle_min = math.radians(rows[0][0])
-    angle_increment = (math.radians(rows[1][0] - rows[0][0])
-                       if len(rows) > 1 else math.radians(1.0))
-    ranges = [d if d > 0.0 else float("inf") for _, d in rows]
-    return ranges, angle_min, angle_increment
-
-
-def render_frame(ax, rows: list[tuple[float, float]], cfg: LidarDockConfig,
-                 title: str = "") -> bool:
-    """CSV 로 읽은 (각도,거리) 목록을 그린다 — `render_scan` 의 얇은 래퍼."""
-    ranges, angle_min, angle_increment = to_detect_args(rows)
-    return render_scan(ax, ranges, angle_min, angle_increment, cfg, title)
-
-
 def render_scan(ax, ranges, angle_min: float, angle_increment: float,
+                range_min: float, range_max: float,
                 cfg: LidarDockConfig, title: str = "") -> bool:
-    """스캔 한 장(원시 `LaserScan` 필드 그대로)을 그린다. 노치를 찾았으면 `True`.
-
-    CSV 재생과 라이브 구독이 이 한 함수를 공유한다 — 그림이 둘 사이에서
-    갈라지지 않는다.
-    """
+    """스캔 한 장(원시 `LaserScan` 필드 그대로)을 그린다. 노치를 찾았으면 `True`."""
     ax.clear()
-    pts = sector_points(ranges, angle_min, angle_increment,
-                        ASSUMED_RANGE_MIN_M, cfg.range_max_m, cfg)
+    pts = sector_points(ranges, angle_min, angle_increment, range_min, cfg.range_max_m, cfg)
     wall = fit_wall(pts, cfg) if len(pts) else None
-    obs = detect(ranges, angle_min, angle_increment,
-                ASSUMED_RANGE_MIN_M, cfg.range_max_m, cfg)
+    obs = detect(ranges, angle_min, angle_increment, range_min, range_max, cfg)
 
     if len(pts):
         ax.scatter(pts[:, 0], pts[:, 1], s=8, c="#999", label=f"라이다 점 {len(pts)}개", zorder=2)
@@ -164,55 +119,12 @@ def render_scan(ax, ranges, angle_min: float, angle_increment: float,
     return obs is not None
 
 
-def capture_live(robot: str, count: int, sector_deg: float, domain_id: int,
-                 cyclonedds_uri: str, ssh_host: str, out_dir: Path) -> list[str]:
-    """`--robot` 로 실제 라이다에서 스캔을 받아 로컬 CSV 로 가져온다.
-
-    ⚠️ 읽기만 한다 — `/scan` 구독뿐이라 로봇을 안 움직인다. 로봇의 fsm_node·
-    bringup 등 다른 프로세스는 건드리지 않는다(다른 세션이 그 로봇을 쓰고 있어도
-    안전한 이유).
-    """
-    import subprocess
-
-    remote_script = "/tmp/aba_dock_scan_dump.py"
-    remote_prefix = "/tmp/aba_dockviz"
-    local_script = str(Path(__file__).resolve().parent / "scan_dump.py")
-
-    print(f"[{robot}] scan_dump.py 전송 중...")
-    subprocess.run(["scp", "-q", local_script, f"{ssh_host}:{remote_script}"], check=True)
-
-    env = (f"source /opt/ros/jazzy/setup.bash && "
-          f"export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp && "
-          f"export CYCLONEDDS_URI='{cyclonedds_uri}' && "
-          f"export ROS_DOMAIN_ID={domain_id}")
-    cmd = (f"{env} && timeout {count * 3 + 15} python3 {remote_script} "
-          f"--count {count} --sector {sector_deg} --out {remote_prefix}")
-    print(f"[{robot}] {count}장 캡처 중(±{sector_deg}도)...")
-    try:
-        subprocess.run(["ssh", ssh_host, cmd], check=True)
-    except subprocess.CalledProcessError as exc:
-        raise RuntimeError(
-            f"[{robot}] 캡처 실패(ssh 종료 코드 {exc.returncode}) — "
-            "가장 흔한 원인은 /scan 이 아직 안 뜬 것이다(라이다·bringup 확인). "
-            f"직접 확인: ssh {ssh_host} \"source /opt/ros/jazzy/setup.bash && "
-            f"export ROS_DOMAIN_ID={domain_id} && ros2 topic hz /scan\"") from exc
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["scp", "-q", f"{ssh_host}:{remote_prefix}_*.csv", str(out_dir)], check=True)
-    files = sorted(str(p) for p in out_dir.glob("aba_dockviz_*.csv"))
-    if not files:
-        raise RuntimeError(f"[{robot}] 캡처된 스캔이 없다 — /scan 이 살아있는지 확인할 것")
-    print(f"[{robot}] {len(files)}장 받음 → {out_dir}")
-    return files
-
-
 def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockConfig) -> None:
     """`/scan` 을 직접 구독해 창 하나에 실시간으로 그린다.
 
     SSH 를 안 쓴다 — 이 노트북 자체가 CycloneDDS 정적 피어 목록에 있어 DDS 로
-    바로 구독된다(`.env` 의 `LAPTOP_IP`, `~/.bashrc` 의 `CYCLONEDDS_URI`).
-    로봇에 새로 뭘 얹지도, 계산을 시키지도 않는다 — RANSAC·노치 검출은
-    전부 이 프로세스 안에서 돈다.
+    바로 구독된다. 로봇에 새로 뭘 얹지도, 계산을 시키지도 않는다 — RANSAC·노치
+    검출은 전부 이 프로세스 안에서 돈다.
     """
     # ⚠️ RMW_IMPLEMENTATION 은 rclpy import **전에** 정해져야 한다.
     os.environ["RMW_IMPLEMENTATION"] = "rmw_cyclonedds_cpp"
@@ -244,7 +156,8 @@ def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockCon
             ax.clear()
             ax.set_title(f"[{robot}] /scan 대기 중... (라이다·bringup 켜져 있나?)")
             return
-        render_scan(ax, msg.ranges, msg.angle_min, msg.angle_increment, cfg,
+        render_scan(ax, msg.ranges, msg.angle_min, msg.angle_increment,
+                   msg.range_min, msg.range_max, cfg,
                    title=f"[{robot}] 스캔 #{latest['n']}")
 
     anim = FuncAnimation(fig, update, interval=100, cache_frame_data=False)
@@ -258,80 +171,21 @@ def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockCon
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("scans", nargs="*", help="scan CSV 파일(들) — 여러 장이면 순서대로 애니메이션. "
-                    "--robot 을 쓰면 생략한다")
-    ap.add_argument("-o", "--out", default=None,
-                    help="출력 파일. 확장자가 .gif 면 애니메이션, 아니면 첫 장만 정지 이미지 "
-                    "— --live 가 아니면 필수(기본값 없음: 안 주면 실행이 안 된다, 전 결과 "
-                    "덮어쓰기 방지)")
-    ap.add_argument("--robot", choices=sorted(ROBOT_DEFAULTS), default=None,
-                    help="CSV 대신 이 로봇에서 캡처한다(예: pinky-3)")
-    ap.add_argument("--live", action="store_true",
-                    help="파일로 안 남기고 창 하나에 실시간으로 그린다. --robot 필수, "
-                    "-o/scans 는 안 쓴다")
-    ap.add_argument("--count", type=int, default=5, help="--robot 캡처 장수(--live 에는 안 씀)")
-    ap.add_argument("--sector", type=float, default=90.0,
-                    help="--robot 캡처 반각(도) — detect() 자체 창(기본 60도)보다 "
-                    "넓게 잡아야 그림에서 잘려 보이지 않는다(--live 에는 안 씀)")
+    ap.add_argument("--robot", required=True, choices=sorted(ROBOT_DEFAULTS),
+                    help="실시간으로 구독할 로봇(예: pinky-3)")
     ap.add_argument("--domain-id", type=int, default=None,
-                    help="--robot 전용 오버라이드. 표에 없는 로봇이면 필수")
-    ap.add_argument("--cyclonedds-uri", default=None, help="--robot 전용 오버라이드")
-    ap.add_argument("--ssh-host", default=None,
-                    help="--robot 전용 오버라이드(기본: ~/.ssh/config 별칭). --live 에는 안 씀")
+                    help="표에 없는 로봇이면 필수(추측 금지 — 실측값만)")
+    ap.add_argument("--cyclonedds-uri", default=None, help="표에 없는 로봇이면 필수")
     args = ap.parse_args()
 
-    if args.live:
-        if not args.robot:
-            ap.error("--live 는 --robot 이 필수다(도메인·CycloneDDS 설정을 알아야 구독한다)")
-        defaults = ROBOT_DEFAULTS.get(args.robot, {})
-        domain_id = args.domain_id if args.domain_id is not None else defaults.get("domain_id")
-        cyclonedds_uri = args.cyclonedds_uri or defaults.get("cyclonedds_uri")
-        if domain_id is None or cyclonedds_uri is None:
-            ap.error(f"{args.robot} 은 실측 기본값이 없다 — "
-                    "--domain-id/--cyclonedds-uri 를 직접 넘길 것")
-        live_view(args.robot, domain_id, cyclonedds_uri, LidarDockConfig())
-        return
+    defaults = ROBOT_DEFAULTS.get(args.robot, {})
+    domain_id = args.domain_id if args.domain_id is not None else defaults.get("domain_id")
+    cyclonedds_uri = args.cyclonedds_uri or defaults.get("cyclonedds_uri")
+    if domain_id is None or cyclonedds_uri is None:
+        ap.error(f"{args.robot} 은 실측 기본값이 없다 — "
+                "--domain-id/--cyclonedds-uri 를 직접 넘길 것")
 
-    if not args.out:
-        ap.error("-o/--out 이 필요하다(--live 를 쓰는 게 아니라면)")
-
-    if args.robot:
-        defaults = ROBOT_DEFAULTS.get(args.robot, {})
-        domain_id = args.domain_id if args.domain_id is not None else defaults.get("domain_id")
-        cyclonedds_uri = args.cyclonedds_uri or defaults.get("cyclonedds_uri")
-        ssh_host = args.ssh_host or defaults.get("ssh_host")
-        if domain_id is None or cyclonedds_uri is None or ssh_host is None:
-            ap.error(f"{args.robot} 은 실측 기본값이 없다 — "
-                    "--domain-id/--cyclonedds-uri/--ssh-host 를 직접 넘길 것")
-        tmp = Path(f"/tmp/aba_dockviz_{args.robot}")
-        files = capture_live(args.robot, args.count, args.sector, domain_id,
-                            cyclonedds_uri, ssh_host, tmp)
-    elif args.scans:
-        files = sorted(args.scans)
-    else:
-        ap.error("scan CSV 파일을 주거나 --robot 을 지정할 것")
-
-    cfg = LidarDockConfig()
-
-    fig, ax = plt.subplots(figsize=(7, 7))
-    if len(files) == 1 or not args.out.lower().endswith(".gif"):
-        rows = load_csv(files[0])
-        found = render_frame(ax, rows, cfg, title=Path(files[0]).name)
-        fig.tight_layout()
-        fig.savefig(args.out, dpi=120)
-        print(f"저장: {args.out} ({'검출 성공' if found else '검출 실패'})")
-        return
-
-    from matplotlib.animation import FuncAnimation, PillowWriter
-    frames_rows = [load_csv(f) for f in files]
-
-    def update(i):
-        render_frame(ax, frames_rows[i], cfg, title=Path(files[i]).name)
-
-    anim = FuncAnimation(fig, update, frames=len(files), interval=500)
-    fig.tight_layout()
-    anim.save(args.out, writer=PillowWriter(fps=2))
-    print(f"저장: {args.out} ({len(files)}프레임)")
+    live_view(args.robot, domain_id, cyclonedds_uri, LidarDockConfig())
 
 
 if __name__ == "__main__":
