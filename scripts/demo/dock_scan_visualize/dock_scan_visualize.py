@@ -63,6 +63,15 @@ else:
           file=sys.stderr)
 matplotlib.rcParams["axes.unicode_minus"] = False
 
+# ⚠️ 실기: 's' 를 누르면 내 저장(`_save_snapshot`)뿐 아니라 matplotlib 기본
+#    단축키(`keymap.save`)도 같이 발동해 `Figure_1.png` 를 홈 디렉터리에 또
+#    남겼다 — 사용자가 "어디 저장된 거냐" 헷갈린 원인이었다. 같은 문제가
+#    'r'(→ keymap.home, 확대 리셋과 겹침)·'v'(→ keymap.forward, 뷰 히스토리
+#    앞으로 가기와 겹침)에도 있어서 셋 다 기본 바인딩을 끈다.
+for _keymap, _key in (("keymap.save", "s"), ("keymap.home", "r"), ("keymap.forward", "v")):
+    if _key in matplotlib.rcParams[_keymap]:
+        matplotlib.rcParams[_keymap].remove(_key)
+
 _LIBI_MODES_SRC = (Path(__file__).resolve().parents[3]
                     / "aba_controller/libi_modes/ros_ws/src/libi_modes")
 sys.path.insert(0, str(_LIBI_MODES_SRC))
