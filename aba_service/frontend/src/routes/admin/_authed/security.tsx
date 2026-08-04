@@ -5,6 +5,12 @@ import { toast } from "sonner";
 import { AdminShell } from "@/components/admin/AdminShell";
 import { ConfirmDeleteDialog } from "@/components/admin/ConfirmDeleteDialog";
 import { MiniDonut } from "@/components/admin/charts";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { ops, opsApi } from "@/lib/ops-api";
 
 export const Route = createFileRoute("/admin/_authed/security")({
@@ -56,6 +62,8 @@ function SecurityPage() {
   const seenIds = useRef<Set<number>>(new Set());
   const seeded = useRef(false);
   const [alertQueue, setAlertQueue] = useState<SecurityEvent[]>([]);
+  // 영상 보기 눌러야 로드 — 목록에 쌓인 영상 전부를 항상 박아두면 스크롤할 때마다 다 받아온다.
+  const [videoClip, setVideoClip] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -324,11 +332,12 @@ function SecurityPage() {
                   {/* 침입 영상 — 파일 경로만 보관한다(바이트는 저장 안 함) */}
                   <div className="mt-2">
                     {e.clip_path ? (
-                      <video
-                        controls
-                        src={e.clip_path}
-                        className="max-h-56 w-full rounded bg-black"
-                      />
+                      <button
+                        onClick={() => setVideoClip(e.clip_path)}
+                        className="rounded bg-secondary px-2 py-1 text-xs font-semibold"
+                      >
+                        영상 보기
+                      </button>
                     ) : (
                       <p className="rounded bg-muted px-2 py-1 text-[11px] text-muted-foreground">
                         저장된 영상이 없습니다 (감지 측이 clip_path 를 보고하면
@@ -342,6 +351,31 @@ function SecurityPage() {
           )}
         </section>
       </div>
+
+      <Dialog open={videoClip != null} onOpenChange={(o) => !o && setVideoClip(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>침입 영상</DialogTitle>
+          </DialogHeader>
+          {videoClip ? (
+            <>
+              <video
+                controls
+                autoPlay
+                src={videoClip}
+                className="max-h-[70vh] w-full rounded bg-black"
+              />
+              <a
+                href={videoClip}
+                download
+                className="justify-self-start rounded bg-secondary px-3 py-1.5 text-xs font-semibold"
+              >
+                다운로드
+              </a>
+            </>
+          ) : null}
+        </DialogContent>
+      </Dialog>
 
       <ConfirmDeleteDialog
         open={deleteId != null}

@@ -242,12 +242,70 @@ def test_fit_wall_near_bearing_still_accepts_a_large_yaw_dock_candidate():
     assert abs(wall.yaw) == pytest.approx(abs(tilt), abs=0.05)
 
 
+def test_detect_prefers_the_facing_wall_over_a_bigger_off_bearing_side_wall():
+    """[2026-08-04 실측, 세 번째 자리] `detect()` 도 SEARCH 와 같은 결함을
+    겪는다 — 좁은 60도 창 안에서도 순수 inlier 최다 기준이면 옆벽에 진다.
+    실기 재현(pinky-3): bearing 1.9도에 진짜 도크 벽(56점, yaw -1.0°) 이
+    있는데, bearing 45~50도대 옆벽이 inlier 수로 이겨서 최종 yaw 문턱에
+    걸려 벽 fit 자체가 통째로 `None` 이 났다(dock_scan_visualize 로 확인).
+    `detect()` 내부와 같은 방식(`wall_bearing_tol_rad` 로 매핑한 cfg)으로
+    `fit_wall_near_bearing` 을 불러 정면 후보를 고르는지 확인한다."""
+    cfg = LidarDockConfig()
+    dock_pts = _wall_pts(bearing_rad=0.0, dist_m=0.30, n=56, span_m=0.12)
+    # `_wall_pts` 는 그 방향을 정면으로 보는 벽을 만들므로 bearing 이 곧 그 벽
+    # 자신의 yaw 다 — wall_yaw_max_rad(50도, 오늘 완화됨) 보다 확실히 크게
+    # 잡아야 plain fit_wall 이 여전히 거절한다.
+    side_pts = _wall_pts(bearing_rad=math.radians(70), dist_m=0.25, n=120, span_m=0.5)
+    pts = np.vstack([dock_pts, side_pts])
+
+    plain = detect.fit_wall(pts, cfg, rng=np.random.default_rng(1))
+    assert plain is None, (
+        "이 시험의 전제 확인 — 옆벽이 더 커서 plain fit_wall 은 yaw 문턱에 걸려 None 이어야 한다")
+
+    bearing_cfg = replace(cfg, search_bearing_tol_rad=cfg.wall_bearing_tol_rad,
+                          search_wall_yaw_max_rad=cfg.wall_yaw_max_rad)
+    picked = detect.fit_wall_near_bearing(pts, bearing_cfg, rng=np.random.default_rng(1))
+    assert picked is not None
+    assert picked.offset == pytest.approx(0.30, abs=0.02), "옆벽이 아니라 정면 벽을 골라야 한다"
+
+
 def test_fit_wall_near_bearing_returns_none_when_only_an_off_bearing_wall_exists():
     """도크 후보가 아예 없을 때(전부 범위 밖) — 잘못된 벽을 억지로 고르지 말고
     `None` 을 내야 SEARCH 가 계속 돈다(엉뚱한 방향으로 확정하지 않는다)."""
     cfg = LidarDockConfig()
     pts = _wall_pts(bearing_rad=math.radians(80), dist_m=1.4, n=100, span_m=0.6)
     assert detect.fit_wall_near_bearing(pts, cfg, rng=np.random.default_rng(1)) is None
+
+
+def test_fit_wall_near_bearing_accepts_a_small_dock_wall_diluted_by_a_wide_sector():
+    """[2026-08-04 실측, 두 번째 결함] `ransac_min_inlier_ratio × n` 을 그대로 쓰면
+    안 된다 — SEARCH 는 섹터를 175도로 넓혀서 쓰는데, 그러면 방 잡음까지 다 잡혀
+    n 자체가 커진다(실측 689). 도크 벽 점 개수는 안 변하는데(실측 87) 분모만
+    커지니 비율 문턱을 절대 못 넘는다 — bearing·거리 게이트는 다 통과하는데도
+    이 줄에서 `None` 이 났다(dock_scan_visualize 15초 연속 재현, 화면엔 벽이 또렷이
+    보이는데 SEARCH 만 계속 "searching"). 도크 벽(87점)을 방향·거리 다 안 맞는
+    잡음 600점 속에 심어서, 비율 기준이었다면 실패했을 바로 그 비율을 재현한다."""
+    cfg = LidarDockConfig()
+    dock_pts = _wall_pts(bearing_rad=0.0, dist_m=0.275, n=87, span_m=0.15)
+    # 방향(80도, 게이트 60도 밖)·거리(1.4m, 게이트 1.0m 밖) 둘 다 벗어난 잡음이라
+    # 자기들끼리 벽으로 뽑혀도 게이트에서 걸린다 — 오직 n(분모)만 불린다.
+    rng = np.random.default_rng(3)
+    noise = np.stack([rng.uniform(-1.5, 1.5, 600), rng.uniform(-1.5, 1.5, 600)], axis=1)
+    noise = noise[np.hypot(noise[:, 0], noise[:, 1]) > 1.0]  # 게이트(1.0m) 밖으로
+    pts = np.vstack([dock_pts, noise])
+    assert len(pts) > 300, "이 시험의 전제 — n 이 커야 비율 문턱이 재현된다"
+
+    wall = detect.fit_wall_near_bearing(pts, cfg, rng=np.random.default_rng(1))
+    assert wall is not None, "방향·거리는 다 맞는데 n 이 커졌다고 벽을 놓치면 안 된다"
+    assert wall.offset == pytest.approx(0.275, abs=0.02)
+
+
+def test_fit_wall_near_bearing_still_rejects_a_cluster_below_the_min_inlier_floor():
+    """절대 개수 문턱을 아예 없앤 게 아니다 — bearing·거리는 맞아도 점이 너무
+    적으면(잡음일 확률이 높다) 여전히 거절해야 한다."""
+    cfg = LidarDockConfig()
+    tiny = _wall_pts(bearing_rad=0.0, dist_m=0.30, n=cfg.search_wall_min_inliers - 5, span_m=0.05)
+    assert detect.fit_wall_near_bearing(tiny, cfg, rng=np.random.default_rng(1)) is None
 
 
 def _detect(cfg=None, **scan_kw):
@@ -292,11 +350,14 @@ def test_detect_rejects_a_shallow_notch_that_still_crosses_the_breakpoint():
     얕아서 `_longest_runs` 단계에서 이미 걸러진다 — brief 의 Step 5 되돌리기(깊이
     게이트 삭제)를 실제로 적용해도 이 시험은 빨개지지 않는다(실측 확인함). 깊이
     게이트 자체를 시험하려면 브레이크포인트는 넘되(> 0.012) 최소 깊이는 못 미치는
-    (< notch_depth_min_m=0.015) 값이 필요하다 — `notch_d=0.013`. 이 값에서는 실제로
-    구간(run)이 잡히고 평균 깊이가 0.013 으로 나오므로(실측), 깊이 게이트가 없으면
-    `detect()` 가 `NotchObs` 를 반환한다(오검출) — 이 시험이 깊이 게이트가 필요하다는
-    것의 진짜 증거다."""
-    assert _detect(wall_m=0.30, notch_d=0.013) is None
+    (< notch_depth_min_m) 값이 필요하다.
+
+    ⚠️ [2026-08-04 실측 정정] notch_depth_min_m 을 0.015→0.013 으로 낮췄다(검출
+    실패가 너무 잦다는 실기 지적 — 사용자가 오검출은 화면 보고 직접 잡기로
+    했다). 그래서 `notch_d=0.013` 은 더 이상 이 시험의 반례가 못 된다 — 그 값을
+    `0.0125` 로 낮춰 여전히 `notch_thresh_m`(0.012) 은 넘고 새 min(0.013) 은
+    못 미치는 값을 쓴다."""
+    assert _detect(wall_m=0.30, notch_d=0.0125) is None
 
 
 def test_detect_rejects_a_notch_that_is_too_wide():
@@ -399,3 +460,27 @@ def test_detect_near_rejects_a_cluster_that_is_too_wide():
     """직선 피팅이 없어 폭 게이트가 유일한 오검출 방어다. 실측: 이 폭에서
     `near_half_deg` 로 잘라내도 여전히 `near_width_max_m` 을 넘는다."""
     assert _detect_near(d=0.10, y_off=0.0, width=0.30) is None
+
+
+def test_min_range_m_returns_the_closest_raw_reading_in_the_near_sector():
+    """[2026-08-04, 사용자 요청] 노치 검출과 무관한 안전 정지가 이 값을 쓴다 —
+    그룹핑·폭 필터 없이 그 창 안 원시 최소거리 그대로여야 한다."""
+    cfg = LidarDockConfig()
+    ranges = make_scan(wall_m=0.20, notch=False)
+    mr = detect.min_range_m(ranges, ANGLE_MIN, ANGLE_INC, RANGE_MIN, RANGE_MAX, cfg)
+    assert mr == pytest.approx(0.20, abs=0.01)
+
+
+def test_min_range_m_is_not_fooled_by_a_deeper_notch():
+    """노치는 벽보다 **더 멀다**(깊이만큼 파여 있다) — 최소값이 노치 쪽으로
+    끌려가면 안 된다. 이게 흔들리면 안전 정지가 실제보다 늦게 걸린다."""
+    cfg = LidarDockConfig()
+    ranges = make_scan(wall_m=0.20, notch_d=0.03, notch=True)
+    mr = detect.min_range_m(ranges, ANGLE_MIN, ANGLE_INC, RANGE_MIN, RANGE_MAX, cfg)
+    assert mr == pytest.approx(0.20, abs=0.01), "노치(더 먼 곳)에 안 속아야 한다"
+
+
+def test_min_range_m_returns_none_with_no_valid_rays():
+    cfg = LidarDockConfig()
+    ranges = [float("inf")] * N_RAYS
+    assert detect.min_range_m(ranges, ANGLE_MIN, ANGLE_INC, RANGE_MIN, RANGE_MAX, cfg) is None

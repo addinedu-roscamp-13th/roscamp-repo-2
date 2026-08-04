@@ -30,7 +30,7 @@ from dataclasses import replace
 from libi_modes.lidar.approach import LidarApproach
 from libi_modes.lidar.config import LidarDockConfig
 from libi_modes.lidar.detect import (detect, detect_near, fit_wall_near_bearing,
-                                     sector_points)
+                                     min_range_m, sector_points)
 
 #: 끝날 때 낼 0 의 **개수**. 시각이 아니라 개수라야 콜백 지연에 안 샌다
 #: (`NudgeDriver` 가 같은 이유로 개수를 쓴다 — 시각으로 재면 밀린 콜백이 0 을
@@ -194,7 +194,12 @@ class LidarDockDriver:
                 if obs is None and self._machine.phase == "FINAL":
                     obs = detect_near(msg.ranges, msg.angle_min, msg.angle_increment,
                                       msg.range_min, msg.range_max, self._cfg)
-                cmd = self._machine.step(obs, now)
+                # ⚠️ [2026-08-04, 사용자 요청] 노치 검출과 완전히 별개로, 원시
+                #    최소거리를 매 tick 재서 안전 정지에 넘긴다 — `obs`/`d` 가
+                #    틀려도 이건 라이다가 잰 그대로다(approach.py 안전 정지 참고).
+                mr = min_range_m(msg.ranges, msg.angle_min, msg.angle_increment,
+                                 msg.range_min, msg.range_max, self._cfg)
+                cmd = self._machine.step(obs, now, min_range_m=mr)
         except Exception as exc:                                   # noqa: BLE001
             self._log.error(f"라이다 도킹 예외 — 정지한다: {exc}")
             self._finish("failure", "exception")

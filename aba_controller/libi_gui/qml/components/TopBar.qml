@@ -28,10 +28,18 @@ Rectangle {
             Text { text: "도서관 사서 로봇"; font.pixelSize: 12; color: S.textMuted; font.family: S.fontFamily }
         }
         StatusPill {
+            // 보안순찰 중엔 chaseState(IntruderChase 내부 상태)로 문구만 바꾼다.
+            // robotState 자체("보안순찰")는 안 바꾼다 — FMS 상위 상태는 그대로 유지,
+            // 여기 텍스트만 그 안의 하위 상태를 덧보여준다.
+            readonly property string securityLabel:
+                controller.robotState !== "보안순찰" ? controller.robotState
+                : controller.chaseState === "chasing" ? "추종중"
+                : controller.chaseState === "release" ? "유실"
+                : controller.robotState
             anchors.verticalCenter: parent.verticalCenter
             // 실물 로봇 LED 와 같은 규칙 — Style.js ledColorFor() 참고
             pillColor: S.ledColorFor(controller.robotState)
-            text: controller.robotState
+            text: securityLabel
         }
 
         // 응대 세션이 끝나기 직전 경고. 예전엔 화면 위를 덮는 배너였는데 상단바까지 가려

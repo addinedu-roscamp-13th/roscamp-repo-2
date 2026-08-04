@@ -59,6 +59,10 @@ signals:
      *  누적 횟수와 그 정점. 늘어난 순간이 곧 "사람 때문에 재탐색을 요청했다" 다.
      *  레벨(`person_blocked`)이 아니라 횟수인 이유는 임계 근처 깜빡임 때문이다. */
     void personBlockReported(int seq, int node);
+    /** /libi/fsm_state 의 `chase_state` — 야간순찰 IntruderChase 리프의 내부 상태
+     *  ("idle"/"chasing"/"release"/"backoff"). `current_state`("보안순찰")와 별개로,
+     *  SECURITY_PATROL 안에서 도는 하위 상태다. 패널이 "추종중"/"유실" 을 그린다. */
+    void chaseStateReceived(QString state);
     /** /libi/replan_reason — FMS 가 내려보내는 **재계획 사유**(String JSON `{seq, reason}`).
      *  사람 사유는 로봇이 스스로 알지만(`person_block_seq`), 지연·차단해제·다른 로봇
      *  때문에 난 재계획은 fleet_node 만 안다. 그걸 패널 기록에 남기려고 받는다. */

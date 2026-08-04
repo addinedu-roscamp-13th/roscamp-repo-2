@@ -286,9 +286,17 @@ demo/
 # `scripts/demo`는 일회용 측정 결과가 아니라 재사용하는 ROS 시연 도구다.
 !scripts/demo/
 !scripts/demo/**
+# 위 whitelist가 __pycache__까지 되살리므로 바이트코드 캐시는 다시 무시한다.
+scripts/demo/**/__pycache__/
 
 # subagent-driven-development manual worktrees (isolated task chains)
 .worktrees/
+
+# colcon symlink-install 산출물 — 소스 아니라 빌드 결과물.
+symlink_install_manifest.txt
+
+# 보안 클립 실측 녹화본 — DB 참조용 로컬 파일, 저장소에 남길 것이 아니다.
+aba_service/backend/media/
 
 # ──────────────────────────────────────────────────────────────
 # 백업 산출물 — 배포/설정 바꾸기 전에 손으로 떠두는 사본

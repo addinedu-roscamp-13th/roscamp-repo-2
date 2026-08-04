@@ -24,6 +24,20 @@ def test_defaults_are_physically_sane():
     assert 0.0 < c.search_bearing_tol_rad < c.search_wall_yaw_max_rad, (
         "bearing 문턱은 좁게, 벽 자체 기울기 허용치(search_wall_yaw_max_rad)는 "
         "여전히 넓게 — 이 둘이 뒤바뀌면 안 된다")
+    # ★ 현장 실측(2026-08-04, 두 번째 결함) — 넓은 섹터(175도)라 n 이 커져서
+    #   ransac_min_inlier_ratio×n 문턱을 실제 도크 벽(87점)이 못 넘었다. 섹터
+    #   폭에 안 흔들리는 절대 개수를 쓴다.
+    assert c.search_wall_min_inliers > 0
+    assert c.search_wall_min_inliers < c.min_points * 5, (
+        "너무 크면 좁은 섹터에서도 못 넘는다 — min_points 대비 상식적인 범위인지만 본다")
+    # ★ 현장 실측(2026-08-04) — y 오차가 yaw 에 비례하므로 FINAL 진입 게이트도
+    #   yaw 를 봐야 한다(y 만 보고 통과시키면 안 된다). 처음엔 SEARCH 와 같은
+    #   값(8.6도)을 썼는데, 실기에서 FINAL 진입 뒤엔 yaw 를 못 고친다는 게
+    #   드러났다(k_yaw_final=0, 벽이 사라져 애초에 못 잰다 — 6.2°로 들어가서
+    #   16.4°까지 더 벌어진 채 도착) — SEARCH 의 대략적 정렬(제자리 회전용)
+    #   보다 훨씬 좁혀야 한다.
+    assert c.yaw_max_enter_final_rad < c.search_align_tol_rad, (
+        "FINAL 은 진입 뒤 교정 수단이 없다 — SEARCH 의 대략적 정렬보다 훨씬 좁아야 한다")
 
 
 def test_clamped_raises_search_rotation_up_to_the_rotation_deadband():

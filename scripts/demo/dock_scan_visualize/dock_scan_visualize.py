@@ -15,7 +15,12 @@
   좌클릭      "실제 노치는 여기다" 라벨링 — 검출값과 대조해 로그 남긴다
              (`/tmp/aba_dockviz_groundtruth.csv`, 세션 내내 누적)
   스크롤휠    확대/축소, `0` 확대 초기화
-창을 닫거나 Ctrl+C 로 끝낸다.
+  휠클릭 드래그  화면 이동(패닝)
+  `g` / 화면 하단 [실행 시작] 버튼   ⚠️ 실행 토글 — 켜면 상태기계가 낸 명령을
+             `cmd_vel_dock` 으로 **실제로 발행한다**(로봇이 움직인다).
+             fsm_node 쪽 도킹이 동시에 돌고 있으면 명령이 겹친다 — 반드시
+             그쪽을 멈춰 두고 쓴다. 다시 누르면 그 자리에서 0 명령을 한 번 낸다.
+창을 닫거나 Ctrl+C 로 끝낸다(실행 중이었으면 종료 직전 0 명령을 한 번 낸다).
 
 ## Pi 에 부담을 안 주는 이유
 
@@ -23,6 +28,11 @@
 Pi 쪽은 이미 하고 있던 발행 그대로다(구독자가 하나 더 붙는 것뿐). SSH 로 로봇에
 들어가지도 않는다 — 노트북이 같은 CycloneDDS 정적 피어 목록에 있어 DDS 로 바로
 구독한다(`.env` 의 `LAPTOP_IP`, `~/.bashrc` 의 `CYCLONEDDS_URI`).
+
+⚠️ **`g`(실행) 만은 예외다.** 켜면 이 프로세스가 `cmd_vel_dock` 을 실제로 발행해
+로봇이 움직인다(2026-08-04 추가 — 상태기계 판단을 눈으로만 보지 말고 실제로 검증하고
+싶다는 요청). 기본은 꺼져 있다(뷰 전용). fsm_node 쪽 도킹 드라이버와 같은 토픽을
+써서 — 그쪽이 동시에 돌면 명령이 겹친다. 반드시 fsm_node 의 도킹을 멈춰 두고 쓴다.
 
 ## 왜 판정 로직을 다시 안 짜나
 
@@ -48,6 +58,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import yaml
+from matplotlib.widgets import Button
 
 # 한글이 네모로 깨지는 것 방지. ⚠️ Noto Sans CJK 는 한 .ttc 파일에 JP/KR/SC/TC/HK
 # 여러 서체가 들어있는데, matplotlib 폰트매니저는 파일당 이름을 하나만 잡는다 —
@@ -70,7 +81,8 @@ matplotlib.rcParams["axes.unicode_minus"] = False
 #    남겼다 — 사용자가 "어디 저장된 거냐" 헷갈린 원인이었다. 같은 문제가
 #    'r'(→ keymap.home, 확대 리셋과 겹침)·'v'(→ keymap.forward, 뷰 히스토리
 #    앞으로 가기와 겹침)에도 있어서 셋 다 기본 바인딩을 끈다.
-for _keymap, _key in (("keymap.save", "s"), ("keymap.home", "r"), ("keymap.forward", "v")):
+for _keymap, _key in (("keymap.save", "s"), ("keymap.home", "r"), ("keymap.forward", "v"),
+                      ("keymap.grid", "g")):
     if _key in matplotlib.rcParams[_keymap]:
         matplotlib.rcParams[_keymap].remove(_key)
 
@@ -80,8 +92,8 @@ sys.path.insert(0, str(_LIBI_MODES_SRC))
 
 from libi_modes.lidar.approach import LidarApproach  # noqa: E402
 from libi_modes.lidar.config import LidarDockConfig  # noqa: E402
-from libi_modes.lidar.detect import (detect, detect_near, fit_wall,
-                                     fit_wall_near_bearing, sector_points)  # noqa: E402
+from libi_modes.lidar.detect import (detect, detect_near, fit_wall_near_bearing,
+                                     min_range_m, sector_points)  # noqa: E402
 
 _PARAMS_YAML = _LIBI_MODES_SRC / "config/params.yaml"
 
@@ -125,6 +137,36 @@ ROBOT_DEFAULTS = {
 }
 
 
+def _obs_xy(obs, wall) -> tuple[float, float] | None:
+    """`detect()` 의 `(d, y)` 는 벽 정렬 좌표계다 — 원시 라이다 `(x, y)` 로 되돌린다.
+
+    ⚠️ 클릭(원시 프레임)이나 raw 점군과 같은 축에 겹쳐 그리려면 **반드시** 이 변환을
+    거쳐야 한다. `wall.yaw == 0`(정면) 이면 두 좌표계가 우연히 같아서 이 변환 없이도
+    맞아 보이지만, yaw 가 커질수록 `(d, y)` 를 그대로 `(x, y)` 로 찍은 마커는 실제
+    점군에서 점점 벗어난다(2026-08-04 실기: 클릭 라벨 비교에서 "yaw 클수록 오차 큼"으로
+    나타난 것 — 실제 검출 오차가 아니라 이 축 불일치였을 가능성이 크다).
+    """
+    if wall is None or obs is None:
+        return None
+    wvec = np.array([-wall.normal[1], wall.normal[0]])
+    xy = obs.d * wall.normal + obs.y * wvec
+    return float(xy[0]), float(xy[1])
+
+
+def _light_clear(ax) -> None:
+    """`ax.clear()` 대신 매 프레임 새로 그리는 아티스트만 지운다.
+
+    프로파일 실기(2026-08-04, cProfile 30프레임): `ax.clear()` 가 프레임당
+    51ms 중 23ms — 축/눈금/spine 을 통째로 재생성하는 비용이었다(점 6개
+    scatter 는 다 합쳐 11ms). 축 구조는 그대로 두고 이 함수가 매번 다시
+    그리는 것(scatter/plot/annotate/text/legend)만 지우면 그 23ms 가 없어진다.
+    """
+    for artist in list(ax.collections) + list(ax.lines) + list(ax.texts) + list(ax.patches):
+        artist.remove()
+    if ax.legend_ is not None:
+        ax.legend_.remove()
+
+
 def render_scan(ax, ranges, angle_min: float, angle_increment: float,
                 range_min: float, range_max: float,
                 cfg: LidarDockConfig, title: str = "",
@@ -133,12 +175,21 @@ def render_scan(ax, ranges, angle_min: float, angle_increment: float,
     """스캔 한 장(원시 `LaserScan` 필드 그대로)을 그린다.
 
     `xlim`/`ylim` 을 안 주면 `cfg.range_max_m` 기준 기본값을 쓴다. 라이브 뷰가
-    확대 상태를 프레임마다 넘겨줄 자리 — `ax.clear()` 를 매 프레임 부르므로
+    확대 상태를 프레임마다 넘겨줄 자리 — 매 프레임 `_light_clear` 를 부르므로
     (아래) 이 함수가 매번 기본 범위로 되돌리면 툴바/스크롤 확대가 무의미해진다.
     """
-    ax.clear()
+    _light_clear(ax)
     pts = sector_points(ranges, angle_min, angle_increment, range_min, cfg.range_max_m, cfg)
-    wall = fit_wall(pts, cfg) if len(pts) else None
+    # ⚠️ [2026-08-04 실기] 화면용 `wall` 을 plain `fit_wall()` 로 따로 재면
+    #    `detect()` 내부(`fit_wall_near_bearing`, bearing 게이트)와 **다른
+    #    알고리즘**이 된다 — 실기에서 `obs`(detect() 성공)는 있는데 이 plain
+    #    fit 만 실패해 "[성공] 검출 성공"이라 찍히고도 벽선·노치별·목표점이
+    #    통째로 안 그려졌다("라이다가 기준점이냐"는 질문의 원인 — 사실은
+    #    그리기 실패였지 기준점 문제가 아니었다). `detect()` 와 **같은** 계산
+    #    (`bearing_cfg`) 을 그대로 써서 둘이 항상 같은 벽을 본다.
+    bearing_cfg = replace(cfg, search_bearing_tol_rad=cfg.wall_bearing_tol_rad,
+                          search_wall_yaw_max_rad=cfg.wall_yaw_max_rad)
+    wall = fit_wall_near_bearing(pts, bearing_cfg) if len(pts) else None
     obs = detect(ranges, angle_min, angle_increment, range_min, range_max, cfg)
 
     if len(pts):
@@ -156,21 +207,45 @@ def render_scan(ax, ranges, angle_min: float, angle_increment: float,
                label=f"벽 fit (yaw={math.degrees(wall.yaw):+.1f}°, rms={wall.rms*1000:.1f}mm)")
 
     # ── 목표 지점(정지선) — 로직이 "여기로 가야 한다"고 보는 자리 ─────────────
-    #   y=0(벽에 정렬), x=stop_m(그 이상 못 들어간다, C1 min range 바닥). 검출
-    #   여부와 무관하게 항상 찍는다 — 지금 얼마나 남았는지 눈으로 바로 비교되게.
-    ax.scatter([cfg.stop_m], [0], marker="X", s=60, c="tab:green", zorder=7,
-              label=f"정지 목표(stop_m={cfg.stop_m*1000:.0f}mm, y=0)")
-    ax.axvline(cfg.stop_m, color="tab:green", lw=0.6, ls=":", alpha=0.5)
-
-    if obs is not None:
-        ax.scatter([obs.d], [obs.y], marker="*", s=90, c="tab:red", zorder=6,
+    #   ⚠️ [2026-08-04 정정, 2번째] 처음엔 "로봇 원점에서 stop_m"(항상 로봇
+    #   옆에 찍힘) → "노치서 stop_m 뒤, y=0 고정"으로 고쳤는데, y 를 0 으로
+    #   박아버리니 obs.y≠0 일 때 별(검출)과 X(목표)가 다른 옆 줄에 떨어져서
+    #   화살표가 대각선으로 꺾였다 — "말이 안 된다"는 지적을 받았다. `d` 하한
+    #   조건만 반영하고 함부로 "정렬될 것"이라는 가정을 얹지 않는다 — 지금
+    #   보이는 노치에서 **그대로** stop_m 만큼 물러난 자리(같은 y). 노치가 안
+    #   보이면(obs 없음) 그 자리를 특정할 방법이 없어 아예 안 그린다.
+    # ⚠️ [2026-08-04 실기, 정정] 한때 `wall` 이 이 함수 전용 plain `fit_wall()`
+    #   결과였고 `obs` 는 `detect()` 내부의 bearing-gated fit 결과라 **서로
+    #   다른 알고리즘**이었다 — `obs is not None` 인데 `wall is None` 이 나서
+    #   `_obs_xy` 가 `None` 을 돌려주는데 언패킹 가드가 없어 매 프레임 예외가
+    #   터졌고, 그게 `update()` 의 `machine.step()` 호출 앞에서 나서 **실제
+    #   명령도 안 나갔다**(사용자가 본 "정지"의 진짜 원인). 지금은 위에서
+    #   `wall` 도 같은 bearing-gated 계산을 쓰게 고쳐 거의 안 벌어지지만,
+    #   RANSAC 은 독립적으로 두 번(화면용·detect() 내부용) 표본을 뽑으므로
+    #   경계값에서 드물게 여전히 갈릴 수 있다 — 가드는 남겨 둔다.
+    if obs is not None and wall is not None:
+        ox, oy = _obs_xy(obs, wall)
+        target_xy = np.array([ox, oy]) - cfg.stop_m * wall.normal  # 같은 y, d 만 stop_m 만큼 물러난다
+        ax.scatter([target_xy[0]], [target_xy[1]], marker="X", s=60, c="tab:green", zorder=7,
+                  label=f"정지 목표(노치서 {cfg.stop_m*1000:.0f}mm 뒤)")
+        ax.scatter([ox], [oy], marker="*", s=90, c="tab:red", zorder=6,
                   label=f"노치 검출 d={obs.d*1000:.0f}mm y={obs.y*1000:+.0f}mm")
+
+        # ── 조향 종료점 — 여기부터는 y·yaw 안 보고 직진만 한다 ──────────────
+        #   [2026-08-04 정정] 벽 법선 방향으로만(원점 기준 y=0) 찍었더니 노치·
+        #   목표를 잇는 선(위 화살표) 위에 있지 않아 "왜 저기 있냐" 는 지적을
+        #   받았다 — 그 선을 따라 똑바로 들어가야 마지막에 수직으로 들어가는데,
+        #   점이 선 밖에 있으면 그 경로가 안 보였다. target_xy 와 같은 식으로
+        #   노치에서 (stop_m+margin) 만큼 물러난 자리(같은 y) — 그 선 위.
+        wp_xy = np.array([ox, oy]) - (cfg.stop_m + cfg.waypoint_margin_m) * wall.normal
+        ax.scatter([wp_xy[0]], [wp_xy[1]], c="tab:purple", s=14, marker="o",
+                  label=f"조향 종료점(stop_m+{cfg.waypoint_margin_m*1000:.0f}mm)")
         # 검출 지점 → 목표 지점. 이 화살표 길이가 "얼마나 더 가야 하는지"다.
-        ax.annotate("", xy=(cfg.stop_m, 0.0), xytext=(obs.d, obs.y),
+        ax.annotate("", xy=(target_xy[0], target_xy[1]), xytext=(ox, oy),
                    arrowprops=dict(arrowstyle="->", color="tab:orange", lw=1, alpha=0.8))
         remain_d = (obs.d - cfg.stop_m) * 1000
         ax.annotate(f"{remain_d:.0f}mm · {obs.y*1000:+.0f}mm",
-                   ((obs.d + cfg.stop_m) / 2, obs.y / 2), fontsize=6, color="tab:orange",
+                   ((ox + target_xy[0]) / 2, (oy + target_xy[1]) / 2), fontsize=6, color="tab:orange",
                    ha="center", va="bottom",
                    xytext=(0, 4), textcoords="offset points")
 
@@ -285,6 +360,13 @@ def _log_ground_truth(robot: str, msg, click_xy: tuple[float, float],
     scan_path = f"/tmp/aba_dockviz_gt_{ts}.csv"
     _write_scan_csv(msg, scan_path)
 
+    pts = sector_points(msg.ranges, msg.angle_min, msg.angle_increment,
+                        msg.range_min, msg.range_max, cfg)
+    # detect() 와 같은 계산을 써야 "노치는 찾았는데 벽 표시만 없다" 가 안 난다
+    # (render_scan 머리말 주석과 같은 이유).
+    bearing_cfg = replace(cfg, search_bearing_tol_rad=cfg.wall_bearing_tol_rad,
+                          search_wall_yaw_max_rad=cfg.wall_yaw_max_rad)
+    wall = fit_wall_near_bearing(pts, bearing_cfg) if len(pts) else None
     obs = detect(msg.ranges, msg.angle_min, msg.angle_increment,
                 msg.range_min, msg.range_max, cfg)
     gx, gy = click_xy
@@ -298,10 +380,15 @@ def _log_ground_truth(robot: str, msg, click_xy: tuple[float, float],
                 f"{obs.d if obs else ''},{obs.y if obs else ''},"
                 f"{obs.yaw if obs else ''},{obs.depth if obs else ''}\n")
 
-    if obs is not None:
-        delta_mm = math.hypot(gx - obs.d, gy - obs.y) * 1000
+    # ⚠️ 클릭(gx,gy)은 원시 라이다 프레임이고 obs.d/obs.y 는 벽 정렬 프레임이다
+    #    (detect.py 참고) — 직접 빼면 wall.yaw≠0 일 때 허수 오차가 낀다
+    #    (2026-08-04 실기 발견). `_obs_xy` 로 원시 프레임으로 되돌린 뒤 비교한다.
+    obs_xy = _obs_xy(obs, wall)
+    if obs_xy is not None:
+        ox, oy = obs_xy
+        delta_mm = math.hypot(gx - ox, gy - oy) * 1000
         print(f"[{robot}] 라벨: 클릭=({gx*1000:.0f},{gy*1000:.0f})mm "
-             f"검출=({obs.d*1000:.0f},{obs.y*1000:.0f})mm 차이={delta_mm:.0f}mm "
+             f"검출=({ox*1000:.0f},{oy*1000:.0f})mm 차이={delta_mm:.0f}mm "
              f"→ {GROUND_TRUTH_LOG}")
     else:
         print(f"[{robot}] 라벨: 클릭=({gx*1000:.0f},{gy*1000:.0f})mm "
@@ -357,6 +444,7 @@ def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockCon
              "디스커버리가 안 될 수 있다", file=sys.stderr)
 
     import rclpy
+    from geometry_msgs.msg import Twist
     from matplotlib.animation import FuncAnimation
     from rclpy.qos import qos_profile_sensor_data
     from sensor_msgs.msg import LaserScan
@@ -370,10 +458,16 @@ def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockCon
         latest["n"] += 1
 
     node.create_subscription(LaserScan, "/scan", on_scan, qos_profile_sensor_data)
+    # ⚠️ `/cmd_vel` 이 아니라 `cmd_vel_dock` 다 — twist_mux 가 `/cmd_vel` 직접
+    #    발행을 막는다(lidar_dock_driver.py 머리말 참고). 실제 도킹 드라이버와
+    #    같은 입력을 쓰므로 fsm_node 쪽 도킹이 동시에 돌면 명령이 겹친다.
+    pub_dock = node.create_publisher(Twist, "cmd_vel_dock", 10)
     print(f"[{robot}] /scan 구독 중 — 's' 한 장 저장, 'v' 녹화 시작/정지, 'r' 국면 재시작, "
-         "스크롤휠 확대, '0' 확대 초기화, 창을 닫으면 끝난다(Ctrl+C 도 됨)")
+         "'g' 실행 토글(⚠️ 로봇이 실제로 움직인다), 스크롤휠 확대, 휠클릭 드래그 이동, "
+         "'0' 확대 초기화, 창을 닫으면 끝난다(Ctrl+C 도 됨)")
 
     fig, ax = plt.subplots(figsize=(7, 7))
+    fig.subplots_adjust(bottom=0.1)  # 실행 버튼 자리
 
     # ⚠️ 실기: Ctrl+C 가 안 먹었다 — TkAgg 의 `plt.show()` 는 C 레벨 블로킹
     #    루프라 파이썬 시그널을 즉시 못 받는다. 그 상태에서 `update()` 가
@@ -391,6 +485,45 @@ def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockCon
     recording = {"dir": None, "n": 0}
     REC_FPS = 10.0  # update() 주기(interval=100ms)와 맞춘다
 
+    #: `g`/실행 버튼으로 토글하는 실행 상태. 켜지면 `update()` 가 매 tick
+    #: 상태기계 명령을 `cmd_vel_dock` 으로 실제 발행한다 — 그 전까진 뷰
+    #: 전용(발행 없음)이었다.
+    driving = {"on": False}
+
+    # ── 실행 버튼 — matplotlib Button 위젯, 화면 하단 ──────────────────────
+    #   처음엔 'g' 키만 넣었는데 "실행 버튼이 어딨어" 라는 질문을 받았다 —
+    #   "UI 상에서 실행 버튼을 누르면" 이라는 원 요청은 문자 그대로 클릭
+    #   가능한 버튼을 뜻했다. 키(`g`)와 버튼 둘 다 같은 `toggle_driving()` 을
+    #   부르게 해서 로직이 갈라지지 않게 한다.
+    btn_ax = fig.add_axes([0.4, 0.02, 0.2, 0.05])
+    drive_button = Button(btn_ax, "실행 시작")
+
+    def toggle_driving() -> None:
+        driving["on"] = not driving["on"]
+        if driving["on"]:
+            # ⚠️ [2026-08-04 실기] 국면 타이머(`_t0`, `timeout_s` 90→300초 판정
+            #    기준)는 `step()` 을 처음 부른 순간 시작한다 — "뷰 전용"으로
+            #    한참 지켜만 보다가 나중에 실행을 눌러도 시계는 그동안 계속
+            #    돌고 있었다. 실기: d=100mm·y≈0·yaw=0.7°까지 거의 다
+            #    맞춰놓고도 전체 타임아웃에 먼저 걸렸다 — 원인은 뷰 전용으로
+            #    구경한 시간이었다. 실행을 누르는 이 순간을 "진짜 시작"으로
+            #    삼아 `r` 과 같은 리셋을 해서 시계를 여기서부터 다시 잰다.
+            state["machine"] = LidarApproach(cfg)
+            state["last_terminal_reason"] = None
+            state["ground_truth"] = None
+            drive_button.label.set_text("■ 정지")
+            drive_button.color = "#ffaaaa"
+            print(f"[{robot}] 실행 시작 — 국면 리셋 후 cmd_vel_dock 실제 발행 시작. "
+                 "fsm_node 쪽 도킹이 동시에 돌고 있으면 명령이 겹친다. "
+                 "다시 누르면 끈다.")
+        else:
+            drive_button.label.set_text("실행 시작")
+            drive_button.color = "0.85"
+            pub_dock.publish(Twist())
+            print(f"[{robot}] 실행 정지 — 0 명령 1회 발행")
+
+    drive_button.on_clicked(lambda _event: toggle_driving())
+
     def on_key(event) -> None:
         if event.key == "s":
             if latest["msg"] is None:
@@ -398,10 +531,16 @@ def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockCon
                 return
             _save_snapshot(latest["msg"], fig)
         elif event.key == "r":
+            # ⚠️ [정정] 처음엔 실행 중이면 껐다 — "왜 r 눌러도 안 움직이냐"로
+            #    헷갈렸다(실행이 꺼진 걸 다시 안 켜서). SETTLE 이 어차피
+            #    settle_sec 동안 0 을 내므로 굳이 끌 필요가 없었다 — 실행
+            #    상태는 손대지 않고 국면만 새로 시작한다.
             state["machine"] = LidarApproach(cfg)
             state["last_terminal_reason"] = None
             state["ground_truth"] = None
             print(f"[{robot}] 국면 재시작 — SETTLE 부터 다시(로봇을 새로 놓고 눌렀다면 맞다)")
+        elif event.key == "g":
+            toggle_driving()
         elif event.key == "0":
             view["xlim"] = None
             view["ylim"] = None
@@ -454,6 +593,46 @@ def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockCon
 
     fig.canvas.mpl_connect("scroll_event", on_scroll)
 
+    # ── 이동 — 휠클릭(가운데 버튼) 드래그 ───────────────────────────────────
+    #   `event.xdata`/`ydata` 로 매 프레임 델타를 누적하면 안 된다 — 그 값은
+    #   **그 순간 축 범위** 기준으로 변환된 값인데, 드래그 도중에도 축 범위가
+    #   계속 바뀌므로(위 `on_scroll` 처럼) 누적 오차가 생긴다. 대신 픽셀
+    #   좌표(`event.x`/`y`, 화면 기준이라 축 범위와 무관)로 드래그 시작 시점
+    #   대비 총 이동량을 재고, 그 시점의 축 범위(`pan["xlim0"]`)에 한 번에
+    #   적용한다 — "누른 지점이 커서 아래 그대로 붙어있다"는 불변식이 정확히
+    #   성립한다(계산 유도로 확인).
+    pan = {"active": False, "x0": None, "y0": None, "xlim0": None, "ylim0": None}
+
+    def on_pan_press(event) -> None:
+        if event.inaxes != ax or event.button != 2:
+            return
+        pan["active"] = True
+        pan["x0"], pan["y0"] = event.x, event.y
+        pan["xlim0"] = view["xlim"] if view["xlim"] is not None else ax.get_xlim()
+        pan["ylim0"] = view["ylim"] if view["ylim"] is not None else ax.get_ylim()
+
+    def on_pan_release(event) -> None:
+        if event.button == 2:
+            pan["active"] = False
+
+    def on_pan_motion(event) -> None:
+        if not pan["active"] or event.x is None or event.y is None:
+            return
+        bbox = ax.get_window_extent()
+        if bbox.width <= 0 or bbox.height <= 0:
+            return
+        x0, x1 = pan["xlim0"]
+        y0, y1 = pan["ylim0"]
+        scale_x = (x1 - x0) / bbox.width
+        scale_y = (y1 - y0) / bbox.height
+        dpx, dpy = event.x - pan["x0"], event.y - pan["y0"]
+        view["xlim"] = (x0 - dpx * scale_x, x1 - dpx * scale_x)
+        view["ylim"] = (y0 + dpy * scale_y, y1 + dpy * scale_y)
+
+    fig.canvas.mpl_connect("button_press_event", on_pan_press)
+    fig.canvas.mpl_connect("button_release_event", on_pan_release)
+    fig.canvas.mpl_connect("motion_notify_event", on_pan_motion)
+
     # ── 실제 상태기계까지 같이 돌린다 — "지금 국면에서 얼마로 움직일 것인가" ──
     #   `render_scan` 은 이 프레임 하나의 검출만 보여준다. 실제로 로봇이
     #   낼 명령(선속도·각속도)은 국면(SETTLE→SEARCH→ACQUIRE→...)과 이전
@@ -474,77 +653,114 @@ def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockCon
             ax.clear()
             ax.set_title(f"[{robot}] /scan 대기 중... (라이다·bringup 켜져 있나?)")
             return
-        _found, arrived = render_scan(ax, msg.ranges, msg.angle_min, msg.angle_increment,
-                                      msg.range_min, msg.range_max, cfg,
-                                      title=f"[{robot}] 스캔 #{latest['n']}",
-                                      xlim=view["xlim"], ylim=view["ylim"])
-        # 도착 순간에만 한 번 알린다 — 매 프레임(10Hz) 찍으면 로그가 안 읽힌다.
-        if arrived and not was_arrived["v"]:
-            print(f"[{robot}] 도착 — 정지 트리거 조건 만족 (스캔 #{latest['n']})")
-        was_arrived["v"] = arrived
+        try:
+            _t0 = time.perf_counter()
+            _found, arrived = render_scan(ax, msg.ranges, msg.angle_min, msg.angle_increment,
+                                          msg.range_min, msg.range_max, cfg,
+                                          title=f"[{robot}] 스캔 #{latest['n']}",
+                                          xlim=view["xlim"], ylim=view["ylim"])
+            if latest["n"] % 20 == 0:
+                print(f"[perf] render_scan={1000*(time.perf_counter()-_t0):.1f}ms", file=sys.stderr)
+            # 도착 순간에만 한 번 알린다 — 매 프레임(10Hz) 찍으면 로그가 안 읽힌다.
+            if arrived and not was_arrived["v"]:
+                print(f"[{robot}] 도착 — 정지 트리거 조건 만족 (스캔 #{latest['n']})")
+            was_arrived["v"] = arrived
 
-        # 드라이버(`lidar_dock_driver.py`)와 같은 규칙(2026-08-04 정정):
-        # SEARCH 는 `detect()`(노치까지 확정)를 안 부른다 — 각도가 심하게
-        # 틀어지면 벽은 잡혀도 노치 자체가 인식이 안 돼 계속 None 이 나와
-        # 방향 신호를 영영 못 받는다. 벽만 넓힌 cfg 로 피팅해 그 yaw 로 돈다.
-        # `fit_wall_near_bearing` — inlier 최다만 보면 방의 다른 벽을
-        # 우선할 수 있다(실측 P1, 위 driver 와 같은 이유).
-        # FINAL 인데 FAR 가 실패하면 기존대로 NEAR 로 인수인계한다.
-        machine = state["machine"]
-        if machine.phase == "SEARCH":
-            pts = sector_points(msg.ranges, msg.angle_min, msg.angle_increment,
-                                msg.range_min, search_cfg.range_max_m, search_cfg)
-            wall = fit_wall_near_bearing(pts, search_cfg) if len(pts) else None
-            cmd = machine.step(None, time.monotonic(),
-                              search_wall_yaw=(wall.yaw if wall else None))
-        else:
-            mobs = detect(msg.ranges, msg.angle_min, msg.angle_increment,
-                          msg.range_min, msg.range_max, cfg)
-            if mobs is None and machine.phase == "FINAL":
-                mobs = detect_near(msg.ranges, msg.angle_min, msg.angle_increment,
-                                  msg.range_min, msg.range_max, cfg)
-            cmd = machine.step(mobs, time.monotonic())
-
-        # ⚠️ 실기: DONE/ABORT 로 끝난 뒤엔 `step()` 이 매 tick 그냥
-        # `Cmd(..., "finished")` 를 낸다(approach.py 맨 위 "이미 끝났으면
-        # 그대로 반환" 분기) — **원래 멈춘 이유(timeout/overshoot/... )가
-        # "finished" 로 덮어써져 사라진다.** 실기에서 위 제목엔 "[성공] 검출
-        # 성공"이 뜨는데 오른쪽엔 "ABORT/finished"만 보여 헷갈렸다 — 실제로는
-        # 이 도구가 로봇을 안 움직이면서 계속 반복 판정만 하다 보니(정적
-        # 재생) 90초 전체 타임아웃에 걸린 것뿐이었다. 진짜 사유를 기억해 둔다.
-        if cmd.reason != "finished":
-            state["last_terminal_reason"] = cmd.reason
-        shown_reason = (state.get("last_terminal_reason") or cmd.reason
-                       if cmd.phase in ("DONE", "ABORT") else cmd.reason)
-
-        cmd_text = (f"국면 {cmd.phase}\n"
-                   f"linear  {cmd.linear:+.3f} m/s\n"
-                   f"angular {cmd.angular:+.3f} rad/s\n"
-                   f"사유 {shown_reason}\n"
-                   f"('r' 로 재시작)")
-        # ⚠️ `family="monospace"` 를 쓰면 안 된다 — 그 폰트엔 한글 글리프가 없어서
-        #    "국면"·"사유" 가 네모로 깨진다(실기로 확인). 전역으로 맞춘 한글
-        #    폰트(위 rcParams)를 그대로 상속하게 둔다.
-        ax.text(0.98, 0.98, cmd_text, transform=ax.transAxes, ha="right", va="top",
-               fontsize=8,
-               bbox=dict(facecolor="white", edgecolor="#888", alpha=0.85, pad=4))
-
-        # ── 클릭으로 찍은 "실제" 위치 — 다음 클릭·'r' 전까지 계속 보여준다 ────
-        gt = state["ground_truth"]
-        if gt is not None:
-            gx, gy = gt
-            ax.scatter([gx], [gy], marker="P", s=110, c="magenta", zorder=8,
-                      label=f"라벨(실제) x={gx*1000:.0f}mm y={gy*1000:.0f}mm")
-            mobs_for_gt = detect(msg.ranges, msg.angle_min, msg.angle_increment,
+            # 드라이버(`lidar_dock_driver.py`)와 같은 규칙(2026-08-04 정정):
+            # SEARCH 는 `detect()`(노치까지 확정)를 안 부른다 — 각도가 심하게
+            # 틀어지면 벽은 잡혀도 노치 자체가 인식이 안 돼 계속 None 이 나와
+            # 방향 신호를 영영 못 받는다. 벽만 넓힌 cfg 로 피팅해 그 yaw 로 돈다.
+            # `fit_wall_near_bearing` — inlier 최다만 보면 방의 다른 벽을
+            # 우선할 수 있다(실측 P1, 위 driver 와 같은 이유).
+            # FINAL 인데 FAR 가 실패하면 기존대로 NEAR 로 인수인계한다.
+            machine = state["machine"]
+            if machine.phase == "SEARCH":
+                pts = sector_points(msg.ranges, msg.angle_min, msg.angle_increment,
+                                    msg.range_min, search_cfg.range_max_m, search_cfg)
+                wall = fit_wall_near_bearing(pts, search_cfg) if len(pts) else None
+                cmd = machine.step(None, time.monotonic(),
+                                  search_wall_yaw=(wall.yaw if wall else None))
+            else:
+                mobs = detect(msg.ranges, msg.angle_min, msg.angle_increment,
+                              msg.range_min, msg.range_max, cfg)
+                if mobs is None and machine.phase == "FINAL":
+                    mobs = detect_near(msg.ranges, msg.angle_min, msg.angle_increment,
+                                      msg.range_min, msg.range_max, cfg)
+                # 실제 드라이버와 같은 안전 정지 — 노치 검출과 무관한 원시 최소거리.
+                mr = min_range_m(msg.ranges, msg.angle_min, msg.angle_increment,
                                  msg.range_min, msg.range_max, cfg)
-            if mobs_for_gt is not None:
-                ax.plot([gx, mobs_for_gt.d], [gy, mobs_for_gt.y],
-                       c="magenta", lw=0.8, ls="--", alpha=0.7)
+                cmd = machine.step(mobs, time.monotonic(), min_range_m=mr)
 
-        if recording["dir"] is not None:
-            frame_path = recording["dir"] / f"frame_{recording['n']:05d}.png"
-            fig.savefig(frame_path, dpi=100)
-            recording["n"] += 1
+            # ── 실행 중이면 이 tick 의 명령을 실제로 발행한다 ──────────────────
+            #   `render_scan` 은 이 프레임 하나만 보여주지만, 이건 상태기계가 방금
+            #   낸 진짜 (linear, angular) 다 — 뷰가 계산한 값을 다시 계산하지 않고
+            #   그대로 내보낸다. 꺼져 있으면(기본) 발행 안 한다 — 뷰 전용.
+            if driving["on"]:
+                twist = Twist()
+                twist.linear.x = float(cmd.linear)
+                twist.angular.z = float(cmd.angular)
+                pub_dock.publish(twist)
+
+            # ⚠️ 실기: DONE/ABORT 로 끝난 뒤엔 `step()` 이 매 tick 그냥
+            # `Cmd(..., "finished")` 를 낸다(approach.py 맨 위 "이미 끝났으면
+            # 그대로 반환" 분기) — **원래 멈춘 이유(timeout/overshoot/... )가
+            # "finished" 로 덮어써져 사라진다.** 실기에서 위 제목엔 "[성공] 검출
+            # 성공"이 뜨는데 오른쪽엔 "ABORT/finished"만 보여 헷갈렸다 — 실제로는
+            # 이 도구가 로봇을 안 움직이면서 계속 반복 판정만 하다 보니(정적
+            # 재생) 90초 전체 타임아웃에 걸린 것뿐이었다. 진짜 사유를 기억해 둔다.
+            if cmd.reason != "finished":
+                state["last_terminal_reason"] = cmd.reason
+            shown_reason = (state.get("last_terminal_reason") or cmd.reason
+                           if cmd.phase in ("DONE", "ABORT") else cmd.reason)
+
+            drive_state = "[실행 중 — cmd_vel_dock 발행]" if driving["on"] else "[뷰 전용 — 'g' 로 실행]"
+            cmd_text = (f"국면 {cmd.phase}\n"
+                       f"linear  {cmd.linear:+.3f} m/s\n"
+                       f"angular {cmd.angular:+.3f} rad/s\n"
+                       f"사유 {shown_reason}\n"
+                       f"{drive_state}\n"
+                       f"('r' 재시작 · 'g' 실행 토글)")
+            # ⚠️ `family="monospace"` 를 쓰면 안 된다 — 그 폰트엔 한글 글리프가 없어서
+            #    "국면"·"사유" 가 네모로 깨진다(실기로 확인). 전역으로 맞춘 한글
+            #    폰트(위 rcParams)를 그대로 상속하게 둔다.
+            # ⚠️ 범례가 `loc="upper right"` 라 여기도 우측 상단이면 겹쳐서 "국면 ABORT"
+            #    같은 글자가 범례 밑에 깔려 안 보인다(실기: 그것 때문에 헷갈렸다).
+            #    좌측 상단으로 둬서 안 겹치게 한다.
+            box_color = "#ffcccc" if driving["on"] else "white"
+            ax.text(0.02, 0.98, cmd_text, transform=ax.transAxes, ha="left", va="top",
+                   fontsize=8,
+                   bbox=dict(facecolor=box_color, edgecolor="#888", alpha=0.9, pad=4))
+
+            # ── 클릭으로 찍은 "실제" 위치 — 다음 클릭·'r' 전까지 계속 보여준다 ────
+            gt = state["ground_truth"]
+            if gt is not None:
+                gx, gy = gt
+                ax.scatter([gx], [gy], marker="P", s=110, c="magenta", zorder=8,
+                          label=f"라벨(실제) x={gx*1000:.0f}mm y={gy*1000:.0f}mm")
+                pts_for_gt = sector_points(msg.ranges, msg.angle_min, msg.angle_increment,
+                                           msg.range_min, msg.range_max, cfg)
+                bearing_cfg_gt = replace(cfg, search_bearing_tol_rad=cfg.wall_bearing_tol_rad,
+                                         search_wall_yaw_max_rad=cfg.wall_yaw_max_rad)
+                wall_for_gt = (fit_wall_near_bearing(pts_for_gt, bearing_cfg_gt)
+                              if len(pts_for_gt) else None)
+                mobs_for_gt = detect(msg.ranges, msg.angle_min, msg.angle_increment,
+                                     msg.range_min, msg.range_max, cfg)
+                obs_xy_for_gt = _obs_xy(mobs_for_gt, wall_for_gt)
+                if obs_xy_for_gt is not None:
+                    ax.plot([gx, obs_xy_for_gt[0]], [gy, obs_xy_for_gt[1]],
+                           c="magenta", lw=0.8, ls="--", alpha=0.7)
+
+            if recording["dir"] is not None:
+                frame_path = recording["dir"] / f"frame_{recording['n']:05d}.png"
+                fig.savefig(frame_path, dpi=100)
+                recording["n"] += 1
+        except Exception:
+            # 프레임 하나가 예외를 던지면 FuncAnimation 타이머 재등록이 안 되고
+            # 화면이 그대로 얼어붙는다(matplotlib+Tk 로 확인, 2026-08-04) — 한 프레임
+            # 건너뛰고 계속 돌게 잡아서 다음 스캔으로 이어간다. traceback 은 stderr 로.
+            import traceback
+            print(f"[{robot}] update() 프레임 #{latest['n']} 예외 — 건너뛴다", file=sys.stderr)
+            traceback.print_exc()
 
     anim = FuncAnimation(fig, update, interval=100, cache_frame_data=False)
     try:
@@ -556,6 +772,9 @@ def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockCon
         stopped["v"] = True
         if anim.event_source is not None:
             anim.event_source.stop()
+        if driving["on"] and rclpy.ok():  # 창을 그냥 닫아도 로봇에 명령이 안 남게
+            pub_dock.publish(Twist())
+            print(f"[{robot}] 종료 — 실행 중이었어서 0 명령 1회 발행")
         if recording["dir"] is not None:  # 녹화 중에 창을 그냥 닫은 경우도 mp4 로 마무리
             _stop_recording(recording["dir"], REC_FPS)
         if rclpy.ok():

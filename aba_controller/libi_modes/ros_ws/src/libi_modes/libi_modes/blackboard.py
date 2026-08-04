@@ -122,6 +122,11 @@ class Keys:
     PERSON_BLOCK_SEQ = "person_block_seq"
     #: 마지막으로 차단을 알린 정점 번호. 기록 문구에 같이 찍는다. None = 없음.
     PERSON_BLOCK_NODE = "person_block_node"
+    #: 야간순찰 `IntruderChase` 리프의 내부 상태 그대로("idle"/"chasing"/"release"/
+    #: "backoff"). `state_io` 가 `/libi/fsm_state` JSON 의 `chase_state` 로 내보내
+    #: libi_gui 가 "추종중"/"유실" 을 그린다. FMS 상위 상태(`current_state`)와는
+    #: 별개다 — SECURITY_PATROL 안에서 도는 하위 상태일 뿐이다.
+    SECURITY_CHASE_STATE = "security_chase_state"
 
 
 #: 등록 누락 경고를 키마다 한 번만 낸다 (tick 마다 도배하지 않게).

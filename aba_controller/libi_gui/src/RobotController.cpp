@@ -1112,6 +1112,7 @@ void RobotController::attachRos(RosLink *ros) {
         if (m_personBlocked) { m_personBlocked = false; emit personBlockedChanged(); }
         if (m_frontPersonSize != 0.0) { m_frontPersonSize = 0.0; emit frontPersonSizeChanged(); }
         if (m_personBlockIn >= 0.0) { m_personBlockIn = -1.0; emit personBlockInChanged(); }
+        if (m_chaseState != "idle") { m_chaseState = "idle"; emit chaseStateChanged(); }
         if (!m_rosConnected) return;
         m_rosConnected = false;
         emit rosConnectedChanged();
@@ -1158,6 +1159,12 @@ void RobotController::attachRos(RosLink *ros) {
         emit frontPersonSizeChanged();
     });
 
+    connect(ros, &RosLink::chaseStateReceived, this, [this](QString state) {
+        if (state == m_chaseState) return;
+        m_chaseState = state;
+        emit chaseStateChanged();
+    });
+
     connect(ros, &RosLink::personBlockInReceived, this, [this](double sec) {
         // 5Hz 로 들어오고 0.2초씩 줄어든다. 0.05초 미만 차이는 무시해 갱신을 줄인다.
         // "세는 중 ↔ 안 셈" 전환은 값이 크게 튀므로 이 문턱에 안 걸린다.
@@ -1195,28 +1202,43 @@ void RobotController::attachRos(RosLink *ros) {
         const QString phase = o.value("phase").toString();
         const QString shelf = o.value("shelf").toString();
         if (phase == QLatin1String("started")) {
-            log(QStringLiteral("%1 정밀 도킹 시작 — 서가 2cm 앞에서 정지").arg(shelf));
+            log(QStringLiteral("%1 정밀 도킹 시작 — 서가 %2cm 앞에서 정지")
+                .arg(shelf)
+                .arg(o.value("clearance_m").toDouble() * 100.0, 0, 'f', 0));
+        } else if (phase == QLatin1String("marker_centering")) {
+            log(QStringLiteral("%1 — 테이프 중앙정렬 중")
+                .arg(o.value("stage").toString()));
         } else if (phase == QLatin1String("initial_marker_centered")) {
             log(QStringLiteral("테이프 초기 중앙정렬 완료 (%1프레임)").arg(o.value("frames").toInt()));
+        } else if (phase == QLatin1String("lateral_plan_ready")) {
+            log(QStringLiteral("1차 PGM 계산 완료 — 옆축 %1cm 이동 예정 (서가까지 %2cm)")
+                .arg(o.value("planned_lateral_m").toDouble() * 100.0, 0, 'f', 1)
+                .arg(o.value("pgm_distance_m").toDouble() * 100.0, 0, 'f', 1));
         } else if (phase == QLatin1String("lateral_start")) {
-            log(QStringLiteral("옆축 PID 시작 — 오차 %1m, 목표 %2m")
-                .arg(o.value("initial_error_m").toDouble(), 0, 'f', 3)
-                .arg(o.value("target_m").toDouble(), 0, 'f', 3));
+            log(QStringLiteral("옆축 PID 이동 중 — %1cm 예정 (현재 오차 %2cm)")
+                .arg(o.value("planned_lateral_m").toDouble() * 100.0, 0, 'f', 1)
+                .arg(o.value("initial_error_m").toDouble() * 100.0, 0, 'f', 1));
         } else if (phase == QLatin1String("lateral_complete")) {
-            log(QStringLiteral("옆축 PID 완료 — 잔여 오차 %1m")
-                .arg(o.value("final_error_m").toDouble(), 0, 'f', 3));
+            log(QStringLiteral("옆축 PID 완료 — 잔여 오차 %1cm")
+                .arg(o.value("final_error_m").toDouble() * 100.0, 0, 'f', 1));
         } else if (phase == QLatin1String("reobserve_marker_centered")) {
-            log(QStringLiteral("재관측 테이프 중앙정렬 완료 — PGM 거리 재계산"));
+            log(QStringLiteral("재관측 테이프 중앙정렬 완료 — PGM 거리 재계산 중"));
+        } else if (phase == QLatin1String("final_plan_ready")) {
+            log(QStringLiteral("재관측 PGM 계산 완료 — 최종축 %1cm 이동 예정 (현재 %2cm, 목표 %3cm)")
+                .arg(o.value("planned_forward_m").toDouble() * 100.0, 0, 'f', 1)
+                .arg(o.value("pgm_distance_m").toDouble() * 100.0, 0, 'f', 1)
+                .arg(o.value("clearance_m").toDouble() * 100.0, 0, 'f', 0));
         } else if (phase == QLatin1String("final_start")) {
-            log(QStringLiteral("최종축 PID 시작 — PGM을 보며 2cm까지 전진"));
+            log(QStringLiteral("최종축 PID 전진 중 — %1cm 이동 예정, PGM을 보며 2cm까지 접근")
+                .arg(o.value("planned_forward_m").toDouble() * 100.0, 0, 'f', 1));
         } else if (phase == QLatin1String("final_progress")) {
-            log(QStringLiteral("최종축: PGM %1m · 2cm까지 %2m · 테이프 오차 %3px")
-                .arg(o.value("pgm_distance_m").toDouble(), 0, 'f', 3)
-                .arg(o.value("remaining_to_clearance_m").toDouble(), 0, 'f', 3)
+            log(QStringLiteral("최종축 전진 중: PGM %1cm · 2cm까지 %2cm · 테이프 오차 %3px")
+                .arg(o.value("pgm_distance_m").toDouble() * 100.0, 0, 'f', 1)
+                .arg(o.value("remaining_to_clearance_m").toDouble() * 100.0, 0, 'f', 1)
                 .arg(o.value("marker_error_px").toDouble(), 0, 'f', 1));
         } else if (phase == QLatin1String("backup_started")) {
-            log(QStringLiteral("FMS 승인 역순 복귀 시작 — 총 %1m")
-                .arg(o.value("planned_drive_m").toDouble(), 0, 'f', 3));
+            log(QStringLiteral("FMS 승인 역순 복귀 시작 — 총 %1cm 이동 예정")
+                .arg(o.value("planned_drive_m").toDouble() * 100.0, 0, 'f', 1));
         } else if (phase == QLatin1String("backup_completed")) {
             log(QStringLiteral("FMS 승인 역순 복귀 완료 — 서가 정점으로 복귀"));
         } else if (phase == QLatin1String("backup_failed")) {

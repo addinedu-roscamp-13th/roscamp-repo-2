@@ -77,6 +77,8 @@ class IntruderChase(py_trees.behaviour.Behaviour):
         # (실기 재현: 순찰 복귀가 안 됨). `_release()`/`terminate(INVALID)` 에서 직접
         # 비운다 — CommandDrivenAction 이 하던 일을 그대로 흉내낸다.
         self.blackboard.register_key(key=Keys.ACTIVE_COMMAND, access=Access.WRITE)
+        # libi_gui 에 "추종중"/"유실" 을 보여주는 용도 — `state_io` 가 그대로 실어 낸다.
+        self.blackboard.register_key(key=Keys.SECURITY_CHASE_STATE, access=Access.WRITE)
 
     def initialise(self):
         """⚠️ **아무것도 지우지 않는다.**
@@ -99,13 +101,13 @@ class IntruderChase(py_trees.behaviour.Behaviour):
             return self._chasing(now, seen)
         if self._state == _RELEASE:
             if now - self._release_at >= self.policy.release_grace_sec:
-                self._state = _BACKOFF if now < self._backoff_until else _IDLE
+                self._set_state(_BACKOFF if now < self._backoff_until else _IDLE)
                 return Status.FAILURE
             return Status.RUNNING           # nav2 를 아직 못 내보낸다 — 아래 주석
         if self._state == _BACKOFF:
             if now < self._backoff_until:
                 return Status.FAILURE
-            self._state = _IDLE
+            self._set_state(_IDLE)
 
         if not seen:
             self._seen_since = None
@@ -136,7 +138,7 @@ class IntruderChase(py_trees.behaviour.Behaviour):
         if self._state in (_CHASING, _RELEASE):
             self._stop_follow()
         self._clear_active_command()
-        self._state = _IDLE
+        self._set_state(_IDLE)
         self._seen_since = None
         self._backoff_until = 0.0
 
@@ -155,7 +157,7 @@ class IntruderChase(py_trees.behaviour.Behaviour):
             # 자세 게이트 대상으로 보므로 이 세션은 자동으로 빠진다 — 관리자
             # 추종은 이 태그 없이 오므로 그대로 role=follow 로 게이트가 유지된다.
             self.follow_driver.start(args={"session_kind": "security"})
-        self._state = _CHASING
+        self._set_state(_CHASING)
         self._chase_start = now
         self._last_seen = now
         self._seen_since = None
@@ -185,7 +187,7 @@ class IntruderChase(py_trees.behaviour.Behaviour):
         """
         self._stop_follow()
         self._clear_active_command()
-        self._state = _RELEASE
+        self._set_state(_RELEASE)
         self._release_at = now
         if backoff:
             self._backoff_until = now + self.policy.release_grace_sec \
@@ -200,6 +202,13 @@ class IntruderChase(py_trees.behaviour.Behaviour):
         """`CommandDrivenAction._release()` 가 하던 일을 그대로 흉내낸다 — 안 지우면
         `follow_admin` 이 `active_command` 에 영원히 박제돼 순찰 재진입이 막힌다."""
         self.blackboard.set(Keys.ACTIVE_COMMAND, None)
+
+    def _set_state(self, state):
+        """`self._state` 를 바꾸는 **유일한 통로**. 블랙보드에도 같이 써서
+        `state_io` → libi_gui 로 "추종중"/"유실" 이 나가게 한다(설계 배경은
+        `Keys.SECURITY_CHASE_STATE` 주석)."""
+        self._state = state
+        self.blackboard.set(Keys.SECURITY_CHASE_STATE, state)
 
 
 class CameraSelectRenew(py_trees.behaviour.Behaviour):

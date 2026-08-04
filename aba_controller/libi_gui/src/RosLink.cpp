@@ -56,6 +56,7 @@ RosLink::RosLink(QObject *parent) : QObject(parent), d_(new Impl) {
             emit personBlockInReceived(o.value("person_block_in").toDouble(-1.0));
             emit personBlockReported(o.value("person_block_seq").toInt(0),
                                      o.value("person_block_node").toInt(-1));
+            emit chaseStateReceived(o.value("chase_state").toString("idle"));
         });
     // ⚠️ `/amcl_pose` 는 **TRANSIENT_LOCAL** 로 발행된다. 기본 QoS(VOLATILE)로 구독하면
     // QoS 불일치로 **아무것도 안 온다** — 증상이 "지도에 로봇이 영영 안 뜬다" 로 나타나

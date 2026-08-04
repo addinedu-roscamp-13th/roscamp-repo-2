@@ -8,7 +8,8 @@ from app.shelf.raycast import Grid
 from app.core.shelf_dock import (CLEARANCE_M, EXTRA_TURN_RAD, FINAL_YAW_RAD,
                                  MARKER_SERVO_MAX_ANG, SHELF_YAW, USE_CAMERA_CALIBRATION,
                                  visual_servo_angular_z, plan_dock, shelf_axes, axis_projection,
-                                 bounded_pid_linear, MAP_AXIS_MAX_LINEAR_MPS, dock_status_payload)
+                                 bounded_pid_linear, MAP_AXIS_MAX_LINEAR_MPS, dock_status_payload,
+                                 map_heading_error)
 
 K640 = (609.15651744, 607.39537016, 278.17496904, 250.36175645)
 
@@ -122,6 +123,13 @@ def test_lateral_axis_is_perpendicular_to_the_shelf_normal():
 def test_map_pid_command_keeps_direction_and_speed_limit():
     assert bounded_pid_linear(1.0, 99.0, MAP_AXIS_MAX_LINEAR_MPS) == MAP_AXIS_MAX_LINEAR_MPS
     assert bounded_pid_linear(-1.0, 99.0, MAP_AXIS_MAX_LINEAR_MPS) == -MAP_AXIS_MAX_LINEAR_MPS
+
+
+def test_lateral_heading_uses_amcl_map_yaw_not_odom_yaw():
+    # odom의 원점/방위 보정값은 map과 다를 수 있다. 옆축 자세 제어에는 절대 map
+    # 방위(AMCL)를 써야, 두 프레임 사이의 고정 offset이 회전 명령에 섞이지 않는다.
+    assert math.isclose(map_heading_error(1.2, 0.7), 0.5)
+    assert math.isclose(map_heading_error(-3.0, 3.0), math.tau - 6.0)
 
 
 def test_dock_status_payload_carries_phase_and_numeric_progress():

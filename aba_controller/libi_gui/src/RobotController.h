@@ -72,6 +72,9 @@ class RobotController : public QObject {
     // 사람 때문에 경로 재탐색이 걸리기까지 남은 초. 음수 = 세고 있지 않음.
     // 관제 화면에서 재계획이 **사람 때문인지 지연 때문인지** 구분하려고 띄운다.
     Q_PROPERTY(double personBlockIn READ personBlockIn NOTIFY personBlockInChanged)
+    // 야간순찰 IntruderChase 하위 상태("idle"/"chasing"/"release"/"backoff").
+    // FMS 상위 상태(robotState="보안순찰")와 별개 — 그 안에서 도는 값이다.
+    Q_PROPERTY(QString chaseState READ chaseState NOTIFY chaseStateChanged)
     Q_PROPERTY(QString emotion READ emotion WRITE setEmotion NOTIFY emotionChanged)
     Q_PROPERTY(QString taskStatus READ taskStatus NOTIFY taskStatusChanged)   // SR-14 작업 알림 문구
 
@@ -118,6 +121,7 @@ public:
     bool following() const { return m_following; }
     bool personBlocked() const { return m_personBlocked; }
     double frontPersonSize() const { return m_frontPersonSize; }
+    QString chaseState() const { return m_chaseState; }
     double personBlockIn() const { return m_personBlockIn; }
     QString emotion() const { return m_emotion; }
     QString taskStatus() const { return m_taskStatus; }
@@ -237,6 +241,7 @@ signals:
     void patrolActiveChanged();
     void personBlockedChanged();
     void frontPersonSizeChanged();
+    void chaseStateChanged();
     void personBlockInChanged();
     void followingChanged();
     //: 관리자가 「해제」를 누른 것이 **아니라**, 로봇이 스스로 추종을 끝냈다.
@@ -299,6 +304,7 @@ private:
     bool m_charging = false;
     bool m_personBlocked = false;
     double m_frontPersonSize = 0.0;
+    QString m_chaseState = "idle";
     double m_personBlockIn = -1.0;
     // 마지막으로 본 사람-차단 보고 번호. -1 = 아직 fsm_state 를 못 받았다.
     // 첫 수신 때는 기록을 남기지 않는다 — 로봇이 이미 여러 번 보고한 뒤에 패널을 켜면

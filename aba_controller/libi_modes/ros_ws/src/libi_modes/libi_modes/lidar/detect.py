@@ -26,7 +26,7 @@ LaserScan 규약에서 `+inf` 는 "그 범위 안에 아무것도 없음"이고 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -194,7 +194,13 @@ def fit_wall_near_bearing(pts: np.ndarray, cfg: LidarDockConfig, rng=None) -> Wa
             continue
         best_mask, best_count = mask, count
 
-    if best_mask is None or best_count < max(2, int(cfg.ransac_min_inlier_ratio * n)):
+    # ⚠️ [2026-08-04 실측, 두 번째 결함] `fit_wall()` 처럼 `ransac_min_inlier_ratio
+    #    × n` 을 쓰면 안 된다 — 여긴 섹터가 넓어서(175도) n 자체가 커진다(실측
+    #    689). 벽 자체 점 개수는 안 변하는데(실측 87) 분모만 커지니 비율 문턱을
+    #    영원히 못 넘는다 — bearing·dist 게이트는 통과하는데 이 줄에서 계속
+    #    걸려 `None` 만 났다(dock_scan_visualize 로 15초 연속 재현). 섹터 폭에
+    #    안 흔들리는 절대 개수(`search_wall_min_inliers`)를 쓴다.
+    if best_mask is None or best_count < cfg.search_wall_min_inliers:
         return None
 
     normal, offset, rms = _refit(pts[best_mask])
@@ -247,6 +253,31 @@ def _longest_runs(mask: np.ndarray) -> list[tuple[int, int]]:
     return runs
 
 
+def min_range_m(ranges, angle_min, angle_increment, range_min, range_max,
+                cfg: LidarDockConfig) -> float | None:
+    """전방 좁은 창(`near_half_deg`) 안 라이다 **원시** 최소 거리.
+
+    [2026-08-04, 사용자 요청] 노치 검출(`detect`/`detect_near`)은 라인 피팅·
+    그룹핑·폭 필터를 거친 **추정값**이다 — 틀릴 수 있다(오늘 밤 여러 번
+    확인). 도킹의 최우선 순위가 "얼마나 정확히 맞춰 서는가"가 아니라
+    "**절대 부딪히지 않는가**"로 바뀌면, 그 판단을 추정값에 맡기면 안 된다.
+    이 값은 필터도 그룹핑도 없이 그 창 안에서 실제로 가장 가까운 raw 거리를
+    그대로 돌려준다 — `approach.py` 의 안전 정지가 이걸로 판정한다.
+    """
+    r = np.asarray(ranges, dtype=float)
+    if r.size == 0 or angle_increment == 0.0:
+        return None
+    a = angle_min + np.arange(r.size) * float(angle_increment)
+    a = np.arctan2(np.sin(a), np.cos(a))
+    half = math.radians(cfg.near_half_deg)
+    lo = max(float(range_min), 1e-3)
+    hi = min(float(range_max), float(cfg.range_max_m))
+    ok = (np.abs(a) <= half) & np.isfinite(r) & (r >= lo) & (r <= hi)
+    if not np.any(ok):
+        return None
+    return float(np.min(r[ok]))
+
+
 def detect(ranges, angle_min, angle_increment, range_min, range_max,
            cfg: LidarDockConfig, rng=None) -> NotchObs | None:
     """스캔 한 장에서 노치를 찾는다. 못 믿으면 `None`.
@@ -268,7 +299,19 @@ def detect(ranges, angle_min, angle_increment, range_min, range_max,
     차이가 `y` 에 따라 변하므로 `stop_m` 상수 보정으로 지워지지 않는다.
     """
     pts = sector_points(ranges, angle_min, angle_increment, range_min, range_max, cfg)
-    wall = fit_wall(pts, cfg, rng=rng)
+    # ⚠️ [2026-08-04 실측, 세 번째 자리] `fit_wall()`(순수 inlier 최다)이 좁은
+    #    60도 창 안에서도 옆벽에 진다 — 실측: 정면(bearing 1.9°)에 진짜 도크
+    #    벽(56점, yaw -1.0°, rms 낮음)이 있는데도, bearing 45~50°대의 옆벽이
+    #    inlier 수로 이겨서 최종 yaw 문턱(wall_yaw_max_rad)에 걸려 통째로
+    #    `None` 이 났다(dock_scan_visualize 로 재현). SEARCH 의 넓은-섹터에서
+    #    이미 겪은 것과 같은 결함이라, 같은 해법(`fit_wall_near_bearing`)을
+    #    좁은 bearing 문턱(`wall_bearing_tol_rad`, SEARCH 의 60°보다 훨씬
+    #    좁다)으로 재사용한다. yaw 상한은 SEARCH 의 느슨한 값이 아니라 이
+    #    국면의 엄격한 `wall_yaw_max_rad` 를 그대로 써야 하므로 `replace()`
+    #    로 갈아 끼운다.
+    bearing_cfg = replace(cfg, search_bearing_tol_rad=cfg.wall_bearing_tol_rad,
+                          search_wall_yaw_max_rad=cfg.wall_yaw_max_rad)
+    wall = fit_wall_near_bearing(pts, bearing_cfg, rng=rng)
     if wall is None:
         return None
 

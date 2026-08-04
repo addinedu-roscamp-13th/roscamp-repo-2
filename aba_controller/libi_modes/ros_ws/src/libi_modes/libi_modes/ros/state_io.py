@@ -221,7 +221,8 @@ class StateIO:
         for key in (Keys.BATTERY_PERCENT, Keys.IS_DOCKED, Keys.INTERACTING_REMAINING,
                     Keys.DOCK_DECLARED, Keys.PERSON_BLOCKED,
                     Keys.FRONT_PERSON_SIZE, Keys.PERSON_BLOCK_IN,
-                    Keys.PERSON_BLOCK_SEQ, Keys.PERSON_BLOCK_NODE):
+                    Keys.PERSON_BLOCK_SEQ, Keys.PERSON_BLOCK_NODE,
+                    Keys.SECURITY_CHASE_STATE):
             self._bb.register_key(key=key, access=Access.READ)
         #: BT 가 선언한 도킹 여부를 밖으로 낸다 (`Keys.DOCK_DECLARED` 주석 참고).
         #  latched 다 — 늦게 뜬 구독자(providers·sim_battery·FMS)도 마지막 값을 받는다.
@@ -383,6 +384,10 @@ class StateIO:
             # 이 두 값이 있어야 관제 기록에서 "이 재계획은 사람 때문" 을 가릴 수 있다.
             "person_block_seq": int(self._read(Keys.PERSON_BLOCK_SEQ, 0) or 0),
             "person_block_node": int(self._read(Keys.PERSON_BLOCK_NODE, -1) or -1),
+            # 야간순찰 IntruderChase 의 내부 상태("idle"/"chasing"/"release"/"backoff").
+            # SECURITY_PATROL 안에서 도는 하위 상태라 `current_state` 와 별개다 —
+            # libi_gui 가 "추종중"/"유실" 을 그리는 데만 쓴다.
+            "chase_state": self._read(Keys.SECURITY_CHASE_STATE) or "idle",
         }, ensure_ascii=False)
         self._state_pub.publish(state)
 

@@ -136,6 +136,11 @@ def bounded_pid_linear(error_m: float, kp: float, max_speed: float) -> float:
     return max(-limit, min(limit, raw))
 
 
+def map_heading_error(target_yaw: float, current_map_yaw: float) -> float:
+    """map 프레임 목표 방위와 AMCL 방위의 최단 각도 오차."""
+    return wrap_pi(float(target_yaw) - float(current_map_yaw))
+
+
 def dock_status_payload(shelf: str, phase: str, **fields) -> str:
     """GUI가 구독하는 도킹 상태 JSON. ROS·Qt 없이 형식을 단위 시험할 수 있다."""
     body = {"event": "shelf_dock", "shelf": str(shelf), "phase": str(phase), **fields}
@@ -460,6 +465,20 @@ def _run(shelf: str, my_gen: int, args: dict) -> tuple[bool, int, dict, str]:
     def cancel_fn() -> bool:
         return _cancelled(my_gen)
 
+    def odom_is_fresh() -> bool:
+        at = odom_state.get("at")
+        return at is not None and time.monotonic() - at <= SENSOR_STATE_STALE_SEC
+
+    def motion_cancel() -> bool:
+        # MoveExecutor는 odom 적분으로 진행을 판정한다. odom이 끊긴 상태에서
+        # 마지막 twist를 계속 내보내지 않도록, 각 tick 전에 안전 중단한다.
+        return cancel_fn() or not odom_is_fresh()
+
+    def motion_failure_reason(why: str) -> str:
+        if why == "canceled" and not cancel_fn() and not odom_is_fresh():
+            return "odom_stale"
+        return why
+
     def finish(ok: bool, status: int, data: dict, msg: str):
         report("completed" if ok else "failed", status=status, message=msg)
         for _ in range(5):
@@ -489,13 +508,15 @@ def _run(shelf: str, my_gen: int, args: dict) -> tuple[bool, int, dict, str]:
 
     # ① 서가 방향으로 회전 (절대 yaw, map 프레임)
     rx, ry, ryaw = pose_before
-    ok, why = mover.run([Move(TURN, wrap_pi(SHELF_YAW[shelf] - ryaw))], cancel=cancel_fn)
+    ok, why = mover.run([Move(TURN, wrap_pi(SHELF_YAW[shelf] - ryaw))], cancel=motion_cancel)
+    why = motion_failure_reason(why)
     if not ok:
         return finish(False, 499 if why == "canceled" else 502, {"docked": False},
                       f"서가 방향 회전 실패: {why}")
 
     # ② 표식을 화각에 넣기 위한 추가 회전
-    ok, why = mover.run([Move(TURN, EXTRA_TURN_RAD)], cancel=cancel_fn)
+    ok, why = mover.run([Move(TURN, EXTRA_TURN_RAD)], cancel=motion_cancel)
+    why = motion_failure_reason(why)
     if not ok:
         return finish(False, 499 if why == "canceled" else 502, {"docked": False},
                       f"추가 회전 실패: {why}")
@@ -507,6 +528,7 @@ def _run(shelf: str, my_gen: int, args: dict) -> tuple[bool, int, dict, str]:
     # ③/⑤ 테이프 중앙정렬은 옆축 이동 전과 후에 각각 수행한다. 두 관측 사이에
     # 이동했으므로 두 번째 결과만 최종 PGM 광선의 기준으로 쓴다.
     def center_marker_pid(phase: str):
+        report("marker_centering", stage=phase)
         frame = None
         trace = []
         last_report_at = 0.0
@@ -582,7 +604,8 @@ def _run(shelf: str, my_gen: int, args: dict) -> tuple[bool, int, dict, str]:
         odom = odom_state.get("pose")
         if odom is None:
             return False, "odom_missing", []
-        ok, why = mover.run([Move(TURN, wrap_pi(heading - odom[2]))], cancel=cancel_fn)
+        ok, why = mover.run([Move(TURN, map_heading_error(heading, pose[2]))], cancel=motion_cancel)
+        why = motion_failure_reason(why)
         if not ok:
             return False, why, []
         trace = []
@@ -602,7 +625,7 @@ def _run(shelf: str, my_gen: int, args: dict) -> tuple[bool, int, dict, str]:
             stable = stable + 1 if abs(error) <= MAP_AXIS_TOL_M else 0
             linear = bounded_pid_linear(error, MAP_AXIS_KP, MAP_AXIS_MAX_LINEAR_MPS)
             angular = max(-MAP_AXIS_MAX_ANG, min(MAP_AXIS_MAX_ANG,
-                MAP_AXIS_HEADING_KP * wrap_pi(heading - odom[2])))
+                MAP_AXIS_HEADING_KP * map_heading_error(heading, pose[2])))
             trace.append((pose[0], pose[1], error, linear, angular, stable))
             if stable >= MAP_AXIS_STABLE_TICKS:
                 publish(0.0, 0.0)
@@ -614,6 +637,10 @@ def _run(shelf: str, my_gen: int, args: dict) -> tuple[bool, int, dict, str]:
 
     def final_forward_pid(grid):
         trace = []
+        # GUI 진행 로그도 제어 루프와 같은 기준 시계에서 제한한다. 이 값이 없으면
+        # 첫 PGM 관측 때 상태 보고 구문이 NameError 로 끝나며, 안전 정지만 하고
+        # 도킹 자체는 실패한다.
+        last_report_at = 0.0
         last_seq = None
         last_new_at = time.monotonic()
         prev_error = None
@@ -656,7 +683,8 @@ def _run(shelf: str, my_gen: int, args: dict) -> tuple[bool, int, dict, str]:
                 publish(0.0, 0.0)
                 return False, "marker_not_found", trace
             cx, bearing = camera_center_and_bearing(u, FRONT_CAM_K_640, 640, frame_now.shape[1])
-            hit = first_occupied(grid, pose[0], pose[1], ray_yaw(pose[2], bearing), max_m=MAX_RANGE_M)
+            current_ray_yaw = ray_yaw(pose[2], bearing)
+            hit = first_occupied(grid, pose[0], pose[1], current_ray_yaw, max_m=MAX_RANGE_M)
             if hit is None:
                 publish(0.0, 0.0)
                 return False, "raycast_no_wall", trace
@@ -680,7 +708,9 @@ def _run(shelf: str, my_gen: int, args: dict) -> tuple[bool, int, dict, str]:
                 report("final_progress", pgm_distance_m=round(distance, 3),
                        remaining_to_clearance_m=round(max(0.0, remaining), 3),
                        marker_error_px=round(filtered_u - float(cx), 1),
-                       linear_mps=round(linear, 3))
+                       linear_mps=round(linear, 3),
+                       marker_bearing_rad=round(bearing, 4),
+                       ray_yaw_rad=round(current_ray_yaw, 4))
                 last_report_at = now
             if stable >= FINAL_APPROACH_STABLE_TICKS:
                 publish(0.0, 0.0)
@@ -719,8 +749,13 @@ def _run(shelf: str, my_gen: int, args: dict) -> tuple[bool, int, dict, str]:
         warn_fn=log.warning)
     normal_axis, lateral_axis = shelf_axes(shelf)
     lateral_target = axis_projection(*first_info["approach_xy"], lateral_axis)
+    lateral_error = lateral_target - axis_projection(robot_pose[0], robot_pose[1], lateral_axis)
+    report("lateral_plan_ready", planned_lateral_m=round(abs(lateral_error), 3),
+           pgm_distance_m=round(first_info["hit_dist_m"], 3),
+           ray_yaw_rad=round(first_info["ray_yaw_rad"], 4))
     report("lateral_start", target_m=round(lateral_target, 3),
-           initial_error_m=round(lateral_target - axis_projection(robot_pose[0], robot_pose[1], lateral_axis), 3))
+           initial_error_m=round(lateral_error, 3),
+           planned_lateral_m=round(abs(lateral_error), 3))
     side_start_pose = current_amcl()
     if side_start_pose is None:
         return finish(False, 503, {"docked": False}, "옆축 PID 시작 전 AMCL 이 오래됐다")
@@ -755,7 +790,12 @@ def _run(shelf: str, my_gen: int, args: dict) -> tuple[bool, int, dict, str]:
 
     # 최종축은 고정 거리 명령이 아니다. 새 프레임의 테이프 중점 PID와 새 AMCL+PGM
     # 거리로 매 tick 제어하고, 서가 표면 2 cm 앞에서만 종료한다.
-    report("final_start", clearance_m=CLEARANCE_M)
+    planned_forward_m = max(0.0, float(final_info["hit_dist_m"]) - CLEARANCE_M)
+    report("final_plan_ready", pgm_distance_m=round(final_info["hit_dist_m"], 3),
+           planned_forward_m=round(planned_forward_m, 3), clearance_m=CLEARANCE_M,
+           ray_yaw_rad=round(final_info["ray_yaw_rad"], 4))
+    report("final_start", clearance_m=CLEARANCE_M,
+           planned_forward_m=round(planned_forward_m, 3))
     ok, why, final_trace = final_forward_pid(grid)
     pose_after = current_amcl() or pose_fn()
     if ok:
