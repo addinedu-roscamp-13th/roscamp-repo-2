@@ -12,6 +12,8 @@
   `v`        녹화 시작/정지 — 프레임을 낱장 PNG 로 계속 쌓다가 정지하면
              ffmpeg 로 mp4 까지 만든다(`/tmp/aba_dockviz_rec_<시각>/`, `.mp4`)
   `r`        국면(SETTLE→SEARCH→ACQUIRE→...) 재시작 — 로봇을 새로 놓고 누른다
+  좌클릭      "실제 노치는 여기다" 라벨링 — 검출값과 대조해 로그 남긴다
+             (`/tmp/aba_dockviz_groundtruth.csv`, 세션 내내 누적)
   스크롤휠    확대/축소, `0` 확대 초기화
 창을 닫거나 Ctrl+C 로 끝낸다.
 
@@ -231,6 +233,21 @@ def _ensure_ros_env(setup_bash: str = ROS_SETUP_BASH) -> None:
     os.execvp("bash", ["bash", "-c", cmd])
 
 
+def _write_scan_csv(msg, csv_path: str) -> None:
+    """스캔 한 장을 `angle_deg,range_m` CSV 로 남긴다 — `scan_dump.py` 와 같은 형식."""
+    rows = []
+    for i, r in enumerate(msg.ranges):
+        a = math.atan2(math.sin(msg.angle_min + i * msg.angle_increment),
+                       math.cos(msg.angle_min + i * msg.angle_increment))
+        dist = r if (isinstance(r, float) and math.isfinite(r) and r > 0.0) else 0.0
+        rows.append((math.degrees(a), dist))
+    rows.sort(key=lambda row: row[0])
+    with open(csv_path, "w", encoding="utf-8") as f:
+        f.write("angle_deg,range_m\n")
+        for deg, dist in rows:
+            f.write(f"{deg:.3f},{dist:.4f}\n")
+
+
 def _save_snapshot(msg, fig) -> None:
     """지금 프레임을 CSV(`angle_deg,range_m`)+PNG 로 `/tmp` 에 남긴다.
 
@@ -239,23 +256,55 @@ def _save_snapshot(msg, fig) -> None:
     안 보인다.
     """
     ts = time.strftime("%Y%m%d_%H%M%S")
-    rows = []
-    for i, r in enumerate(msg.ranges):
-        a = math.atan2(math.sin(msg.angle_min + i * msg.angle_increment),
-                       math.cos(msg.angle_min + i * msg.angle_increment))
-        dist = r if (isinstance(r, float) and math.isfinite(r) and r > 0.0) else 0.0
-        rows.append((math.degrees(a), dist))
-    rows.sort(key=lambda row: row[0])
-
     csv_path = f"/tmp/aba_dockviz_{ts}.csv"
-    with open(csv_path, "w", encoding="utf-8") as f:
-        f.write("angle_deg,range_m\n")
-        for deg, dist in rows:
-            f.write(f"{deg:.3f},{dist:.4f}\n")
-
+    _write_scan_csv(msg, csv_path)
     png_path = f"/tmp/aba_dockviz_{ts}.png"
     fig.savefig(png_path, dpi=120)
     print(f"저장: {csv_path} , {png_path}")
+
+
+#: 클릭으로 찍은 "실제" 노치 위치 vs 검출값 — 세션 내내 누적되는 라벨 데이터.
+GROUND_TRUTH_LOG = "/tmp/aba_dockviz_groundtruth.csv"
+
+
+def _log_ground_truth(robot: str, msg, click_xy: tuple[float, float],
+                      cfg: LidarDockConfig, phase: str) -> None:
+    """클릭 지점을 검출값과 함께 기록한다 — 나중에 방향·거리 사전지식 같은 걸
+    튜닝할 때(codex 권고, 2026-08-04) 추측이 아니라 실제 라벨로 검증하려고.
+
+    클릭마다 원본 스캔도 같이 저장한다 — 라벨 하나가 어느 스캔에 대한 것인지
+    나중에 다시 찾을 수 있어야 한다.
+    """
+    # ⚠️ `%f`(마이크로초)는 datetime.strftime 전용이다 — time.strftime 은 그냥
+    #    글자 그대로 "%f" 를 찍는다(치환 안 함). 실기: 클릭 두 번이 같은 초 안에
+    #    들어오면 타임스탬프가 완전히 겹쳐 두 번째가 첫 번째 스캔 파일을
+    #    덮어썼다. time.time() 의 소수부로 직접 마이크로초를 만든다.
+    _now = time.time()
+    ts = time.strftime("%Y%m%d_%H%M%S", time.localtime(_now)) + f"_{int((_now % 1) * 1e6):06d}"
+    scan_path = f"/tmp/aba_dockviz_gt_{ts}.csv"
+    _write_scan_csv(msg, scan_path)
+
+    obs = detect(msg.ranges, msg.angle_min, msg.angle_increment,
+                msg.range_min, msg.range_max, cfg)
+    gx, gy = click_xy
+    new_file = not os.path.exists(GROUND_TRUTH_LOG)
+    with open(GROUND_TRUTH_LOG, "a", encoding="utf-8") as f:
+        if new_file:
+            f.write("timestamp,robot,phase,scan_file,click_x_m,click_y_m,"
+                    "det_found,det_d_m,det_y_m,det_yaw_rad,det_depth_m\n")
+        f.write(f"{ts},{robot},{phase},{scan_path},{gx:.4f},{gy:.4f},"
+                f"{int(obs is not None)},"
+                f"{obs.d if obs else ''},{obs.y if obs else ''},"
+                f"{obs.yaw if obs else ''},{obs.depth if obs else ''}\n")
+
+    if obs is not None:
+        delta_mm = math.hypot(gx - obs.d, gy - obs.y) * 1000
+        print(f"[{robot}] 라벨: 클릭=({gx*1000:.0f},{gy*1000:.0f})mm "
+             f"검출=({obs.d*1000:.0f},{obs.y*1000:.0f})mm 차이={delta_mm:.0f}mm "
+             f"→ {GROUND_TRUTH_LOG}")
+    else:
+        print(f"[{robot}] 라벨: 클릭=({gx*1000:.0f},{gy*1000:.0f})mm "
+             f"검출 없음(비교 불가) → {GROUND_TRUTH_LOG}")
 
 
 def _stop_recording(rec_dir: Path, fps: float) -> None:
@@ -350,6 +399,7 @@ def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockCon
         elif event.key == "r":
             state["machine"] = LidarApproach(cfg)
             state["last_terminal_reason"] = None
+            state["ground_truth"] = None
             print(f"[{robot}] 국면 재시작 — SETTLE 부터 다시(로봇을 새로 놓고 눌렀다면 맞다)")
         elif event.key == "0":
             view["xlim"] = None
@@ -368,6 +418,22 @@ def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockCon
                 _stop_recording(rec_dir, REC_FPS)
 
     fig.canvas.mpl_connect("key_press_event", on_key)
+
+    # ── 클릭 = "실제 노치는 여기다" 라벨링 ──────────────────────────────────
+    #   검출값과 눈으로만 비교하지 말고 숫자로 쌓는다 — codex 가 SEARCH 벽
+    #   선택에 방향·거리 사전지식을 넣으라고 권고(2026-08-04)했는데, 그 문턱을
+    #   추측이 아니라 이 라벨 데이터로 잡으려는 것.
+    def on_click(event) -> None:
+        if event.inaxes != ax or event.button != 1 or event.xdata is None:
+            return
+        if latest["msg"] is None:
+            print("아직 스캔을 못 받았다 — 라벨링할 게 없다")
+            return
+        state["ground_truth"] = (event.xdata, event.ydata)
+        _log_ground_truth(robot, latest["msg"], state["ground_truth"],
+                          cfg, state["machine"].phase)
+
+    fig.canvas.mpl_connect("button_press_event", on_click)
 
     # ── 확대 — 스크롤 휠. `None` 이면 `render_scan` 기본 범위를 쓴다. ──────────
     #   툴바/드래그 확대를 안 쓰는 이유: `render_scan` 이 매 프레임 `ax.clear()`
@@ -394,7 +460,7 @@ def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockCon
     #   못 보여준다 — 여기서도 그 클래스를 그대로 쓴다.
     search_cfg = replace(cfg, sector_half_deg=cfg.search_half_deg,
                         wall_yaw_max_rad=cfg.search_wall_yaw_max_rad)
-    state = {"machine": LidarApproach(cfg), "last_terminal_reason": None}
+    state = {"machine": LidarApproach(cfg), "last_terminal_reason": None, "ground_truth": None}
     was_arrived = {"v": False}
     stopped = {"v": False}
 
@@ -459,6 +525,18 @@ def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockCon
         ax.text(0.98, 0.98, cmd_text, transform=ax.transAxes, ha="right", va="top",
                fontsize=8,
                bbox=dict(facecolor="white", edgecolor="#888", alpha=0.85, pad=4))
+
+        # ── 클릭으로 찍은 "실제" 위치 — 다음 클릭·'r' 전까지 계속 보여준다 ────
+        gt = state["ground_truth"]
+        if gt is not None:
+            gx, gy = gt
+            ax.scatter([gx], [gy], marker="P", s=110, c="magenta", zorder=8,
+                      label=f"라벨(실제) x={gx*1000:.0f}mm y={gy*1000:.0f}mm")
+            mobs_for_gt = detect(msg.ranges, msg.angle_min, msg.angle_increment,
+                                 msg.range_min, msg.range_max, cfg)
+            if mobs_for_gt is not None:
+                ax.plot([gx, mobs_for_gt.d], [gy, mobs_for_gt.y],
+                       c="magenta", lw=0.8, ls="--", alpha=0.7)
 
         if recording["dir"] is not None:
             frame_path = recording["dir"] / f"frame_{recording['n']:05d}.png"
