@@ -58,9 +58,19 @@ def settled(cfg=None):
 
 
 def ready(cfg=None, d=0.50):
-    """SETTLE·ACQUIRE 를 통과시켜 주행 국면에 들어간 상태기계를 돌려준다."""
+    """SETTLE·SEARCH·ACQUIRE 를 통과시켜 주행 국면에 들어간 상태기계를 돌려준다.
+
+    SEARCH 는 전용 kwarg(`search_wall_yaw`)로만 정렬 신호를 받는다(2026-08-04
+    정정 — `obs.yaw` 는 더 이상 안 본다). 이 헬퍼는 SEARCH 자체를 시험하는
+    게 아니라 ACQUIRE 이후를 시험하는 자리라, 이미 정렬이 끝난 것으로 보고
+    `phase` 를 직접 대입해 곧장 ACQUIRE 로 넘긴다 — 다른 백박스 시험들
+    (`test_acquire_aborts_without_rotating_when_nothing_is_found` 등)과 같은
+    관례다.
+    """
     cfg = cfg or raw_cfg()
     m = settled(cfg)
+    m.phase = "ACQUIRE"
+    m._phase_t0 = 2.0
     run(m, [obs(d=d)] * cfg.confirm_frames, t0=2.0)
     return m
 
@@ -75,6 +85,8 @@ def test_settle_publishes_zero_and_does_not_move():
 def test_acquire_needs_consecutive_confirmations():
     cfg = LidarDockConfig(confirm_frames=3)
     m = settled(cfg)
+    m.phase = "ACQUIRE"          # SEARCH 를 건너뛴다 — 여기선 ACQUIRE 만 시험한다
+    m._phase_t0 = 2.0
     for _ in range(2):
         cmd = m.step(obs(), 2.0)
         assert cmd.phase == "ACQUIRE"
@@ -126,11 +138,19 @@ def test_search_aborts_on_timeout_when_nothing_found():
     assert cmd.linear == 0.0 and cmd.angular == 0.0
 
 
-def test_search_ignores_near_observations():
-    """NEAR 에는 직선 피팅이라는 오검출 방어가 없다 — SEARCH 의 정렬 판정에도
-    쓰면 안 된다(실측 벽 yaw 0.0 오인 위험). ACQUIRE 와 같은 방어를 SEARCH 도 진다."""
+def test_search_ignores_obs_and_only_reacts_to_search_wall_yaw():
+    """[2026-08-04 실기 정정] 처음엔 `obs.yaw`(노치까지 확정된 값)로 돌았는데,
+    각도가 심하게 틀어지면 벽은 잡혀도 노치 자체가 인식이 안 돼(라이다가 노치
+    바닥 대신 옆벽을 스치는 등) `obs` 가 계속 `None` 이었다 — SEARCH 가 방향
+    신호를 영영 못 받고 무한 스핀했다. 그래서 회전 방향은 `search_wall_yaw`
+    (벽만 피팅한 값, 노치 확정 불필요)로만 정한다. 이 시험은 `obs` 에 뭘 담아
+    넘겨도(정렬된 것처럼 보이는 값이라도) `search_wall_yaw` 를 안 주면 SEARCH
+    가 절대 못 빠져나온다는 것을 잠근다 — obs 가 다시 슬쩍 쓰이면 여기서 걸린다.
+    """
     m = settled(LidarDockConfig())
-    cmd = m.step(near_obs(), 5.0)
+    cmd = m.step(obs(yaw=0.0), 5.0)     # obs 는 "정렬 끝" 처럼 보이지만 무시돼야 한다
+    assert cmd.phase == "SEARCH"
+    cmd = m.step(near_obs(), 5.1)       # NEAR 도 마찬가지로 무시돼야 한다
     assert cmd.phase == "SEARCH"
 
 
@@ -138,13 +158,15 @@ def test_search_turns_toward_the_wall_and_hands_off_to_acquire_once_aligned():
     cfg = LidarDockConfig(search_align_tol_rad=0.4, steer_sign=1.0)
     m = settled(cfg)
     # 크게 어긋난 상태 — 아직 정렬 전이라 그 방향으로 계속 돈다
-    cmd = m.step(obs(yaw=-0.9), 5.0)
+    cmd = m.step(None, 5.0, search_wall_yaw=-0.9)
     assert cmd.phase == "SEARCH"
     assert cmd.angular == pytest.approx(
         math.copysign(cfg.search_rot_rad_s, cfg.steer_sign * -0.9))
-    # 허용 오차 안으로 들어왔다 — ACQUIRE 로 넘긴다
-    cmd = m.step(obs(yaw=0.1), 5.1)
+    # 허용 오차 안으로 들어왔다 — ACQUIRE 로 넘긴다(같은 tick 에 확정까지는 안 한다)
+    cmd = m.step(None, 5.1, search_wall_yaw=0.1)
     assert cmd.phase == "ACQUIRE"
+    assert cmd.linear == 0.0 and cmd.angular == 0.0
+    assert m._confirm == 0, "핸드오프 tick 이 노치 확정 카운트를 슬쩍 올리면 안 된다"
     assert cmd.linear == 0.0 and cmd.angular == 0.0
 
 

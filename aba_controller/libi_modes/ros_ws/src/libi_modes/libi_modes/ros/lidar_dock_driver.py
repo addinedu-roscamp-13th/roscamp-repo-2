@@ -29,7 +29,7 @@ from dataclasses import replace
 
 from libi_modes.lidar.approach import LidarApproach
 from libi_modes.lidar.config import LidarDockConfig
-from libi_modes.lidar.detect import detect, detect_near
+from libi_modes.lidar.detect import detect, detect_near, fit_wall, sector_points
 
 #: 끝날 때 낼 0 의 **개수**. 시각이 아니라 개수라야 콜백 지연에 안 샌다
 #: (`NudgeDriver` 가 같은 이유로 개수를 쓴다 — 시각으로 재면 밀린 콜백이 0 을
@@ -163,22 +163,34 @@ class LidarDockDriver:
         #    (0.5s)·모터 워치독(0.5s)까지 계속 밀린다. 0.05m/s 면 2.5cm 다.
         msg = self._msg
         try:
-            # SEARCH 국면에서는 넓힌 cfg 로 찾는다 — 사전 회전이 부정확해도
-            # 벽을 봐야 한다(config.py "탐색" 섹션, 2026-08-03 실측).
-            detect_cfg = self._search_cfg if self._machine.phase == "SEARCH" else self._cfg
-            obs = detect(msg.ranges, msg.angle_min, msg.angle_increment,
-                         msg.range_min, msg.range_max, detect_cfg)
-            # FAR 가 실패하고 이미 FINAL 이면 NEAR 로 인수인계한다.
-            # ⚠️ **FINAL 뿐이다 — APPROACH 는 아니다.** NEAR 의 `y` 는 근거리에서
-            #    노치 가장자리가 창 밖으로 잘려 오차가 커진다(실측: 좌우 2cm→12mm,
-            #    3cm→21mm). APPROACH 에서 받아들이면 그 값이 FINAL 진입 정렬 문턱
-            #    (`y_max_enter_final_m`, ≤15mm)을 오염시킨다. ACQUIRE·ALIGN·APPROACH
-            #    에서는 절대 NEAR 를 부르지 않는다 — 상태기계가 다시 한 번 막지만
-            #    (near 관측 무시), 여기서도 안 부르는 것이 명시적이다.
-            if obs is None and self._machine.phase == "FINAL":
-                obs = detect_near(msg.ranges, msg.angle_min, msg.angle_increment,
-                                  msg.range_min, msg.range_max, self._cfg)
-            cmd = self._machine.step(obs, now)
+            # ⚠️ [2026-08-04 실기 정정] SEARCH 국면에서는 `detect()`(노치까지
+            #    확정)를 안 부른다 — 각도가 심하게 틀어지면 벽은 잡혀도 노치
+            #    자체가 그 각도에서 인식이 안 돼(라이다가 노치 바닥 대신 옆벽을
+            #    스치거나 깊이·폭이 찌그러져 찍힘) `obs` 가 계속 `None` 이라
+            #    SEARCH 가 방향 신호를 영영 못 받았다. 벽만 넓힌 cfg 로 찾아
+            #    `search_wall_yaw` 로 넘긴다 — 자세한 이유는 approach.py 의
+            #    SEARCH 블록 주석.
+            if self._machine.phase == "SEARCH":
+                pts = sector_points(msg.ranges, msg.angle_min, msg.angle_increment,
+                                    msg.range_min, self._search_cfg.range_max_m,
+                                    self._search_cfg)
+                wall = fit_wall(pts, self._search_cfg) if len(pts) else None
+                cmd = self._machine.step(None, now,
+                                         search_wall_yaw=(wall.yaw if wall else None))
+            else:
+                obs = detect(msg.ranges, msg.angle_min, msg.angle_increment,
+                             msg.range_min, msg.range_max, self._cfg)
+                # FAR 가 실패하고 이미 FINAL 이면 NEAR 로 인수인계한다.
+                # ⚠️ **FINAL 뿐이다 — APPROACH 는 아니다.** NEAR 의 `y` 는 근거리에서
+                #    노치 가장자리가 창 밖으로 잘려 오차가 커진다(실측: 좌우 2cm→12mm,
+                #    3cm→21mm). APPROACH 에서 받아들이면 그 값이 FINAL 진입 정렬 문턱
+                #    (`y_max_enter_final_m`, ≤15mm)을 오염시킨다. ACQUIRE·ALIGN·APPROACH
+                #    에서는 절대 NEAR 를 부르지 않는다 — 상태기계가 다시 한 번 막지만
+                #    (near 관측 무시), 여기서도 안 부르는 것이 명시적이다.
+                if obs is None and self._machine.phase == "FINAL":
+                    obs = detect_near(msg.ranges, msg.angle_min, msg.angle_increment,
+                                      msg.range_min, msg.range_max, self._cfg)
+                cmd = self._machine.step(obs, now)
         except Exception as exc:                                   # noqa: BLE001
             self._log.error(f"라이다 도킹 예외 — 정지한다: {exc}")
             self._finish("failure", "exception")

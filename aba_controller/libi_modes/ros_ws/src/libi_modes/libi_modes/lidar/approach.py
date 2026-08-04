@@ -13,9 +13,17 @@
 것을 전제한다. 그런데 실측(pinky-3)에서 그 회전이 목표각에 못 미친 채 다음 단계로
 넘어온 사례가 나왔다(벽 yaw -40.7도, ACQUIRE 의 허용치 35도 초과 — `notch_not_found`
 로 반복 실패). nav2 자체 회전 정밀도에 기대는 대신, 라이다가 스스로 훨씬 넓은 창
-(`search_half_deg`)으로 벽+노치를 찾고 그 방향으로 제자리 회전해 정렬한 뒤에야
-ACQUIRE 로 넘어간다. `search_align_tol_rad` 안에 들어오면 그 즉시 ACQUIRE 로
-넘기므로, 이후 흐름(확정→정렬→접근→최종)은 이전과 완전히 같다.
+(`search_half_deg`)으로 **벽만** 찾고(노치는 아직 안 찾는다) 그 방향으로 제자리
+회전해 정렬한 뒤에야 ACQUIRE 로 넘어간다. `search_align_tol_rad` 안에 들어오면 그
+즉시 ACQUIRE 로 넘기므로, 이후 흐름(확정→정렬→접근→최종)은 이전과 완전히 같다.
+
+⚠️ [2026-08-04] "벽+노치를 찾는다"가 아니라 **"벽만" 찾는다** — 처음엔 노치까지
+확정된 `obs.yaw` 로 돌렸는데, 각도가 심하게 틀어지면 벽은 잡혀도 **노치 자체가 그
+각도에서 인식이 안 됐다**(라이다가 노치 바닥이 아니라 옆벽을 스치거나 깊이·폭이
+찌그러져 찍힌다). 그러면 `obs` 가 계속 `None` 이라 SEARCH 가 방향 신호를 영영
+못 받고 무한정 스핀만 했다. 벽은 노치보다 훨씬 넓은 각도에서 잡히므로(아래
+`search_wall_yaw_max_rad`), 방향 결정과 노치 확정을 분리했다 — 자세한 이유는
+`step()` 의 SEARCH 블록 주석.
 
 ## 제자리 회전을 하지 않는다 (SEARCH 제외)
 
@@ -139,7 +147,8 @@ class LidarApproach:
         return max(-c.ang_max_rad_s, min(c.ang_max_rad_s, raw))
 
     # ── 본체 ──────────────────────────────────────────────────────────────
-    def step(self, obs: NotchObs | None, now_s: float) -> Cmd:
+    def step(self, obs: NotchObs | None, now_s: float,
+             search_wall_yaw: float | None = None) -> Cmd:
         c = self.cfg
         if self._t0 is None:
             self._t0, self._phase_t0 = now_s, now_s
@@ -168,20 +177,30 @@ class LidarApproach:
                 return Cmd(0.0, 0.0, "SETTLE", False, "settling")
             self._enter("SEARCH", now_s)
 
-        # ── SEARCH — 넓은 창으로 벽을 찾아 그 방향으로 제자리 정렬한다 ──────
-        #   `obs` 는 이 tick 의 원본 관측이다(드라이버가 SEARCH 국면일 때 넓힌
-        #   cfg 로 이미 검출해 넘겨준다 — lidar_dock_driver.py 참고). 여기서는
-        #   필터를 거치지 않는다: 회전 중에는 y·yaw 가 빠르게 바뀌는 게 정상이라,
-        #   ACQUIRE 이후의 EMA·튐게이트를 그대로 쓰면 정상 프레임이 전부 걸러진다.
+        # ── SEARCH — 넓은 창으로 "벽만" 찾아 그 방향으로 제자리 정렬한다 ────
+        #   ⚠️ [2026-08-04 실기 정정] 원래는 `obs`(노치까지 확정된 전체 검출)의
+        #   yaw 로 돌았다. 그런데 각도가 심하게 틀어지면 **벽은 잡혀도 노치
+        #   자체가 그 각도에서 인식이 안 된다**(라이다가 노치 바닥이 아니라
+        #   옆벽을 스치거나 깊이·폭이 찌그러져 찍힌다) — `obs` 가 계속 `None`
+        #   이라 SEARCH 가 어느 방향으로 돌아야 할지 신호 자체를 못 받고
+        #   무한정 스핀만 했다. 그래서 회전 방향은 **벽 fit 의 yaw 만**으로
+        #   정한다(`search_wall_yaw` — 드라이버가 노치 확인 없이
+        #   `fit_wall()` 만 불러 넘긴다). 벽은 노치보다 훨씬 넓은 각도에서도
+        #   잡힌다(`search_wall_yaw_max_rad` 가 사실상 무제한). 노치 확정은
+        #   정렬이 끝난 뒤 ACQUIRE 가 좁은 창으로 새로 한다 — 그래서 정렬이
+        #   끝나는 즉시 **여기서 리턴한다**(같은 tick 에 이어서 확정까지
+        #   하지 않는다). 필터도 안 거친다 — 회전 중엔 y·yaw 가 빠르게
+        #   바뀌는 게 정상이라 EMA·튐게이트를 쓰면 정상 프레임이 걸러진다.
         if self.phase == "SEARCH":
             if now_s - self._phase_t0 >= c.search_timeout_s:
                 return self._stop("ABORT", "search_timeout")
-            if obs is None:
+            if search_wall_yaw is None:
                 return Cmd(0.0, c.search_rot_rad_s, "SEARCH", False, "searching")
-            if abs(obs.yaw) > c.search_align_tol_rad:
-                ang = math.copysign(c.search_rot_rad_s, c.steer_sign * obs.yaw)
+            if abs(search_wall_yaw) > c.search_align_tol_rad:
+                ang = math.copysign(c.search_rot_rad_s, c.steer_sign * search_wall_yaw)
                 return Cmd(0.0, ang, "SEARCH", False, "aligning")
             self._enter("ACQUIRE", now_s)
+            return Cmd(0.0, 0.0, "ACQUIRE", False, "confirming")
 
         filtered = self._filter(obs, now_s) if obs is not None else None
 

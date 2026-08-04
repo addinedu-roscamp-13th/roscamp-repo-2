@@ -189,10 +189,12 @@ def test_detect_near_is_never_called_while_acquiring(monkeypatch):
     assert near_calls == [], "ACQUIRE 에서 detect_near 를 부르면 안 된다"
 
 
-def test_search_phase_detects_with_the_widened_cfg_not_the_narrow_one(monkeypatch):
-    """SEARCH 국면에서는 좁은 기본 창(±60도)이 아니라 넓힌 탐색 창으로 `detect()`
-    를 불러야 한다 — 사전 회전이 크게 어긋나도 벽을 찾을 수 있어야 한다(실측
-    2026-08-03, 벽 yaw -40.7도로 넘어온 사례)."""
+def test_search_phase_fits_wall_only_with_the_widened_cfg_not_full_detect(monkeypatch):
+    """[2026-08-04 실기 정정] SEARCH 국면은 더 이상 `detect()`(노치까지 확정)를
+    안 부른다 — 각도가 심하게 틀어지면 벽은 잡혀도 노치 자체가 인식이 안 돼
+    `detect()` 가 계속 `None` 을 내고 SEARCH 가 방향 신호를 영영 못 받았다
+    (실측 2026-08-03, 벽 yaw -40.7도). 그래서 벽만 넓힌 cfg 로 피팅한다 —
+    `detect` 는 아예 안 불려야 하고, `fit_wall` 이 넓힌 cfg 로 불려야 한다."""
     node, drv, _ = _driver(sector_half_deg=60.0, search_half_deg=175.0)
     drv.start()
     drv._machine.phase = "SEARCH"
@@ -200,14 +202,18 @@ def test_search_phase_detects_with_the_widened_cfg_not_the_narrow_one(monkeypatc
                           range_min=0.05, range_max=2.0)
     node.sub_cb(msg)
 
-    seen_cfgs = []
+    detect_calls = []
     monkeypatch.setattr(lidar_dock_driver, "detect",
-                        lambda *a, **k: seen_cfgs.append(a[-1]) or None)
+                        lambda *a, **k: detect_calls.append(1) or None)
+    seen_cfgs = []
+    monkeypatch.setattr(lidar_dock_driver, "fit_wall",
+                        lambda pts, cfg, **k: seen_cfgs.append(cfg) or None)
 
     node.timer_cb()
 
-    assert seen_cfgs, "detect 가 호출돼야 한다"
-    assert seen_cfgs[0].sector_half_deg == 175.0, "SEARCH 는 넓힌 cfg 로 검출해야 한다"
+    assert detect_calls == [], "SEARCH 는 detect() 를 부르면 안 된다(노치 확정 불필요)"
+    assert seen_cfgs, "fit_wall 이 호출돼야 한다"
+    assert seen_cfgs[0].sector_half_deg == 175.0, "SEARCH 는 넓힌 cfg 로 벽을 찾아야 한다"
 
 
 def test_acquire_phase_still_detects_with_the_narrow_cfg(monkeypatch):

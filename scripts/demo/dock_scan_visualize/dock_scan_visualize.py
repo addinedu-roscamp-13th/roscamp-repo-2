@@ -406,16 +406,25 @@ def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockCon
             print(f"[{robot}] 도착 — 정지 트리거 조건 만족 (스캔 #{latest['n']})")
         was_arrived["v"] = arrived
 
-        # 드라이버(`lidar_dock_driver.py`)와 같은 규칙: SEARCH 국면일 때만
-        # 넓힌 cfg 로 찾고, FINAL 인데 FAR 가 실패하면 NEAR 로 인수인계한다.
+        # 드라이버(`lidar_dock_driver.py`)와 같은 규칙(2026-08-04 정정):
+        # SEARCH 는 `detect()`(노치까지 확정)를 안 부른다 — 각도가 심하게
+        # 틀어지면 벽은 잡혀도 노치 자체가 인식이 안 돼 계속 None 이 나와
+        # 방향 신호를 영영 못 받는다. 벽만 넓힌 cfg 로 피팅해 그 yaw 로 돈다.
+        # FINAL 인데 FAR 가 실패하면 기존대로 NEAR 로 인수인계한다.
         machine = state["machine"]
-        detect_cfg = search_cfg if machine.phase == "SEARCH" else cfg
-        mobs = detect(msg.ranges, msg.angle_min, msg.angle_increment,
-                      msg.range_min, msg.range_max, detect_cfg)
-        if mobs is None and machine.phase == "FINAL":
-            mobs = detect_near(msg.ranges, msg.angle_min, msg.angle_increment,
-                              msg.range_min, msg.range_max, cfg)
-        cmd = machine.step(mobs, time.monotonic())
+        if machine.phase == "SEARCH":
+            pts = sector_points(msg.ranges, msg.angle_min, msg.angle_increment,
+                                msg.range_min, search_cfg.range_max_m, search_cfg)
+            wall = fit_wall(pts, search_cfg) if len(pts) else None
+            cmd = machine.step(None, time.monotonic(),
+                              search_wall_yaw=(wall.yaw if wall else None))
+        else:
+            mobs = detect(msg.ranges, msg.angle_min, msg.angle_increment,
+                          msg.range_min, msg.range_max, cfg)
+            if mobs is None and machine.phase == "FINAL":
+                mobs = detect_near(msg.ranges, msg.angle_min, msg.angle_increment,
+                                  msg.range_min, msg.range_max, cfg)
+            cmd = machine.step(mobs, time.monotonic())
 
         cmd_text = (f"국면 {cmd.phase}\n"
                    f"linear  {cmd.linear:+.3f} m/s\n"
