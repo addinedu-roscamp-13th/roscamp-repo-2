@@ -133,6 +133,79 @@ def fit_wall(pts: np.ndarray, cfg: LidarDockConfig, rng=None) -> Wall | None:
     return Wall(normal=normal, offset=offset, yaw=yaw, rms=rms, inliers=best_mask)
 
 
+def fit_wall_near_bearing(pts: np.ndarray, cfg: LidarDockConfig, rng=None) -> Wall | None:
+    """SEARCH 전용 — inlier 최다가 아니라 **로봇 뒤(0도) 근처 + 예상 도크 거리
+    범위 안**에 있는 후보만 비교해서 고른다.
+
+    ## 왜 `fit_wall()` 하나로 안 끝내나 (2026-08-04 실측, codex P1 확인)
+
+    SEARCH 는 넓은 창(`search_half_deg`)에서 벽을 찾는데, 순수 "inlier 최다"
+    기준은 도크와 무관한 방의 다른 벽을 우선할 수 있다 — 실측: 200점짜리
+    옆벽이 110점짜리 도크 벽을 이겼다(같은 스캔, `wall_yaw_max_rad` 를
+    거의 무제한으로 풀어 둔 게 원인). 정지 재생으로 확인: 그 결과 SEARCH 가
+    엉뚱한 방향으로 계속 돌다 `search_timeout` 으로 ABORT 했다.
+
+    ## 왜 yaw 는 여전히 넓게 허용하면서 bearing 은 좁히나
+
+    이 둘은 다른 것이다. **yaw** 는 벽 직선 자체의 기울기 — 로봇이 심하게
+    잘못 돌아 있으면 도크 벽도 크게 기울어 보인다(그게 SEARCH 를 쓰는
+    이유다, 좁히면 안 됨). **bearing** 은 후보 벽 점들이 스캔에서 **어느
+    방향에 있는가** — 도크는 로봇 뒤 근처의 고정된 물리 구조물이라, 로봇이
+    아무리 잘못 돌아 있어도 도크 자체의 위치(방향·거리)는 어느 정도 예상
+    범위를 벗어나지 않는다. 방의 다른 벽(복도 옆벽 등)은 그 범위 밖에
+    있을 가능성이 높다.
+
+    ⚠️ `search_bearing_tol_rad`·`search_wall_dist_min_m`·`search_wall_dist_max_m`
+       는 아직 현장 값 몇 개로 잡은 1차 추정치다 — 라벨 데이터
+       (`scripts/demo/dock_scan_visualize` 의 클릭 로그) 가 쌓이면 좁힐 것.
+
+    ## 왜 후보마다 전체 재피팅(SVD)을 안 돌리나
+
+    `_refit` 은 RANSAC 반복(기본 200회)마다 돌리면 비용이 200배로 불어난다
+    (Pi 에서 CPU 여유가 없다 — 다른 곳에서도 같은 이유로 콜백을 가볍게
+    유지한다). 이미 계산해 둔 2점 샘플의 법선(`nvec`)과 그 점(`pts[i]`)으로
+    근사 offset 을 싸게 구해 쓴다. **현재 최고 기록을 넘어설 후보에만**
+    이 필터를 돌린다 — 대부분의 반복은 이 필터까지 갈 필요조차 없다.
+    """
+    n = len(pts)
+    if n < cfg.min_points:
+        return None
+    rng = np.random.default_rng(0) if rng is None else rng
+    tol = float(cfg.ransac_inlier_m)
+    bearing_tol = float(cfg.search_bearing_tol_rad)
+    dist_lo, dist_hi = float(cfg.search_wall_dist_min_m), float(cfg.search_wall_dist_max_m)
+
+    best_mask, best_count = None, 0
+    for _ in range(int(cfg.ransac_iters)):
+        i, j = rng.choice(n, size=2, replace=False)
+        d = pts[j] - pts[i]
+        norm = math.hypot(d[0], d[1])
+        if norm < 1e-6:
+            continue
+        nvec = np.array([-d[1] / norm, d[0] / norm])
+        mask = np.abs((pts - pts[i]) @ nvec) <= tol
+        count = int(mask.sum())
+        if count <= best_count:
+            continue
+        centroid = pts[mask].mean(axis=0)
+        bearing = math.atan2(float(centroid[1]), float(centroid[0]))
+        dist = math.hypot(float(centroid[0]), float(centroid[1]))
+        if abs(bearing) > bearing_tol or not (dist_lo <= dist <= dist_hi):
+            continue
+        best_mask, best_count = mask, count
+
+    if best_mask is None or best_count < max(2, int(cfg.ransac_min_inlier_ratio * n)):
+        return None
+
+    normal, offset, rms = _refit(pts[best_mask])
+    if rms > cfg.wall_rms_max_m:
+        return None
+    yaw = math.atan2(float(normal[1]), float(normal[0]))
+    if abs(yaw) > cfg.search_wall_yaw_max_rad:
+        return None
+    return Wall(normal=normal, offset=offset, yaw=yaw, rms=rms, inliers=best_mask)
+
+
 @dataclass(frozen=True)
 class NotchObs:
     """도크 노치 관측 한 장.

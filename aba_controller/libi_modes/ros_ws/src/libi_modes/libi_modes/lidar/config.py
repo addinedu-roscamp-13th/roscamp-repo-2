@@ -69,11 +69,27 @@ class LidarDockConfig:
     #     180도 모호성을 없애므로 거의 전 방향을 봐도 방향 판정이 흔들리지 않는다).
     search_half_deg: float = 175.0
     search_wall_yaw_max_rad: float = 3.2
+    #   ⚠️ [2026-08-04 실측 정정] 0.4(22.9도) → 0.15(8.6도). 클릭 라벨링으로 실측한
+    #     결과, 노치 y 오차가 벽 yaw 에 거의 선형 비례했다(상관계수 0.93,
+    #     1도당 약 2.4mm, 23도에서 60mm까지). 설계 당시 시뮬레이션은 "23도까지
+    #     오차 2mm"였는데 실측은 그 30배 — 믹스드픽셀 등 시뮬레이션에 없던
+    #     물리가 낀 것으로 보인다(원인 조사는 별도, scripts/demo/dock_scan_visualize
+    #     클릭 로그로 계속 검증 중). 원인을 다 몰라도 이 값을 낮추면 ACQUIRE
+    #     인수인계 시점의 편향 위험 구간 자체가 줄어든다 — 값싼 안전마진.
     #: 이 안으로 들어오면 ACQUIRE 로 넘긴다. `wall_yaw_max_rad`(0.61)보다 빡빡해야
     #: 넘어간 바로 다음 tick 에 좁은 창의 `detect()` 도 곧장 성공한다.
-    search_align_tol_rad: float = 0.4
+    search_align_tol_rad: float = 0.15
     search_rot_rad_s: float = 0.25
     search_timeout_s: float = 30.0
+    #   ⚠️ [2026-08-04 실측 정정] `fit_wall_near_bearing()` 전용 — inlier 최다
+    #     기준만으로는 도크와 무관한 방의 다른 벽을 우선할 수 있다(실측:
+    #     200점 옆벽이 110점 도크벽을 이김, codex P1 확인). 벽의 **기울기**
+    #     (search_wall_yaw_max_rad)는 여전히 넓게 두되, 벽 점들이 있는
+    #     **방향·거리**는 예상 범위로 제한한다.
+    #     아직 현장 값 몇 개로 잡은 1차 추정치다 — 라벨 데이터 쌓이면 좁힐 것.
+    search_bearing_tol_rad: float = 1.05          # 60도
+    search_wall_dist_min_m: float = 0.05
+    search_wall_dist_max_m: float = 1.0
     # ── NEAR 모드 (벽이 min range 아래로 사라진 뒤) ───────────────────────
     near_half_deg: float = 35.0
     near_gap_m: float = 0.02

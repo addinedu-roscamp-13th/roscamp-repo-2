@@ -29,7 +29,8 @@ from dataclasses import replace
 
 from libi_modes.lidar.approach import LidarApproach
 from libi_modes.lidar.config import LidarDockConfig
-from libi_modes.lidar.detect import detect, detect_near, fit_wall, sector_points
+from libi_modes.lidar.detect import (detect, detect_near, fit_wall_near_bearing,
+                                     sector_points)
 
 #: 끝날 때 낼 0 의 **개수**. 시각이 아니라 개수라야 콜백 지연에 안 샌다
 #: (`NudgeDriver` 가 같은 이유로 개수를 쓴다 — 시각으로 재면 밀린 콜백이 0 을
@@ -170,11 +171,14 @@ class LidarDockDriver:
             #    SEARCH 가 방향 신호를 영영 못 받았다. 벽만 넓힌 cfg 로 찾아
             #    `search_wall_yaw` 로 넘긴다 — 자세한 이유는 approach.py 의
             #    SEARCH 블록 주석.
+            # ⚠️ [2026-08-04 실측 추가] `fit_wall` 이 아니라 `fit_wall_near_bearing`
+            #    이다 — inlier 최다만 보면 도크와 무관한 방의 다른 벽을 우선할
+            #    수 있다(실측: 200점 옆벽이 110점 도크벽을 이김, codex P1 확인).
             if self._machine.phase == "SEARCH":
                 pts = sector_points(msg.ranges, msg.angle_min, msg.angle_increment,
                                     msg.range_min, self._search_cfg.range_max_m,
                                     self._search_cfg)
-                wall = fit_wall(pts, self._search_cfg) if len(pts) else None
+                wall = fit_wall_near_bearing(pts, self._search_cfg) if len(pts) else None
                 cmd = self._machine.step(None, now,
                                          search_wall_yaw=(wall.yaw if wall else None))
             else:

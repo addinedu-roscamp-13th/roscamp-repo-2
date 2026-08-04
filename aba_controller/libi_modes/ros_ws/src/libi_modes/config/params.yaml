@@ -197,9 +197,19 @@ libi_modes:
       #     nav2 회전 정밀도에 안 기대고 라이다가 넓은 창으로 스스로 찾아 정렬한다.
       search_half_deg: 175.0
       search_wall_yaw_max_rad: 3.2
-      search_align_tol_rad: 0.4
+      #   ⚠️ [2026-08-04 실측 정정] 0.4(22.9도)→0.15(8.6도) — 클릭 라벨링으로 재보니
+      #     노치 y 오차가 벽 yaw 에 거의 선형 비례했다(상관계수 0.93, 1도당 2.4mm).
+      search_align_tol_rad: 0.15
       search_rot_rad_s: 0.25
       search_timeout_s: 30.0
+      #   ⚠️ [2026-08-04 실측 추가] `fit_wall_near_bearing` 전용 — inlier 최다만
+      #     보면 도크와 무관한 방의 다른 벽을 우선할 수 있다(실측: 200점 옆벽이
+      #     110점 도크벽을 이김, codex P1 확인). 벽의 기울기는 여전히 넓게
+      #     허용하되(search_wall_yaw_max_rad), 벽 점들의 방향·거리는 제한한다.
+      #     아직 1차 추정치 — 라벨 데이터 쌓이면 좁힐 것.
+      search_bearing_tol_rad: 1.05
+      search_wall_dist_min_m: 0.05
+      search_wall_dist_max_m: 1.0
       # ── 노치 (실측: 폭 6cm · 깊이 2.5cm) ──
       smooth_rays: 5
       notch_thresh_m: 0.012

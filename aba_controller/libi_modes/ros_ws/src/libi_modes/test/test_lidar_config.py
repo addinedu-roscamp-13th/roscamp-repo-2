@@ -16,6 +16,14 @@ def test_defaults_are_physically_sane():
     # SEARCH 가 ACQUIRE 로 넘긴 바로 다음 tick 에 좁은 창의 detect() 도 곧장
     # 성공해야 한다 — 안 그러면 넘기자마자 다시 실패로 튕긴다.
     assert c.search_align_tol_rad < c.wall_yaw_max_rad
+    # ★ 현장 실측(2026-08-04) — 노치 y 오차가 벽 yaw 에 거의 선형 비례했다
+    #   (상관계수 0.93, 1도당 약 2.4mm). 0.4(22.9도)는 너무 느슨했다.
+    assert c.search_align_tol_rad == 0.15
+    # `fit_wall_near_bearing` 전용 — bearing 은 좁게, 거리는 최소<최대가 성립해야 한다.
+    assert c.search_wall_dist_min_m < c.search_wall_dist_max_m
+    assert 0.0 < c.search_bearing_tol_rad < c.search_wall_yaw_max_rad, (
+        "bearing 문턱은 좁게, 벽 자체 기울기 허용치(search_wall_yaw_max_rad)는 "
+        "여전히 넓게 — 이 둘이 뒤바뀌면 안 된다")
 
 
 def test_clamped_raises_search_rotation_up_to_the_rotation_deadband():

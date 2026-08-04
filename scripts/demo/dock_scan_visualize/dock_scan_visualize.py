@@ -80,7 +80,8 @@ sys.path.insert(0, str(_LIBI_MODES_SRC))
 
 from libi_modes.lidar.approach import LidarApproach  # noqa: E402
 from libi_modes.lidar.config import LidarDockConfig  # noqa: E402
-from libi_modes.lidar.detect import detect, detect_near, fit_wall, sector_points  # noqa: E402
+from libi_modes.lidar.detect import (detect, detect_near, fit_wall,
+                                     fit_wall_near_bearing, sector_points)  # noqa: E402
 
 _PARAMS_YAML = _LIBI_MODES_SRC / "config/params.yaml"
 
@@ -486,12 +487,14 @@ def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockCon
         # SEARCH 는 `detect()`(노치까지 확정)를 안 부른다 — 각도가 심하게
         # 틀어지면 벽은 잡혀도 노치 자체가 인식이 안 돼 계속 None 이 나와
         # 방향 신호를 영영 못 받는다. 벽만 넓힌 cfg 로 피팅해 그 yaw 로 돈다.
+        # `fit_wall_near_bearing` — inlier 최다만 보면 방의 다른 벽을
+        # 우선할 수 있다(실측 P1, 위 driver 와 같은 이유).
         # FINAL 인데 FAR 가 실패하면 기존대로 NEAR 로 인수인계한다.
         machine = state["machine"]
         if machine.phase == "SEARCH":
             pts = sector_points(msg.ranges, msg.angle_min, msg.angle_increment,
                                 msg.range_min, search_cfg.range_max_m, search_cfg)
-            wall = fit_wall(pts, search_cfg) if len(pts) else None
+            wall = fit_wall_near_bearing(pts, search_cfg) if len(pts) else None
             cmd = machine.step(None, time.monotonic(),
                               search_wall_yaw=(wall.yaw if wall else None))
         else:

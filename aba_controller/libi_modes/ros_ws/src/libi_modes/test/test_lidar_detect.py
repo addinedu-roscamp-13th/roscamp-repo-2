@@ -11,6 +11,7 @@
 0 rad = 로봇의 물리적 뒤 = 후진 진행 방향. x = 도크 쪽, y = 좌우.
 """
 import math
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -181,6 +182,72 @@ def test_fit_wall_is_deterministic():
     a = detect.fit_wall(pts, cfg)
     b = detect.fit_wall(pts, cfg)
     assert a.yaw == b.yaw and a.offset == b.offset
+
+
+def _wall_pts(bearing_rad: float, dist_m: float, n: int, span_m: float = 0.3):
+    """`bearing_rad` 방향, `dist_m` 거리에 놓인 평평한 벽 점들을 만든다.
+    벽은 그 방향에 수직(로봇을 정면으로 보는 벽)이라고 둔다 — `fit_wall_near_bearing`
+    시험에서 "이 후보가 어디 있는가"만 조절하면 되므로 이 정도면 충분하다."""
+    nx, ny = math.cos(bearing_rad), math.sin(bearing_rad)
+    tx, ty = -ny, nx
+    s = np.linspace(-span_m / 2, span_m / 2, n)
+    return np.stack([nx * dist_m + tx * s, ny * dist_m + ty * s], axis=1)
+
+
+def test_fit_wall_near_bearing_prefers_the_dock_candidate_over_a_bigger_off_bearing_wall():
+    """[2026-08-04 실측, codex P1 확인] 넓은 SEARCH 창에서 순수 inlier 최다 기준은
+    도크와 무관한 방의 다른 벽을 우선할 수 있다 — 실측: 200점짜리 옆벽이 110점짜리
+    도크 벽을 이겼다. `fit_wall_near_bearing` 은 bearing·거리 사전지식으로 막는다."""
+    cfg = LidarDockConfig()
+    # SEARCH 가 실제로 쓰는 넓힌 cfg — `wall_yaw_max_rad` 를 `search_wall_yaw_max_rad`
+    # 로 바꾼 것(드라이버의 `_search_cfg` 와 같은 구성). 이걸 안 쓰면(그냥 좁은 기본
+    # cfg 로 plain fit_wall 을 부르면) 옆벽 자체의 yaw(75도)가 기본 35도 문턱에
+    # 걸려 plain 도 그냥 None 을 내서 이 시험의 전제(옆벽이 이긴다)가 성립 안 한다.
+    search_cfg = replace(cfg, wall_yaw_max_rad=cfg.search_wall_yaw_max_rad)
+    dock_pts = _wall_pts(bearing_rad=0.0, dist_m=0.30, n=60, span_m=0.1)
+    # 점도 더 많고(120>60) rms 도 더 좋을 방의 다른 벽 — bearing·거리 둘 다 범위 밖
+    side_pts = _wall_pts(bearing_rad=math.radians(75), dist_m=1.3, n=120, span_m=0.6)
+    pts = np.vstack([dock_pts, side_pts])
+
+    plain = detect.fit_wall(pts, search_cfg, rng=np.random.default_rng(1))
+    assert plain is not None and plain.inliers.sum() >= 100, (
+        "이 시험의 전제 확인 — 옆벽(점 더 많음)이 plain fit_wall 에서 이겨야 한다")
+
+    picked = detect.fit_wall_near_bearing(pts, cfg, rng=np.random.default_rng(1))
+    assert picked is not None
+    assert picked.offset == pytest.approx(0.30, abs=0.02), "옆벽이 아니라 도크 벽을 골라야 한다"
+    assert abs(picked.yaw) < math.radians(5)
+
+
+def test_fit_wall_near_bearing_still_accepts_a_large_yaw_dock_candidate():
+    """SEARCH 를 만든 원래 이유(2026-08-03, 벽 yaw -40.7도)를 이 필터가 다시
+    깨면 안 된다 — bearing·거리는 좁히되 벽 자체의 기울기는 여전히 넓게 허용해야
+    한다. bearing 0도 근처에 있지만 그 벽 자체는 크게 기운 경우를 시험한다."""
+    cfg = LidarDockConfig()
+    # 벽은 bearing 0도 근처에 있지만(가까운 거리), 벽 자체 방향은 크게 기울어 있다
+    # (로봇이 잘못 돌아 있어서 벽이 비스듬히 보이는 상황을 흉내)
+    tilt = math.radians(-41)
+    n = 80
+    s = np.linspace(-0.15, 0.15, n)
+    base = np.array([0.30, 0.0])
+    tangent = np.array([math.sin(tilt), math.cos(tilt)])
+    pts = base + np.outer(s, tangent)
+
+    wall = detect.fit_wall_near_bearing(pts, cfg, rng=np.random.default_rng(1))
+    assert wall is not None, "bearing 은 가까운데도 거절되면 SEARCH 가 못 쓴다"
+    # ⚠️ 부호가 아니라 크기만 본다 — `_refit` 이 `offset>=0` 이 되도록 법선을
+    # 뒤집을 수 있어(180도 모호성 해소, detect.py 참고) 부호는 손으로 만든
+    # 기하의 접선 방향 관례에 좌우된다. 여기서 잠그려는 건 "35도 훨씬 넘는
+    # 기울기도 거절 안 한다"는 것이지 부호 관례가 아니다.
+    assert abs(wall.yaw) == pytest.approx(abs(tilt), abs=0.05)
+
+
+def test_fit_wall_near_bearing_returns_none_when_only_an_off_bearing_wall_exists():
+    """도크 후보가 아예 없을 때(전부 범위 밖) — 잘못된 벽을 억지로 고르지 말고
+    `None` 을 내야 SEARCH 가 계속 돈다(엉뚱한 방향으로 확정하지 않는다)."""
+    cfg = LidarDockConfig()
+    pts = _wall_pts(bearing_rad=math.radians(80), dist_m=1.4, n=100, span_m=0.6)
+    assert detect.fit_wall_near_bearing(pts, cfg, rng=np.random.default_rng(1)) is None
 
 
 def _detect(cfg=None, **scan_kw):
