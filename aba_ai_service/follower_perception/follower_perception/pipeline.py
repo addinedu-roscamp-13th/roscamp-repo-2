@@ -7,7 +7,7 @@ from .reid_engine import ReIDEngine
 from .target_matcher import TargetMatcher
 from .bbox_smoother import BBoxSmoother
 from .constants import (
-    FRAME_DT, PREDICT_DT, COAST_LIMIT, CALIBRATION_INTERVAL,
+    FRAME_DT, PREDICT_DT, COAST_LIMIT, COAST_MAX_DRIFT_W, CALIBRATION_INTERVAL,
     REGISTRATION_STABLE_FRAMES, REGISTRATION_LEARN_SEC, REGISTRATION_MIN_AREA_RATIO,
 )
 
@@ -279,6 +279,12 @@ class FollowerPerception:
         owner_id = self.matcher.match(cands, frame)
         if owner_id is not None:
             owner = next(c for c in cands if c.track_id == owner_id)
+            # ⚠️ `dt` 는 이 필터에서 **완전히 소거된다** — `velocity` 가 항상
+            # `velocity * dt` 로만 등장하고 `beta / dt * dt = beta` 라서다. 실측
+            # 2026-08-06: dt 를 0.01 과 0.50 으로 줘도 출력 차이가 2.8e-14 px 다.
+            # 실측 dt 를 넣어 봤지만 얻는 게 없었고, 프레임 간격이 흔들릴 때는
+            # 오히려 나빠졌다(간격 지터 30%에서 오차 +4.1%) — 지터는 다음 간격을
+            # 예측하지 못하는데 앞보기만 같이 흔들리기 때문이다. 공칭값이 맞다.
             self.smoother.update(owner.cx, owner.cy, owner.area, FRAME_DT)
             self._last_owner = owner
             self._miss = 0
@@ -326,32 +332,40 @@ class FollowerPerception:
             bbox = self._last_owner.bbox
             is_pred = False
         elif self._miss <= COAST_LIMIT and may_coast(self._exit_dir, self._last_posture):
-            # ⚠️⚠️ [2026-08-02] **코스팅은 "마지막 박스를 그대로 든다" 이다. 외삽이 아니다.**
+            # 코스팅 — 알파베타 속도로 **위치만** 밀어 준다(2026-08-06 사용자 요청으로
+            # 재도입). 그래야 가려진 동안에도 사람이 가던 쪽으로 조금 더 따라간다.
             #
-            #   사용자 지시: "예측 느낌 말고, 유실된 그 시점의 박스를 유지하기만 하면 된다."
+            # ⚠️ [2026-08-02] 에 이 외삽을 껐던 이유 두 가지는 **각각 막아 두었다** —
+            #    안 막고 되돌리면 그때 그 결함이 그대로 재현된다:
             #
-            #   예전에는 `smoother.predict(miss * FRAME_DT)` 로 위치·면적을 계속 밀었다.
-            #   그게 두 가지를 망가뜨렸다:
-            #     ① **면적 붕괴** — 서가·문틀 뒤로 들어가면 사라지기 직전 bbox 가 잘려
-            #        면적이 급감한다. 필터가 그 급감을 속도로 학습해 밀고 나가서
-            #        실측 재현상 **3프레임 만에 area 가 0** 이 됐다(700 → -459/frame).
-            #        화면의 주황 박스가 점으로 쪼그라들어 안 보였고(사용자 보고),
-            #        `√area = 0` 이라 거리 PID 가 "아주 멀다"로 읽어 **전속 전진**했다.
-            #     ② **위치 폭주** — 가려지기 직전 몇 프레임은 bbox 가 잘리며 중심도
-            #        튄다. 그 튐이 속도로 학습돼 엉뚱한 데로 박스를 끌고 갔다.
+            #   ① **면적은 외삽하지 않는다.** 서가·문틀 뒤로 들어가면 사라지기 직전
+            #      bbox 가 잘려 면적이 급감하고, 필터가 그 급감을 속도로 학습해 밀고
+            #      나갔다. 실측 **3프레임 만에 area 0**(700 → -459/frame) → `√area = 0`
+            #      을 거리 PID 가 "아주 멀다"로 읽어 **전속 전진**했다. 면적은 마지막
+            #      실측을 그대로 든다 — 가려짐이 바꾸는 건 겉보기뿐이고 실제 거리는
+            #      그대로이므로 이게 물리적으로도 맞다.
             #
-            #   가려짐이 바꾸는 것은 **겉보기**뿐이다 — 사람의 실제 위치·거리는 그대로다.
-            #   1.4초 동안 진짜 이동량은 `LINEAR_X_MAX`(0.06 m/s) × 1.4s ≈ 8cm 로 작다.
-            #   그래서 모르면 **안 바뀐 것으로 둔다**: 마지막으로 실제 본 박스를 그대로
-            #   내보내고, 그 시간이 지나면 소실로 넘긴다. 화면에서도 박스가 그 자리에
-            #   그대로 떠 있다가 사라진다 — 사용자가 원한 동작이다.
+            #   ② **밀어낼 거리에 상한을 둔다**(`COAST_MAX_DRIFT_W`). 가려지기 직전
+            #      중심이 튄 것이 속도로 학습돼 박스를 엉뚱한 데로 끌고 갔다. 1.4초
+            #      동안 사람의 진짜 이동은 8cm 안팎이라 화면에서 bbox 폭을 크게 넘을
+            #      수 없다. 넘으면 그건 튐이지 이동이 아니다.
             #
-            #   ⚠️ 스무더는 **여전히 필요하다.** `_miss == 0` 경로에서 검출 흔들림을
-            #      깎고 한 스텝 지연을 보상한다. 여기서만 안 쓴다.
-            cx = self._last_owner.cx
-            cy = self._last_owner.cy
-            area = max(0.0, float(self._last_owner.area))
-            bbox = self._last_owner.bbox
+            # `predict(miss * FRAME_DT)` 는 `_miss == 0` 경로와 달리 update 때와 **다른**
+            # dt 를 쓴다 — 그래서 여기서는 dt 가 소거되지 않고 실제로 외삽 거리를 정한다
+            # (`_miss == 0` 쪽 dt 가 왜 무의미한지는 bbox_smoother 시험 참고).
+            pred = self.smoother.predict(self._miss * FRAME_DT)
+            lx, ly = self._last_owner.cx, self._last_owner.cy
+            dx, dy = (pred[0] - lx, pred[1] - ly) if pred is not None else (0.0, 0.0)
+            x1, y1, x2, y2 = self._last_owner.bbox
+            limit = COAST_MAX_DRIFT_W * abs(x2 - x1)
+            drift = math.hypot(dx, dy)
+            if limit <= 0 or drift <= 1e-9:
+                dx = dy = 0.0
+            elif drift > limit:                      # 방향은 살리고 길이만 자른다
+                dx, dy = dx * limit / drift, dy * limit / drift
+            cx, cy = lx + dx, ly + dy
+            area = max(0.0, float(self._last_owner.area))   # ← ① 면적은 안 민다
+            bbox = (x1 + dx, y1 + dy, x2 + dx, y2 + dy)     # 화면 박스도 같이 민다
             is_pred = True
         else:
             return None

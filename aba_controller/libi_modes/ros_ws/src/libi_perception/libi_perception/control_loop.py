@@ -3,7 +3,7 @@ import time
 import py_trees
 
 from . import session as sess
-from .pid import angle_deadzone
+from .pid import lost_side
 from .recovery_bt import SearchContext, create_searching_tree, tick_tree
 from .switch import FollowSwitch
 from .tracking_controller import TrackingController
@@ -36,8 +36,6 @@ class ControlLoop:
         self.role = role
         #: 진단 로그 통로. 주입 안 하면 조용하다(테스트는 그대로 돈다).
         self._log = log or (lambda _msg: None)
-        #: 이번 코스팅 에피소드를 이미 찍었나 — 20Hz 로 매번 찍으면 로그가 묻힌다.
-        self._coast_logged = False
         self.switch = FollowSwitch()
         self.tracker = TrackingController(publish, cfg)
         self.miss = 0
@@ -49,16 +47,27 @@ class ControlLoop:
         self._search_ctx = None
         self._search_tree = None
         self._last_tick = None
-        #: 마지막으로 **실제로 본** 대상이 화면 가운데(방위 정지 구간 안)에 있었나.
+        #: 마지막으로 본 박스가 화면 **3등분 어느 칸**에 있었나.
+        #:   `+1` 왼쪽 칸 · `-1` 오른쪽 칸 · `0` 가운데 칸 · `None` 아직 못 봄
         #:
-        #: 회복 탐색의 첫 단계 `LkdPeek` 는 "마지막으로 돌던 방향으로 90° 돌아본다" 인데,
-        #: 대상이 가운데에서 사라졌으면 그건 **어느 쪽으로 나간 게 아니라 가려진 것**이다.
-        #: 그때 LKD 로 도는 것은 근거 없는 추측이고, 사람이 다시 나타났을 때 로봇이
-        #: 엉뚱한 데를 보고 있게 된다. 사용자 지시(2026-08-02): "가운데에서 사라지면
-        #: peek 가 없어도 될 것 같다."
+        #: 회복 탐색의 첫 단계 `LkdPeek` 가 이 값으로 방향을 정한다. 부호는 각속도와
+        #: 같다 — `pid.compute` 의 `e_cx = W/2 - cx` 라 왼쪽에 있으면 양수(좌회전)다.
         #:
-        #: 기본 False = "아직 아무것도 못 봤다" → peek 를 켠 채로 둔다(기존 동작).
-        self._last_centered = False
+        #: 가운데 칸이면 **안 돈다.** 어느 쪽으로 나간 게 아니라 가려진 것이라, 그때
+        #: 도는 것은 근거 없는 추측이고 사람이 다시 나타났을 때 로봇이 엉뚱한 데를 본다
+        #: (사용자 지시 2026-08-02: "가운데에서 사라지면 peek 가 없어도 될 것 같다").
+        #:
+        #: ⚠️ 기준은 **눈에 보이는 3등분 가이드선**(`w/3`·`2w/3`)이지 방위 정지 구간이
+        #:    아니다. 정지 구간은 `ANGLE_DEADZONE_FRAC`(현재 1/24 = 반폭 26.7px)로
+        #:    좁혀져 있어서 3등분(반폭 w/6 = 106.7px)과 **더는 같지 않다.**
+        #:    사람이 화면으로 보고 판단하는 선과 맞춘다.
+        self._last_side = None
+        #: 이번 유실에서 **코스팅 박스(주황)를 실제로 봤나.** 한 번도 안 나왔으면
+        #: 사라진 방향에 대한 근거가 없으므로 peek 를 하지 않는다(사용자 지시
+        #: 2026-08-06). 실검출이 돌아오면 되감는다.
+        #: 코스팅 시작 로그를 에피소드당 한 번만 찍는 데도 같이 쓴다 — 20Hz 로 매번
+        #: 찍으면 로그가 묻힌다.
+        self._coast_seen = False
         #: 안내에서 예측 bbox 를 처음 받은 시각. `GUIDE_COAST_SEC` 유예를 잰다.
         #: 진짜 검출이 오거나 검출이 끊기면 None 으로 되감는다.
         self._guide_coast_since = None
@@ -179,7 +188,19 @@ class ControlLoop:
         self._build_search()
 
     def _build_search(self):
-        lkd = self.tracker.last_direction or 1.0
+        # peek 방향은 **마지막 코스팅 박스가 3등분 어느 칸에 있었나**로 정한다.
+        # 로봇이 돌던 방향(`tracker.last_direction`)이 아니다 — 그건 "내가 어디로
+        # 돌고 있었나"이지 "사람이 어디로 사라졌나"가 아니다. 칸을 못 정했으면
+        # (박스를 한 번도 못 봤으면) 옛 근거로 떨어진다.
+        lkd = float(self._last_side) if self._last_side else \
+            (self.tracker.last_direction or 1.0)
+        # peek 를 하는 조건 두 가지 — **둘 다** 만족해야 돈다.
+        #   ① 마지막 박스가 왼쪽/오른쪽 칸에 있었다. 가운데 칸이면 어느 쪽으로 나간 게
+        #      아니라 가려진 것이라 도는 것이 추측이 된다(사용자 지시 2026-08-02).
+        #   ② 코스팅 박스를 실제로 봤다. 주황 박스가 한 번도 안 나왔으면 사라진 방향에
+        #      대한 근거가 아예 없다 — 그때 도는 것은 순전한 추측이다
+        #      (사용자 지시 2026-08-06).
+        do_peek = self._last_side in (-1, 1) and self._coast_seen
         # 재시작이면(이전 컨텍스트가 있으면) 그게 실제로 남겨 둔 캠을 물려준다.
         # 안 넘기면 새 컨텍스트가 home_camera 라고 낙관적으로 가정하는데, 소진된
         # 회복은 peek 캠에서 끝나는 경우가 있어 그 가정이 틀릴 수 있다.
@@ -191,9 +212,7 @@ class ControlLoop:
                                          peek_people=self.peek_people,
                                          role=self.role,
                                          initial_camera=prev_camera,
-                                         # 가운데에서 사라졌으면 LKD peek 를 끈다
-                                         # (근거: `_last_centered` 주석)
-                                         peek=not self._last_centered)
+                                         peek=do_peek)
         # Stamp the search start when SEARCHING begins, not on the tree's first tick —
         # those can be ticks apart, which would understate elapsed search time.
         self._search_ctx.start = self.now()
@@ -230,20 +249,19 @@ class ControlLoop:
                 #     · 뜨는데 안 움직이면 → 하류(자세 게이트·라이다)가 막는 것이다
                 #   에피소드당 한 번만 찍는다. 20Hz 로 매 tick 찍으면 로그가 묻힌다.
                 if getattr(det, 'is_predicted', False):
-                    if not self._coast_logged:
-                        self._coast_logged = True
+                    if not self._coast_seen:
+                        self._coast_seen = True
                         self._log(f'α-β 코스팅 시작 — 예측 bbox 로 추종 유지 '
                                   f'(cx={det.cx:.0f} area={det.area:.0f} '
                                   f'motion_ok={getattr(det, "motion_ok", True)} '
                                   f'posture={getattr(det, "posture", None)})')
-                elif self._coast_logged:
-                    self._coast_logged = False
+                elif self._coast_seen:
+                    self._coast_seen = False
                     self._log('α-β 코스팅 끝 — 실검출 복귀')
-                # "사라질 때 가운데였나" 를 PID 와 **같은 기준**으로 기록한다.
-                # 예측(coast) 프레임도 포함한다 — 코스팅은 마지막으로 본 위치에서
-                # 이어지는 것이라 그 사이 화면 위치가 판정의 근거로 유효하다.
-                self._last_centered = abs(
-                    self.cfg.IMAGE_WIDTH / 2.0 - det.cx) <= angle_deadzone(self.cfg)
+                # "사라질 때 어느 칸이었나". 예측(coast) 프레임도 포함한다 — 코스팅은
+                # 마지막으로 본 위치에서 이어지는 것이라 그 사이 화면 위치가 유효한
+                # 근거이고, 오히려 **마지막 코스팅 박스**가 가장 최근 근거다.
+                self._last_side = lost_side(det.cx, self.cfg.IMAGE_WIDTH)
                 # 자세 게이트는 ``사람에게 다가가는`` 추종 전용 안전 규칙이다.
                 # guide 는 nav2 가 목적지로 주행하고 이 루프는 뒷카메라 감시만 한다.
                 # 뒤따르는 사람의 자세로 nav2 를 멈추면 안 된다. 역할은 AI 파이프라인이

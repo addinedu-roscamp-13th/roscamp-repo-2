@@ -16,6 +16,28 @@ def angle_deadzone(cfg) -> float:
     return (cfg.IMAGE_WIDTH * dz_frac) if dz_frac is not None else cfg.ANGLE_DEADZONE
 
 
+def lost_side(cx, width) -> int:
+    """박스 중심이 화면 **3등분** 어느 칸에 있나. `+1` 왼쪽 · `-1` 오른쪽 · `0` 가운데.
+
+    부호를 각속도와 맞춘다 — `FollowPID.compute` 의 `e_cx = W/2 - cx` 가 왼쪽에서
+    양수(좌회전)이므로, 여기서도 왼쪽이 `+1` 이다. 회복 탐색이 이 값을 그대로
+    `lkd` 로 쓴다(`control_loop._build_search`).
+
+    ⚠️ 기준은 **눈에 보이는 가이드선**(`w/3`·`2w/3`)이다. 방위 정지 구간
+    (`angle_deadzone`, 현재 반폭 26.7px)과 **다르다** — 그쪽은 "돌지 말지"이고
+    이쪽은 "어느 쪽으로 사라졌나"라 질문이 다르다. 두 값이 같던 시절
+    (`ANGLE_DEADZONE_FRAC = 1/6`)의 기억으로 하나로 합치면, 정지 구간을 좁힐 때마다
+    peek 방향 판정이 같이 예민해진다.
+    """
+    if not width or width <= 0:
+        return 0
+    if cx < width / 3.0:
+        return 1
+    if cx > 2.0 * width / 3.0:
+        return -1
+    return 0
+
+
 class FollowPID:
     """Distance PID (sqrt-area) -> linear_x (with reverse); bearing PID (cx) -> angular_z."""
 

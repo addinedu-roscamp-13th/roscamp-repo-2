@@ -27,7 +27,9 @@ import sys
 import time
 from statistics import median
 
-from .constants import POSE_EVERY_N_FRAMES, POSE_WEIGHTS, YOLO_POSE_DIR
+from .constants import (
+    POSE_CALIBRATION_TIMEOUT_SEC, POSE_EVERY_N_FRAMES, POSE_WEIGHTS, YOLO_POSE_DIR,
+)
 from .keypoint_filter import KeypointFilter
 from .pose_calib import load_pose_calib
 
@@ -135,6 +137,10 @@ class PoseEstimator:
         self._calibrator = cal
         self._bbox_hw_samples = []
         self._ref_bbox_hw = getattr(self._calib, "ref_bbox_hw", None)
+        #: 측정을 시작한 시각. 제한 시간을 재는 기준이다 — 첫 판정 프레임에 채운다
+        #: (여기서 채우면 등록 전 대기 시간까지 세어 시작하자마자 만료될 수 있다).
+        self._calib_since = None
+        self._calib_gave_up = False
 
     def _freeze_ref_bbox_hw(self) -> None:
         """측정 구간 bbox 종횡비 표본의 중앙값을 굳힌다.
@@ -164,7 +170,9 @@ class PoseEstimator:
 
     @property
     def calibrating(self) -> bool:
-        return not self._calibrator.done
+        """측정 중인가. **포기했으면 False** — 화면 카운트다운이 영영 안 끝나는
+        숫자를 띄우면 사람이 로봇이 고장 났다고 읽는다."""
+        return not self._calibrator.done and not self._calib_gave_up
 
     @property
     def ref_ratio(self):
@@ -228,10 +236,18 @@ class PoseEstimator:
             dt = 0.0 if self._filter_ts is None else now - self._filter_ts
             self._filter_ts = now
             xy = self._filter.apply(xy, conf, dt)
+            if self.last_keypoints is not None:
+                self.last_keypoints = (xy, conf, self.last_keypoints[2])
+            # ⚠️ 화면도 **판정과 같은 좌표**를 그린다.
+            #
+            # `last_keypoints` 는 `_keypoints()` 가 필터 **전** 값으로 채운다(원본
+            # 배열이고, `apply` 는 복사본을 돌려준다). 여기서 안 덮으면 판정만 걸러지고
+            # 그림은 원본이라 "판정은 나아졌는데 화면은 그대로 떤다"가 된다 —
+            # 필터를 켜 본 사람이 "필터가 안 먹는다"로 읽게 되는 자리다.
 
         bbox_wh, bbox_clipped = self._bbox_wh_and_clipped(frame, clamped)
 
-        if not self._calibrator.done:
+        if not self._calibrator.done and not self._calib_gave_up:
             # ⚠️ 신뢰도를 통과한 프레임만 표본에 넣는다. 예전에는 검사가 없어서
             #    난수 좌표가 기준 중앙값에 섞였다. 측정 구간에 옆으로 선 프레임이
             #    많으면 기준이 커지고, 그만큼 측면 임계도 같이 커져 이후의 진짜
@@ -245,6 +261,22 @@ class PoseEstimator:
                     self._bbox_hw_samples.append(self._posture.bbox_hw(bbox_wh))
                     if self._calibrator.done:
                         self._freeze_ref_bbox_hw()
+            # 제한 시간 — 골격이 안 잡혀 표본이 안 모이면 **영영 안 끝난다.** 그동안
+            # 코스팅이 통째로 막히고(`_NO_COAST_POSTURES`) 주행도 멈춘다. 시간이 다
+            # 되면 기준을 억지로 세우지 않고 `Unknown` 으로 넘어간다 — 판정은 포기하되
+            # 거짓말은 안 한다(근거는 constants.POSE_CALIBRATION_TIMEOUT_SEC 주석).
+            if not self._calibrator.done and POSE_CALIBRATION_TIMEOUT_SEC > 0:
+                now = time.monotonic()
+                if self._calib_since is None:
+                    self._calib_since = now          # 첫 판정 프레임부터 잰다
+                elif now - self._calib_since >= POSE_CALIBRATION_TIMEOUT_SEC:
+                    got, need = self.calibration_progress
+                    print(f"[pose] 기준 측정 포기 — {POSE_CALIBRATION_TIMEOUT_SEC:.0f}초 안에 "
+                          f"{got}/{need} 장만 모였습니다(골격 신뢰도 부족). "
+                          f"자세를 Unknown 으로 두고 계속합니다", flush=True)
+                    self._calib_gave_up = True
+                    self._last = self._posture.UNKNOWN
+                    return self._last
             # 방금 확정됐더라도 이번 프레임은 측정 프레임으로 친다 — 확정 직후
             # 같은 프레임으로 판정하면 표본에 넣은 값으로 자기 자신을 재는 셈이다.
             self._last = CALIBRATING

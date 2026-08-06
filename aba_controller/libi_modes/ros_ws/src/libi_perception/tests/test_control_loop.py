@@ -499,39 +499,104 @@ def test_side_does_not_count_as_miss_either():
     assert loop.state == 'TRACKING'
 
 
-# ── 가운데 소실이면 LKD peek 를 건너뛴다 (2026-08-02) ───────────────────────
-# 사용자 지시: "알파베타 필터가 가운데에서 사라지면 peek 가 없어도 될 것 같다."
-# 가운데 소실 = 어느 쪽으로 나간 게 아니라 **가려진 것**이라, 마지막 회전 방향으로
-# 90° 도는 것은 근거 없는 추측이다.
+# ── peek 는 "마지막 코스팅 박스가 3등분 어느 칸에 있었나"로 정한다 ──────────
+#
+# 사용자 지시 2026-08-02: "가운데에서 사라지면 peek 가 없어도 될 것 같다."
+# 사용자 지시 2026-08-06: "왼쪽이면 왼쪽으로, 오른쪽이면 오른쪽으로. 박스가 안
+#                          생겼었다면 peek 안 하게."
+#
+# 가운데 소실 = 어느 쪽으로 나간 게 아니라 **가려진 것**이고, 코스팅 박스가 아예
+# 안 나온 소실 = 방향에 대한 근거가 **하나도 없는 것**이다. 둘 다 도는 것이 추측이 된다.
 
 def _peek_of(loop):
     """지금 도는 회복 컨텍스트가 peek 를 켰는지."""
     return loop._search_ctx.peek
 
 
-def test_center_loss_skips_the_lkd_peek():
-    cfg = _cfg(N_MISS_FRAMES=1, IMAGE_WIDTH=320, ANGLE_DEADZONE_FRAC=1.0 / 24.0)
-    d = _det(); d.cx = 160.0          # 정중앙
-    seen = [d]
-    loop = ControlLoop(lambda: seen.pop(0) if seen else None,
+def _coast_det(cx):
+    """코스팅(주황) 박스 — `is_predicted=True` 가 그 표시다."""
+    return Detection(cx=cx, cy=240.0, area=100.0, bbox=(cx - 5, 0, cx + 5, 10),
+                     track_id=1, is_owner=True, confidence=0.9, is_predicted=True)
+
+
+def _lost_after(seen, cfg=None):
+    """`seen` 을 차례로 보여 준 뒤 놓치게 만들고, SEARCHING 상태의 루프를 준다."""
+    cfg = cfg or _cfg(N_MISS_FRAMES=1, IMAGE_WIDTH=320)
+    q = list(seen)
+    loop = ControlLoop(lambda: q.pop(0) if q else None,
                        _clear_scan, _Pub(), cfg, now=_Clock())
-    loop.tick()                       # 잡았다 — 가운데
-    loop.tick()                       # 놓쳤다 → 탐색 시작
+    for _ in range(len(seen) + 1):
+        loop.tick()
     assert loop.state == 'SEARCHING'
+    return loop
+
+
+def test_center_loss_skips_the_lkd_peek():
+    d = _det(); d.cx = 160.0                      # 320 폭의 정중앙 = 가운데 칸
+    loop = _lost_after([d, _coast_det(160.0)])
     assert _peek_of(loop) is False, "가운데에서 사라졌는데 peek 를 켰다"
 
 
-def test_off_center_loss_keeps_the_lkd_peek():
-    """옆으로 사라졌으면 그쪽부터 보는 것이 맞다 — 기존 동작."""
-    cfg = _cfg(N_MISS_FRAMES=1, IMAGE_WIDTH=320, ANGLE_DEADZONE_FRAC=1.0 / 24.0)
-    d = _det(); d.cx = 20.0           # 왼쪽 끝
-    seen = [d]
-    loop = ControlLoop(lambda: seen.pop(0) if seen else None,
-                       _clear_scan, _Pub(), cfg, now=_Clock())
-    loop.tick()
-    loop.tick()
-    assert loop.state == 'SEARCHING'
-    assert _peek_of(loop) is True, "옆에서 사라졌는데 peek 를 껐다"
+def test_left_third_peeks_left():
+    """왼쪽 칸(< w/3 = 106.7)에서 사라졌으면 왼쪽으로 — 각속도 부호는 +."""
+    d = _det(); d.cx = 20.0
+    loop = _lost_after([d, _coast_det(20.0)])
+    assert _peek_of(loop) is True
+    assert loop._search_ctx.lkd == 1.0, "왼쪽에서 사라졌는데 오른쪽을 본다"
+
+
+def test_right_third_peeks_right():
+    d = _det(); d.cx = 300.0                      # > 2w/3 = 213.3
+    loop = _lost_after([d, _coast_det(300.0)])
+    assert _peek_of(loop) is True
+    assert loop._search_ctx.lkd == -1.0, "오른쪽에서 사라졌는데 왼쪽을 본다"
+
+
+def test_no_coast_box_skips_the_peek():
+    """코스팅 박스가 **한 번도 안 나온** 소실 — 방향 근거가 없으니 돌지 않는다.
+
+    실제로 이렇게 되는 경로: 자세가 `Lying`/`Calibrating` 이거나 이탈 방향이
+    `DOWN`/`UP` 이면 파이프라인의 `may_coast` 가 막아 예측 bbox 가 아예 안 나온다.
+    """
+    d = _det(); d.cx = 20.0                       # 왼쪽 칸이지만 코스팅이 없었다
+    loop = _lost_after([d])
+    assert _peek_of(loop) is False, "주황 박스를 한 번도 못 봤는데 peek 를 켰다"
+
+
+def test_peek_direction_follows_the_last_coast_box_not_the_first():
+    """사람이 왼쪽에서 잡혔다가 오른쪽으로 빠졌다 — **마지막** 박스가 이겨야 한다."""
+    d = _det(); d.cx = 20.0
+    loop = _lost_after([d, _coast_det(150.0), _coast_det(300.0)])
+    assert loop._search_ctx.lkd == -1.0
+    assert _peek_of(loop) is True
+
+
+def test_peek_direction_holds_when_the_robot_never_turned():
+    """⚠️ 이 시험이 "박스 위치"와 "로봇이 돌던 방향"을 **가른다.**
+
+    `TrackingController.last_direction` 은 각속도가 `0.01` 을 넘은 적이 있어야
+    채워진다. 정지 구간이 넓거나 오차가 작아 한 번도 안 돌았으면 `None` 이고,
+    옛 코드는 `or 1.0` 으로 떨어져 **사람이 오른쪽에 있어도 늘 왼쪽을 봤다.**
+    박스 위치로 정하면 그 경우에도 맞는 쪽을 본다.
+    """
+    # 정지 구간을 화면 절반으로 넓혀 PID 가 한 번도 안 돌게 만든다.
+    cfg = _cfg(N_MISS_FRAMES=1, IMAGE_WIDTH=320, ANGLE_DEADZONE_FRAC=0.5)
+    d = _det(); d.cx = 300.0                      # 오른쪽 칸
+    loop = _lost_after([d, _coast_det(300.0)], cfg=cfg)
+    assert loop.tracker.last_direction is None, "이 시험의 전제 — 로봇이 안 돌았다"
+    assert loop._search_ctx.lkd == -1.0, "안 돌았다고 기본값(왼쪽)으로 떨어졌다"
+
+
+def test_middle_third_is_center_even_outside_the_bearing_deadzone():
+    """기준은 **3등분 가이드선**이지 방위 정지 구간이 아니다.
+
+    정지 구간은 `ANGLE_DEADZONE_FRAC = 1/24`(320 폭에서 반폭 13.3px)로 좁혀져 있어,
+    `cx=140` 은 정지 구간 **밖**이지만 가운데 칸(106.7~213.3) **안**이다.
+    사용자가 화면으로 보고 판단하는 선을 따른다 — 그 칸 안이면 안 돈다.
+    """
+    d = _det(); d.cx = 140.0
+    loop = _lost_after([d, _coast_det(140.0)])
+    assert _peek_of(loop) is False, "가운데 칸인데 peek 를 켰다(정지 구간 기준으로 판정)"
 
 
 def test_peek_flag_actually_removes_the_phase_from_the_tree():

@@ -1,6 +1,7 @@
 import os
 
 import numpy as np
+import pytest
 from follower_perception.detection import TrackedBox
 from follower_perception.reid_engine import ReIDEngine
 from follower_perception.mocks import MockDetector
@@ -127,7 +128,14 @@ def _moving_box(tid, cx, w=40, h=80):
                       track_id=tid, confidence=0.9)
 
 
-def test_coasting_holds_the_last_real_box():
+def test_coasting_extrapolates_position_but_never_area():
+    """코스팅은 **위치만** 민다. 면적은 마지막 실측을 든다.
+
+    ⚠️ [2026-08-06] 이 시험은 뒤집혔다. 2026-08-02 에는 "얼린다"를 검사했다
+       (`test_coasting_holds_the_last_real_box`). 사용자 요청으로 외삽을 되돌리되,
+       그때 외삽을 껐던 이유 두 개는 각각 막았다 — 면적 고정과 이동 상한.
+       상한·대각선·Lying 차단은 `test_coast_extrapolation.py` 가 따로 본다.
+    """
     n = constants.REGISTRATION_STABLE_FRAMES
     # 오른쪽으로 꾸준히 이동하다 사라진다.
     moving = [[_moving_box(1, 80 + i * 6)] for i in range(n + 6)]
@@ -141,27 +149,25 @@ def test_coasting_holds_the_last_real_box():
     last_real = p.get_latest()
     assert last_real.is_predicted is False
 
-    # ⚠️ [2026-08-02] **외삽하지 않는다 — 마지막 실검출 박스를 그대로 든다.**
-    #   사용자 지시: "예측 느낌 말고, 유실된 그 시점의 박스를 유지하기만 하면 된다."
-    #   외삽은 가려질 때 면적을 무너뜨리고(3프레임 만에 0) 중심도 끌고 갔다.
     boxes = []
-    for _ in range(6):
+    for _ in range(5):
         p.run(red)
         d = p.get_latest()
         assert d.is_predicted is True
         boxes.append((d.cx, d.cy, d.area, tuple(d.bbox)))
-    first = boxes[0]
-    assert all(b == first for b in boxes), \
-        f"코스팅 중에 박스가 움직였다(외삽이 살아 있다): {boxes[0]} → {boxes[-1]}"
-    # 그리고 그 박스는 **마지막으로 실제 본 검출** 그 자체여야 한다.
-    #
-    # ⚠️ 살아 있을 때의 `det.cx`(133.8)와는 다르다 — 그쪽은 스무더가 한 스텝 앞을
-    #    보정한 값이고(`predict(PREDICT_DT)`), 코스팅은 **원본 박스**를 든다.
-    #    그래서 코스팅에서는 `cx` 가 bbox 중심과 정확히 일치한다(화면과 제어가 같은 것을
-    #    가리킨다). 전환 순간의 한 번뿐인 차이는 방위 데드존(±13.3px)보다 작다.
-    assert tuple(last_real.bbox) == first[3]
-    assert abs(first[0] - (first[3][0] + first[3][2]) / 2.0) < 1e-6, \
-        "코스팅 cx 가 bbox 중심과 다르다"
+
+    # ① 위치는 가던 쪽(오른쪽)으로 계속 밀린다 — 안 밀면 주황 박스가 제자리에 선다.
+    assert boxes[-1][0] > boxes[0][0], "코스팅이 위치를 안 민다(외삽이 꺼져 있다)"
+    # ② 면적은 한 톨도 안 변한다 — √area 가 거리 PID 의 입력이라 여기가 무너지면
+    #    "아주 멀다"로 읽혀 전속 전진한다(실측 2026-08-02).
+    assert all(b[2] == pytest.approx(last_real.area) for b in boxes)
+    # ③ 화면 박스도 같은 만큼 밀리고 크기는 그대로다 — cx 만 밀면 눈에는 안 보인다.
+    w0 = boxes[0][3][2] - boxes[0][3][0]
+    assert all(b[3][2] - b[3][0] == pytest.approx(w0) for b in boxes)
+    assert boxes[-1][3][0] > boxes[0][3][0]
+    # ④ cx 는 여전히 bbox 중심이다 — 화면과 제어가 같은 곳을 가리켜야 한다.
+    for b in boxes:
+        assert b[0] == pytest.approx((b[3][0] + b[3][2]) / 2.0)
 
 
 def test_predicted_bbox_keeps_the_last_aspect_ratio():

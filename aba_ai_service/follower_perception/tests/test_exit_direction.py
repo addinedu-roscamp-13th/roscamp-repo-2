@@ -84,14 +84,28 @@ def test_coast_blocked_for_down_and_up():
     assert may_coast("up", "Standing") is False
 
 
-def test_lying_and_calibrating_block_regardless_of_direction():
-    """쓰러지는 중이던 대상을 예측 위치로 쫓아가는 것이 바로 피하려던 상황이다.
-
-    `Calibrating` 도 막는다 — 기준을 재는 중이라 자세 판정 자체를 못 믿는다.
-    """
+def test_lying_blocks_regardless_of_direction():
+    """쓰러지는 중이던 대상을 예측 위치로 쫓아가는 것이 바로 피하려던 상황이다."""
     assert may_coast("side", "Lying") is False
     assert may_coast("center", "Lying") is False
-    assert may_coast("side", "Calibrating") is False
+
+
+def test_calibrating_no_longer_blocks_coasting():
+    """⚠️ [2026-08-06] `Calibrating` 을 차단목록에서 **뺐다.**
+
+    넣었던 이유는 "기준을 재는 중이라 판정을 못 믿는다" 였는데, 같은 "모른다"인
+    `Unknown` 은 이미 허용하고 있어 일관되지 않았다. 막으면 등록 직후 캘리브 구간
+    (정상 조건에서도 60프레임 ≈ 3.5초, 골격이 안 잡히면 더 길다) 안에 놓칠 때마다
+    주황 박스가 통째로 사라진다 — 사용자 보고 2026-08-06 "pose 켜면 안 보인다".
+
+    빼도 안전한 근거는 **로봇이 어차피 안 움직인다**는 것이다. `PostureGate` 가
+    `Calibrating` 을 즉시정지로 보고, 코스팅은 `motion_ok` 를 마지막 실제 판정에서
+    물려받으므로 전진은 0 이다(`test_pose_does_not_kill_coasting.py` 가 종단으로 확인).
+    """
+    assert may_coast("side", "Calibrating") is True
+    assert may_coast("center", "Calibrating") is True
+    # 방향 규칙은 그대로다 — 코앞(down)·낙하(up)는 자세와 무관하게 막힌다.
+    assert may_coast("down", "Calibrating") is False
 
 
 def test_side_and_unknown_do_not_block_coasting():
