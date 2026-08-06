@@ -200,10 +200,7 @@ def draw_overlay(frame, det, *, cands=None, pick=None, cmd=None, status_extra=""
         # 이미 여기서 굽는다(FollowScreen.qml 머리말).
         posture = getattr(det, "posture", None)
         pcol = _POSTURE_COLORS.get(posture, _POSTURE_UNKNOWN_COLOR)
-        # 포즈 판정에 실제로 사용한 최신 키포인트를 화면에도 표시한다.
-        # 판정이 꺼져 있거나 아직 owner 포즈가 없으면 None 이므로 기존처럼 안전하게
-        # 아무것도 그리지 않는다.
-        kp = getattr(pose, "last_keypoints", None) if pose is not None else None
+        kp = None  # 골격 표시 끔 — 그리기만 막음, posture 판정 로직엔 영향 없음
         if kp is not None:
             # 판정이 실제로 쓴 축을 그대로 그린다 — 안 읽으면 화면은 항상 torso 축인데
             # 판정은 shoulder_knee 로 나오는 어긋남이 생긴다(이 파일이 고치는 이유).
@@ -332,8 +329,12 @@ EOF = object()
 
 def serve_loop(conn, frames, perception, *, poll_cmd=None, jpeg_quality=80,
                cmd_sink=None, policy=None, lidar_source=None, detection_sink=None,
-               camera_source=None, role_source=None, recorder=None):
+               camera_source=None, role_source=None, recorder=None,
+               live_snapshot_path=None):
     last_t = time.monotonic()
+    # 1초에 한 번만 쓴다 — 15~17fps 마다 디스크에 쓰면 아무도 안 보는 야간 내내
+    # 불필요한 I/O 다. 사람 눈으로 보는 용도라 1초 지연은 문제되지 않는다.
+    last_snapshot_t = 0.0
     for frame in frames:
         # None = 심장박동(영상이 아직 안 옴). 소켓만 확인하고 넘어간다 — 이게 없으면
         # 프레임이 안 오는 동안 뷰어가 끊긴 것을 영영 못 알아챈다(udp_video.frames 주석).
@@ -399,6 +400,19 @@ def serve_loop(conn, frames, perception, *, poll_cmd=None, jpeg_quality=80,
                 # 등록 여부와 무관하게 매 프레임 잡히므로 침입 트리거로 쓴다.
                 front_size = max((c.area for c in cands), default=0.0) ** 0.5
                 recorder.feed(buf.tobytes(), front_size, frame=frame, cands=cands)
+            if live_snapshot_path is not None:
+                now2 = time.monotonic()
+                if now2 - last_snapshot_t >= 1.0:
+                    last_snapshot_t = now2
+                    # 임시파일 후 rename — 서빙 쪽(ops_extra.py)이 쓰는 도중 파일을
+                    # 읽어 반쪽 JPEG 를 돌려주는 일이 없게 한다.
+                    tmp = live_snapshot_path + ".tmp"
+                    try:
+                        with open(tmp, "wb") as f:
+                            f.write(buf.tobytes())
+                        os.replace(tmp, live_snapshot_path)
+                    except OSError:
+                        pass
             try:
                 send_frame(conn, buf.tobytes())
                 send_frame(conn, _pose_payload(det, cmd, _pose_or_none(perception), fps, perception.matcher))
@@ -715,7 +729,7 @@ def build_security(args, perception):
           f"관제={args.security_ops} 저장={media}", flush=True)
     print("[security] ⚠️ 뷰어 연결이 있어야 돕니다. 패널 추종 화면을 열거나 "
           "security_viewer.py 를 띄우세요", flush=True)
-    return recorder, _shutdown
+    return recorder, _shutdown, media
 
 
 def main():
@@ -819,6 +833,11 @@ def main():
 
     _sec = build_security(args, perception)
     recorder = _sec[0] if _sec else None
+    # secview 가 뷰어 자리를 차지해도(=패널이 못 붙어도) 이 파일 하나는 계속 갱신된다.
+    # ops_extra.py 의 `GET /security/live.jpg` 가 같은 경로를 무인증으로 서빙한다
+    # (같은 노트북 — build_security 의 media 주석 참고). 사람이 야간에 「보고 싶으면」
+    # 패널/secview 자리싸움과 무관하게 이걸로 본다.
+    live_snapshot_path = os.path.join(_sec[2], "live.jpg") if _sec else None
 
     cmd_sink = None
     if args.drive_host:
@@ -894,7 +913,8 @@ def main():
             serve_loop(conn, frames, perception, poll_cmd=make_socket_poller(),
                        cmd_sink=cmd_sink, policy=policy, lidar_source=lidar_source,
                        detection_sink=detection_sink, camera_source=camera_source,
-                       role_source=role_source, recorder=recorder)
+                       role_source=role_source, recorder=recorder,
+                       live_snapshot_path=live_snapshot_path)
         finally:
             conn.close()
             print("[..] viewer disconnected; waiting again")

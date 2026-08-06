@@ -64,6 +64,18 @@ function SecurityPage() {
   const [alertQueue, setAlertQueue] = useState<SecurityEvent[]>([]);
   // 영상 보기 눌러야 로드 — 목록에 쌓인 영상 전부를 항상 박아두면 스크롤할 때마다 다 받아온다.
   const [videoClip, setVideoClip] = useState<string | null>(null);
+  // 야간 라이브 미리보기 — secview/패널이 뷰어 자리를 두고 싸우는 것과 무관하게
+  // AI 서버가 1초마다 덮어쓰는 스냅샷(GET /security/live.jpg)을 그냥 폴링해서 본다.
+  // 기본 꺼짐 — 아무도 안 볼 때 1초마다 요청을 쏘지 않으려고 opt-in 으로 둔다.
+  const [showLive, setShowLive] = useState(false);
+  const [liveTick, setLiveTick] = useState(0);
+  const [liveOk, setLiveOk] = useState(true);
+
+  useEffect(() => {
+    if (!showLive) return;
+    const id = setInterval(() => setLiveTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [showLive]);
 
   const load = useCallback(async () => {
     try {
@@ -234,7 +246,41 @@ function SecurityPage() {
               >
                 {state?.ai_alive ? "🟢 감지 켜짐" : "🔴 AI 서버 없음"}
               </span>
+              <button
+                onClick={() => {
+                  setLiveOk(true);
+                  setShowLive((v) => !v);
+                }}
+                className={`rounded px-2 py-1 text-xs font-bold transition ${
+                  showLive
+                    ? "bg-sky-500/15 text-sky-700"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                🎥 라이브 {showLive ? "끄기" : "보기"}
+              </button>
             </div>
+
+            {/* 야간 라이브 — secview 가 뷰어 자리를 잡고 있어도(=패널이 검게 나와도)
+                이건 별도 스냅샷 파일을 폴링하는 것이라 그대로 보인다. */}
+            {showLive ? (
+              <div className="mt-3 overflow-hidden rounded-md border bg-black">
+                <img
+                  key={liveTick}
+                  src={`/api/admin/ops/security/live.jpg?t=${liveTick}`}
+                  alt="야간 라이브"
+                  className="max-h-64 w-full object-contain"
+                  onLoad={() => setLiveOk(true)}
+                  onError={() => setLiveOk(false)}
+                />
+                {!liveOk ? (
+                  <p className="p-2 text-center text-xs text-rose-400">
+                    라이브 연결 안 됨 — AI 서버가 --security 로 떠 있는지, 5초 안에
+                    갱신됐는지(뷰어가 하나도 안 붙었으면 멈춘다) 확인하세요.
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
 
             {/* 자동 전환 시각 — 설정하면 그 시각에 위 모드를 자동으로 바꾼다 */}
             <div className="mt-4 border-t pt-3">

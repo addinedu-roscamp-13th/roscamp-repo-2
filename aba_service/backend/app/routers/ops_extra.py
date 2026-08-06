@@ -611,6 +611,24 @@ def security_clip(name: str):
     return FileResponse(path, media_type="video/mp4")
 
 
+@router.get("/security/live.jpg")
+def security_live_snapshot():
+    """야간 감시 라이브 스냅샷 — **무인증**(`<img src>` 도 clip 처럼 인증 헤더를 못 싣는다).
+
+    AI 서버(`perception_server.py --security`)가 `SECURITY_MEDIA_DIR/live.jpg` 를
+    1초마다 덮어쓴다 — secview/패널 중 누가 뷰어 자리를 잡고 있든 상관없이 갱신된다
+    (serve_loop 이 프레임을 처리할 때마다 쓰는 것이라, 자리싸움과 무관하다).
+    파일이 없거나(--security 안 켰거나 아직 시작 전) 5초 넘게 안 갱신됐으면(뷰어가
+    아무도 안 붙어 serve_loop 자체가 안 도는 중) 404 — 프론트가 "라이브 없음"으로 안다.
+    """
+    path = SECURITY_MEDIA_DIR / "live.jpg"
+    if not path.is_file() or (_time.time() - path.stat().st_mtime) > 5.0:
+        raise HTTPException(status_code=404, detail="라이브 영상이 없습니다")
+    return FileResponse(
+        path, media_type="image/jpeg", headers={"Cache-Control": "no-store"}
+    )
+
+
 @router.delete("/security/events/{event_id}")
 def delete_intrusion_event(
     event_id: int, db: Session = Depends(get_db), _: AdminUser = Depends(get_current_admin)
