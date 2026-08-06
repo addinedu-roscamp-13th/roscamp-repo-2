@@ -2177,7 +2177,33 @@ private:
   // 로봇을 주간 순회 루프에 태워 무한 순회 시작.
   void start_patrol(RobotInfo & r)
   {
-    std::vector<int> path = make_patrol_path(r, -1, patrol_route_);
+    std::vector<int> path;
+    // 충전 완료 직후에는 충전소 정점에 그대로 둔 채 일반 순회 루프를
+    // 시작하면 안 된다. costmap 경계 안에서 첫 순회 goal을 다시 충전소로
+    // 받거나, 출구 방향이 뒤집혀 멈추는 현장 문제가 있었다.
+    // CHARGING 이탈 시 한 번만 래치하고, 충전소통로(v17)까지 빠져나온 뒤
+    // 다음 tick부터 기존 patrol_route를 사용한다.
+    auto exit_it = charging_exit_pending_.find(r.name);
+    const bool charging_exit = exit_it != charging_exit_pending_.end() && exit_it->second;
+    if (charging_exit) {
+      const int start = graph_.nearest(r.x, r.y);
+      const int corridor = return_goal_node_;  // arte2: 충전소통로(v17)
+      if (start >= 0 && corridor >= 0 && corridor < graph_.size() && start != corridor) {
+        path = graph_.dijkstra(start, corridor);
+      }
+      if (path.size() >= 2) {
+        exit_it->second = false;
+        RCLCPP_INFO(get_logger(), "[%s] 충전 완료 출구: 충전소통로(v%d) 직행",
+                    r.name.c_str(), corridor);
+      } else {
+        exit_it->second = false;
+        RCLCPP_WARN(get_logger(), "[%s] 충전소통로(v%d) 경로 생성 실패 → 일반 순회로 전환",
+                    r.name.c_str(), corridor);
+      }
+    }
+    if (path.size() < 2) {
+      path = make_patrol_path(r, -1, patrol_route_);
+    }
     if (path.size() < 2) { return; }
     r.busy = true;
     std::string tid = "P-" + r.name;
@@ -2317,7 +2343,11 @@ private:
     const std::string robot = json_str_field(msg->data, "robot_id");
     const std::string state = json_str_field(msg->data, "current_state");
     if (robot.empty() || state.empty() || !kLibiModesStates.count(state)) { return; }
-    if (mode_of(robot) == state) { return; }   // 변화 없으면 무시(매 발행마다 처리 방지)
+    const std::string before = mode_of(robot);
+    if (before == state) { return; }   // 변화 없으면 무시(매 발행마다 처리 방지)
+    if (before == "CHARGING" && state != "CHARGING") {
+      charging_exit_pending_[robot] = true;
+    }
     robot_mode_[robot] = state;
     if (is_immobile(state)) {
       auto it = robots_.find(robot);
@@ -2375,6 +2405,8 @@ private:
   std::vector<int> patrol_route_;
   std::vector<int> security_patrol_route_;   // 야간 보안순회 루프(CCW 정규화)
   std::map<std::string, std::string> robot_mode_;   // 로봇 → PATROL|IDLE|STOP|CHARGE
+  // CHARGING 이탈 후 충전소통로(v17) 직행을 한 번만 수행하는 래치.
+  std::map<std::string, bool> charging_exit_pending_;
   std::map<std::string, RobotInfo> robots_;
   //: 로봇별 마지막 /robot_state 수신 시각. **robots_ 는 만료되지 않으므로** 이것이
   //  "이 로봇 소식이 끊겼다"를 알 수 있는 유일한 근거다.

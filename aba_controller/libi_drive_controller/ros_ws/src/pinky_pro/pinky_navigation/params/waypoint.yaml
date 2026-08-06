@@ -50,7 +50,7 @@ vertices:
   순회경로-7:
     x: -0.0737
     y: -1.0018
-    yaw: 0.0
+    yaw: -1.5708
   순회경로-5:
     x: 0.2
     y: -1.385
@@ -62,7 +62,7 @@ vertices:
     x: -0.0737
     y: -1.704
   충전소통로:
-    x: 0.284
+    x: 0.234
     y: -0.03
     yaw: 0.0
   충전소입구:
@@ -93,9 +93,6 @@ lanes:
   bidirectional: true
 - from: 과학-인문학서가
   to: 순회경로-6
-  bidirectional: true
-- from: 순회경로-7
-  to: 순회경로-3
   bidirectional: true
 - from: 수거함
   to: 순회경로-3
