@@ -14,7 +14,10 @@
 서버 도메인 86 에는 domain_bridge 가 /pinky{N}/* 로 개명 중계):
   /fleet_cmd        구독  {"id","ts","action","args"}          서버→로봇 (reversed 중계)
   /fleet_cmd_result 발행  {"id","ok","status","data","msg"}    명령 실행 결과
-  /fleet_status     발행  {"ts","mission":{...}}               2초 하트비트 (TRANSIENT_LOCAL)
+  /fleet_status     발행  {"ts","mission":{…},"nav":{…},"drive":{…}}  2초 하트비트 (TRANSIENT_LOCAL)
+                          nav   = 어떤 목표를 **실제로** 실행 중인가 (ros_bridge.nav_status)
+                          drive = 왜 바퀴가 안 도는가            (ros_bridge.drive_status)
+                          ⚠️ 소비자는 `mission` 만 읽어도 된다 — 키 추가는 후방호환이다.
   /fleet_costmaps   발행  {"ts","local_costmap","global_costmap"}  5초 주기
 
 명령 dispatch 는 HTTP nav_router(driving.py 플랫 /api/*)와 **동일한 의미**로
@@ -512,7 +515,17 @@ def _link_thread() -> None:
             from app.core import mission
             while True:
                 try:
-                    payload = json.dumps({"ts": time.time(), "mission": mission.get_status()})
+                    # `nav` 는 "지금 이 목표가 실제로 실행 중인가"다. FMS 가 자기가 시킨
+                    # 것(desired)과 로봇이 하는 것(inflight)을 대조할 수 있게 한다 —
+                    # 없으면 원인이 달라도 전부 "pose 가 그대로"로만 보인다
+                    # (ros_bridge.nav_status 머리말).
+                    from app.core import ros_bridge as _rb
+                    # `drive` 는 "왜 바퀴가 안 도는가"다 — nav2 는 정상인데 twist_mux 가
+                    # 막는 경우를 `nav` 와 갈라 준다(ros_bridge.drive_status 머리말).
+                    payload = json.dumps({"ts": time.time(),
+                                          "mission": mission.get_status(),
+                                          "nav": _rb.nav_status(),
+                                          "drive": _rb.drive_status()})
                     status_pub.publish(String(data=payload))
                 except Exception:
                     pass

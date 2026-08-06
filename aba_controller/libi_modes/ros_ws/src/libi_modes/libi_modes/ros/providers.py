@@ -173,9 +173,17 @@ class RosProviders:
         self._front_person_size_ttl = float(front_person_size_ttl_sec)
         #: 마지막으로 `/libi/front_person_size` 를 받은 시각. `None` = 한 번도 안 왔다.
         self._front_person_size_stamp = None
+        #: robot_agent 가 보고하는 nav 실행 단계(`/fleet_status` 의 `nav.phase`).
+        #: `None` = 한 번도 안 왔다(옛 robot_agent 이거나 브릿지가 죽었다) — 그때는
+        #: 예전처럼 동작해야 하므로 소비자가 None 을 "모름"으로 다뤄야 한다.
+        self._nav_phase = None
         self._now = now_fn
 
         node.create_subscription(Float32, battery_topic, self._on_battery, 10)
+        # 실행 층이 이 목표를 **실제로** 어떻게 하고 있나. 대기열에 있으면 아직
+        # 출발도 안 한 것이라 도착 시계를 돌리면 안 된다(NavigationExec).
+        # 2초 하트비트라 성기지만, 재는 대상이 초 단위라 충분하다.
+        node.create_subscription(String, "fleet_status", self._on_fleet_status, _LATCHED)
         node.create_subscription(Bool, docked_topic, self._on_docked, 10)
         node.create_subscription(Bool, fault_topic, self._on_fault, 10)
         node.create_subscription(String, cmd_topic, self._on_cmd, 10)
@@ -196,6 +204,15 @@ class RosProviders:
                                  self._on_guide_search_failed, 10)
 
     # ── 콜백 (캐시에 담기만 한다) ──────────────────────────────────────────────
+
+    def _on_fleet_status(self, msg):
+        """`nav.phase` 만 꺼내 둔다. 나머지는 FMS 가 쓰는 것이라 BT 가 알 필요 없다."""
+        try:
+            data = json.loads(msg.data)
+            nav = data.get("nav")
+            self._nav_phase = nav.get("phase") if isinstance(nav, dict) else None
+        except Exception:      # noqa: BLE001 — 하트비트 파싱 실패로 트리를 죽이지 않는다
+            pass
 
     def _on_battery(self, msg):
         self._battery = float(msg.data)
@@ -495,4 +512,5 @@ class RosProviders:
             "moving_straight": lambda: self._moving_straight,
             "committed_node": lambda: self._committed_node,
             "committed_is_destination": lambda: self._committed_is_destination,
+            "nav_phase": lambda: self._nav_phase,
         }

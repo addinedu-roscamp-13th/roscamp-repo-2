@@ -32,6 +32,9 @@ _KEY_BY_PROVIDER = {
     "moving_straight": Keys.MOVING_STRAIGHT,
     "committed_node": Keys.COMMITTED_NODE,
     "committed_is_destination": Keys.COMMITTED_IS_DESTINATION,
+    # 실행 층이 이 목표를 실제로 어떻게 하고 있나(robot_agent 의 nav.phase).
+    # Keys 에 없는 문자열 키 관례는 위 `exec_args` 와 같다.
+    "nav_phase": "nav_phase",
 }
 
 

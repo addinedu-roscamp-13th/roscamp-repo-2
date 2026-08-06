@@ -35,10 +35,15 @@ def reset_demo_data(db) -> dict[str, int]:
     n_res = db.query(Reservation).filter(Reservation.is_demo.is_(True)).delete()
     n_req = db.query(DeliveryRequest).filter(DeliveryRequest.is_demo.is_(True)).delete()
     n_loans = db.query(Loan).filter(Loan.is_demo.is_(True)).delete()
-    # TaskLog 는 is_demo 컬럼이 없다 — task_id="demo-task-*" 네이밍이 이미 마커다.
-    n_logs = db.query(TaskLog).filter(TaskLog.task_id.like("demo-%")).delete(
-        synchronize_session=False
-    )
+    # TaskLog 는 is_demo 컬럼이 없다 — task_id 네이밍이 유일한 마커다.
+    #   t9xxx  : 지금 시더가 쓰는 예약 번호대(`seed_demo_data.DEMO_TASK_ID_BASE`).
+    #            화면에 진짜처럼(`t9001`) 보이게 하면서 데모를 골라내려는 것이다.
+    #   demo-* : 그 이전 시더가 쓰던 접두사. 남아 있는 DB 를 위해 같이 지운다.
+    # ⚠️ 실제 FMS 는 부팅마다 t1 부터 세므로 9000번대와 겹치지 않는다
+    #    (`fleet_orchestrator.py` 의 `itertools.count(1)`).
+    n_logs = db.query(TaskLog).filter(
+        TaskLog.task_id.like("t9%") | TaskLog.task_id.like("demo-%")
+    ).delete(synchronize_session=False)
     n_intrusions = db.query(IntrusionEvent).filter(IntrusionEvent.is_demo.is_(True)).delete()
     # DemoRobotState 는 태생부터 전부 데모 데이터라(파일 상단 docstring 참고) 통째로 비워도 안전.
     n_robots = db.query(DemoRobotState).delete()

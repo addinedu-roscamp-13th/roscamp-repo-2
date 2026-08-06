@@ -37,8 +37,19 @@ N_DUE_TOMORROW_LOANS = 6  # 대시보드 "반납 임박(1일 이내)" 이 확실
 N_TASK_LOGS = 120
 N_INTRUSIONS = 8
 
+#: 데모 task_id 예약 번호대. 실제 FMS 는 `f"t{next(itertools.count(1))}"` 라 부팅마다
+#: t1 부터 센다(`fleet_orchestrator.py`). 화면에는 진짜와 같은 모양(`t9001`)으로 보이면서
+#: 데모 행을 골라낼 수 있게 9000번대를 비워 둔다.
+#
+# ⚠️ **이 번호대가 `reset_demo_data.py` 의 유일한 마커다** — `cb_task_logs` 에는
+#    `is_demo` 컬럼이 없다. 여기를 바꾸면 그쪽 필터도 같이 바꿔야 하고, 안 바꾸면
+#    데모 작업로그가 영영 안 지워진 채 실제 이력과 섞인다.
+DEMO_TASK_ID_BASE = 9000
+
 # ops.py 의 TASK_KINDS 표(운영 지시 폼)와 같은 종류 키만 씀 — 화면 라벨과 어긋나지 않게.
-TASK_KIND_KEYS = ["transfer", "collect", "tidy", "porter", "dispatch", "patrol"]
+# [2026-08-07] tidy·dispatch 제거 — 실제 운영에 없는 시나리오라 ops.TASK_KINDS 에서
+#   빠졌다. 여기 남겨 두면 화면에 없는 종류의 이력만 쌓인다.
+TASK_KIND_KEYS = ["transfer", "collect", "porter", "patrol"]
 # 실제 로봇 이름(libi1~3) — README/도메인 브릿지 설정과 동일, 여기선 로그용 문자열일 뿐.
 ROBOTS = ["libi-1", "libi-2", "libi-3"]
 INTRUSION_NOTES = [
@@ -140,7 +151,7 @@ def _seed_task_logs(db, now) -> int:
         status = random.choices(["COMPLETED", "FAILED"], weights=[87, 13])[0]
         db.add(
             TaskLog(
-                task_id=f"demo-task-{i}",
+                task_id=f"t{DEMO_TASK_ID_BASE + i}",
                 kind=random.choice(TASK_KIND_KEYS),
                 robot=random.choice(ROBOTS),
                 status=status,
@@ -292,7 +303,8 @@ def main() -> None:
                     pickup=book.zone,
                     dropoff="안내데스크" if kind == "borrow" else "테이블-1번-좌",
                     approval=approval,
-                    fms_task_id=f"demo-{i}" if approval == "APPROVED" else "",
+                    fms_task_id=(f"t{DEMO_TASK_ID_BASE + i}"
+                                 if approval == "APPROVED" else ""),
                     reject_reason="재고 확인이 필요합니다" if approval == "REJECTED" else None,
                     created_at=created_at,
                     decided_at=created_at,

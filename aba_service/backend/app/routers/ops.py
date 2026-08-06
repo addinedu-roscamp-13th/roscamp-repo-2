@@ -66,17 +66,6 @@ TASK_KINDS = [
         "hint": "책을 고르면 출발지가 그 책의 서가로 자동 설정됩니다.",
     },
     {
-        "key": "shelve",
-        "label": "진열",
-        "desc": "수거된 도서를 서가에 꽂기",
-        "mode": "order",
-        "order_kind": "delivery",
-        "fields": ["book", "pickup"],
-        # 목적지는 사서가 고르지 않는다 — 책이 정한다(도서의 zone).
-        "auto_dropoff": "book_zone",
-        "hint": "목적지는 그 도서의 서가로 자동 지정됩니다.",
-    },
-    {
         # [2026-07-30] "분류"(sort) 는 실제 운영에서 없어져 삭제했다 — "분류대" 라는
         # 진짜 waypoint 가 애초에 없어서, 프런트가 `테이블-1번-좌` 를 pickup/dropoff
         # 양쪽에 몰래 채워 보내던 플레이스홀더였다. 그 자리를 "수거"가 대신한다.
@@ -92,15 +81,6 @@ TASK_KINDS = [
         "hint": "수거함으로 가서 바구니를 교체합니다. 로봇만 지정(선택)하면 됩니다.",
     },
     {
-        "key": "tidy",
-        "label": "정리",
-        "desc": "서가 정돈 점검",
-        "mode": "order",
-        "order_kind": "navigate",
-        "fields": ["dropoff"],
-        "hint": "점검할 서가로 다녀옵니다. 집고 놓는 동작이 없어 주행 1다리입니다.",
-    },
-    {
         "key": "porter",
         "label": "짐꾼",
         "desc": "짐을 실어 지정 위치로",
@@ -108,15 +88,6 @@ TASK_KINDS = [
         "order_kind": "delivery",
         "fields": ["cargo", "pickup", "dropoff"],
         "hint": "도서 목록에 없는 물건입니다. 짐 이름을 직접 적어주세요.",
-    },
-    {
-        "key": "dispatch",
-        "label": "파견",
-        "desc": "지정 위치로 이동 대기",
-        "mode": "order",
-        "order_kind": "navigate",
-        "fields": ["dropoff"],
-        "hint": "지정 위치까지 가서 대기합니다. 주행 1다리입니다.",
     },
     {
         "key": "return",

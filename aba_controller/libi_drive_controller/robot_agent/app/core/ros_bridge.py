@@ -15,7 +15,9 @@ import threading
 import time
 from typing import Any
 
+from app.core import drive_diag, nav_phase
 from app.core.nav_goal_tracker import NavGoalTracker
+from app.core.nav_phase import NavPhase
 
 # ── 공유 상태 (스레드 세이프 읽기/쓰기) ──────────────────────
 _lock = threading.Lock()
@@ -208,6 +210,56 @@ def send_nav_goal(x: float, y: float, yaw: float) -> bool:
         return False
 
 
+def nav_status() -> dict:
+    """지금 이 로봇이 **어떤 목표를 실제로 실행 중인가**. `/fleet_status` 로 나간다.
+
+    ## 왜 있나
+
+    FMS 는 `pose`·`path`·`mission` 만 봤다. 그래서 "명령을 줬는데 안 움직인다"의
+    원인 넷(인플라이트 물림 · 죽은 목표 흡수 · motion_lock 차단 · 회복 무한반복)이
+    전부 "pose 가 그대로"로 **똑같이** 보였다. 원인이 넷인데 증상이 하나였다.
+
+    핵심은 `desired` 와 `inflight` 를 **둘 다** 싣는 것이다 — FMS 가 "내가 시킨 것"과
+    "로봇이 하는 것"을 직접 대조할 수 있다. 지금까지는 그 대조가 원천적으로 불가능했다.
+
+    노드가 없으면 `{"phase": "no_node"}` — 필드를 비우지 않는다. 키가 사라지면 소비자가
+    "정상인데 값이 없다"와 구분을 못 한다.
+    """
+    node = _node
+    if node is None:
+        return {"phase": "no_node"}
+    try:
+        with node._nav_goal_lock:
+            return node._nav.snapshot()
+    except Exception as e:      # noqa: BLE001 — 상태 보고가 하트비트를 죽이면 안 된다
+        return {"phase": "error", "error": str(e)}
+
+
+def drive_status() -> dict:
+    """**왜 바퀴가 안 도는가.** `/fleet_status` 로 나간다.
+
+    `nav_status()` 가 목표 쪽 원인을 갈랐고, 여기가 나머지 하나를 가른다 —
+    nav2 는 정상인데 twist_mux 가 막는 경우다. `blocked` 한 필드가 이유를 이름으로
+    말한다(`drive_diag` 머리말).
+    """
+    node = _node
+    if node is None:
+        return {"blocked": "no_node"}
+    try:
+        now = time.monotonic()
+        seen = dict(node._drive_seen)
+        ages = {name: (None if name not in seen else now - seen[name])
+                for name, _t, _p in drive_diag.MUX_INPUTS}
+        return drive_diag.snapshot(
+            ages, node._motion_lock,
+            cmd_vel_age=(None if node._cmd_vel_at is None else now - node._cmd_vel_at),
+            cmd_vel_moving_age=(None if node._cmd_vel_moving_at is None
+                                else now - node._cmd_vel_moving_at),
+        )
+    except Exception as e:      # noqa: BLE001 — 진단이 하트비트를 죽이면 안 된다
+        return {"blocked": "error", "error": str(e)}
+
+
 def nav_to(x: float, y: float, yaw: float, stop_event=None) -> bool:
     """NavigateToPose 로 주행하고 완료까지 블로킹 대기. 성공 True / 실패·중단 False.
 
@@ -364,8 +416,13 @@ def _bridge_thread() -> None:
                 # 현재 goal 이 끝난 뒤 마지막 요청을 이어 보낸다. 그렇지 않으면
                 # preemption 때 controller 가 cmd_vel 을 끊고 모터 watchdog 이 선다.
                 self._nav_goal_lock = threading.Lock()
-                self._nav_inflight_target = None
-                self._nav_pending_target = None
+                #: 목표 실행 단계 — 판단은 전부 여기 있다(ROS 없이 시험된다,
+                #: tests/test_nav_phase.py). 이 클래스는 ROS 접착만 한다.
+                #:
+                #: ⚠️ 이게 없던 동안 인플라이트 물림·죽은목표흡수·motion_lock차단·
+                #:    회복무한반복이 전부 "pose 가 안 움직인다" 하나로만 보였다.
+                #:    원인이 넷인데 증상이 하나였다(2026-07-28 에 같은 계열로 하루 여섯 번).
+                self._nav = NavPhase(time.monotonic)
                 #: 목표 핸들의 수명(보관·세대·선취소)을 다루는 순수 상태기.
                 #: 여기 두면 ROS 없이 단위테스트가 된다 — tests/test_nav_goal_tracker.py
                 self._goals = NavGoalTracker()
@@ -386,6 +443,31 @@ def _bridge_thread() -> None:
                 # 센서 구독 (pinky_sensor_adc)
                 self.create_subscription(Range, "/us_sensor/range", self._on_us_range, 10)
                 self.create_subscription(UInt16MultiArray, "/ir_sensor/range", self._on_ir_range, 10)
+
+                # ── "왜 바퀴가 안 도는가" 진단 ────────────────────────────
+                #
+                # nav2 는 정상 주행 중이고 `cmd_vel_nav_out` 도 나오는데 `/cmd_vel` 만
+                # 침묵하는 경우가 있다 — twist_mux 의 `fsm_motion_lock` 이 막을 뿐
+                # 0 을 만들지 않기 때문이다. 상위층은 거리로만 판단하므로 이것을
+                # "정체"로 오인하고 재시도를 소진한다(drive_diag 머리말).
+                #
+                # 구독만 한다 — **아무것도 발행하지 않는다.** 진단이 제어에 끼어들면
+                # 그 자체가 새로운 사고 경로가 된다.
+                from std_msgs.msg import Bool as _Bool
+                self._drive_seen: dict[str, float] = {}
+                self._cmd_vel_at = None
+                self._cmd_vel_moving_at = None
+                self._motion_lock = None
+
+                def _mk_input_cb(name: str):
+                    def _cb(_msg, _n=name):
+                        self._drive_seen[_n] = time.monotonic()
+                    return _cb
+
+                for _name, _topic, _prio in drive_diag.MUX_INPUTS:
+                    self.create_subscription(Twist, _topic, _mk_input_cb(_name), 10)
+                self.create_subscription(Twist, "/cmd_vel", self._on_cmd_vel_out, 10)
+                self.create_subscription(_Bool, "/libi/motion_lock", self._on_motion_lock, 10)
 
                 # 하드웨어 서비스 클라이언트 (LED/밝기/표정)
                 self._set_led_client = self.create_client(SetLed, "/set_led")
@@ -530,6 +612,37 @@ def _bridge_thread() -> None:
                     self.get_logger().error(f"액션 클라이언트 재생성 실패: {e}")
                     return False
 
+            def _on_cmd_vel_out(self, msg) -> None:
+                """twist_mux 가 실제로 바퀴에 보낸 것.
+
+                ⚠️ **무발행으로 정지를 판정하면 안 된다** — 정지도 0 을 발행하는 정상
+                   동작이다. 그래서 "마지막 수신"과 "마지막으로 0 이 아니었던 때"를
+                   따로 센다(state_drive_verify.py 와 같은 이유).
+                """
+                now = time.monotonic()
+                self._cmd_vel_at = now
+                if abs(msg.linear.x) > 1e-6 or abs(msg.angular.z) > 1e-6:
+                    self._cmd_vel_moving_at = now
+
+            def _on_motion_lock(self, msg) -> None:
+                self._motion_lock = bool(msg.data)
+
+            def _nav_server_ready(self) -> bool:
+                """액션서버가 아직 살아 있나. 유실 판정의 두 번째 근거다 —
+                feedback 침묵만으로 죽었다고 하면 오탐이 난다(nav_phase 머리말)."""
+                try:
+                    return bool(self._nav_action.server_is_ready())
+                except Exception:      # noqa: BLE001 — 조회 실패로 주행을 죽이지 않는다
+                    return True        # 모르면 살아 있는 쪽으로 — 멀쩡한 주행을 안 끊는다
+
+            def _on_nav_feedback(self, msg) -> None:
+                """nav2 가 주는 유일한 능동 생존 신호. 정체·회복 판정의 근거이기도 하다."""
+                fb = getattr(msg, "feedback", None)
+                dist = getattr(fb, "distance_remaining", None) if fb is not None else None
+                recov = getattr(fb, "number_of_recoveries", None) if fb is not None else None
+                with self._nav_goal_lock:
+                    self._nav.on_feedback(distance_remaining=dist, recoveries=recov)
+
             def send_nav_goal(self, x, y, yaw) -> bool:
                 """완료를 기다리지 않고 목표만 던진다(BT 의 `goal` 명령이 쓰는 경로).
 
@@ -541,50 +654,63 @@ def _bridge_thread() -> None:
                 (반면 블로킹 경로인 `nav_to()` 는 처음부터 콜백을 달고 있었다.)
                 """
                 target = (float(x), float(y), float(yaw))
+                server_ready = self._nav_server_ready()
                 with self._nav_goal_lock:
-                    inflight = self._nav_inflight_target
-                    if inflight is not None:
-                        # 같은 목표는 heartbeat 로 취급한다. 새 액션을 만들지 않는다.
-                        if all(abs(a - b) < 1e-4 for a, b in zip(inflight, target)):
-                            return True
-                        # 다음 waypoint 는 현재 waypoint 완료 뒤에만 선점 없이 전달한다.
-                        self._nav_pending_target = target
+                    decision = self._nav.request(target, server_ready=server_ready)
+                    if decision == nav_phase.DUPLICATE:
+                        return True
+                    if decision == nav_phase.QUEUE:
                         self.get_logger().info(
                             "목표 대기열: 현재 goal 완료 후 다음 goal 전송 "
                             f"({target[0]:.2f}, {target[1]:.2f}, {target[2]:.2f})")
                         return True
+                    if self._nav.phase == nav_phase.LOST:
+                        self.get_logger().warning(
+                            "nav 목표 유실 판정 — 인플라이트를 풀고 재전송한다")
+                    seq_before = self._nav.cancel_seq
+                return self._send_goal_now(target, seq_before, "send goal")
 
+            def _send_goal_now(self, target, seq_before: int, label: str) -> bool:
+                """실제 전송. `seq_before` 는 결정 시점의 취소 세대다.
+
+                ⚠️ 액션서버 대기(최대 2초)는 lock 밖에서 한다 — 그 사이 취소가 끼면
+                   `NavGoalTracker.begin()` 이 취소 의사를 지워 **취소가 조용히 무시되고
+                   로봇이 계속 달린다**(codex P0, 2026-08-06). 전송 직전에 세대를 대조해
+                   그 창을 닫는다.
+                """
                 if not self._ensure_nav_action(2.0):
                     self.get_logger().error("navigate_to_pose 액션서버 없음")
+                    with self._nav_goal_lock:
+                        self._nav.on_rejected()
                     return False
                 with self._nav_goal_lock:
-                    self._nav_inflight_target = target
+                    if self._nav.cancel_seq != seq_before:
+                        self.get_logger().warning("전송 직전에 취소가 들어왔다 — goal 을 보내지 않는다")
+                        return False
+                    self._nav.on_sent(target)
                 gen = self._goals.begin()
-                self._nav_action.send_goal_async(self._make_goal(*target)) \
-                    .add_done_callback(lambda f, g=gen: self._on_goal_response(f, g))
+                try:
+                    self._nav_action.send_goal_async(
+                        self._make_goal(*target), feedback_callback=self._on_nav_feedback) \
+                        .add_done_callback(lambda f, g=gen: self._on_goal_response(f, g))
+                except Exception as e:      # noqa: BLE001
+                    # 여기서 새면 인플라이트가 영원히 물린다 — 물림 경로를 하나 더 닫는다.
+                    with self._nav_goal_lock:
+                        self._nav.on_rejected()
+                    self.get_logger().error(f"goal 전송 실패: {e}")
+                    return False
                 self.get_logger().info(
-                    f"[WEB] send goal: x={target[0]:.2f}, y={target[1]:.2f}, yaw={target[2]:.2f}")
+                    f"[WEB] {label}: x={target[0]:.2f}, y={target[1]:.2f}, yaw={target[2]:.2f}")
                 return True
 
             def _dispatch_pending_nav_goal(self) -> None:
                 """현재 goal 종료 뒤 대기 중인 최신 waypoint를 한 번만 전송한다."""
                 with self._nav_goal_lock:
-                    target = self._nav_pending_target
-                    self._nav_pending_target = None
-                    if target is None or self._nav_inflight_target is not None:
+                    target = self._nav.take_queued()
+                    if target is None:
                         return
-                    self._nav_inflight_target = target
-                if not self._ensure_nav_action(2.0):
-                    with self._nav_goal_lock:
-                        self._nav_inflight_target = None
-                    self.get_logger().error("대기 goal 전송 실패: navigate_to_pose 액션서버 없음")
-                    return
-                gen = self._goals.begin()
-                self._nav_action.send_goal_async(self._make_goal(*target)) \
-                    .add_done_callback(lambda f, g=gen: self._on_goal_response(f, g))
-                self.get_logger().info(
-                    f"[WEB] queued goal send: x={target[0]:.2f}, "
-                    f"y={target[1]:.2f}, yaw={target[2]:.2f}")
+                    seq_before = self._nav.cancel_seq
+                self._send_goal_now(target, seq_before, "queued goal send")
 
             def _on_goal_response(self, future, generation=None):
                 try:
@@ -600,11 +726,13 @@ def _bridge_thread() -> None:
                     # 어느 쪽이든 이 목표는 진행하지 않는다.
                     if gh is None or not getattr(gh, "accepted", True):
                         with self._nav_goal_lock:
-                            self._nav_inflight_target = None
+                            self._nav.on_rejected()
                         self._goal_result = False
                         self._goal_done.set()
                         self._dispatch_pending_nav_goal()
                     return
+                with self._nav_goal_lock:
+                    self._nav.on_accepted()
                 gh.get_result_async().add_done_callback(
                     lambda f, g=generation: self._on_goal_result(f, g))
 
@@ -622,7 +750,7 @@ def _bridge_thread() -> None:
                     self._goal_result = False
                 self._goals.clear()
                 with self._nav_goal_lock:
-                    self._nav_inflight_target = None
+                    self._nav.on_result(bool(self._goal_result))
                 self._goal_done.set()
                 self._dispatch_pending_nav_goal()
 
@@ -630,8 +758,9 @@ def _bridge_thread() -> None:
                 # 핸들이 아직 없으면 취소 의사만 남는다(응답 시점에 갚는다).
                 # 그냥 돌아가면 잠시 뒤 핸들이 도착해 로봇이 계속 달린다.
                 with self._nav_goal_lock:
-                    self._nav_inflight_target = None
-                    self._nav_pending_target = None
+                    # 세대를 올려 **전송 중이던 goal 도 막는다.** 이게 없으면
+                    # `send_nav_goal` 이 액션서버를 기다리는 사이의 취소가 무시된다.
+                    self._nav.cancel()
                 self._goals.cancel()
 
             def nav_to(self, x, y, yaw, stop_event=None, wait_action_sec: float = None) -> bool:

@@ -288,3 +288,146 @@ def test_resumed_drive_sends_the_goal_again(leaf):
     node.pause_arrive_timer(False)
     assert node.update() == Status.RUNNING
     assert node.driver.start_count == 2, "정지가 풀리면 goal 을 다시 내야 한다"
+
+
+# ── 절대 상한 (2026-08-06, codex P1) ──────────────────────────────────────
+#
+# `arrive_timeout_sec` 은 상한이 아니었다 — `_retry_or_give_up` 이 재시도마다
+# `_target_at` 을 새로 주므로 실효 상한이 `arrive_timeout_sec × (재시도+1)` 로
+# **곱해진다.** "총시간 워치독이 받아 준다"는 전제가 그래서 성립하지 않았다.
+# 그 상한을 재시도와 무관한 **하나의 숫자**로 뺀다.
+
+def _bare_leaf(clock, **kw):
+    """블랙보드까지 직접 세운 리프 — 생성자 인자를 바꿔야 할 때 쓴다."""
+    import py_trees
+    from py_trees.common import Access
+
+    from libi_modes.blackboard import Keys as K
+    from libi_modes.common.working_actions import NavigationExec
+
+    class Driver:
+        def start(self, args=None):
+            pass
+
+        def poll(self):
+            return "running"
+
+        def stop(self):
+            pass
+
+    node = NavigationExec(Driver(), arrive_tolerance=0.05, arrive_resend_sec=30.0,
+                          arrive_timeout_sec=60.0, now_fn=clock, **kw)
+    node.setup()
+    bb = py_trees.blackboard.Client(name="hard")
+    for k in (K.ACTIVE_COMMAND, K.NAV_TARGET, K.ROBOT_POSE):
+        bb.register_key(key=k, access=Access.WRITE)
+    bb.set(K.ACTIVE_COMMAND, "navigate")
+    bb.set(K.NAV_TARGET, {"x": 5.0, "y": 0.0})
+    bb.set(K.ROBOT_POSE, {"x": 0.0, "y": 0.0, "yaw": 0.0})
+    node.test_bb = bb
+    return node
+
+
+def test_hard_timeout_is_not_extended_by_retries():
+    """재시도가 아무리 많아도 절대 상한을 넘겨 붙들지 못한다.
+
+    재시도 상한을 크게 줘서 "재시도 소진"으로 끝나는 길을 막아 둔다 — 그래야
+    끝내는 것이 **절대 상한**임이 드러난다.
+    """
+    clock = _Clock()
+    node = _bare_leaf(clock, recovery_retry_max=99, hard_timeout_sec=100.0)
+    assert node.update() == Status.RUNNING
+    clock.t = 99.0
+    assert node.update() == Status.RUNNING, "아직 상한 안이다"
+    clock.t = 101.0
+    assert node.update() == Status.FAILURE, "재시도가 남았다고 상한을 넘겨 붙들었다"
+    assert node.test_bb.get(Keys.ACTIVE_COMMAND) is None
+
+
+def test_hard_timeout_defaults_to_the_old_effective_bound():
+    """기본값은 **지금 동작을 안 바꾼다** — 암묵적 곱셈을 숫자 하나로 옮겼을 뿐이다."""
+    node = _bare_leaf(_Clock(), recovery_retry_max=3)
+    assert node.hard_timeout_sec == 60.0 * 4
+
+
+def test_hard_timeout_restarts_on_a_new_target():
+    """노드가 많은 다리는 중간 노드를 지날 때마다 예산이 새로 생겨야 한다."""
+    clock = _Clock()
+    node = _bare_leaf(clock, hard_timeout_sec=100.0)
+    node.update()
+    clock.t = 99.0
+    node.test_bb.set(Keys.NAV_TARGET, {"x": 6.0, "y": 0.0})
+    node.update()
+    clock.t = 150.0
+    assert node.update() == Status.RUNNING, "새 목적지부터 다시 세야 한다"
+
+
+def test_waiting_for_a_person_does_not_eat_the_hard_budget():
+    """⚠️ 사람을 기다린 시간이 상한을 먹으면, 조금만 오래 기다려도 ERROR 로 가고
+    fleet_node 가 이 로봇을 **영구 장애물**로 표시한다."""
+    clock = _Clock()
+    node = _bare_leaf(clock, hard_timeout_sec=100.0)
+    assert node.update() == Status.RUNNING
+    node.pause_arrive_timer(True)
+    clock.t = 300.0                     # 5분을 서 있었다
+    node.pause_arrive_timer(False)
+    clock.t = 310.0
+    assert node.update() == Status.RUNNING, "서 있던 300초가 절대 상한을 먹었다"
+
+
+# ── 대기열 중에는 도착 시계를 안 돌린다 (2026-08-06) ──────────────────────
+#
+# 실행 층은 현재 waypoint 를 끝낸 뒤에 다음 목표를 보낸다. 그 동안은 **출발도 안 한**
+# 상태라, 도착 시계를 돌리면 "가다가 못 갔다"로 오인해 재시도를 소진한다.
+
+def _bb_write(node, key, value):
+    import py_trees
+    from py_trees.common import Access
+    c = py_trees.blackboard.Client(name=f"w-{key}")
+    c.register_key(key=key, access=Access.WRITE)
+    c.set(key, value)
+
+
+def test_queued_time_does_not_count_toward_the_arrive_timeout(leaf):
+    clock = _Clock()
+    node = leaf(clock=clock, **{Keys.ACTIVE_COMMAND: "navigate",
+                                Keys.NAV_TARGET: _to(1.0, 0.0),
+                                Keys.ROBOT_POSE: _at(0.0, 0.0)})
+    assert node.update() == Status.RUNNING
+    _bb_write(node, "nav_phase", "queued")
+    for t in range(1, 200):                 # 200초를 대기열에서 보낸다
+        clock.t = float(t)
+        assert node.update() == Status.RUNNING
+    # ⚠️ RUNNING 만 보면 아무것도 검증 못 한다 — 대기 분기를 꺼도 재시도(3회)가
+    #    각각 시계를 리셋해 200초 안에는 어차피 FAILURE 가 안 난다. **재시도가 한 번도
+    #    안 일어났는지**를 본다. 그게 "시계가 안 돌았다"의 직접 증거다.
+    assert node._recovery_retries == 0, "대기 시간이 도착 시계를 먹어 워치독이 돌았다"
+    _bb_write(node, "nav_phase", "driving")
+    clock.t += 1.0
+    assert node.update() == Status.RUNNING
+
+
+def test_queued_time_still_counts_toward_the_hard_timeout():
+    """⚠️ 절대 상한은 **어떤 사유로도 안 늘어난다.**
+
+    대기열이 안 빠지는 버그가 나면 오히려 이것만이 이 다리를 끊는다.
+    """
+    clock = _Clock()
+    node = _bare_leaf(clock, recovery_retry_max=99, hard_timeout_sec=100.0)
+    assert node.update() == Status.RUNNING
+    _bb_write(node, "nav_phase", "queued")
+    clock.t = 101.0
+    assert node.update() == Status.FAILURE, "대기가 절대 상한까지 늘렸다"
+
+
+def test_unknown_nav_phase_behaves_like_before(leaf):
+    """옛 robot_agent · 브릿지 다운이면 값이 안 온다 — 그때는 예전처럼 돌아야 한다.
+    모름을 대기로 읽으면 시계가 영영 안 돌아 더 나쁘다."""
+    clock = _Clock()
+    node = leaf(clock=clock, **{Keys.ACTIVE_COMMAND: "navigate",
+                                Keys.NAV_TARGET: _to(1.0, 0.0),
+                                Keys.ROBOT_POSE: _at(0.0, 0.0)})
+    _bb_write(node, "nav_phase", None)
+    node.update()
+    clock.t = TIMEOUT * 4 + 1
+    assert node.update() == Status.FAILURE, "값이 없으면 예전처럼 시계가 돌아야 한다"

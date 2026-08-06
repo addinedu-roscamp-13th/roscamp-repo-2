@@ -125,11 +125,24 @@ class NavigationExec(CommandDrivenAction):
 
     def __init__(self, driver, arrive_tolerance: float, arrive_resend_sec: float,
                  arrive_timeout_sec: float, name: str | None = None, now_fn=time.monotonic,
-                 recovery_retry_max: int = 3, recovery_stall_sec: float = 0.0):
+                 recovery_retry_max: int = 3, recovery_stall_sec: float = 0.0,
+                 hard_timeout_sec: float | None = None):
         super().__init__(driver, handles={"navigate"}, name=name or "NavigationExec")
         self.arrive_tolerance = arrive_tolerance
         self.arrive_resend_sec = arrive_resend_sec
         self.arrive_timeout_sec = arrive_timeout_sec
+        #: 이 목표에 쓸 수 있는 **절대 상한**(초). 재시도가 리셋하지 않는다.
+        #
+        # ⚠️ [2026-08-06 codex P1] `arrive_timeout_sec` 은 상한이 아니었다 —
+        #    `_retry_or_give_up` 이 재시도마다 `_target_at = now` 로 도착 창을 새로
+        #    주기 때문에, 실효 상한이 `arrive_timeout_sec × (재시도+1)` 로 **곱해진다.**
+        #    "총시간 워치독이 받아 준다"는 전제가 그래서 성립하지 않았다.
+        #
+        # 기본값을 그 실효 상한과 같게 둔다 — **지금 동작을 안 바꾼다.** 바뀌는 것은
+        # 그 상한이 암묵적 곱셈이 아니라 **하나의 숫자**가 되는 것이고, params.yaml 에서
+        # 내려 잡을 수 있게 되는 것이다.
+        self.hard_timeout_sec = (float(hard_timeout_sec) if hard_timeout_sec is not None
+                                 else arrive_timeout_sec * (max(0, int(recovery_retry_max)) + 1))
         # A fleet command result only confirms that fleet_link accepted the request; it
         # does not confirm that Nav2 is still executing it.  A lost/aborted goal must be
         # retried here, while we still own the command, instead of silently releasing the
@@ -140,6 +153,12 @@ class NavigationExec(CommandDrivenAction):
         self._now = now_fn
         self._target = None
         self._target_at = 0.0
+        #: 이 목표가 **처음** 들어온 시각. 재시도가 리셋하지 않는다 — `hard_timeout_sec`
+        #: 를 재는 기준이다. `_target_at` 과 따로 두는 이유는 그쪽이 재시도마다
+        #: 새 도착 창을 받기 때문이다.
+        self._hard_at = None
+        #: 직전 tick 시각. 대기(`queued`) 구간만큼 도착 시계를 밀 때 쓴다.
+        self._last_tick_at = None
         self._sent_at = None
         #: nav2 에 goal 을 냈고 **아직 안 끊었다.** `_started` 와 별개로 둔다.
         #
@@ -174,17 +193,27 @@ class NavigationExec(CommandDrivenAction):
                 self._paused_at = self._now()
             return
         if self._paused_at is not None:
-            self._target_at += self._now() - self._paused_at
+            waited = self._now() - self._paused_at
+            self._target_at += waited
+            # ⚠️ 절대 시계도 같이 민다. 안 밀면 사람을 기다린 시간이 상한을 먹고,
+            #    조금만 오래 기다려도 ERROR → fleet_node 가 이 로봇을 **영구 장애물**로
+            #    표시한다(위 `_paused_at` 주석의 그 경로).
+            if self._hard_at is not None:
+                self._hard_at += waited
             self._paused_at = None
 
     def setup(self, **kwargs):
         super().setup(**kwargs)
         self.blackboard.register_key(key=Keys.NAV_TARGET, access=Access.READ)
         self.blackboard.register_key(key=Keys.ROBOT_POSE, access=Access.READ)
+        # 실행 층이 이 목표를 실제로 어떻게 하고 있나. 문자열 키 관례는 "exec_args" 와 같다.
+        self.blackboard.register_key(key="nav_phase", access=Access.READ)
 
     def initialise(self):
         super().initialise()
         self._target = None
+        self._hard_at = None
+        self._last_tick_at = None
         self._sent_at = None
         self._recovery_retries = 0
         self._best_distance = None
@@ -224,6 +253,7 @@ class NavigationExec(CommandDrivenAction):
         if target != self._target:      # 새 목적지 — 그대로 이어서 보낸다
             self._target = target
             self._target_at = now
+            self._hard_at = now         # 절대 시계는 여기서만 걸린다
             self._sent_at = None        # 아직 안 보냈다
             self._recovery_retries = 0
             self._best_distance = self._distance_to(target)
@@ -242,6 +272,36 @@ class NavigationExec(CommandDrivenAction):
         #    실행 층 상태를 묻지도 않는다 — 시계도 같이 멈춘다.
         if self._paused_at is not None:
             return Status.RUNNING
+
+        # ⚠️ 절대 상한은 **대기 검사보다 먼저** 본다. 뒤에 두면 대기열이 안
+        #    빠지는 버그에서 이 다리를 끊는 유일한 방벽이 같이 무력해진다
+        #    (시험 `test_queued_time_still_counts_toward_the_hard_timeout`).
+        # 절대 상한은 **재시도로 못 늘린다.** 여기 걸리면 재시도 없이 끝낸다 —
+        # 안 그러면 nav2 가 회복만 반복하는 동안 아무도 이 다리를 못 끊는다.
+
+        if self._hard_at is not None and now - self._hard_at >= self.hard_timeout_sec:
+            log = getattr(self.driver, "_log", None)
+            if log is not None:
+                log.warning(f"주행 절대 상한({self.hard_timeout_sec:.0f}초) 초과 — 재시도 없이 포기한다")
+            return self._give_up()
+
+        # ── 대기열에 있으면 아직 **출발도 안 했다** ──────────────────────────
+        #
+        # 실행 층은 현재 waypoint 를 끝낸 뒤에 다음 목표를 보낸다(선점하면 controller 가
+        # cmd_vel 을 끊어 모터 워치독이 선다). 그 동안 도착 시계를 돌리면 "가다가 못 갔다"
+        # 로 오인해 재시도를 소진하고, 심하면 ERROR → fleet_node 가 이 로봇을 영구
+        # 장애물로 표시한다. 사람 대기(`_paused_at`)와 같은 이유·같은 처리다.
+        #
+        # ⚠️ **절대 상한(`_hard_at`)은 안 민다.** 그건 마지막 방벽이라 어떤 사유로도
+        #    늘어나면 안 된다 — 대기열이 안 빠지는 버그가 나면 오히려 그것만이 끊는다.
+        #
+        # `None`(옛 robot_agent · 브릿지 다운)이면 예전처럼 동작한다 — 모름을 대기로
+        # 읽으면 시계가 영영 안 돌아 더 나쁘다.
+        if bb.get(self.blackboard, "nav_phase") == "queued":
+            self._target_at += now - self._last_tick_at if self._last_tick_at else 0.0
+            self._last_tick_at = now
+            return Status.RUNNING
+        self._last_tick_at = now
 
         if self._sent_at is None or now - self._sent_at >= self.arrive_resend_sec:
             # 처음이거나, 같은 목적지인데 아직 못 갔다 — 주행이 도착 없이 끝났을 수 있다.
@@ -264,6 +324,8 @@ class NavigationExec(CommandDrivenAction):
         stalled = (self.recovery_stall_sec > 0 and self._progress_at is not None
                    and now - self._progress_at >= self.recovery_stall_sec)
         timed_out = now - self._target_at >= self.arrive_timeout_sec
+        # 절대 상한은 **재시도로 못 늘린다.** 여기 걸리면 재시도 없이 끝낸다 —
+        # 안 그러면 nav2 가 회복만 반복하는 동안 아무도 이 다리를 못 끊는다.
         if stalled or timed_out:
             reason = "motion progress watchdog expired" if stalled else "arrival watchdog expired"
             if not self._retry_or_give_up(now, reason):
