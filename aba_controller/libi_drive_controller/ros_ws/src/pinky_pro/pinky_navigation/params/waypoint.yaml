@@ -166,3 +166,6 @@ lanes:
 - from: 충전소통로
   to: 충전소
   bidirectional: true
+- from: 순회경로-4
+  to: 순회경로-7
+  bidirectional: true
