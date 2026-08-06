@@ -40,7 +40,7 @@ N_INTRUSIONS = 8
 # ops.py 의 TASK_KINDS 표(운영 지시 폼)와 같은 종류 키만 씀 — 화면 라벨과 어긋나지 않게.
 TASK_KIND_KEYS = ["transfer", "collect", "tidy", "porter", "dispatch", "patrol"]
 # 실제 로봇 이름(libi1~3) — README/도메인 브릿지 설정과 동일, 여기선 로그용 문자열일 뿐.
-ROBOTS = ["libi1", "libi2", "libi3"]
+ROBOTS = ["libi-1", "libi-2", "libi-3"]
 INTRUSION_NOTES = [
     "열람실 창문 근처 움직임 감지",
     "야간 순찰 중 인기척 감지",
@@ -51,6 +51,17 @@ INTRUSION_NOTES = [
 # 데모용 도서 보강 — 진짜 카탈로그(seed_books.py, 카테고리당 3권)는 그대로 두고, 데모에서만
 # 카테고리당 이 수만큼 채워서 인기도서 TOP·분야별 대출이 더 다양하게 보이게 한다.
 TARGET_BOOKS_PER_CATEGORY = 20
+#: 데모 회원 총원. 실계정(member1~5)은 그대로 두고 모자란 만큼만 만든다.
+#
+# ⚠️ 왜 필요한가: 대출 이력을 담을 사람이 5명뿐이면 1인당 60권이 넘어 대시보드의
+#    "회원당 대출" 같은 수치가 한눈에 거짓말이 된다. 40명이면 1인당 5~6권으로 앉는다.
+# ⚠️ `Member` 에는 `is_demo` 컬럼이 없다 — 그래서 `reset_demo_data.py` 가 안 지운다.
+#    지우려면 username 접두사 `demo_` 로 직접 지운다. 실계정과 섞이지 않게 하려는 접두사다.
+TARGET_MEMBERS = 40
+DEMO_MEMBER_PREFIX = "demo_"
+DEMO_SURNAMES = ["김", "이", "박", "최", "정", "강", "조", "윤", "장", "임", "한", "오", "서", "신", "권"]
+DEMO_GIVEN = ["서준", "지우", "하윤", "도윤", "지호", "예린", "민서", "채원", "시우", "수아",
+              "연우", "하준", "지안", "은우", "다은", "선우", "지훈", "유진", "태윤", "소율"]
 CATEGORY_META = {
     "literature": {"label": "문학", "zone": "문학서가", "cover": "📖", "color": "from-rose-200 to-rose-300"},
     "art": {"label": "예술", "zone": "예술서가", "cover": "🎨", "color": "from-orange-200 to-amber-300"},
@@ -64,6 +75,31 @@ def _would_create_duplicate_active_loan(
 ) -> bool:
     """이 대출을 그대로 대출중으로 확정하면 같은 책이 두 번째로 대출중이 되는가."""
     return is_active and book_id in active_book_ids
+
+
+def _top_up_members(db) -> int:
+    """대출을 담을 회원을 `TARGET_MEMBERS` 명까지 채운다(이미 있으면 skip).
+
+    비밀번호는 실계정과 같은 해시 함수를 쓰되 값은 고정이다 — 데모 계정이라 로그인할
+    일이 있으면 `demo1234` 로 들어간다.
+    """
+    from app.security import hash_password
+
+    have = db.query(Member).count()
+    missing = TARGET_MEMBERS - have
+    if missing <= 0:
+        return 0
+    pw = hash_password("demo1234")
+    for i in range(missing):
+        n = i + 1
+        db.add(Member(
+            username=f"{DEMO_MEMBER_PREFIX}{n:03d}",
+            full_name=f"{DEMO_SURNAMES[i % len(DEMO_SURNAMES)]}{DEMO_GIVEN[i % len(DEMO_GIVEN)]}",
+            hashed_password=pw,
+            is_active=True,
+        ))
+    db.commit()
+    return missing
 
 
 def _top_up_books(db) -> None:
@@ -143,11 +179,11 @@ def _seed_robot_states(db) -> int:
     개발 환경에서 도넛이 항상 빈값이 되는 걸 막는다. `ops.py`/`/dashboard` 는 실제 FMS
     스냅샷이 있으면 이 테이블을 절대 안 쓴다. 재실행해도 안 쌓이게 먼저 비운다."""
     db.query(DemoRobotState).delete()
-    # 주행 3대(libi1-3) — 대수만큼만 스프레드라 에러 조각은 비어 있는 게 정상.
+    # 주행 3대(libi-1~3) — 대수만큼만 스프레드라 에러 조각은 비어 있는 게 정상.
     demo_fleet = [
-        ("libi1", "PATROL"),
-        ("libi2", "WORKING"),
-        ("libi3", "CHARGING"),
+        ("libi-1", "PATROL"),
+        ("libi-2", "WORKING"),
+        ("libi-3", "CHARGING"),
     ]
     for robot, state in demo_fleet:
         db.add(DemoRobotState(robot=robot, state=state))
@@ -167,6 +203,9 @@ def main() -> None:
             )
             return
 
+        n_members = _top_up_members(db)
+        if n_members:
+            print(f"회원 보강: +{n_members}명")
         _top_up_books(db)
         books = db.query(Book).all()
 

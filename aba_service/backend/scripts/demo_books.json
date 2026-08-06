@@ -1,0 +1,2594 @@
+{
+ "literature": [
+  {
+   "kr": "죄와 벌",
+   "en": "Crime and Punishment",
+   "zh": "罪与罚",
+   "vi": "Tội ác và trừng phạt",
+   "author": "표도르 도스토옙스키",
+   "cover": "🪓",
+   "summary": "가난한 대학생 라스콜니코프가 저지른 살인과 그 뒤를 짓누르는 양심의 기록.",
+   "tags": [
+    "#러시아문학",
+    "#심리소설",
+    "#고전"
+   ]
+  },
+  {
+   "kr": "카라마조프가의 형제들",
+   "en": "The Brothers Karamazov",
+   "zh": "卡拉马佐夫兄弟",
+   "vi": "Anh em nhà Karamazov",
+   "author": "표도르 도스토옙스키",
+   "cover": "⛪",
+   "summary": "아버지의 죽음을 둘러싼 세 형제의 갈등으로 신앙과 자유를 묻는 대작.",
+   "tags": [
+    "#러시아문학",
+    "#철학소설"
+   ]
+  },
+  {
+   "kr": "안나 카레니나",
+   "en": "Anna Karenina",
+   "zh": "安娜·卡列尼娜",
+   "vi": "Anna Karenina",
+   "author": "레프 톨스토이",
+   "cover": "🚂",
+   "summary": "사랑을 좇다 파멸에 이르는 안나와, 땅에서 삶의 답을 찾는 레빈의 두 궤적.",
+   "tags": [
+    "#러시아문학",
+    "#사랑",
+    "#고전"
+   ]
+  },
+  {
+   "kr": "전쟁과 평화",
+   "en": "War and Peace",
+   "zh": "战争与和平",
+   "vi": "Chiến tranh và hòa bình",
+   "author": "레프 톨스토이",
+   "cover": "🎖️",
+   "summary": "나폴레옹 전쟁을 배경으로 여러 가문의 삶을 겹쳐 그린 서사시.",
+   "tags": [
+    "#대하소설",
+    "#역사",
+    "#고전"
+   ]
+  },
+  {
+   "kr": "위대한 개츠비",
+   "en": "The Great Gatsby",
+   "zh": "了不起的盖茨比",
+   "vi": "Đại gia Gatsby",
+   "author": "F. 스콧 피츠제럴드",
+   "cover": "🥂",
+   "summary": "돌아오지 않는 사랑을 향해 화려한 파티를 여는 개츠비의 초록불빛.",
+   "tags": [
+    "#미국문학",
+    "#재즈시대"
+   ]
+  },
+  {
+   "kr": "호밀밭의 파수꾼",
+   "en": "The Catcher in the Rye",
+   "zh": "麦田里的守望者",
+   "vi": "Bắt trẻ đồng xanh",
+   "author": "J. D. 샐린저",
+   "cover": "🧢",
+   "summary": "학교에서 쫓겨난 홀든이 뉴욕을 헤매며 어른의 위선을 견디는 사흘.",
+   "tags": [
+    "#성장소설",
+    "#미국문학"
+   ]
+  },
+  {
+   "kr": "1984",
+   "en": "Nineteen Eighty-Four",
+   "zh": "一九八四",
+   "vi": "1984",
+   "author": "조지 오웰",
+   "cover": "👁️",
+   "summary": "모든 것을 감시하는 빅 브라더 아래에서 기억과 언어마저 통제되는 세계.",
+   "tags": [
+    "#디스토피아",
+    "#정치소설"
+   ]
+  },
+  {
+   "kr": "동물농장",
+   "en": "Animal Farm",
+   "zh": "动物农场",
+   "vi": "Trại súc vật",
+   "author": "조지 오웰",
+   "cover": "🐖",
+   "summary": "농장을 차지한 동물들이 다시 새로운 압제를 세우는 정치 우화.",
+   "tags": [
+    "#우화",
+    "#정치풍자"
+   ]
+  },
+  {
+   "kr": "오만과 편견",
+   "en": "Pride and Prejudice",
+   "zh": "傲慢与偏见",
+   "vi": "Kiêu hãnh và định kiến",
+   "author": "제인 오스틴",
+   "cover": "💐",
+   "summary": "첫인상의 오해를 넘어 서로를 다시 보게 되는 엘리자베스와 다아시.",
+   "tags": [
+    "#영국문학",
+    "#로맨스",
+    "#고전"
+   ]
+  },
+  {
+   "kr": "제인 에어",
+   "en": "Jane Eyre",
+   "zh": "简·爱",
+   "vi": "Jane Eyre",
+   "author": "샬럿 브론테",
+   "cover": "🕯️",
+   "summary": "고아 소녀가 스스로의 존엄을 지키며 사랑과 자립을 찾아가는 이야기.",
+   "tags": [
+    "#영국문학",
+    "#성장",
+    "#고전"
+   ]
+  },
+  {
+   "kr": "폭풍의 언덕",
+   "en": "Wuthering Heights",
+   "zh": "呼啸山庄",
+   "vi": "Đồi gió hú",
+   "author": "에밀리 브론테",
+   "cover": "🌪️",
+   "summary": "황량한 언덕에서 대를 이어 타오르는 히스클리프의 사랑과 복수.",
+   "tags": [
+    "#영국문학",
+    "#비극"
+   ]
+  },
+  {
+   "kr": "레 미제라블",
+   "en": "Les Misérables",
+   "zh": "悲惨世界",
+   "vi": "Những người khốn khổ",
+   "author": "빅토르 위고",
+   "cover": "🕊️",
+   "summary": "빵 한 조각으로 감옥에 간 장 발장이 사람으로 다시 서는 긴 여정.",
+   "tags": [
+    "#프랑스문학",
+    "#대하소설"
+   ]
+  },
+  {
+   "kr": "몬테크리스토 백작",
+   "en": "The Count of Monte Cristo",
+   "zh": "基督山伯爵",
+   "vi": "Bá tước Monte Cristo",
+   "author": "알렉상드르 뒤마",
+   "cover": "💎",
+   "summary": "억울한 옥살이 끝에 이름을 바꾸고 돌아온 사내의 치밀한 복수극.",
+   "tags": [
+    "#모험",
+    "#복수",
+    "#프랑스문학"
+   ]
+  },
+  {
+   "kr": "백년의 고독",
+   "en": "One Hundred Years of Solitude",
+   "zh": "百年孤独",
+   "vi": "Trăm năm cô đơn",
+   "author": "가브리엘 가르시아 마르케스",
+   "cover": "🦋",
+   "summary": "마콘도를 세운 부엔디아 가문 백 년의 흥망을 마술적으로 그린 소설.",
+   "tags": [
+    "#마술적사실주의",
+    "#라틴문학"
+   ]
+  },
+  {
+   "kr": "변신",
+   "en": "The Metamorphosis",
+   "zh": "变形记",
+   "vi": "Hóa thân",
+   "author": "프란츠 카프카",
+   "cover": "🪳",
+   "summary": "어느 아침 벌레로 변한 그레고르와, 그를 점점 밀어내는 가족.",
+   "tags": [
+    "#부조리",
+    "#중편"
+   ]
+  },
+  {
+   "kr": "심판",
+   "en": "The Trial",
+   "zh": "审判",
+   "vi": "Vụ án",
+   "author": "프란츠 카프카",
+   "cover": "⚖️",
+   "summary": "죄목도 모른 채 재판에 끌려다니는 요제프 K의 끝없는 관료 미로.",
+   "tags": [
+    "#부조리",
+    "#현대문학"
+   ]
+  },
+  {
+   "kr": "이방인",
+   "en": "The Stranger",
+   "zh": "局外人",
+   "vi": "Người xa lạ",
+   "author": "알베르 카뮈",
+   "cover": "☀️",
+   "summary": "어머니의 죽음에도 울지 않은 뫼르소가 태양 아래에서 마주한 재판.",
+   "tags": [
+    "#실존주의",
+    "#프랑스문학"
+   ]
+  },
+  {
+   "kr": "페스트",
+   "en": "The Plague",
+   "zh": "鼠疫",
+   "vi": "Dịch hạch",
+   "author": "알베르 카뮈",
+   "cover": "🩺",
+   "summary": "봉쇄된 도시에서 역병에 맞서는 사람들의 연대와 성실함.",
+   "tags": [
+    "#실존주의",
+    "#연대"
+   ]
+  },
+  {
+   "kr": "파리대왕",
+   "en": "Lord of the Flies",
+   "zh": "蝇王",
+   "vi": "Chúa ruồi",
+   "author": "윌리엄 골딩",
+   "cover": "🐚",
+   "summary": "무인도에 남겨진 소년들이 규칙을 잃고 야만으로 기울어가는 과정.",
+   "tags": [
+    "#우화",
+    "#인간본성"
+   ]
+  },
+  {
+   "kr": "모비딕",
+   "en": "Moby-Dick",
+   "zh": "白鲸",
+   "vi": "Cá voi trắng",
+   "author": "허먼 멜빌",
+   "cover": "🐋",
+   "summary": "흰 고래를 쫓는 에이해브 선장의 집념이 배와 사람을 삼키는 항해기.",
+   "tags": [
+    "#미국문학",
+    "#모험",
+    "#고전"
+   ]
+  },
+  {
+   "kr": "주홍글씨",
+   "en": "The Scarlet Letter",
+   "zh": "红字",
+   "vi": "Chữ A màu đỏ",
+   "author": "너새니얼 호손",
+   "cover": "🅰️",
+   "summary": "가슴에 붉은 글자를 단 헤스터가 침묵과 낙인 속에서 지켜낸 것.",
+   "tags": [
+    "#미국문학",
+    "#고전"
+   ]
+  },
+  {
+   "kr": "톰 소여의 모험",
+   "en": "The Adventures of Tom Sawyer",
+   "zh": "汤姆·索亚历险记",
+   "vi": "Những cuộc phiêu lưu của Tom Sawyer",
+   "author": "마크 트웨인",
+   "cover": "🪧",
+   "summary": "미시시피 강가 마을에서 벌어지는 개구쟁이 톰의 여름 모험.",
+   "tags": [
+    "#모험",
+    "#성장",
+    "#미국문학"
+   ]
+  },
+  {
+   "kr": "허클베리 핀의 모험",
+   "en": "Adventures of Huckleberry Finn",
+   "zh": "哈克贝利·费恩历险记",
+   "vi": "Những cuộc phiêu lưu của Huckleberry Finn",
+   "author": "마크 트웨인",
+   "cover": "🛶",
+   "summary": "뗏목을 타고 강을 내려가며 자유를 배우는 헉과 짐의 여정.",
+   "tags": [
+    "#모험",
+    "#미국문학"
+   ]
+  },
+  {
+   "kr": "앵무새 죽이기",
+   "en": "To Kill a Mockingbird",
+   "zh": "杀死一只知更鸟",
+   "vi": "Giết con chim nhại",
+   "author": "하퍼 리",
+   "cover": "🐦",
+   "summary": "편견이 짙은 남부 마을에서 아버지의 변호를 지켜본 어린 스카웃의 눈.",
+   "tags": [
+    "#미국문학",
+    "#정의",
+    "#성장"
+   ]
+  },
+  {
+   "kr": "분노의 포도",
+   "en": "The Grapes of Wrath",
+   "zh": "愤怒的葡萄",
+   "vi": "Chùm nho phẫn nộ",
+   "author": "존 스타인벡",
+   "cover": "🍇",
+   "summary": "모래폭풍에 땅을 잃고 서부로 떠난 조드 가족의 고단한 길.",
+   "tags": [
+    "#미국문학",
+    "#사회소설"
+   ]
+  },
+  {
+   "kr": "생쥐와 인간",
+   "en": "Of Mice and Men",
+   "zh": "人鼠之间",
+   "vi": "Của chuột và người",
+   "author": "존 스타인벡",
+   "cover": "🐁",
+   "summary": "작은 농장을 꿈꾸던 두 떠돌이 일꾼에게 닥친 피할 수 없는 결말.",
+   "tags": [
+    "#미국문학",
+    "#중편"
+   ]
+  },
+  {
+   "kr": "무기여 잘 있거라",
+   "en": "A Farewell to Arms",
+   "zh": "永别了，武器",
+   "vi": "Giã từ vũ khí",
+   "author": "어니스트 헤밍웨이",
+   "cover": "🎗️",
+   "summary": "1차 대전 이탈리아 전선에서 피어난 사랑과, 전쟁이 앗아간 것.",
+   "tags": [
+    "#전쟁",
+    "#미국문학"
+   ]
+  },
+  {
+   "kr": "누구를 위하여 종은 울리나",
+   "en": "For Whom the Bell Tolls",
+   "zh": "丧钟为谁而鸣",
+   "vi": "Chuông nguyện hồn ai",
+   "author": "어니스트 헤밍웨이",
+   "cover": "🔔",
+   "summary": "스페인 내전의 다리 폭파 임무에 놓인 사흘의 사랑과 죽음.",
+   "tags": [
+    "#전쟁",
+    "#미국문학"
+   ]
+  },
+  {
+   "kr": "젊은 베르테르의 슬픔",
+   "en": "The Sorrows of Young Werther",
+   "zh": "少年维特的烦恼",
+   "vi": "Nỗi đau của chàng Werther",
+   "author": "요한 볼프강 폰 괴테",
+   "cover": "💌",
+   "summary": "이룰 수 없는 사랑에 온 마음을 쏟은 청년의 편지들.",
+   "tags": [
+    "#독일문학",
+    "#낭만주의"
+   ]
+  },
+  {
+   "kr": "파우스트",
+   "en": "Faust",
+   "zh": "浮士德",
+   "vi": "Faust",
+   "author": "요한 볼프강 폰 괴테",
+   "cover": "📜",
+   "summary": "모든 것을 알고자 악마와 계약한 학자의 구원과 몰락.",
+   "tags": [
+    "#독일문학",
+    "#희곡",
+    "#고전"
+   ]
+  },
+  {
+   "kr": "데카메론",
+   "en": "The Decameron",
+   "zh": "十日谈",
+   "vi": "Mười ngày",
+   "author": "조반니 보카치오",
+   "cover": "🏰",
+   "summary": "흑사병을 피해 모인 열 사람이 열흘 동안 주고받은 백 편의 이야기.",
+   "tags": [
+    "#고전",
+    "#이탈리아문학"
+   ]
+  },
+  {
+   "kr": "돈키호테",
+   "en": "Don Quixote",
+   "zh": "堂吉诃德",
+   "vi": "Don Quixote",
+   "author": "미겔 데 세르반테스",
+   "cover": "🐴",
+   "summary": "기사 소설에 빠져 풍차로 돌진한 시골 노인의 유쾌하고 서글픈 편력.",
+   "tags": [
+    "#스페인문학",
+    "#고전",
+    "#풍자"
+   ]
+  },
+  {
+   "kr": "햄릿",
+   "en": "Hamlet",
+   "zh": "哈姆雷特",
+   "vi": "Hamlet",
+   "author": "윌리엄 셰익스피어",
+   "cover": "💀",
+   "summary": "아버지의 죽음을 복수해야 하는 왕자가 망설임 속에서 던지는 물음.",
+   "tags": [
+    "#희곡",
+    "#비극",
+    "#고전"
+   ]
+  },
+  {
+   "kr": "로미오와 줄리엣",
+   "en": "Romeo and Juliet",
+   "zh": "罗密欧与朱丽叶",
+   "vi": "Romeo và Juliet",
+   "author": "윌리엄 셰익스피어",
+   "cover": "🌹",
+   "summary": "원수 집안에서 태어난 두 사람이 하루아침에 타오르고 스러진 사랑.",
+   "tags": [
+    "#희곡",
+    "#비극",
+    "#사랑"
+   ]
+  },
+  {
+   "kr": "오디세이아",
+   "en": "The Odyssey",
+   "zh": "奥德赛",
+   "vi": "Odyssey",
+   "author": "호메로스",
+   "cover": "⛵",
+   "summary": "트로이 전쟁을 마치고 십 년을 떠돌아 집으로 돌아가는 오디세우스.",
+   "tags": [
+    "#서사시",
+    "#그리스",
+    "#고전"
+   ]
+  },
+  {
+   "kr": "일리아스",
+   "en": "The Iliad",
+   "zh": "伊利亚特",
+   "vi": "Iliad",
+   "author": "호메로스",
+   "cover": "🛡️",
+   "summary": "트로이 성 앞에서 벌어진 아킬레우스의 분노와 영웅들의 마지막 날들.",
+   "tags": [
+    "#서사시",
+    "#그리스",
+    "#고전"
+   ]
+  },
+  {
+   "kr": "신곡",
+   "en": "The Divine Comedy",
+   "zh": "神曲",
+   "vi": "Thần khúc",
+   "author": "단테 알리기에리",
+   "cover": "🔥",
+   "summary": "지옥과 연옥을 지나 천국에 이르는 순례를 시로 옮긴 중세의 대서사.",
+   "tags": [
+    "#서사시",
+    "#고전",
+    "#이탈리아문학"
+   ]
+  },
+  {
+   "kr": "그리스인 조르바",
+   "en": "Zorba the Greek",
+   "zh": "希腊人左巴",
+   "vi": "Zorba người Hy Lạp",
+   "author": "니코스 카잔차키스",
+   "cover": "🎻",
+   "summary": "책으로만 살던 화자가 자유롭게 사는 조르바에게 배우는 삶의 방식.",
+   "tags": [
+    "#그리스문학",
+    "#자유"
+   ]
+  },
+  {
+   "kr": "설국",
+   "en": "Snow Country",
+   "zh": "雪国",
+   "vi": "Xứ tuyết",
+   "author": "가와바타 야스나리",
+   "cover": "❄️",
+   "summary": "눈에 갇힌 온천 마을에서 스치듯 이어지는 만남과 덧없음.",
+   "tags": [
+    "#일본문학",
+    "#노벨문학상"
+   ]
+  },
+  {
+   "kr": "나는 고양이로소이다",
+   "en": "I Am a Cat",
+   "zh": "我是猫",
+   "vi": "Tôi là con mèo",
+   "author": "나쓰메 소세키",
+   "cover": "🐈",
+   "summary": "이름 없는 고양이의 눈으로 본 메이지 시대 지식인들의 우스운 초상.",
+   "tags": [
+    "#일본문학",
+    "#풍자"
+   ]
+  },
+  {
+   "kr": "인간실격",
+   "en": "No Longer Human",
+   "zh": "人间失格",
+   "vi": "Thất lạc cõi người",
+   "author": "다자이 오사무",
+   "cover": "🎭",
+   "summary": "사람다움을 흉내 내며 살아온 요조의 수기, 그 끝의 고백.",
+   "tags": [
+    "#일본문학",
+    "#고백체"
+   ]
+  },
+  {
+   "kr": "노르웨이의 숲",
+   "en": "Norwegian Wood",
+   "zh": "挪威的森林",
+   "vi": "Rừng Na Uy",
+   "author": "무라카미 하루키",
+   "cover": "🌲",
+   "summary": "상실을 안고 스무 살을 건너가는 와타나베의 조용한 연대기.",
+   "tags": [
+    "#일본문학",
+    "#상실",
+    "#청춘"
+   ]
+  },
+  {
+   "kr": "토지",
+   "en": "Land",
+   "zh": "土地",
+   "vi": "Đất",
+   "author": "박경리",
+   "cover": "🌾",
+   "summary": "구한말부터 광복까지, 평사리 최참판댁을 축으로 흐르는 한국 근대사.",
+   "tags": [
+    "#한국문학",
+    "#대하소설"
+   ]
+  },
+  {
+   "kr": "무진기행",
+   "en": "Record of a Journey to Mujin",
+   "zh": "雾津纪行",
+   "vi": "Ký sự Mujin",
+   "author": "김승옥",
+   "cover": "🌫️",
+   "summary": "안개의 도시 무진에 잠시 머문 사내가 마주한 자기 자신.",
+   "tags": [
+    "#한국문학",
+    "#단편"
+   ]
+  },
+  {
+   "kr": "소나기",
+   "en": "The Shower",
+   "zh": "骤雨",
+   "vi": "Cơn mưa rào",
+   "author": "황순원",
+   "cover": "☔",
+   "summary": "시골 소년과 서울 소녀가 소나기 한 번에 나눈 짧고 맑은 여름.",
+   "tags": [
+    "#한국문학",
+    "#단편",
+    "#첫사랑"
+   ]
+  },
+  {
+   "kr": "난장이가 쏘아올린 작은 공",
+   "en": "The Dwarf",
+   "zh": "侏儒抛出的小球",
+   "vi": "Quả bóng nhỏ của người lùn",
+   "author": "조세희",
+   "cover": "🎈",
+   "summary": "철거를 앞둔 도시 변두리에서 부서져 가는 한 가족의 연작소설.",
+   "tags": [
+    "#한국문학",
+    "#사회소설"
+   ]
+  },
+  {
+   "kr": "채식주의자",
+   "en": "The Vegetarian",
+   "zh": "素食者",
+   "vi": "Người ăn chay",
+   "author": "한강",
+   "cover": "🌿",
+   "summary": "고기를 끊겠다는 선언 하나로 무너져 내리는 한 가족의 세 시선.",
+   "tags": [
+    "#한국문학",
+    "#부커상"
+   ]
+  }
+ ],
+ "art": [
+  {
+   "kr": "서양미술사",
+   "en": "The Story of Art",
+   "zh": "艺术的故事",
+   "vi": "Câu chuyện nghệ thuật",
+   "author": "E. H. 곰브리치",
+   "cover": "🏛️",
+   "summary": "동굴벽화부터 현대미술까지 미술의 흐름을 한 권으로 잇는 입문 고전.",
+   "tags": [
+    "#미술사",
+    "#입문서"
+   ]
+  },
+  {
+   "kr": "다른 방식으로 보기",
+   "en": "Ways of Seeing",
+   "zh": "观看之道",
+   "vi": "Cách nhìn",
+   "author": "존 버거",
+   "cover": "👁️",
+   "summary": "그림을 보는 방식 자체가 어떻게 만들어지는지 묻는 짧고 날카로운 강의.",
+   "tags": [
+    "#미술비평",
+    "#시각문화"
+   ]
+  },
+  {
+   "kr": "예술에서의 정신적인 것에 대하여",
+   "en": "Concerning the Spiritual in Art",
+   "zh": "论艺术的精神",
+   "vi": "Về cái tinh thần trong nghệ thuật",
+   "author": "바실리 칸딘스키",
+   "cover": "🎨",
+   "summary": "색과 형태가 마음에 울리는 방식을 따라 추상회화의 근거를 세운 글.",
+   "tags": [
+    "#추상미술",
+    "#이론"
+   ]
+  },
+  {
+   "kr": "점·선·면",
+   "en": "Point and Line to Plane",
+   "zh": "点线面",
+   "vi": "Điểm, đường, mặt",
+   "author": "바실리 칸딘스키",
+   "cover": "📐",
+   "summary": "회화를 이루는 가장 작은 요소들을 하나씩 뜯어 본 조형 문법.",
+   "tags": [
+    "#조형",
+    "#이론"
+   ]
+  },
+  {
+   "kr": "반 고흐, 영혼의 편지",
+   "en": "The Letters of Vincent van Gogh",
+   "zh": "梵高书信集",
+   "vi": "Thư của Van Gogh",
+   "author": "빈센트 반 고흐",
+   "cover": "🌻",
+   "summary": "동생 테오에게 보낸 편지로 읽는 화가의 가난과 색채와 확신.",
+   "tags": [
+    "#서간집",
+    "#인상주의"
+   ]
+  },
+  {
+   "kr": "카메라 루시다",
+   "en": "Camera Lucida",
+   "zh": "明室",
+   "vi": "Căn phòng sáng",
+   "author": "롤랑 바르트",
+   "cover": "📷",
+   "summary": "어머니의 사진 한 장에서 출발해 사진이 무엇인지 되묻는 사유.",
+   "tags": [
+    "#사진",
+    "#비평"
+   ]
+  },
+  {
+   "kr": "사진에 관하여",
+   "en": "On Photography",
+   "zh": "论摄影",
+   "vi": "Bàn về nhiếp ảnh",
+   "author": "수전 손택",
+   "cover": "🖼️",
+   "summary": "찍는 행위가 세상과 맺는 관계를 파고든 사진 비평의 고전.",
+   "tags": [
+    "#사진",
+    "#비평"
+   ]
+  },
+  {
+   "kr": "결정적 순간",
+   "en": "The Decisive Moment",
+   "zh": "决定性瞬间",
+   "vi": "Khoảnh khắc quyết định",
+   "author": "앙리 카르티에브레송",
+   "cover": "⏱️",
+   "summary": "셔터를 누르는 그 한 순간에 형태와 의미가 맞아떨어지는 사진론.",
+   "tags": [
+    "#사진",
+    "#다큐멘터리"
+   ]
+  },
+  {
+   "kr": "디자인과 인간심리",
+   "en": "The Design of Everyday Things",
+   "zh": "设计心理学",
+   "vi": "Thiết kế đồ vật hằng ngày",
+   "author": "도널드 노먼",
+   "cover": "🚪",
+   "summary": "문 손잡이 하나에도 담긴 좋은 디자인과 나쁜 디자인의 기준.",
+   "tags": [
+    "#디자인",
+    "#사용성"
+   ]
+  },
+  {
+   "kr": "디자인의 디자인",
+   "en": "Designing Design",
+   "zh": "设计中的设计",
+   "vi": "Thiết kế của thiết kế",
+   "author": "하라 켄야",
+   "cover": "⚪",
+   "summary": "비움과 여백을 통해 디자인의 자리를 다시 묻는 일본 디자이너의 사유.",
+   "tags": [
+    "#디자인",
+    "#미니멀"
+   ]
+  },
+  {
+   "kr": "바우하우스",
+   "en": "Bauhaus",
+   "zh": "包豪斯",
+   "vi": "Bauhaus",
+   "author": "마그달레나 드로스테",
+   "cover": "🧱",
+   "summary": "예술과 공예와 산업을 한자리에 놓으려 한 학교의 14년.",
+   "tags": [
+    "#디자인사",
+    "#건축"
+   ]
+  },
+  {
+   "kr": "건축을 향하여",
+   "en": "Towards a New Architecture",
+   "zh": "走向新建筑",
+   "vi": "Hướng tới kiến trúc mới",
+   "author": "르 코르뷔지에",
+   "cover": "🏗️",
+   "summary": "집은 살기 위한 기계라는 선언으로 근대건축의 방향을 연 책.",
+   "tags": [
+    "#건축",
+    "#근대"
+   ]
+  },
+  {
+   "kr": "공간의 시학",
+   "en": "The Poetics of Space",
+   "zh": "空间的诗学",
+   "vi": "Thi pháp không gian",
+   "author": "가스통 바슐라르",
+   "cover": "🏠",
+   "summary": "다락과 지하실과 서랍에 깃든 상상력을 따라 읽는 공간론.",
+   "tags": [
+    "#건축",
+    "#미학"
+   ]
+  },
+  {
+   "kr": "미학 오디세이",
+   "en": "An Odyssey of Aesthetics",
+   "zh": "美学奥德赛",
+   "vi": "Hành trình mỹ học",
+   "author": "진중권",
+   "cover": "🗿",
+   "summary": "에셔와 마그리트를 길잡이 삼아 미학의 물음을 따라가는 여행.",
+   "tags": [
+    "#미학",
+    "#입문서"
+   ]
+  },
+  {
+   "kr": "그림의 힘",
+   "en": "The Power of Painting",
+   "zh": "绘画的力量",
+   "vi": "Sức mạnh của hội họa",
+   "author": "김선현",
+   "cover": "🖌️",
+   "summary": "마음을 다독이는 그림들을 골라 미술치료의 눈으로 읽어 준다.",
+   "tags": [
+    "#미술치료",
+    "#에세이"
+   ]
+  },
+  {
+   "kr": "클림트",
+   "en": "Gustav Klimt",
+   "zh": "克里姆特",
+   "vi": "Gustav Klimt",
+   "author": "질 네레",
+   "cover": "✨",
+   "summary": "황금빛 장식과 관능으로 빈을 흔든 화가의 생애와 작품.",
+   "tags": [
+    "#화가",
+    "#세기말"
+   ]
+  },
+  {
+   "kr": "모네, 빛의 화가",
+   "en": "Monet: Painter of Light",
+   "zh": "莫奈：光的画家",
+   "vi": "Monet: Họa sĩ của ánh sáng",
+   "author": "실비 파탱",
+   "cover": "🌅",
+   "summary": "수련과 건초더미를 시간마다 다시 그린 인상주의의 눈.",
+   "tags": [
+    "#인상주의",
+    "#화가"
+   ]
+  },
+  {
+   "kr": "피카소",
+   "en": "Picasso",
+   "zh": "毕加索",
+   "vi": "Picasso",
+   "author": "칼로스 로하스",
+   "cover": "🐂",
+   "summary": "청색시대에서 큐비즘까지, 스스로를 계속 부순 화가의 일생.",
+   "tags": [
+    "#큐비즘",
+    "#화가"
+   ]
+  },
+  {
+   "kr": "프리다 칼로",
+   "en": "Frida Kahlo",
+   "zh": "弗里达·卡罗",
+   "vi": "Frida Kahlo",
+   "author": "안드레아 케텐만",
+   "cover": "🌺",
+   "summary": "고통과 정체성을 자화상으로 옮긴 멕시코 화가의 삶.",
+   "tags": [
+    "#화가",
+    "#자화상"
+   ]
+  },
+  {
+   "kr": "앤디 워홀의 철학",
+   "en": "The Philosophy of Andy Warhol",
+   "zh": "安迪·沃霍尔的哲学",
+   "vi": "Triết lý của Andy Warhol",
+   "author": "앤디 워홀",
+   "cover": "🥫",
+   "summary": "수프 깡통과 유명세에 관한 팝아트 거장의 삐딱한 단상들.",
+   "tags": [
+    "#팝아트",
+    "#에세이"
+   ]
+  },
+  {
+   "kr": "현대미술의 이해",
+   "en": "Understanding Modern Art",
+   "zh": "理解现代艺术",
+   "vi": "Hiểu nghệ thuật hiện đại",
+   "author": "에이미 뎀프시",
+   "cover": "🖼️",
+   "summary": "난해하다는 현대미술의 사조를 시대별로 갈라 짚어 준다.",
+   "tags": [
+    "#현대미술",
+    "#입문서"
+   ]
+  },
+  {
+   "kr": "음악의 기쁨",
+   "en": "The Joy of Music",
+   "zh": "音乐的喜悦",
+   "vi": "Niềm vui âm nhạc",
+   "author": "레너드 번스타인",
+   "cover": "🎼",
+   "summary": "지휘자가 들려주는, 악보 뒤에 숨은 음악의 재미.",
+   "tags": [
+    "#음악",
+    "#에세이"
+   ]
+  },
+  {
+   "kr": "클래식 음악사",
+   "en": "A History of Western Music",
+   "zh": "西方音乐史",
+   "vi": "Lịch sử âm nhạc phương Tây",
+   "author": "도널드 그라우트",
+   "cover": "🎻",
+   "summary": "그레고리오 성가부터 현대음악까지 서양음악의 큰 줄기.",
+   "tags": [
+    "#음악사",
+    "#교양"
+   ]
+  },
+  {
+   "kr": "바흐, 음악적 헌정",
+   "en": "Bach: A Musical Offering",
+   "zh": "巴赫：音乐的奉献",
+   "vi": "Bach: Hiến dâng âm nhạc",
+   "author": "크리스토프 볼프",
+   "cover": "⛪",
+   "summary": "푸가의 건축가 바흐의 생애와 그가 남긴 구조의 아름다움.",
+   "tags": [
+    "#음악",
+    "#바로크"
+   ]
+  },
+  {
+   "kr": "베토벤",
+   "en": "Beethoven",
+   "zh": "贝多芬",
+   "vi": "Beethoven",
+   "author": "메이너드 솔로몬",
+   "cover": "🎹",
+   "summary": "귀가 멀어가면서도 교향곡을 밀고 나간 작곡가의 내면.",
+   "tags": [
+    "#음악",
+    "#전기"
+   ]
+  },
+  {
+   "kr": "재즈의 역사",
+   "en": "The History of Jazz",
+   "zh": "爵士乐史",
+   "vi": "Lịch sử nhạc Jazz",
+   "author": "테드 지오이아",
+   "cover": "🎷",
+   "summary": "뉴올리언스에서 시작해 세계로 퍼진 즉흥의 음악.",
+   "tags": [
+    "#재즈",
+    "#음악사"
+   ]
+  },
+  {
+   "kr": "이것이 디자인이다",
+   "en": "This Is Design",
+   "zh": "这就是设计",
+   "vi": "Đây là thiết kế",
+   "author": "김재훈",
+   "cover": "✏️",
+   "summary": "일상 사물의 형태가 왜 그렇게 정해졌는지 짚어 주는 디자인 교양서.",
+   "tags": [
+    "#디자인",
+    "#교양"
+   ]
+  },
+  {
+   "kr": "타이포그래피 교과서",
+   "en": "The Elements of Typographic Style",
+   "zh": "字体排印风格要素",
+   "vi": "Nguyên tắc kiểu chữ",
+   "author": "로버트 브링허스트",
+   "cover": "🔠",
+   "summary": "활자와 여백을 다루는 규칙을 정리한 타이포그래피의 표준서.",
+   "tags": [
+    "#타이포그래피",
+    "#디자인"
+   ]
+  },
+  {
+   "kr": "색채의 상호작용",
+   "en": "Interaction of Color",
+   "zh": "色彩构成",
+   "vi": "Tương tác của màu sắc",
+   "author": "요제프 알베르스",
+   "cover": "🟨",
+   "summary": "같은 색도 이웃에 따라 달라 보인다 — 눈으로 배우는 색채 수업.",
+   "tags": [
+    "#색채",
+    "#디자인"
+   ]
+  },
+  {
+   "kr": "보이지 않는 도시들",
+   "en": "Invisible Cities",
+   "zh": "看不见的城市",
+   "vi": "Những thành phố vô hình",
+   "author": "이탈로 칼비노",
+   "cover": "🌉",
+   "summary": "마르코 폴로가 들려주는 존재하지 않는 도시들의 건축적 상상.",
+   "tags": [
+    "#건축적상상",
+    "#문학과예술"
+   ]
+  },
+  {
+   "kr": "한국의 미",
+   "en": "The Beauty of Korea",
+   "zh": "韩国之美",
+   "vi": "Vẻ đẹp Hàn Quốc",
+   "author": "최순우",
+   "cover": "🏺",
+   "summary": "백자와 처마 곡선에서 한국적 아름다움의 결을 짚어 낸 명저.",
+   "tags": [
+    "#한국미술",
+    "#공예"
+   ]
+  },
+  {
+   "kr": "나의 문화유산답사기",
+   "en": "My Journey Through Cultural Heritage",
+   "zh": "我的文化遗产踏查记",
+   "vi": "Hành trình di sản văn hóa",
+   "author": "유홍준",
+   "cover": "🛕",
+   "summary": "발로 걸으며 읽어 낸 우리 옛 건축과 조각의 이야기.",
+   "tags": [
+    "#문화유산",
+    "#답사"
+   ]
+  },
+  {
+   "kr": "조선의 그림",
+   "en": "Paintings of Joseon",
+   "zh": "朝鲜绘画",
+   "vi": "Hội họa Joseon",
+   "author": "오주석",
+   "cover": "🖼️",
+   "summary": "김홍도와 신윤복의 화폭을 세밀히 뜯어 읽는 옛 그림 강의.",
+   "tags": [
+    "#한국회화",
+    "#조선"
+   ]
+  },
+  {
+   "kr": "영화의 이해",
+   "en": "Understanding Movies",
+   "zh": "认识电影",
+   "vi": "Hiểu về điện ảnh",
+   "author": "루이스 자네티",
+   "cover": "🎬",
+   "summary": "쇼트와 편집과 미장센으로 영화를 읽는 법을 가르치는 표준 교재.",
+   "tags": [
+    "#영화",
+    "#입문서"
+   ]
+  },
+  {
+   "kr": "히치콕과의 대화",
+   "en": "Hitchcock/Truffaut",
+   "zh": "希区柯克与特吕弗对话录",
+   "vi": "Hitchcock/Truffaut",
+   "author": "프랑수아 트뤼포",
+   "cover": "🎥",
+   "summary": "두 감독이 작품을 하나씩 짚어 가며 나눈 영화 연출의 교본.",
+   "tags": [
+    "#영화",
+    "#인터뷰"
+   ]
+  },
+  {
+   "kr": "연극의 이해",
+   "en": "Understanding Theatre",
+   "zh": "戏剧概论",
+   "vi": "Hiểu về sân khấu",
+   "author": "오스카 브로켓",
+   "cover": "🎭",
+   "summary": "무대와 배우와 관객이 만드는 예술로서의 연극 입문.",
+   "tags": [
+    "#연극",
+    "#입문서"
+   ]
+  },
+  {
+   "kr": "춤추는 몸",
+   "en": "The Dancing Body",
+   "zh": "舞动的身体",
+   "vi": "Cơ thể nhảy múa",
+   "author": "이사도라 덩컨",
+   "cover": "💃",
+   "summary": "코르셋을 벗고 맨발로 춤춘 현대무용 개척자의 기록.",
+   "tags": [
+    "#무용",
+    "#현대무용"
+   ]
+  },
+  {
+   "kr": "공예란 무엇인가",
+   "en": "What Is Craft",
+   "zh": "何谓工艺",
+   "vi": "Thủ công là gì",
+   "author": "야나기 무네요시",
+   "cover": "🍶",
+   "summary": "이름 없는 장인이 만든 일상의 그릇에서 아름다움을 찾는 민예론.",
+   "tags": [
+    "#공예",
+    "#민예"
+   ]
+  },
+  {
+   "kr": "도자기의 세계",
+   "en": "The World of Ceramics",
+   "zh": "陶瓷的世界",
+   "vi": "Thế giới gốm sứ",
+   "author": "정양모",
+   "cover": "🏺",
+   "summary": "청자와 백자, 흙과 불이 만들어 온 도자기의 역사.",
+   "tags": [
+    "#도자기",
+    "#공예"
+   ]
+  },
+  {
+   "kr": "미술관에 간 화학자",
+   "en": "A Chemist in the Art Museum",
+   "zh": "走进美术馆的化学家",
+   "vi": "Nhà hóa học trong bảo tàng",
+   "author": "전창림",
+   "cover": "🧪",
+   "summary": "물감과 안료의 화학으로 명화를 다시 들여다본다.",
+   "tags": [
+    "#미술",
+    "#과학교양"
+   ]
+  },
+  {
+   "kr": "명화로 보는 서양사",
+   "en": "Western History Through Masterpieces",
+   "zh": "名画中的西方史",
+   "vi": "Lịch sử phương Tây qua danh họa",
+   "author": "김태권",
+   "cover": "🖼️",
+   "summary": "한 장의 그림에 담긴 시대의 사건과 권력을 읽는다.",
+   "tags": [
+    "#미술사",
+    "#역사"
+   ]
+  },
+  {
+   "kr": "디자인은 어떻게 세상을 만드는가",
+   "en": "How Design Makes the World",
+   "zh": "设计如何塑造世界",
+   "vi": "Thiết kế tạo nên thế giới",
+   "author": "스콧 버쿤",
+   "cover": "🌍",
+   "summary": "우리가 쓰는 모든 것 뒤에 있는 선택과 책임을 짚는다.",
+   "tags": [
+    "#디자인",
+    "#사회"
+   ]
+  },
+  {
+   "kr": "사진의 역사",
+   "en": "A History of Photography",
+   "zh": "摄影史",
+   "vi": "Lịch sử nhiếp ảnh",
+   "author": "보먼트 뉴홀",
+   "cover": "📸",
+   "summary": "은판사진에서 디지털까지, 이미지를 붙잡아 온 기술과 시선.",
+   "tags": [
+    "#사진",
+    "#역사"
+   ]
+  },
+  {
+   "kr": "빛으로 그리는 사진",
+   "en": "Painting with Light",
+   "zh": "用光作画",
+   "vi": "Vẽ bằng ánh sáng",
+   "author": "존 알톤",
+   "cover": "💡",
+   "summary": "촬영감독이 알려주는 빛과 그림자를 다루는 실전 감각.",
+   "tags": [
+    "#사진",
+    "#촬영"
+   ]
+  },
+  {
+   "kr": "그래픽 디자인의 역사",
+   "en": "A History of Graphic Design",
+   "zh": "平面设计史",
+   "vi": "Lịch sử thiết kế đồ họa",
+   "author": "필립 멕스",
+   "cover": "🖍️",
+   "summary": "포스터와 활자와 로고가 걸어온 시각 커뮤니케이션의 길.",
+   "tags": [
+    "#그래픽디자인",
+    "#역사"
+   ]
+  },
+  {
+   "kr": "현대 조각의 흐름",
+   "en": "Movements in Modern Sculpture",
+   "zh": "现代雕塑的流变",
+   "vi": "Dòng chảy điêu khắc hiện đại",
+   "author": "허버트 리드",
+   "cover": "🗿",
+   "summary": "로댕 이후 조각이 좌대를 떠나 공간으로 나아간 과정.",
+   "tags": [
+    "#조각",
+    "#현대미술"
+   ]
+  },
+  {
+   "kr": "뮤지엄의 탄생",
+   "en": "The Birth of the Museum",
+   "zh": "博物馆的诞生",
+   "vi": "Sự ra đời của bảo tàng",
+   "author": "토니 베넷",
+   "cover": "🏛️",
+   "summary": "수집과 전시라는 제도가 어떻게 만들어졌는지 되짚는다.",
+   "tags": [
+    "#박물관학",
+    "#문화"
+   ]
+  },
+  {
+   "kr": "방구석 미술관",
+   "en": "Art Museum in My Room",
+   "zh": "房间里的美术馆",
+   "vi": "Bảo tàng trong phòng",
+   "author": "조원재",
+   "cover": "🛋️",
+   "summary": "화가의 삶을 곁들여 명화를 수다처럼 풀어 주는 미술 입문서.",
+   "tags": [
+    "#미술",
+    "#입문서",
+    "#교양"
+   ]
+  },
+  {
+   "kr": "미술관에 간 인문학자",
+   "en": "A Humanist in the Art Museum",
+   "zh": "走进美术馆的人文学者",
+   "vi": "Nhà nhân văn trong bảo tàng",
+   "author": "안현배",
+   "cover": "📚",
+   "summary": "그림 한 점에 얽힌 역사와 사람의 이야기를 함께 읽는다.",
+   "tags": [
+    "#미술사",
+    "#인문교양"
+   ]
+  },
+  {
+   "kr": "하루 한 장 인생 그림",
+   "en": "One Painting a Day",
+   "zh": "每天一幅画",
+   "vi": "Mỗi ngày một bức tranh",
+   "author": "이소영",
+   "cover": "🌤️",
+   "summary": "매일 한 점씩 곁에 두고 마음을 다독이는 그림 에세이.",
+   "tags": [
+    "#미술",
+    "#에세이"
+   ]
+  }
+ ],
+ "science": [
+  {
+   "kr": "코스모스",
+   "en": "Cosmos",
+   "zh": "宇宙",
+   "vi": "Vũ trụ",
+   "author": "칼 세이건",
+   "cover": "🌌",
+   "summary": "우주의 크기와 시간을 사람의 눈높이로 옮겨 놓은 과학 교양의 고전.",
+   "tags": [
+    "#천문학",
+    "#교양과학"
+   ]
+  },
+  {
+   "kr": "창백한 푸른 점",
+   "en": "Pale Blue Dot",
+   "zh": "暗淡蓝点",
+   "vi": "Chấm xanh mờ nhạt",
+   "author": "칼 세이건",
+   "cover": "🔵",
+   "summary": "보이저가 찍은 작은 점 하나에서 시작하는 인류의 자리에 대한 성찰.",
+   "tags": [
+    "#천문학",
+    "#에세이"
+   ]
+  },
+  {
+   "kr": "시간의 역사",
+   "en": "A Brief History of Time",
+   "zh": "时间简史",
+   "vi": "Lược sử thời gian",
+   "author": "스티븐 호킹",
+   "cover": "⏳",
+   "summary": "빅뱅과 블랙홀, 시간의 방향을 수식 없이 풀어낸 우주론 입문.",
+   "tags": [
+    "#우주론",
+    "#물리학"
+   ]
+  },
+  {
+   "kr": "위대한 설계",
+   "en": "The Grand Design",
+   "zh": "大设计",
+   "vi": "Thiết kế vĩ đại",
+   "author": "스티븐 호킹",
+   "cover": "🌠",
+   "summary": "우주가 스스로 생겨날 수 있는지 현대물리학의 언어로 묻는다.",
+   "tags": [
+    "#우주론",
+    "#물리학"
+   ]
+  },
+  {
+   "kr": "이기적 유전자",
+   "en": "The Selfish Gene",
+   "zh": "自私的基因",
+   "vi": "Gen vị kỷ",
+   "author": "리처드 도킨스",
+   "cover": "🧬",
+   "summary": "진화의 주인공을 개체가 아니라 유전자로 바꿔 놓은 관점의 전환.",
+   "tags": [
+    "#진화",
+    "#생물학"
+   ]
+  },
+  {
+   "kr": "눈먼 시계공",
+   "en": "The Blind Watchmaker",
+   "zh": "盲眼钟表匠",
+   "vi": "Người thợ đồng hồ mù",
+   "author": "리처드 도킨스",
+   "cover": "⌚",
+   "summary": "설계자 없이도 복잡한 생명이 만들어지는 자연선택의 원리.",
+   "tags": [
+    "#진화",
+    "#생물학"
+   ]
+  },
+  {
+   "kr": "종의 기원",
+   "en": "On the Origin of Species",
+   "zh": "物种起源",
+   "vi": "Nguồn gốc các loài",
+   "author": "찰스 다윈",
+   "cover": "🐢",
+   "summary": "자연선택으로 종이 갈라져 나온다는, 생물학을 바꾼 원전.",
+   "tags": [
+    "#진화",
+    "#고전"
+   ]
+  },
+  {
+   "kr": "침묵의 봄",
+   "en": "Silent Spring",
+   "zh": "寂静的春天",
+   "vi": "Mùa xuân vắng lặng",
+   "author": "레이첼 카슨",
+   "cover": "🐦",
+   "summary": "살충제가 생태계를 어떻게 무너뜨리는지 고발해 환경운동을 연 책.",
+   "tags": [
+    "#환경",
+    "#생태"
+   ]
+  },
+  {
+   "kr": "생명이란 무엇인가",
+   "en": "What Is Life?",
+   "zh": "生命是什么",
+   "vi": "Sự sống là gì",
+   "author": "에르빈 슈뢰딩거",
+   "cover": "🔬",
+   "summary": "물리학자가 던진 질문 하나가 분자생물학의 출발점이 되었다.",
+   "tags": [
+    "#생물학",
+    "#물리학"
+   ]
+  },
+  {
+   "kr": "이중나선",
+   "en": "The Double Helix",
+   "zh": "双螺旋",
+   "vi": "Chuỗi xoắn kép",
+   "author": "제임스 왓슨",
+   "cover": "🧬",
+   "summary": "DNA 구조를 밝히던 경쟁의 나날을 당사자가 직접 쓴 기록.",
+   "tags": [
+    "#생물학",
+    "#과학사"
+   ]
+  },
+  {
+   "kr": "유전자의 내밀한 역사",
+   "en": "The Gene: An Intimate History",
+   "zh": "基因传",
+   "vi": "Lịch sử thầm kín của gen",
+   "author": "싯다르타 무케르지",
+   "cover": "🧫",
+   "summary": "멘델부터 유전자 편집까지, 유전이라는 개념이 걸어온 길.",
+   "tags": [
+    "#유전학",
+    "#과학사"
+   ]
+  },
+  {
+   "kr": "만병의 황제, 암의 역사",
+   "en": "The Emperor of All Maladies",
+   "zh": "众病之王",
+   "vi": "Hoàng đế của bách bệnh",
+   "author": "싯다르타 무케르지",
+   "cover": "🎗️",
+   "summary": "암과 싸워 온 의학의 4천 년을 한 편의 전기처럼 쓴 책.",
+   "tags": [
+    "#의학",
+    "#과학사"
+   ]
+  },
+  {
+   "kr": "파인만의 물리학 강의",
+   "en": "The Feynman Lectures on Physics",
+   "zh": "费曼物理学讲义",
+   "vi": "Bài giảng vật lý Feynman",
+   "author": "리처드 파인만",
+   "cover": "⚛️",
+   "summary": "물리를 왜 그렇게 생각해야 하는지 알려 주는 전설적인 강의록.",
+   "tags": [
+    "#물리학",
+    "#강의"
+   ]
+  },
+  {
+   "kr": "파인만 씨, 농담도 잘하시네!",
+   "en": "Surely You're Joking, Mr. Feynman!",
+   "zh": "别闹了，费曼先生",
+   "vi": "Ngài đùa chắc, ông Feynman!",
+   "author": "리처드 파인만",
+   "cover": "🥁",
+   "summary": "금고를 따고 봉고를 치는 물리학자의 유쾌한 일화 모음.",
+   "tags": [
+    "#에세이",
+    "#물리학"
+   ]
+  },
+  {
+   "kr": "부분과 전체",
+   "en": "Physics and Beyond",
+   "zh": "部分与整体",
+   "vi": "Phần và toàn thể",
+   "author": "베르너 하이젠베르크",
+   "cover": "🌀",
+   "summary": "양자역학을 만든 이들이 나눈 대화로 되짚는 과학과 철학.",
+   "tags": [
+    "#양자역학",
+    "#회고"
+   ]
+  },
+  {
+   "kr": "엘러건트 유니버스",
+   "en": "The Elegant Universe",
+   "zh": "优雅的宇宙",
+   "author": "브라이언 그린",
+   "vi": "Vũ trụ thanh lịch",
+   "cover": "🎻",
+   "summary": "끈이론으로 상대성이론과 양자역학을 잇겠다는 시도를 풀어낸다.",
+   "tags": [
+    "#끈이론",
+    "#물리학"
+   ]
+  },
+  {
+   "kr": "우주의 구조",
+   "en": "The Fabric of the Cosmos",
+   "zh": "宇宙的结构",
+   "vi": "Cấu trúc vũ trụ",
+   "author": "브라이언 그린",
+   "cover": "🕸️",
+   "summary": "공간과 시간이 무엇으로 이루어졌는지 되묻는 현대물리 안내서.",
+   "tags": [
+    "#물리학",
+    "#우주론"
+   ]
+  },
+  {
+   "kr": "블랙홀 전쟁",
+   "en": "The Black Hole War",
+   "zh": "黑洞战争",
+   "vi": "Cuộc chiến hố đen",
+   "author": "레너드 서스킨드",
+   "cover": "🕳️",
+   "summary": "블랙홀이 정보를 삼키는가를 두고 벌어진 20년의 물리 논쟁.",
+   "tags": [
+    "#블랙홀",
+    "#물리학"
+   ]
+  },
+  {
+   "kr": "퀀텀 스토리",
+   "en": "The Quantum Story",
+   "zh": "量子物理史话",
+   "vi": "Câu chuyện lượng tử",
+   "author": "짐 배것",
+   "cover": "🎲",
+   "summary": "양자역학이 세워지기까지의 40개 순간을 이야기로 잇는다.",
+   "tags": [
+    "#양자역학",
+    "#과학사"
+   ]
+  },
+  {
+   "kr": "상대성이론",
+   "en": "Relativity: The Special and General Theory",
+   "zh": "相对论",
+   "vi": "Thuyết tương đối",
+   "author": "알베르트 아인슈타인",
+   "cover": "🚀",
+   "summary": "아인슈타인이 일반 독자를 위해 직접 쓴 상대성이론 해설.",
+   "tags": [
+    "#물리학",
+    "#고전"
+   ]
+  },
+  {
+   "kr": "페르마의 마지막 정리",
+   "en": "Fermat's Last Theorem",
+   "zh": "费马大定理",
+   "vi": "Định lý cuối của Fermat",
+   "author": "사이먼 싱",
+   "cover": "➗",
+   "summary": "여백에 적힌 한 줄을 증명하기까지 358년의 수학 드라마.",
+   "tags": [
+    "#수학",
+    "#과학사"
+   ]
+  },
+  {
+   "kr": "코드북",
+   "en": "The Code Book",
+   "zh": "密码故事",
+   "vi": "Sách mật mã",
+   "author": "사이먼 싱",
+   "cover": "🔐",
+   "summary": "고대 암호부터 공개키까지, 감추고 푸는 기술의 역사.",
+   "tags": [
+    "#암호학",
+    "#수학"
+   ]
+  },
+  {
+   "kr": "수학이 필요한 순간",
+   "en": "When We Need Mathematics",
+   "zh": "需要数学的时刻",
+   "vi": "Khi ta cần toán học",
+   "author": "김민형",
+   "cover": "🧮",
+   "summary": "수학이 세상을 어떻게 다르게 보게 하는지 묻는 일곱 번의 강의.",
+   "tags": [
+    "#수학",
+    "#교양"
+   ]
+  },
+  {
+   "kr": "수학, 문명을 지배하다",
+   "en": "Mathematics in Western Culture",
+   "zh": "西方文化中的数学",
+   "vi": "Toán học trong văn hóa phương Tây",
+   "author": "모리스 클라인",
+   "cover": "📐",
+   "summary": "수학이 예술과 철학과 과학을 어떻게 밀고 왔는지 보여 준다.",
+   "tags": [
+    "#수학",
+    "#문명사"
+   ]
+  },
+  {
+   "kr": "괴델, 에셔, 바흐",
+   "en": "Gödel, Escher, Bach",
+   "zh": "哥德尔、艾舍尔、巴赫",
+   "vi": "Gödel, Escher, Bach",
+   "author": "더글러스 호프스태터",
+   "cover": "♾️",
+   "summary": "수학과 그림과 음악에 공통으로 흐르는 자기참조의 고리를 좇는다.",
+   "tags": [
+    "#인지과학",
+    "#수학"
+   ]
+  },
+  {
+   "kr": "카오스",
+   "en": "Chaos: Making a New Science",
+   "zh": "混沌：开创新科学",
+   "vi": "Hỗn độn",
+   "author": "제임스 글릭",
+   "cover": "🦋",
+   "summary": "나비 한 마리가 날씨를 바꾼다는 혼돈 이론이 태어난 이야기.",
+   "tags": [
+    "#카오스",
+    "#과학사"
+   ]
+  },
+  {
+   "kr": "인포메이션",
+   "en": "The Information",
+   "zh": "信息简史",
+   "vi": "Thông tin",
+   "author": "제임스 글릭",
+   "cover": "📡",
+   "summary": "북소리에서 비트까지, 정보라는 개념이 세워지기까지의 역사.",
+   "tags": [
+    "#정보이론",
+    "#과학사"
+   ]
+  },
+  {
+   "kr": "엔트로피",
+   "en": "Entropy",
+   "zh": "熵：一种新的世界观",
+   "vi": "Entropy",
+   "author": "제러미 리프킨",
+   "cover": "♨️",
+   "summary": "열역학 제2법칙의 눈으로 문명과 에너지를 다시 본다.",
+   "tags": [
+    "#열역학",
+    "#문명"
+   ]
+  },
+  {
+   "kr": "떨림과 울림",
+   "en": "Trembling and Resonance",
+   "zh": "颤动与共鸣",
+   "vi": "Rung và vang",
+   "author": "김상욱",
+   "cover": "〰️",
+   "summary": "물리학자가 원자와 우주 사이에서 길어 올린 사유의 문장들.",
+   "tags": [
+    "#물리학",
+    "#에세이"
+   ]
+  },
+  {
+   "kr": "물리학자는 영화에서 과학을 본다",
+   "en": "A Physicist Watches Movies",
+   "zh": "物理学家看电影",
+   "vi": "Nhà vật lý xem phim",
+   "author": "정재승",
+   "cover": "🎬",
+   "summary": "영화 속 장면을 과학으로 뜯어보며 노는 대중과학 에세이.",
+   "tags": [
+    "#교양과학",
+    "#에세이"
+   ]
+  },
+  {
+   "kr": "열두 발자국",
+   "en": "Twelve Steps",
+   "zh": "十二个脚印",
+   "vi": "Mười hai bước chân",
+   "author": "정재승",
+   "cover": "👣",
+   "summary": "뇌과학자가 선택과 창의에 대해 던지는 열두 번의 강연.",
+   "tags": [
+    "#뇌과학",
+    "#강연"
+   ]
+  },
+  {
+   "kr": "정재승의 과학 콘서트",
+   "en": "Science Concert",
+   "zh": "科学音乐会",
+   "vi": "Buổi hòa nhạc khoa học",
+   "author": "정재승",
+   "cover": "🎼",
+   "summary": "복잡계의 눈으로 교통체증과 유행을 설명하는 과학 교양서.",
+   "tags": [
+    "#복잡계",
+    "#교양과학"
+   ]
+  },
+  {
+   "kr": "하리하라의 생물학 카페",
+   "en": "Harihara's Biology Cafe",
+   "zh": "哈里哈拉的生物学咖啡馆",
+   "vi": "Quán cà phê sinh học",
+   "author": "이은희",
+   "cover": "☕",
+   "summary": "신화와 일상 이야기로 풀어낸 친절한 생물학 수업.",
+   "tags": [
+    "#생물학",
+    "#교양"
+   ]
+  },
+  {
+   "kr": "다정한 것이 살아남는다",
+   "en": "Survival of the Friendliest",
+   "zh": "友者生存",
+   "vi": "Kẻ thân thiện sống sót",
+   "author": "브라이언 헤어",
+   "cover": "🐕",
+   "summary": "강한 종이 아니라 협력하는 종이 살아남았다는 자기가축화 가설.",
+   "tags": [
+    "#진화",
+    "#인류학"
+   ]
+  },
+  {
+   "kr": "생명 최초의 30억 년",
+   "en": "Life on a Young Planet",
+   "zh": "年轻星球上的生命",
+   "vi": "Sự sống trên hành tinh trẻ",
+   "author": "앤드루 놀",
+   "cover": "🦠",
+   "summary": "화석이 거의 없는 시절, 미생물이 지구를 바꾼 30억 년.",
+   "tags": [
+    "#고생물학",
+    "#지구과학"
+   ]
+  },
+  {
+   "kr": "지구의 짧은 역사",
+   "en": "A Brief History of Earth",
+   "zh": "地球简史",
+   "vi": "Lược sử Trái Đất",
+   "author": "앤드루 놀",
+   "cover": "🌏",
+   "summary": "46억 년을 여덟 장으로 압축한 지구 이야기.",
+   "tags": [
+    "#지구과학",
+    "#교양"
+   ]
+  },
+  {
+   "kr": "주기율표",
+   "en": "The Periodic Table",
+   "zh": "元素周期表",
+   "vi": "Bảng tuần hoàn",
+   "author": "프리모 레비",
+   "cover": "⚗️",
+   "summary": "원소 하나에 자기 삶의 한 장면을 겹쳐 놓은 화학자의 자전.",
+   "tags": [
+    "#화학",
+    "#에세이"
+   ]
+  },
+  {
+   "kr": "사라진 스푼",
+   "en": "The Disappearing Spoon",
+   "zh": "消失的勺子",
+   "vi": "Chiếc thìa biến mất",
+   "author": "샘 킨",
+   "cover": "🥄",
+   "summary": "주기율표 칸마다 숨은 사건과 사람에 대한 이야기.",
+   "tags": [
+    "#화학",
+    "#교양과학"
+   ]
+  },
+  {
+   "kr": "화학에서 인생을 배우다",
+   "en": "Life Lessons from Chemistry",
+   "zh": "从化学中学人生",
+   "vi": "Học đời từ hóa học",
+   "author": "황영애",
+   "cover": "🧪",
+   "summary": "결합과 반응의 원리에 삶의 비유를 겹쳐 읽는 화학 교양서.",
+   "tags": [
+    "#화학",
+    "#에세이"
+   ]
+  },
+  {
+   "kr": "기후변화의 심리학",
+   "en": "Don't Even Think About It",
+   "zh": "气候变化心理学",
+   "vi": "Tâm lý học biến đổi khí hậu",
+   "author": "조지 마셜",
+   "cover": "🌡️",
+   "summary": "우리는 왜 기후 위기를 알면서도 외면하는가를 파고든다.",
+   "tags": [
+    "#기후",
+    "#심리"
+   ]
+  },
+  {
+   "kr": "불편한 진실",
+   "en": "An Inconvenient Truth",
+   "zh": "难以忽视的真相",
+   "vi": "Sự thật mất lòng",
+   "author": "앨 고어",
+   "cover": "🧊",
+   "summary": "데이터와 사진으로 지구온난화의 현실을 정면으로 보여 준다.",
+   "tags": [
+    "#기후",
+    "#환경"
+   ]
+  },
+  {
+   "kr": "뇌는 어떻게 세상을 보는가",
+   "en": "Phantoms in the Brain",
+   "zh": "脑中魅影",
+   "vi": "Bóng ma trong não",
+   "author": "빌라야누르 라마찬드란",
+   "cover": "🧠",
+   "summary": "환상지와 착시 같은 기이한 증상으로 읽는 뇌의 작동 방식.",
+   "tags": [
+    "#뇌과학",
+    "#신경학"
+   ]
+  },
+  {
+   "kr": "아내를 모자로 착각한 남자",
+   "en": "The Man Who Mistook His Wife for a Hat",
+   "zh": "错把妻子当帽子",
+   "vi": "Người nhầm vợ với chiếc mũ",
+   "author": "올리버 색스",
+   "cover": "🎩",
+   "summary": "신경과 환자들의 사례에서 인간다움을 다시 묻는 임상 이야기.",
+   "tags": [
+    "#신경학",
+    "#에세이"
+   ]
+  },
+  {
+   "kr": "의식의 강",
+   "en": "The River of Consciousness",
+   "zh": "意识之河",
+   "vi": "Dòng sông ý thức",
+   "author": "올리버 색스",
+   "cover": "🌊",
+   "summary": "기억과 시간과 창조성에 대해 신경과 의사가 남긴 마지막 사유.",
+   "tags": [
+    "#신경학",
+    "#에세이"
+   ]
+  },
+  {
+   "kr": "통섭",
+   "en": "Consilience",
+   "zh": "知识大融通",
+   "vi": "Sự thống nhất tri thức",
+   "author": "에드워드 윌슨",
+   "cover": "🔗",
+   "summary": "자연과학과 인문학을 한 줄기로 잇자는 대담한 제안.",
+   "tags": [
+    "#과학철학",
+    "#통합"
+   ]
+  },
+  {
+   "kr": "이것이 생물학이다",
+   "en": "This Is Biology",
+   "zh": "这就是生物学",
+   "vi": "Đây là sinh học",
+   "author": "에른스트 마이어",
+   "cover": "🌱",
+   "summary": "생물학이 물리학과 어떻게 다른 학문인지 정리한 노학자의 결론.",
+   "tags": [
+    "#생물학",
+    "#과학철학"
+   ]
+  },
+  {
+   "kr": "최무영 교수의 물리학 강의",
+   "en": "Lectures on Physics by Choi Moo-young",
+   "zh": "崔武英教授物理学讲义",
+   "vi": "Bài giảng vật lý",
+   "author": "최무영",
+   "cover": "📘",
+   "summary": "교양 수업에서 출발해 복잡계까지 이어지는 국내 물리 강의록.",
+   "tags": [
+    "#물리학",
+    "#강의"
+   ]
+  },
+  {
+   "kr": "랩 걸",
+   "en": "Lab Girl",
+   "zh": "实验室女孩",
+   "vi": "Cô gái phòng thí nghiệm",
+   "author": "호프 자런",
+   "cover": "🌳",
+   "summary": "나무를 연구하는 과학자가 쓴, 식물과 삶에 대한 자전적 기록.",
+   "tags": [
+    "#식물학",
+    "#에세이"
+   ]
+  },
+  {
+   "kr": "우리 몸 연대기",
+   "en": "The Story of the Human Body",
+   "zh": "人体的故事",
+   "vi": "Câu chuyện cơ thể người",
+   "author": "대니얼 리버먼",
+   "cover": "🦴",
+   "summary": "진화의 눈으로 보면 현대병의 이유가 보인다는 인체 이야기.",
+   "tags": [
+    "#진화",
+    "#의학"
+   ]
+  },
+  {
+   "kr": "오리진",
+   "en": "Origins",
+   "zh": "起源",
+   "vi": "Khởi nguyên",
+   "author": "루이스 다트넬",
+   "cover": "🌋",
+   "summary": "판구조와 기후 같은 지구의 조건이 인류사를 어떻게 밀었는지 살핀다.",
+   "tags": [
+    "#지구과학",
+    "#인류사"
+   ]
+  }
+ ],
+ "humanities": [
+  {
+   "kr": "사피엔스",
+   "en": "Sapiens",
+   "zh": "人类简史",
+   "vi": "Sapiens: Lược sử loài người",
+   "author": "유발 하라리",
+   "cover": "🧍",
+   "summary": "인지혁명부터 과학혁명까지, 호모 사피엔스가 세상을 차지한 이야기.",
+   "tags": [
+    "#인류사",
+    "#베스트셀러"
+   ]
+  },
+  {
+   "kr": "호모 데우스",
+   "en": "Homo Deus",
+   "zh": "未来简史",
+   "vi": "Homo Deus",
+   "author": "유발 하라리",
+   "cover": "🤖",
+   "summary": "굶주림과 역병을 넘어선 인류가 다음으로 향하는 곳을 묻는다.",
+   "tags": [
+    "#미래학",
+    "#인류사"
+   ]
+  },
+  {
+   "kr": "21세기를 위한 21가지 제언",
+   "en": "21 Lessons for the 21st Century",
+   "zh": "今日简史",
+   "vi": "21 bài học cho thế kỷ 21",
+   "author": "유발 하라리",
+   "cover": "🗺️",
+   "summary": "기술과 정치가 뒤흔드는 지금, 무엇을 붙들어야 하는가.",
+   "tags": [
+    "#현대사회",
+    "#에세이"
+   ]
+  },
+  {
+   "kr": "총, 균, 쇠",
+   "en": "Guns, Germs, and Steel",
+   "zh": "枪炮、病菌与钢铁",
+   "vi": "Súng, vi trùng và thép",
+   "author": "재레드 다이아몬드",
+   "cover": "🌾",
+   "summary": "대륙마다 문명의 속도가 달랐던 이유를 지리와 생태에서 찾는다.",
+   "tags": [
+    "#인류사",
+    "#지리"
+   ]
+  },
+  {
+   "kr": "정의란 무엇인가",
+   "en": "Justice",
+   "zh": "公正",
+   "vi": "Phải trái đúng sai",
+   "author": "마이클 샌델",
+   "cover": "⚖️",
+   "summary": "전차 문제부터 시장의 도덕까지, 정의를 묻는 하버드 강의.",
+   "tags": [
+    "#정치철학",
+    "#윤리"
+   ]
+  },
+  {
+   "kr": "공정하다는 착각",
+   "en": "The Tyranny of Merit",
+   "zh": "精英的傲慢",
+   "vi": "Sự chuyên chế của tài năng",
+   "author": "마이클 샌델",
+   "cover": "🎓",
+   "summary": "능력주의가 어떻게 오만과 굴욕을 함께 만들어 냈는지 짚는다.",
+   "tags": [
+    "#정치철학",
+    "#사회"
+   ]
+  },
+  {
+   "kr": "니코마코스 윤리학",
+   "en": "Nicomachean Ethics",
+   "zh": "尼各马可伦理学",
+   "vi": "Đạo đức học Nicomachus",
+   "author": "아리스토텔레스",
+   "cover": "🏛️",
+   "summary": "좋은 삶이란 무엇인가를 습관과 덕의 관점에서 세운 윤리학의 원전.",
+   "tags": [
+    "#철학",
+    "#윤리",
+    "#고전"
+   ]
+  },
+  {
+   "kr": "국가",
+   "en": "The Republic",
+   "zh": "理想国",
+   "vi": "Cộng hòa",
+   "author": "플라톤",
+   "cover": "🏺",
+   "summary": "정의로운 나라와 정의로운 사람을 겹쳐 놓고 묻는 대화편.",
+   "tags": [
+    "#철학",
+    "#정치",
+    "#고전"
+   ]
+  },
+  {
+   "kr": "소크라테스의 변명",
+   "en": "Apology",
+   "zh": "苏格拉底的申辩",
+   "vi": "Biện hộ của Socrates",
+   "author": "플라톤",
+   "cover": "🗣️",
+   "summary": "법정에 선 소크라테스가 남긴, 캐묻는 삶에 대한 변론.",
+   "tags": [
+    "#철학",
+    "#고전"
+   ]
+  },
+  {
+   "kr": "명상록",
+   "en": "Meditations",
+   "zh": "沉思录",
+   "vi": "Suy tưởng",
+   "author": "마르쿠스 아우렐리우스",
+   "cover": "📜",
+   "summary": "전쟁터에서 황제가 자신에게 쓴 스토아 철학의 메모.",
+   "tags": [
+    "#스토아",
+    "#철학",
+    "#고전"
+   ]
+  },
+  {
+   "kr": "인생이 왜 짧은가",
+   "en": "On the Shortness of Life",
+   "zh": "论生命之短暂",
+   "vi": "Về sự ngắn ngủi của đời người",
+   "author": "세네카",
+   "cover": "⏳",
+   "summary": "시간을 흘려보내는 방식을 꾸짖는 스토아 철학자의 편지.",
+   "tags": [
+    "#스토아",
+    "#에세이"
+   ]
+  },
+  {
+   "kr": "방법서설",
+   "en": "Discourse on the Method",
+   "zh": "谈谈方法",
+   "vi": "Phương pháp luận",
+   "author": "르네 데카르트",
+   "cover": "💭",
+   "summary": "모든 것을 의심한 끝에 남은 하나에서 근대철학이 시작된다.",
+   "tags": [
+    "#철학",
+    "#근대",
+    "#고전"
+   ]
+  },
+  {
+   "kr": "순수이성비판",
+   "en": "Critique of Pure Reason",
+   "zh": "纯粹理性批判",
+   "vi": "Phê phán lý tính thuần túy",
+   "author": "임마누엘 칸트",
+   "cover": "🧭",
+   "summary": "우리가 무엇을 알 수 있는지 그 한계를 그은 근대철학의 분수령.",
+   "tags": [
+    "#철학",
+    "#인식론"
+   ]
+  },
+  {
+   "kr": "실천이성비판",
+   "en": "Critique of Practical Reason",
+   "zh": "实践理性批判",
+   "vi": "Phê phán lý tính thực hành",
+   "author": "임마누엘 칸트",
+   "cover": "⭐",
+   "summary": "내 안의 도덕법칙에서 자유와 의무의 근거를 찾는다.",
+   "tags": [
+    "#철학",
+    "#윤리"
+   ]
+  },
+  {
+   "kr": "차라투스트라는 이렇게 말했다",
+   "en": "Thus Spoke Zarathustra",
+   "zh": "查拉图斯特拉如是说",
+   "vi": "Zarathustra đã nói như thế",
+   "author": "프리드리히 니체",
+   "cover": "🦅",
+   "summary": "신의 죽음 이후 스스로 가치를 세우라고 외치는 시적 철학서.",
+   "tags": [
+    "#철학",
+    "#니체"
+   ]
+  },
+  {
+   "kr": "선악의 저편",
+   "en": "Beyond Good and Evil",
+   "zh": "善恶的彼岸",
+   "vi": "Bên kia thiện ác",
+   "author": "프리드리히 니체",
+   "cover": "⚔️",
+   "summary": "도덕의 기원을 캐물어 기존 가치의 틀을 흔든다.",
+   "tags": [
+    "#철학",
+    "#니체"
+   ]
+  },
+  {
+   "kr": "존재와 시간",
+   "en": "Being and Time",
+   "zh": "存在与时间",
+   "vi": "Tồn tại và thời gian",
+   "author": "마르틴 하이데거",
+   "cover": "🕰️",
+   "summary": "죽음을 향한 존재로서 인간의 있음을 다시 묻는 20세기 철학서.",
+   "tags": [
+    "#철학",
+    "#존재론"
+   ]
+  },
+  {
+   "kr": "실존주의는 휴머니즘이다",
+   "en": "Existentialism Is a Humanism",
+   "zh": "存在主义是一种人道主义",
+   "vi": "Thuyết hiện sinh là một thuyết nhân bản",
+   "author": "장폴 사르트르",
+   "cover": "🚶",
+   "summary": "실존이 본질에 앞선다는 명제를 대중 강연으로 풀어낸 글.",
+   "tags": [
+    "#실존주의",
+    "#철학"
+   ]
+  },
+  {
+   "kr": "슬픈 열대",
+   "en": "Tristes Tropiques",
+   "zh": "忧郁的热带",
+   "vi": "Nhiệt đới buồn",
+   "author": "클로드 레비스트로스",
+   "cover": "🌴",
+   "summary": "인류학자의 여행기이자 문명과 야만을 뒤집어 보는 사유.",
+   "tags": [
+    "#인류학",
+    "#고전"
+   ]
+  },
+  {
+   "kr": "감시와 처벌",
+   "en": "Discipline and Punish",
+   "zh": "规训与惩罚",
+   "vi": "Giám sát và trừng phạt",
+   "author": "미셸 푸코",
+   "cover": "👁️",
+   "summary": "감옥의 탄생을 통해 근대 권력이 몸을 길들이는 방식을 밝힌다.",
+   "tags": [
+    "#철학",
+    "#권력"
+   ]
+  },
+  {
+   "kr": "광기의 역사",
+   "en": "History of Madness",
+   "zh": "疯癫与文明",
+   "vi": "Lịch sử của điên loạn",
+   "author": "미셸 푸코",
+   "cover": "🌒",
+   "summary": "광기를 가두기 시작한 순간부터 이성이 무엇이 되었는지 추적한다.",
+   "tags": [
+    "#철학",
+    "#역사"
+   ]
+  },
+  {
+   "kr": "오리엔탈리즘",
+   "en": "Orientalism",
+   "zh": "东方学",
+   "vi": "Đông phương luận",
+   "author": "에드워드 사이드",
+   "cover": "🕌",
+   "summary": "서구가 동양을 어떻게 만들어 냈는지 밝힌 탈식민 연구의 출발점.",
+   "tags": [
+    "#탈식민",
+    "#문화비평"
+   ]
+  },
+  {
+   "kr": "자본론",
+   "en": "Capital",
+   "zh": "资本论",
+   "vi": "Tư bản luận",
+   "author": "카를 마르크스",
+   "cover": "🏭",
+   "summary": "상품과 노동에서 출발해 자본주의의 운동 법칙을 해부한다.",
+   "tags": [
+    "#경제학",
+    "#고전"
+   ]
+  },
+  {
+   "kr": "프로테스탄트 윤리와 자본주의 정신",
+   "en": "The Protestant Ethic and the Spirit of Capitalism",
+   "zh": "新教伦理与资本主义精神",
+   "vi": "Đạo đức Tin Lành và tinh thần chủ nghĩa tư bản",
+   "author": "막스 베버",
+   "cover": "⛪",
+   "summary": "금욕적 신앙이 어떻게 자본주의의 정신이 되었는지 추적한다.",
+   "tags": [
+    "#사회학",
+    "#고전"
+   ]
+  },
+  {
+   "kr": "국부론",
+   "en": "The Wealth of Nations",
+   "zh": "国富论",
+   "vi": "Của cải của các quốc gia",
+   "author": "애덤 스미스",
+   "cover": "💰",
+   "summary": "분업과 보이지 않는 손으로 시장을 설명한 경제학의 첫 걸음.",
+   "tags": [
+    "#경제학",
+    "#고전"
+   ]
+  },
+  {
+   "kr": "자유론",
+   "en": "On Liberty",
+   "zh": "论自由",
+   "vi": "Bàn về tự do",
+   "author": "존 스튜어트 밀",
+   "cover": "🕊️",
+   "summary": "다수의 압력에서 개인의 자유를 어디까지 지켜야 하는가.",
+   "tags": [
+    "#정치철학",
+    "#고전"
+   ]
+  },
+  {
+   "kr": "사회계약론",
+   "en": "The Social Contract",
+   "zh": "社会契约论",
+   "vi": "Khế ước xã hội",
+   "author": "장자크 루소",
+   "cover": "📝",
+   "summary": "사람은 자유롭게 태어났다는 선언에서 시작하는 정치의 근거.",
+   "tags": [
+    "#정치철학",
+    "#고전"
+   ]
+  },
+  {
+   "kr": "군주론",
+   "en": "The Prince",
+   "zh": "君主论",
+   "vi": "Quân vương",
+   "author": "니콜로 마키아벨리",
+   "cover": "👑",
+   "summary": "권력을 얻고 지키는 법을 도덕과 분리해 서술한 정치학의 고전.",
+   "tags": [
+    "#정치",
+    "#고전"
+   ]
+  },
+  {
+   "kr": "리바이어던",
+   "en": "Leviathan",
+   "zh": "利维坦",
+   "vi": "Leviathan",
+   "author": "토머스 홉스",
+   "cover": "🐉",
+   "summary": "만인의 만인에 대한 투쟁을 끝내기 위해 세우는 국가의 논리.",
+   "tags": [
+    "#정치철학",
+    "#고전"
+   ]
+  },
+  {
+   "kr": "열린사회와 그 적들",
+   "en": "The Open Society and Its Enemies",
+   "zh": "开放社会及其敌人",
+   "vi": "Xã hội mở và những kẻ thù",
+   "author": "칼 포퍼",
+   "cover": "🚪",
+   "summary": "전체주의의 지적 뿌리를 캐고 비판 가능한 사회를 옹호한다.",
+   "tags": [
+    "#정치철학",
+    "#과학철학"
+   ]
+  },
+  {
+   "kr": "역사란 무엇인가",
+   "en": "What Is History?",
+   "zh": "历史是什么",
+   "vi": "Lịch sử là gì",
+   "author": "E. H. 카",
+   "cover": "📖",
+   "summary": "사실과 해석 사이에서 역사가가 하는 일을 묻는 강의.",
+   "tags": [
+    "#역사학",
+    "#고전"
+   ]
+  },
+  {
+   "kr": "로마제국 쇠망사",
+   "en": "The History of the Decline and Fall of the Roman Empire",
+   "zh": "罗马帝国衰亡史",
+   "vi": "Sự suy tàn của đế chế La Mã",
+   "author": "에드워드 기번",
+   "cover": "🏛️",
+   "summary": "천 년 제국이 무너지는 과정을 방대한 사료로 추적한 역사서.",
+   "tags": [
+    "#역사",
+    "#고전"
+   ]
+  },
+  {
+   "kr": "문명의 충돌",
+   "en": "The Clash of Civilizations",
+   "zh": "文明的冲突",
+   "vi": "Sự va chạm của các nền văn minh",
+   "author": "새뮤얼 헌팅턴",
+   "cover": "🌐",
+   "summary": "냉전 이후 갈등의 축이 문화와 종교로 옮겨 간다는 논쟁적 주장.",
+   "tags": [
+    "#국제정치",
+    "#문명"
+   ]
+  },
+  {
+   "kr": "서양철학사",
+   "en": "A History of Western Philosophy",
+   "zh": "西方哲学史",
+   "vi": "Lịch sử triết học phương Tây",
+   "author": "버트런드 러셀",
+   "cover": "🧠",
+   "summary": "탈레스부터 현대까지 철학자들을 시대와 함께 읽는 통사.",
+   "tags": [
+    "#철학사",
+    "#교양"
+   ]
+  },
+  {
+   "kr": "철학이 필요한 시간",
+   "en": "A Time for Philosophy",
+   "zh": "需要哲学的时间",
+   "vi": "Thời khắc cần triết học",
+   "author": "강신주",
+   "cover": "🕯️",
+   "summary": "삶의 고비마다 꺼내 읽을 수 있게 고른 철학자들의 문장.",
+   "tags": [
+    "#철학",
+    "#에세이"
+   ]
+  },
+  {
+   "kr": "인간의 조건",
+   "en": "The Human Condition",
+   "zh": "人的境况",
+   "vi": "Thân phận con người",
+   "author": "한나 아렌트",
+   "cover": "🏗️",
+   "summary": "노동과 작업과 행위를 갈라 인간 활동의 자리를 다시 세운다.",
+   "tags": [
+    "#정치철학",
+    "#아렌트"
+   ]
+  },
+  {
+   "kr": "예루살렘의 아이히만",
+   "en": "Eichmann in Jerusalem",
+   "zh": "艾希曼在耶路撒冷",
+   "vi": "Eichmann ở Jerusalem",
+   "author": "한나 아렌트",
+   "cover": "🪑",
+   "summary": "재판정에서 본 평범한 관료에게서 악의 진부함을 읽어 낸 보고.",
+   "tags": [
+    "#정치철학",
+    "#역사"
+   ]
+  },
+  {
+   "kr": "죽음의 수용소에서",
+   "en": "Man's Search for Meaning",
+   "zh": "活出生命的意义",
+   "vi": "Đi tìm lẽ sống",
+   "author": "빅터 프랭클",
+   "cover": "🕯️",
+   "summary": "수용소에서 살아남은 정신과 의사가 찾아낸 의미의 힘.",
+   "tags": [
+    "#심리학",
+    "#회고"
+   ]
+  },
+  {
+   "kr": "미움받을 용기",
+   "en": "The Courage to Be Disliked",
+   "zh": "被讨厌的勇气",
+   "vi": "Dám bị ghét",
+   "author": "기시미 이치로",
+   "cover": "💬",
+   "summary": "아들러 심리학을 대화 형식으로 풀어낸 인간관계 안내서.",
+   "tags": [
+    "#심리학",
+    "#자기계발"
+   ]
+  },
+  {
+   "kr": "논어",
+   "en": "The Analects",
+   "zh": "论语",
+   "vi": "Luận ngữ",
+   "author": "공자",
+   "cover": "🎋",
+   "summary": "배움과 예를 두고 스승과 제자가 주고받은 말들의 기록.",
+   "tags": [
+    "#동양철학",
+    "#고전"
+   ]
+  },
+  {
+   "kr": "맹자",
+   "en": "Mencius",
+   "zh": "孟子",
+   "vi": "Mạnh Tử",
+   "author": "맹자",
+   "cover": "🌱",
+   "summary": "사람의 본성은 선하다는 전제 위에 세운 정치와 윤리.",
+   "tags": [
+    "#동양철학",
+    "#고전"
+   ]
+  },
+  {
+   "kr": "도덕경",
+   "en": "Tao Te Ching",
+   "zh": "道德经",
+   "vi": "Đạo đức kinh",
+   "author": "노자",
+   "cover": "☯️",
+   "summary": "억지로 하지 않음으로 다스린다는 여든한 장의 잠언.",
+   "tags": [
+    "#동양철학",
+    "#고전"
+   ]
+  },
+  {
+   "kr": "장자",
+   "en": "Zhuangzi",
+   "zh": "庄子",
+   "vi": "Trang Tử",
+   "author": "장자",
+   "cover": "🦋",
+   "summary": "나비 꿈과 우화로 인위를 넘어선 자유를 이야기한다.",
+   "tags": [
+    "#동양철학",
+    "#고전"
+   ]
+  },
+  {
+   "kr": "목민심서",
+   "en": "Admonitions on Governing the People",
+   "zh": "牧民心书",
+   "vi": "Mục dân tâm thư",
+   "author": "정약용",
+   "cover": "🏯",
+   "summary": "지방 수령이 지켜야 할 도리를 조목조목 적은 실학의 결실.",
+   "tags": [
+    "#한국사상",
+    "#실학"
+   ]
+  },
+  {
+   "kr": "유배지에서 보낸 편지",
+   "en": "Letters from Exile",
+   "zh": "流放地来信",
+   "vi": "Thư từ nơi lưu đày",
+   "author": "정약용",
+   "cover": "✉️",
+   "summary": "유배지에서 아들과 제자에게 보낸 공부와 처신에 관한 당부.",
+   "tags": [
+    "#한국사상",
+    "#서간집"
+   ]
+  },
+  {
+   "kr": "백범일지",
+   "en": "The Autobiography of Kim Gu",
+   "zh": "白凡逸志",
+   "vi": "Tự truyện Kim Gu",
+   "author": "김구",
+   "cover": "🇰🇷",
+   "summary": "독립운동가 김구가 직접 쓴 삶과 임시정부의 기록.",
+   "tags": [
+    "#한국사",
+    "#자서전"
+   ]
+  },
+  {
+   "kr": "나의 한국현대사",
+   "en": "My Modern History of Korea",
+   "zh": "我的韩国现代史",
+   "vi": "Lịch sử hiện đại Hàn Quốc của tôi",
+   "author": "유시민",
+   "cover": "📰",
+   "summary": "1959년부터 지금까지를 한 사람의 눈으로 겹쳐 읽은 현대사.",
+   "tags": [
+    "#한국사",
+    "#에세이"
+   ]
+  },
+  {
+   "kr": "지적 대화를 위한 넓고 얕은 지식",
+   "en": "Broad and Shallow Knowledge",
+   "zh": "广而浅的知识",
+   "vi": "Kiến thức rộng và nông",
+   "author": "채사장",
+   "cover": "🗨️",
+   "summary": "역사·경제·정치·철학을 한 줄기로 엮어 훑는 교양 입문서.",
+   "tags": [
+    "#교양",
+    "#인문학"
+   ]
+  },
+  {
+   "kr": "팩트풀니스",
+   "en": "Factfulness",
+   "zh": "事实",
+   "vi": "Factfulness",
+   "author": "한스 로슬링",
+   "cover": "📊",
+   "summary": "우리가 세상을 실제보다 나쁘게 보는 열 가지 본능을 데이터로 깬다.",
+   "tags": [
+    "#통계",
+    "#사회"
+   ]
+  },
+  {
+   "kr": "축의 시대",
+   "en": "The Great Transformation",
+   "zh": "轴心时代",
+   "vi": "Thời đại trục",
+   "author": "카렌 암스트롱",
+   "cover": "🕉️",
+   "summary": "공자와 붓다와 소크라테스가 거의 동시에 등장한 시대를 읽는다.",
+   "tags": [
+    "#종교",
+    "#사상사"
+   ]
+  }
+ ]
+}

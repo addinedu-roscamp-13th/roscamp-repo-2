@@ -27,8 +27,10 @@ dispatcher 플러그인이 정하게 두고, 우리는 그 결과를 받아 다�
 
 from __future__ import annotations
 
+import heapq
 import itertools
 import logging
+import math
 import os
 import threading
 import time
@@ -146,6 +148,63 @@ def vertex_xy(idx: int) -> tuple[float, float] | None:
     if _vertex_coords is None or not (0 <= idx < len(_vertex_coords)):
         return None
     return _vertex_coords[idx]
+
+
+#: 정점 인덱스 → [(이웃, 거리 m), ...]. lane 은 **방향 간선**이라 yaml 이 `[a,b]` 와
+#: `[b,a]` 를 따로 적는다 — 여기서도 적힌 방향만 넣는다(무향으로 뒤집으면 일방통행이 사라진다).
+_lane_adj: dict[int, list[tuple[int, float]]] | None = None
+
+
+def _load_lanes() -> dict[int, list[tuple[int, float]]]:
+    """navgraph 의 방향 간선 표. 비용은 두 정점 사이 직선거리(m)."""
+    global _lane_adj
+    if _lane_adj is not None:
+        return _lane_adj
+
+    import yaml
+
+    _load_vertex_index()                       # _vertex_coords 를 채운다
+    coords = _vertex_coords or []
+    with open(NAVGRAPH_PATH) as f:
+        data = yaml.safe_load(f)
+    adj: dict[int, list[tuple[int, float]]] = {}
+    for lane in data["levels"]["L1"].get("lanes") or []:
+        a, b = int(lane[0]), int(lane[1])
+        if not (0 <= a < len(coords) and 0 <= b < len(coords)):
+            continue
+        (ax, ay), (bx, by) = coords[a], coords[b]
+        adj.setdefault(a, []).append((b, math.hypot(bx - ax, by - ay)))
+    _lane_adj = adj
+    log.info("[dispatch] navgraph 간선 %d개 로드", sum(len(v) for v in adj.values()))
+    return adj
+
+
+def path_cost(start: int, goal: int) -> float | None:
+    """`start` → `goal` 최단 주행거리(m). 도달 불가면 None.
+
+    **배차 입찰가가 이 값이다.** fleet_node 의 `Navgraph::dijkstra` + `path_cost` 와 같은
+    것을 파이썬에서 재현한다 — 정점이 22개뿐이라 힙 하나로 충분하다.
+
+    ⚠️ 홉 수가 아니라 **미터**다. arte2 는 레인 길이 편차가 커서(최소 0.062m) 홉 수로
+       세면 짧은 레인을 여러 번 지나는 로봇이 부당하게 불리해진다.
+    """
+    if start == goal:
+        return 0.0
+    adj = _load_lanes()
+    dist: dict[int, float] = {start: 0.0}
+    heap: list[tuple[float, int]] = [(0.0, start)]
+    while heap:
+        d, v = heapq.heappop(heap)
+        if v == goal:
+            return d
+        if d > dist.get(v, float("inf")):
+            continue                            # 낡은 항목
+        for w, cost in adj.get(v, ()):
+            nd = d + cost
+            if nd < dist.get(w, float("inf")):
+                dist[w] = nd
+                heapq.heappush(heap, (nd, w))
+    return None
 
 
 def resolve_vertex(name: str) -> int:
@@ -1106,6 +1165,18 @@ def on_orchestrator_event(kind: str, task, leg) -> None:
 # 나중에 fleet_node 쪽 `SubmitTask.srv` 에 robot 필드를 추가하면 이 함수는 지우고
 # `real_dispatch` 가 `robot=""` 로 제출하도록 바꾼다.
 AUTO_ASSIGN_SEC = float(os.environ.get("LIBI_AUTO_ASSIGN_SEC", "3"))
+
+#: 배터리 완주 관문 — **fleet_node 의 `battery_drain_per_m` · `battery_reserve_pct`
+#: 기본값과 같은 값이다.** 두 곳에 있는 이유는 입찰 단계에서 먼저 걸러야 낙찰된 뒤
+#: 거절당하는 일이 없기 때문이다(`pick_robot` 독스트링). fleet_node 쪽 파라미터를
+#: 바꾸면 여기 환경변수도 같이 준다 — 어긋나면 관문이 두 번 다르게 걸린다.
+DRAIN_PER_M = float(os.environ.get("LIBI_BATTERY_DRAIN_PER_M", "1.0"))
+BATTERY_RESERVE_PCT = float(os.environ.get("LIBI_BATTERY_RESERVE_PCT", "15.0"))
+
+#: 로봇 좌표에서 정점을 되찾을 때의 반경(m). 노드 점유 정보가 없을 때만 쓴다.
+#: `vertex_at` 의 기본값(0.05)은 홉 판정용이라 너무 빡빡해 — 서 있는 로봇은 그보다
+#: 벌어져 있는 것이 정상이다.
+ROBOT_VERTEX_TOL = float(os.environ.get("LIBI_ROBOT_VERTEX_TOL", "0.4"))
 _auto_assign_stop = threading.Event()
 
 #: fleet_node 의 `can_accept()`/`is_dispatchable()` 과 같은 규칙(IDLE·PATROL 만).
@@ -1138,43 +1209,187 @@ def _reject_reason(r: dict) -> str | None:
     return None
 
 
-def pick_robot(robots: list[dict]) -> str | None:
-    """대기 중인 주문 하나에 배정할 로봇을 고른다. 근거: `dispatch-shared.ts:pickRobot`."""
+def _robot_vertex(r: dict) -> int | None:
+    """로봇이 지금 서 있는 정점.
+
+    쥐고 있는 노드가 있으면 그것을 쓴다 — 교통관제가 "이 로봇은 여기 있다"고 판정한
+    값이라 좌표 역산보다 정확하다. 없으면 좌표에서 가장 가까운 정점을 찾는다.
+    """
+    held = r.get("held_nodes") or []
+    if held:
+        return int(held[0])
+    x, y = r.get("x"), r.get("y")
+    if x is None or y is None:
+        return None
+    return vertex_at(float(x), float(y), tol=ROBOT_VERTEX_TOL)
+
+
+def pick_robot(robots: list[dict], goal_idx: int | None = None) -> str | None:
+    """대기 중인 주문 하나에 배정할 로봇을 고른다 — **경매(Auction)**.
+
+    후보 로봇이 목표까지의 **실제 주행거리(m)** 로 입찰하고 **최저가가 낙찰**된다.
+
+    ## 배터리는 입찰가가 아니라 완주 관문이다
+
+    입찰가에 섞으면 "배터리 많은 로봇이 굳이 먼 거리를 가는" 비효율이 생긴다.
+    통과한 로봇끼리는 거리로만 겨루고, 방전 좌초는 관문이 막는다.
+
+    ⚠️ 관문을 **여기서 먼저** 거는 이유: fleet_node 도 같은 관문을 갖고 있지만, 거기서
+       거절당하면 이미 낙찰된 주문이 dispatch 단계에서 실패로 닫힌다. 입찰 단계에서
+       빼면 그 로봇이 애초에 낙찰되지 않는다.
+
+    ## 거리를 못 재면 예전 규칙으로 떨어진다
+
+    목표 정점을 모르거나(주행 다리가 없는 주문) navgraph 를 못 읽는 경우다. 그때는
+    순회 우선 → 배터리 높은 순 (`dispatch-shared.ts:pickRobot` 과 같은 규칙).
+    **거리를 잴 수 있었는데 관문을 다 떨어진 경우는 폴백하지 않는다** — 폴백하면
+    배터리 부족한 로봇이 낙찰되어 fleet_node 가 거절한다.
+    """
     candidates = [r for r in robots if _reject_reason(r) is None]
     if not candidates:
         return None
+
+    if goal_idx is not None:
+        bids: list[tuple[float, str]] = []
+        priced = 0                      # 거리를 잰 로봇 수 (관문 탈락 포함)
+        for r in candidates:
+            if _reachable(r, goal_idx) is None:
+                continue                # 위치 미상·경로 없음 — 거리를 못 잰다
+            priced += 1
+            cost = bid_of(r, goal_idx)
+            if cost is not None:
+                bids.append((cost, str(r["name"])))
+        if priced:
+            if not bids:
+                return None             # 전원 관문 탈락 — 폴백하지 않는다(위 독스트링)
+            bids.sort()
+            return bids[0][1]
+
     candidates.sort(key=lambda r: (0 if r.get("state") == "PATROL" else 1,
                                    -(r.get("battery") if r.get("battery") is not None else -1)))
     return str(candidates[0]["name"])
 
 
+def _reachable(robot: dict, goal_idx: int | None) -> float | None:
+    """이 로봇이 목표까지 가는 주행거리(m). 위치를 모르거나 경로가 없으면 None.
+
+    **완주 관문은 여기서 안 본다** — "거리를 잴 수 있었나"와 "갈 배터리가 있나"를
+    가르기 위해서다. 둘을 합치면 배터리 부족을 '거리 못 잼'으로 오인해 폴백이 열린다.
+    """
+    if goal_idx is None:
+        return None
+    v = _robot_vertex(robot)
+    if v is None:
+        return None
+    return path_cost(v, int(goal_idx))
+
+
+def bid_of(robot: dict, goal_idx: int | None) -> float | None:
+    """이 로봇이 이 목표에 낼 **입찰가(m)**. 입찰할 수 없으면 None.
+
+    입찰가 = 목표까지의 실제 주행거리. 배터리는 값에 섞지 않고 관문으로만 쓴다.
+    """
+    cost = _reachable(robot, goal_idx)
+    if cost is None:
+        return None
+    batt = robot.get("battery")
+    if batt is not None and float(batt) < cost * DRAIN_PER_M + BATTERY_RESERVE_PCT:
+        return None                     # 완주 관문 탈락
+    return cost
+
+
+def first_goal_vertex(task: dict) -> int | None:
+    """주문의 **첫 주행 다리** 목적지 정점. 없으면 None(= 거리 입찰 불가).
+
+    입찰가는 "지금 위치 → 첫 목적지"다. 배달이면 서가까지의 거리이고, 그 뒤 다리는
+    어느 로봇이 맡아도 같으므로 비교에 넣지 않는다.
+    """
+    for leg in task.get("legs") or []:
+        if leg.get("type") != LegType.NAVIGATE.value:
+            continue
+        wp = (leg.get("params") or {}).get("waypoint")
+        if wp is None:
+            return None
+        try:
+            return resolve_vertex(wp)
+        except Exception:               # noqa: BLE001 — navgraph 에 없는 이름
+            return None
+    return None
+
+
+def _best_pair(tasks: list[dict], robots: list[dict],
+               goals: dict[str, int | None]) -> tuple[dict, dict] | None:
+    """이번 라운드의 **최저 입찰 (주문, 로봇) 한 쌍**. 아무도 입찰 못 하면 None.
+
+    SSI 의 한 라운드다 — 남은 주문 전체 × 남은 로봇 전체를 보고 가장 싼 짝을 고른다.
+    주문을 고정해 두고 로봇만 고르면(= 예전 방식) 그 주문이 로봇을 먼저 집어가서
+    **더 싸게 처리될 수 있었던 다음 주문이 먼 로봇을 떠안는다.**
+    """
+    best: tuple[float, dict, dict] | None = None
+    for t in tasks:
+        goal = goals.get(t["id"])
+        for r in robots:
+            bid = bid_of(r, goal)
+            if bid is None:
+                continue
+            if best is None or bid < best[0]:
+                best = (bid, t, r)
+    return (best[1], best[2]) if best else None
+
+
 def _auto_assign_once() -> int:
+    """대기 주문을 **순차 단일품목 경매(SSI)** 로 배차한다.
+
+    한 라운드마다 (남은 주문 × 남은 로봇)의 입찰가를 전부 보고 **가장 싼 짝**을 낙찰한다.
+    낙찰된 주문과 로봇을 빼고 다음 라운드를 돈다 — 그래서 앞 낙찰이 뒤 주문의 선택지를
+    바꾸는 것을 계산에 넣는다(그 재평가가 없으면 단순 즉시배정 IA 다).
+
+    `priority` 는 입찰가로 흡수하지 않고 **계층**으로 둔다 — 급한 주문이 "조금 더 가까운"
+    일반 주문에 밀리면 우선순위라는 말이 성립하지 않는다. 같은 계층 안에서만 경매한다.
+    """
     orc = _orc()
-    # 우선순위 높은 순 — priority 는 task 지정 우선도(SubmitTask.srv 주석과 같은 뜻).
-    pending = sorted(orc.pending(), key=lambda t: -t.get("priority", 0))
+    pending = list(orc.pending())
     if not pending:
         return 0
-    robots = fleet_link.snapshot().get("robots", [])
+    robots = [r for r in fleet_link.snapshot().get("robots", [])
+              if _reject_reason(r) is None]
+    all_robots = fleet_link.snapshot().get("robots", [])
+    goals = {t["id"]: first_goal_vertex(t) for t in pending}
     assigned = 0
-    for t in pending:
-        robot = pick_robot(robots)
-        if robot is None:
-            # ⚠️ **조용히 나가지 않는다.** 대기 주문이 있는데 후보가 0이면 그건 정상이
-            #    아니라 진단해야 할 상태다. 로봇별 거절 사유를 로그와 주문 사유에 남겨,
-            #    "왜 배차가 안 되지" 를 화면만 보고 알 수 있게 한다.
-            why = ", ".join(
-                f"{r.get('name')}: {_reject_reason(r)}" for r in robots
-            ) or "로봇 없음"
-            log.warning("[auto-assign] 대기 %d건인데 배차 가능한 로봇이 없습니다 — %s",
-                        len(pending), why)
-            _mark_stalled(pending, why)
-            break   # 배차 가능한 로봇 소진 — 나머지는 다음 주기로
+
+    while pending and robots:
+        # 우선순위 계층 — priority 는 task 지정 우선도(SubmitTask.srv 주석과 같은 뜻).
+        tier = max(int(t.get("priority", 0) or 0) for t in pending)
+        tier_tasks = [t for t in pending if int(t.get("priority", 0) or 0) == tier]
+
+        pair = _best_pair(tier_tasks, robots, goals)
+        if pair is None:
+            # 거리를 못 재는 계층(주행 다리가 없거나 위치 미상) — 예전 규칙으로 한 건 민다.
+            task = tier_tasks[0]
+            name = pick_robot(robots, goals.get(task["id"]))
+            if name is None:
+                # ⚠️ **조용히 나가지 않는다.** 대기 주문이 있는데 후보가 0이면 그건 정상이
+                #    아니라 진단해야 할 상태다. 로봇별 거절 사유를 로그와 주문 사유에 남겨,
+                #    "왜 배차가 안 되지" 를 화면만 보고 알 수 있게 한다.
+                why = ", ".join(
+                    f"{r.get('name')}: {_reject_reason(r)}" for r in all_robots
+                ) or "로봇 없음"
+                log.warning("[auto-assign] 대기 %d건인데 배차 가능한 로봇이 없습니다 — %s",
+                            len(pending), why)
+                _mark_stalled(pending, why)
+                break   # 배차 가능한 로봇 소진 — 나머지는 다음 주기로
+            robot = next(r for r in robots if str(r.get("name")) == name)
+        else:
+            task, robot = pair
+
+        pending = [t for t in pending if t["id"] != task["id"]]
         try:
-            orc.assign(t["id"], robot)
+            orc.assign(task["id"], str(robot["name"]))
         except (KeyError, ValueError) as exc:
-            log.warning("[auto-assign] %s → %s 배정 실패: %s", t["id"], robot, exc)
-            continue
-        robots = [r for r in robots if r.get("name") != robot]   # 이번 주기엔 다시 안 고른다
+            log.warning("[auto-assign] %s → %s 배정 실패: %s",
+                        task["id"], robot.get("name"), exc)
+            continue    # 로봇은 남겨 둔다 — 다른 주문이 쓸 수 있다
+        robots = [r for r in robots if r.get("name") != robot.get("name")]
         assigned += 1
     return assigned
 
