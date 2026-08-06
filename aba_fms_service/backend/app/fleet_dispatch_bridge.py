@@ -469,6 +469,10 @@ NAV_VIA_BT = os.environ.get("LIBI_NAV_VIA_BT", "1") == "1"
 # 그래서 재발행을 **느린 심박**으로 쓴다: 같은 목적지라도 이 시간이 지나면 한 번 더
 # 보낸다. 정상 홉은 2~17초라 보통은 재전송 없이 끝나고, 멈춘 로봇만 다시 출발한다.
 #
+# ⚠️ [2026-08-06 실측] pinky-3 순회 로그로 보면 정상 홉이 실제로는 20~21초 걸렸다 —
+#   20초였던 이전 값 바로 위 경계라 거의 매 홉마다 걸렸다(멀쩡히 가던 중에 nav2 goal
+#   이 다시 나가 "중간중간 끊김"으로 관찰됨). 여유를 두고 45초로 올린다.
+#
 # ⚠️ `libi_modes` 의 `NavigationExec` 에도 재전송(`arrive_resend_sec`)이 있다.
 #    **중복이 아니라 서로 다른 고장을 막는다** — 지우기 전에 읽을 것:
 #      여기(FMS)  : 명령이 **로봇에 닿지 않은** 경우 (DDS 유실, 로봇 늦게 뜸,
@@ -477,7 +481,7 @@ NAV_VIA_BT = os.environ.get("LIBI_NAV_VIA_BT", "1") == "1"
 #    BT 는 자기가 못 받은 명령을 다시 보낼 수 없고, FMS 는 로봇이 도착했는지 모른다.
 #    같은 목적지가 다시 와도 BT 는 목적지가 안 바뀌었으면 goal 을 새로 내지 않으므로
 #    둘이 겹쳐도 주행을 끊지 않는다.
-NAV_RESEND_SEC = float(os.environ.get("LIBI_NAV_RESEND_SEC", "20"))
+NAV_RESEND_SEC = float(os.environ.get("LIBI_NAV_RESEND_SEC", "45"))
 
 #: 로봇별 (마지막 목적지, 보낸 시각).
 _last_nav: dict[str, tuple] = {}
