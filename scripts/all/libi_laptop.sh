@@ -5,12 +5,13 @@
 #   ./libi_laptop.sh --robot pinky-3 --domain-id 119
 #   ./libi_laptop.sh --robot pinky-1 --domain-id 117 --no-gui   # 패널 없이 추종만
 #   ./libi_laptop.sh --robot pinky-3 --domain-id 119 --window   # 패널을 이 PC 에 창으로
-#   ./libi_laptop.sh --robot pinky-3 --domain-id 119 --no-secview   # 야간 더미 뷰어 끄기
+#   ./libi_laptop.sh --robot pinky-3 --domain-id 119 --no-security   # 야간 감시 끄기
+#   ./libi_laptop.sh --robot pinky-3 --domain-id 119 --secview       # 옛 더미 뷰어 켜기
 #
-# ⚠️ 야간 감시 더미 뷰어는 [2026-08-04] **기본으로 켜짐**이다. 인지 서버는 뷰어를 한
-#    번에 하나만 받지만, 이 뷰어는 관제 mode 를 보고 **낮이면 스스로 접속을 비워** 패널의
-#    추종 화면을 막지 않는다(security_viewer.py 의 --ops-url/mode_check). 그래도 안
-#    켜고 싶으면 --no-secview.
+# ⚠️ 야간 감시 더미 뷰어는 [2026-08-06] **기본으로 꺼짐**이다. 인지 서버가 뷰어 없이도
+#    프레임 루프를 돌리게 바뀌어서(`perception_server.serve_loop` 의 `accept_srv` —
+#    뷰어는 있으면 보내고 없으면 마는 옵셔널 슬롯이다) 자리를 채워 줄 마네킹이 필요
+#    없어졌다. 야간 녹화는 아무도 안 봐도 돌고, 그 와중에 패널이 붙어도 안 검다.
 #
 # `--window` 는 VNC 대신이다 — **둘 다는 안 된다**(Qt 플랫폼 플러그인이 하나뿐).
 # 창을 켜면 :590x VNC 는 안 열리므로, 태블릿에서도 봐야 하면 붙이지 마라.
@@ -57,11 +58,15 @@ WITH_GUI=true
 #: 패널을 이 PC 에 **창으로** 띄운다. 기본은 VNC(태블릿/로봇 패널이 붙는 쪽)이고,
 #  Qt 플랫폼 플러그인은 한 번에 하나라 **둘 다는 안 된다** — 창을 켜면 VNC :590x 는 안 열린다.
 WITH_WINDOW=false
-#: 야간 감시 더미 뷰어(security_viewer.py)를 같이 띄운다. [2026-08-04] 기본을 켬으로
-#  바꿨다 — 매번 --secview 를 잊는 사고가 있었는데, 이제 뷰어가 --ops-url 로 관제
-#  mode 를 보고 day 면 스스로 접속을 비우므로(security_viewer.py 의 mode_check) 낮에
-#  패널을 막지 않는다. 그래도 안 끄고 싶으면 --no-secview.
-WITH_SECVIEW=true
+#: 야간 감시 기능(AI 서버의 --security — SecurityRecorder/OpsSink). 기본 켬.
+#  ⚠️ [2026-08-06] 이걸 아래 WITH_SECVIEW 에서 **떼어냈다.** 전에는 한 변수가 둘을
+#  같이 켰는데, 더미 뷰어를 끄면 야간 감시까지 조용히 같이 꺼졌다.
+WITH_SECURITY=true
+#: 야간 감시 더미 뷰어(security_viewer.py)를 같이 띄운다. [2026-08-06] 기본을 **끔**으로
+#  바꿨다 — 인지 서버가 뷰어 없이도 돌게 되어(perception_server.serve_loop 의
+#  accept_srv) 자리를 채워 줄 마네킹이 더는 필요 없다. 옛 서버(뷰어 필수)로 되돌려야
+#  하는 상황에서만 --secview 로 켠다. **이걸 꺼도 야간 감시는 돈다.**
+WITH_SECVIEW=false
 #: AI 서버에 그대로 넘길 추가 인자. `--pose` 같은 스위치용이다.
 AI_EXTRA=""
 while [ $# -gt 0 ]; do
@@ -71,8 +76,12 @@ while [ $# -gt 0 ]; do
     --no-ai)     WITH_AI=false; shift ;;
     --no-gui)    WITH_GUI=false; shift ;;
     --window)    WITH_WINDOW=true; shift ;;
-    --secview)    WITH_SECVIEW=true; shift ;;
-    --no-secview) WITH_SECVIEW=false; shift ;;
+    --secview)     WITH_SECVIEW=true; shift ;;
+    --no-secview)  WITH_SECVIEW=false; shift ;;
+    # --security 는 기본값과 같다(켬). 손이 먼저 치는 자리라 받아준다 — 없으면
+    # "모르는 인자"로 죽어서 데모 직전에 아무것도 안 뜬다.
+    --security)    WITH_SECURITY=true; shift ;;
+    --no-security) WITH_SECURITY=false; shift ;;
     # 자세(pose) 판정을 **켠다**. [2026-07-30] 기본이 꺼짐으로 바뀌었다
     # (perception_server 의 `--pose` 옵트인). 꺼져 있으면 PostureGate 가 주행을 항상
     # 허용한다(posture_gate.py — "판정 소스가 아예 없다" 분기): Calibrating 정지도,
@@ -80,7 +89,7 @@ while [ $# -gt 0 ]; do
     # 켜면 그 판정이 돌아오는 대신 프레임당 2차 추론이 붙어 추종 주기가 느려진다.
     --pose)      AI_EXTRA="$AI_EXTRA --pose"; shift ;;
     *) die "모르는 인자: $1
-  사용법: ./libi_laptop.sh --robot <이름> [--no-ai] [--no-gui] [--window] [--pose] [--no-secview] [--domain-id <n>]" ;;
+  사용법: ./libi_laptop.sh --robot <이름> [--no-ai] [--no-gui] [--window] [--pose] [--secview] [--no-security] [--domain-id <n>]" ;;
   esac
 done
 
@@ -162,8 +171,10 @@ tmux new-session -d -s "$SESSION" -n urls \
   관제 콘솔   http://localhost:9002/
   도서관 웹   http://localhost:3000/'; exec bash"
 
-# 야간 감시 옵트인 — AI 서버에 --security 를 넘겨 SecurityRecorder/OpsSink 를 태운다.
-[ "$WITH_SECVIEW" = true ] && AI_EXTRA="$AI_EXTRA --security --security-robot '$ROBOT'"
+# 야간 감시 — AI 서버에 --security 를 넘겨 SecurityRecorder/OpsSink 를 태운다.
+# ⚠️ 이건 더미 뷰어(WITH_SECVIEW)와 **무관하다.** 예전엔 같은 변수였는데, 뷰어를 끄면
+#    감시 기능까지 조용히 꺼져서 갈랐다. 뷰어 없이도 녹화가 도는 게 지금 구조다.
+[ "$WITH_SECURITY" = true ] && AI_EXTRA="$AI_EXTRA --security --security-robot '$ROBOT'"
 
 # ── 1) AI 추종 서버 ────────────────────────────────────────────────────────
 if [ "$WITH_AI" = true ]; then

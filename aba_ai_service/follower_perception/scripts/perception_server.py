@@ -200,7 +200,10 @@ def draw_overlay(frame, det, *, cands=None, pick=None, cmd=None, status_extra=""
         # 이미 여기서 굽는다(FollowScreen.qml 머리말).
         posture = getattr(det, "posture", None)
         pcol = _POSTURE_COLORS.get(posture, _POSTURE_UNKNOWN_COLOR)
-        kp = None  # 골격 표시 끔 — 그리기만 막음, posture 판정 로직엔 영향 없음
+        # 포즈 판정에 실제로 사용한 최신 키포인트를 화면에도 표시한다.
+        # 판정이 꺼져 있거나 아직 owner 포즈가 없으면 None 이므로 기존처럼 안전하게
+        # 아무것도 그리지 않는다.
+        kp = getattr(pose, "last_keypoints", None) if pose is not None else None
         if kp is not None:
             # 판정이 실제로 쓴 축을 그대로 그린다 — 안 읽으면 화면은 항상 torso 축인데
             # 판정은 shoulder_knee 로 나오는 어긋남이 생긴다(이 파일이 고치는 이유).
@@ -327,15 +330,50 @@ def _pose_payload(det, cmd, pose, fps, matcher=None):
 EOF = object()
 
 
+def _drop_viewer(conn):
+    """뷰어 슬롯을 비운다. **반드시 닫는다** — 안 닫으면 소켓이 CLOSE-WAIT 로 잔류한다."""
+    try:
+        conn.close()
+    except OSError:
+        pass
+    print("[..] viewer disconnected; waiting again", flush=True)
+    return None
+
+
 def serve_loop(conn, frames, perception, *, poll_cmd=None, jpeg_quality=80,
                cmd_sink=None, policy=None, lidar_source=None, detection_sink=None,
                camera_source=None, role_source=None, recorder=None,
-               live_snapshot_path=None):
+               live_snapshot_path=None, accept_srv=None):
+    """`conn` 은 **옵셔널**이다 — `None` 이면 뷰어 없이 돈다(녹화·live.jpg 는 그대로).
+
+    `accept_srv` 를 주면 뷰어가 붙고 끊기는 것을 이 루프 **안에서** 처리한다: 매 프레임
+    논블로킹으로 `accept()` 를 시도하고, 끊기면 슬롯만 비우고 루프는 안 멈춘다.
+    안 주면 예전 그대로 — 끊기면 리턴한다(호출자가 `accept()` 로 돌아간다).
+
+    ## 왜 옵셔널인가
+
+    야간 감시는 **아무도 패널을 안 보는데 녹화는 돌아야 한다.** 예전엔 프레임 루프가
+    통째로 이 함수 안에 있어서 "뷰어 없음 = 서버가 아무 일도 안 함"이었고, 그래서
+    자리만 채우는 더미 뷰어(`security_viewer.py`)를 붙였다. 그게 낮에 패널의 추종
+    화면을 막았다(뷰어는 한 번에 하나다). 여기서 옵셔널로 낮춰 그 마네킹을 없앤다.
+
+    ⚠️ 뷰어가 없을 때 **무장(야간)이 아니면 추론을 돌리지 않는다** — 아무도 안 보는
+    주간 순찰 내내 YOLO 를 돌리면 노트북만 태운다. 그동안에도 `recorder.feed(None)`
+    심장박동은 계속 넣는다(모드 전이·클립 마감 시계가 거기서 돈다).
+    """
     last_t = time.monotonic()
     # 1초에 한 번만 쓴다 — 15~17fps 마다 디스크에 쓰면 아무도 안 보는 야간 내내
     # 불필요한 I/O 다. 사람 눈으로 보는 용도라 1초 지연은 문제되지 않는다.
     last_snapshot_t = 0.0
     for frame in frames:
+        if accept_srv is not None and conn is None:
+            # 논블로킹 — 아무도 안 붙어 있어도 프레임 루프는 계속 돌아야 한다.
+            if select.select([accept_srv], [], [], 0)[0]:
+                conn, addr = accept_srv.accept()
+                # 폴러를 새로 만든다 — 옛 뷰어가 남긴 반쪽 줄이 새 뷰어의 첫 명령에
+                # 붙는 것을 막는다(make_socket_poller 의 state["buf"]).
+                poll_cmd = make_socket_poller()
+                print(f"[ok] viewer connected: {addr}", flush=True)
         # None = 심장박동(영상이 아직 안 옴). 소켓만 확인하고 넘어간다 — 이게 없으면
         # 프레임이 안 오는 동안 뷰어가 끊긴 것을 영영 못 알아챈다(udp_video.frames 주석).
         if frame is None:
@@ -344,17 +382,28 @@ def serve_loop(conn, frames, perception, *, poll_cmd=None, jpeg_quality=80,
             # 안 붙는다(security_recorder.feed 머리말).
             if recorder is not None:
                 recorder.feed(None, 0.0)
-            if poll_cmd is not None and poll_cmd(conn) is EOF:
-                return
+            if poll_cmd is not None and conn is not None and poll_cmd(conn) is EOF:
+                if accept_srv is None:
+                    return
+                conn = _drop_viewer(conn)
+            continue
+        if conn is None and (recorder is None or not recorder.wants_armed):
+            # 보는 사람도 없고 무장도 안 됐다 — 추론을 돌릴 이유가 없다. 심장박동만
+            # 넣어 모드 전이(야간→주간)와 클립 마감 시계는 계속 돌린다.
+            if recorder is not None:
+                recorder.feed(None, 0.0)
             continue
         _sync_camera(perception, camera_source)
         _sync_role(perception, role_source)
-        cmd = poll_cmd(conn) if poll_cmd else None
+        cmd = poll_cmd(conn) if (poll_cmd and conn is not None) else None
         if cmd is EOF:
-            # 패널이 닫혔다. 여기서 안 빠지면 소켓이 CLOSE-WAIT 로 잔류하고,
+            # 패널이 닫혔다. 여기서 안 비우면 소켓이 CLOSE-WAIT 로 잔류하고,
             # `listen(1)` + 뷰어 1개 구조라 **다음 패널이 영영 못 붙는다**
             # (SYN-SENT 로 매달린 채 "AI 서버에 연결 중…"). 실측 2026-07-28.
-            return
+            if accept_srv is None:
+                return
+            conn = _drop_viewer(conn)
+            cmd = None
         if cmd == "register":
             perception.register_from_image(frame)
         elif cmd == "reset":
@@ -413,6 +462,8 @@ def serve_loop(conn, frames, perception, *, poll_cmd=None, jpeg_quality=80,
                         os.replace(tmp, live_snapshot_path)
                     except OSError:
                         pass
+            if conn is None:
+                continue                                     # 뷰어 없음 — 녹화만 돈다
             try:
                 send_frame(conn, buf.tobytes())
                 send_frame(conn, _pose_payload(det, cmd, _pose_or_none(perception), fps, perception.matcher))
@@ -424,7 +475,14 @@ def serve_loop(conn, frames, perception, *, poll_cmd=None, jpeg_quality=80,
                             _cm(s["left"]),                       _cm(s["right"]),
                             _cm(s["back_left"]),  _cm(s["back"]), _cm(s["back_right"])))
             except (BrokenPipeError, ConnectionResetError, OSError):
-                return
+                if accept_srv is None:
+                    return
+                conn = _drop_viewer(conn)
+
+    # 여기까지 왔으면 뷰어가 아니라 **프레임 소스**가 끝난 것이다. `accept_srv` 모드에선
+    # 뷰어를 이 함수가 들고 있으므로 여기서 닫는다 — 호출자는 이 conn 을 모른다.
+    if accept_srv is not None and conn is not None:
+        _drop_viewer(conn)
 
 
 def make_socket_poller():
@@ -727,8 +785,8 @@ def build_security(args, perception):
     signal.signal(signal.SIGTERM, lambda *_a: (_shutdown(), sys.exit(0)))
     print(f"[security] 야간 보안 감지 켜짐 — 로봇={args.security_robot} "
           f"관제={args.security_ops} 저장={media}", flush=True)
-    print("[security] ⚠️ 뷰어 연결이 있어야 돕니다. 패널 추종 화면을 열거나 "
-          "security_viewer.py 를 띄우세요", flush=True)
+    print("[security] 뷰어 없이도 돕니다 — 야간이면 패널이 안 붙어 있어도 녹화가 "
+          "돌고, 붙으면 그때부터 같이 보입니다(serve_loop 의 accept_srv)", flush=True)
     return recorder, _shutdown, media
 
 
@@ -907,17 +965,25 @@ def main():
           f"({'test-pattern' if args.test_pattern else f'camera {args.camera}'}); "
           f"waiting for viewer…")
     while True:
-        conn, addr = srv.accept()
-        print(f"[ok] viewer connected: {addr}")
+        conn = None
+        if recorder is None:
+            # 녹화가 없으면 뷰어 없이 돌 이유가 없다 — 예전처럼 붙을 때까지 잔다.
+            conn, addr = srv.accept()
+            print(f"[ok] viewer connected: {addr}")
         try:
+            # recorder 가 있으면 뷰어를 **옵셔널 슬롯**으로 넘긴다: serve_loop 이
+            # 직접 accept 하고, 끊겨도 안 멈춘다. 그래서 더미 뷰어가 필요 없다
+            # (security_viewer.py 는 이제 안 띄워도 된다).
             serve_loop(conn, frames, perception, poll_cmd=make_socket_poller(),
                        cmd_sink=cmd_sink, policy=policy, lidar_source=lidar_source,
                        detection_sink=detection_sink, camera_source=camera_source,
                        role_source=role_source, recorder=recorder,
-                       live_snapshot_path=live_snapshot_path)
+                       live_snapshot_path=live_snapshot_path,
+                       accept_srv=srv if recorder is not None else None)
         finally:
-            conn.close()
-            print("[..] viewer disconnected; waiting again")
+            if conn is not None:
+                conn.close()
+                print("[..] viewer disconnected; waiting again")
         if not args.test_pattern:
             # 제너레이터는 닫히면 소진된다 — 다음 뷰어를 위해 **같은 종류로** 다시 만든다.
             # `_camera_frames()` 를 직접 부르면 UDP 모드가 무시된다(new_frames 주석).

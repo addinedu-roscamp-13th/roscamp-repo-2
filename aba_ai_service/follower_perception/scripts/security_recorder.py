@@ -86,6 +86,17 @@ class SecurityRecorder:
         """
         self._want_armed = bool(on)
 
+    @property
+    def wants_armed(self) -> bool:
+        """관제가 지금 「야간」을 원하는가 — 폴링 워커가 세운 플래그 그대로.
+
+        `_armed`(실제 전이 완료)가 아니라 이쪽을 노출한다. 전이는 `feed()` 안에서만
+        일어나는데, 호출자(`perception_server.serve_loop`)는 **feed 를 부를지 말지**를
+        정하려고 이 값을 읽기 때문이다. `_armed` 를 보면 "무장하려면 feed 가 필요한데
+        feed 를 하려면 무장돼 있어야 하는" 교착이 된다.
+        """
+        return self._want_armed
+
     def feed(self, jpeg, front_person_size, frame=None, cands=None) -> None:
         """프레임 하나. `jpeg=None` 은 **심장박동**(영상이 안 오는 동안 시계만 돌린다).
 

@@ -106,6 +106,7 @@ def test_플래그를_주면_녹화기와_종료훅을_만든다(tmp_path):
 
     got = perception_server.build_security(_Args(), _Perception())
     assert got is not None
-    recorder, shutdown = got
+    recorder, shutdown, media = got
+    assert media == str(tmp_path)    # live.jpg 가 여기 쓰인다(main 의 live_snapshot_path)
     assert callable(shutdown)
     shutdown()                       # 종료 경로가 예외 없이 돈다
