@@ -36,9 +36,9 @@ libi_modes:
     #   BT 가 더 엄격하면 관제가 다음 노드를 줬는데 BT 는 이전 목적지를 붙들고 있다.
     #   또 이 값은 **최소 레인(0.062m)보다 작아야** 옆 노드와 구분이 된다.
     #   전체 부등식:
-    #     update_min_d(0.02) < xy_goal_tolerance(0.03) < arrive_tolerance_m = arrive_radius(0.05)
-    #                                                                       < 최소 레인(0.062)
-    arrive_tolerance_m: 0.05
+    #     update_min_d(0.02) < xy_goal_tolerance(0.05) < arrive_tolerance_m = arrive_radius(0.07)
+    #                                                                       < 최소 레인(0.062) (현장 요청값은 오인식 점검 필요)
+    arrive_tolerance_m: 0.07
     # 도착하지 않은 채 이 시간이 지나면 같은 목적지로 goal 을 **다시** 낸다.
     #   nav2 주행은 도착 없이 끝날 수 있다(ABORTED, 또는 선점 순간 직전 목표의 완료가
     #   새 목표의 완료로 보고되는 경우). 그때 다시 몰아 줄 주체가 필요하다.

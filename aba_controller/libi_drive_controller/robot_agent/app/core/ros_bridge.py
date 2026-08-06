@@ -359,6 +359,13 @@ def _bridge_thread() -> None:
                 self._nav_action = ActionClient(self, NavigateToPose, "navigate_to_pose")
                 self._goal_done = threading.Event()
                 self._goal_result = False
+                # Nav2 goal 은 한 번에 하나만 선점한다. fleet_node 가 같은 홉을
+                # 재발행하거나 다음 홉을 너무 일찍 보내도 액션 서버에 바로 넣지 않고
+                # 현재 goal 이 끝난 뒤 마지막 요청을 이어 보낸다. 그렇지 않으면
+                # preemption 때 controller 가 cmd_vel 을 끊고 모터 watchdog 이 선다.
+                self._nav_goal_lock = threading.Lock()
+                self._nav_inflight_target = None
+                self._nav_pending_target = None
                 #: 목표 핸들의 수명(보관·세대·선취소)을 다루는 순수 상태기.
                 #: 여기 두면 ROS 없이 단위테스트가 된다 — tests/test_nav_goal_tracker.py
                 self._goals = NavGoalTracker()
@@ -533,14 +540,51 @@ def _bridge_thread() -> None:
                 화면에만 뜨고 로봇은 계속 달리던 원인이 이것이다.
                 (반면 블로킹 경로인 `nav_to()` 는 처음부터 콜백을 달고 있었다.)
                 """
+                target = (float(x), float(y), float(yaw))
+                with self._nav_goal_lock:
+                    inflight = self._nav_inflight_target
+                    if inflight is not None:
+                        # 같은 목표는 heartbeat 로 취급한다. 새 액션을 만들지 않는다.
+                        if all(abs(a - b) < 1e-4 for a, b in zip(inflight, target)):
+                            return True
+                        # 다음 waypoint 는 현재 waypoint 완료 뒤에만 선점 없이 전달한다.
+                        self._nav_pending_target = target
+                        self.get_logger().info(
+                            "목표 대기열: 현재 goal 완료 후 다음 goal 전송 "
+                            f"({target[0]:.2f}, {target[1]:.2f}, {target[2]:.2f})")
+                        return True
+
                 if not self._ensure_nav_action(2.0):
                     self.get_logger().error("navigate_to_pose 액션서버 없음")
                     return False
+                with self._nav_goal_lock:
+                    self._nav_inflight_target = target
                 gen = self._goals.begin()
-                self._nav_action.send_goal_async(self._make_goal(x, y, yaw)) \
+                self._nav_action.send_goal_async(self._make_goal(*target)) \
                     .add_done_callback(lambda f, g=gen: self._on_goal_response(f, g))
-                self.get_logger().info(f"[WEB] send goal: x={x:.2f}, y={y:.2f}, yaw={yaw:.2f}")
+                self.get_logger().info(
+                    f"[WEB] send goal: x={target[0]:.2f}, y={target[1]:.2f}, yaw={target[2]:.2f}")
                 return True
+
+            def _dispatch_pending_nav_goal(self) -> None:
+                """현재 goal 종료 뒤 대기 중인 최신 waypoint를 한 번만 전송한다."""
+                with self._nav_goal_lock:
+                    target = self._nav_pending_target
+                    self._nav_pending_target = None
+                    if target is None or self._nav_inflight_target is not None:
+                        return
+                    self._nav_inflight_target = target
+                if not self._ensure_nav_action(2.0):
+                    with self._nav_goal_lock:
+                        self._nav_inflight_target = None
+                    self.get_logger().error("대기 goal 전송 실패: navigate_to_pose 액션서버 없음")
+                    return
+                gen = self._goals.begin()
+                self._nav_action.send_goal_async(self._make_goal(*target)) \
+                    .add_done_callback(lambda f, g=gen: self._on_goal_response(f, g))
+                self.get_logger().info(
+                    f"[WEB] queued goal send: x={target[0]:.2f}, "
+                    f"y={target[1]:.2f}, yaw={target[2]:.2f}")
 
             def _on_goal_response(self, future, generation=None):
                 try:
@@ -555,8 +599,11 @@ def _bridge_thread() -> None:
                     # 거절됐거나, 낡은 세대이거나, 응답보다 취소가 먼저 왔다.
                     # 어느 쪽이든 이 목표는 진행하지 않는다.
                     if gh is None or not getattr(gh, "accepted", True):
+                        with self._nav_goal_lock:
+                            self._nav_inflight_target = None
                         self._goal_result = False
                         self._goal_done.set()
+                        self._dispatch_pending_nav_goal()
                     return
                 gh.get_result_async().add_done_callback(
                     lambda f, g=generation: self._on_goal_result(f, g))
@@ -574,11 +621,17 @@ def _bridge_thread() -> None:
                 except Exception:      # noqa: BLE001 — 콜백 예외가 executor 를 죽인다
                     self._goal_result = False
                 self._goals.clear()
+                with self._nav_goal_lock:
+                    self._nav_inflight_target = None
                 self._goal_done.set()
+                self._dispatch_pending_nav_goal()
 
             def cancel_active_goal(self) -> None:
                 # 핸들이 아직 없으면 취소 의사만 남는다(응답 시점에 갚는다).
                 # 그냥 돌아가면 잠시 뒤 핸들이 도착해 로봇이 계속 달린다.
+                with self._nav_goal_lock:
+                    self._nav_inflight_target = None
+                    self._nav_pending_target = None
                 self._goals.cancel()
 
             def nav_to(self, x, y, yaw, stop_event=None, wait_action_sec: float = None) -> bool:

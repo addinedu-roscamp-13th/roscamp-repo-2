@@ -173,13 +173,13 @@ controller_server:
       #   stateful 을 끄면 목표 판정이 매 주기 XY 부터 다시 확인한다.
       stateful: False
       plugin: "nav2_controller::SimpleGoalChecker"
-      # ⚠️ [2026-07-21] fleet_node 의 도착 판정(arrive_radius=0.05)보다 **작아야** 한다.
-      #   둘이 같으면(0.05=0.05) 여유가 0 이라, nav2 가 5.0cm 지점에서 멈추면
+      # ⚠️ fleet_node 의 도착 판정(arrive_radius=0.07)보다 **작아야** 한다.
+      #   둘이 같으면(0.07=0.07) 여유가 0 이라, nav2 가 7.0cm 지점에서 멈추면
       #   fleet_node 는 "아직 5.0cm" 로 보고 도착을 인정하지 않아 교착에 빠진다
       #   (실측: v13→v4 구간에서 5.27cm 에 선 채 다음 노드로 못 넘어감).
-      #   전체 부등식: update_min_d(0.02) < xy_goal_tolerance < arrive_radius(0.05)
-      #                                                        < 최소 레인(0.062)
-      xy_goal_tolerance: 0.03
+      #   전체 부등식: update_min_d(0.02) < xy_goal_tolerance(0.05) < arrive_radius(0.07)
+      #                                                        < 최소 레인(0.062) (오인식 점검 필요)
+      xy_goal_tolerance: 0.05
       yaw_goal_tolerance: 0.15
 
     # ★ 여기부터: Regulated Pure Pursuit 컨트롤러 설정
