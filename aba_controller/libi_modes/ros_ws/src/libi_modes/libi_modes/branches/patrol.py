@@ -34,7 +34,9 @@ def create(params: dict, driver, *, undock_gate, clock=time.monotonic,
     person_sustain = work.get("person_sustain_sec", 10.0)
     person_grace = work.get("person_resume_grace_sec", 1.0)
     nav = PatrolNavigation(driver, work["arrive_tolerance_m"],
-                           work["arrive_resend_sec"], work["arrive_timeout_sec"])
+                           work["arrive_resend_sec"], work["arrive_timeout_sec"],
+                           recovery_retry_max=work.get("recovery_retry_max", 3),
+                           recovery_stall_sec=work.get("recovery_stall_sec", 0))
     return py_trees.composites.Sequence(
         name="PatrolBranch",
         memory=False,

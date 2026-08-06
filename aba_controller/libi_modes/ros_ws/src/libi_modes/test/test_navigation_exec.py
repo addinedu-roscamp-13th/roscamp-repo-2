@@ -122,6 +122,22 @@ def test_same_target_is_re_driven_after_the_resend_window(leaf):
     assert node.driver.start_count == 2
 
 
+def test_motion_stall_watchdog_recovers_before_long_arrival_timeout(leaf):
+    clock = _Clock()
+    node = leaf(clock=clock,
+                **{Keys.ACTIVE_COMMAND: "navigate",
+                   Keys.NAV_TARGET: _to(1.0, 0.0),
+                   Keys.ROBOT_POSE: _at(0.0, 0.0)})
+    node.recovery_stall_sec = 5.0
+    node.update()
+    clock.t = 4.9
+    node.update()
+    assert node.driver.start_count == 1
+    clock.t = 5.0
+    assert node.update() == Status.RUNNING
+    assert node.driver.start_count == 2
+
+
 def test_gives_up_after_the_arrive_timeout(leaf):
     """영영 못 가는 것과 아직 가는 중인 것을 구별한다.
 
@@ -134,6 +150,21 @@ def test_gives_up_after_the_arrive_timeout(leaf):
                                 Keys.ROBOT_POSE: _at(0.0, 0.0)})
     node.update()
     clock.t = TIMEOUT
+    assert node.update() == Status.RUNNING, "첫 watchdog 만료는 자동 복구해야 한다"
+    assert node.test_bb.get(Keys.ACTIVE_COMMAND) == "navigate"
+
+
+def test_retries_a_lost_goal_then_fails_loudly(leaf):
+    """접수 유실이 반복되면 무한 대기하지 않고 최종 실패한다."""
+    clock = _Clock()
+    node = leaf(clock=clock, **{Keys.ACTIVE_COMMAND: "navigate",
+                                Keys.NAV_TARGET: _to(1.0, 0.0),
+                                Keys.ROBOT_POSE: _at(0.0, 0.0)})
+    node.update()
+    for _ in range(3):
+        clock.t += TIMEOUT
+        assert node.update() == Status.RUNNING
+    clock.t += TIMEOUT
     assert node.update() == Status.FAILURE
     assert node.test_bb.get(Keys.ACTIVE_COMMAND) is None
 

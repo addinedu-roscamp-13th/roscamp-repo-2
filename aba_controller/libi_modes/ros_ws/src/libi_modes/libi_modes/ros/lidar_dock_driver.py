@@ -184,10 +184,10 @@ class LidarDockDriver:
                 # SEARCH에서 크게 틀어진 동안에는 벽 정렬만 한다. 그러나 벽이
                 # 이미 정렬 허용치 안이면 이 프레임의 노치를 즉시 첫 확정 표본으로
                 # 넘긴다. 연속 확인 전에는 여전히 0 속도다.
-                search_obs = None
-                if wall is not None and abs(wall.yaw) <= self._cfg.search_align_tol_rad:
-                    search_obs = detect(msg.ranges, msg.angle_min, msg.angle_increment,
-                                        msg.range_min, msg.range_max, self._cfg)
+                # 현재 자세에서 노치가 보이면 벽 fit이 같은 프레임에
+                # 실패해도 검출을 버리지 않는다.
+                search_obs = detect(msg.ranges, msg.angle_min, msg.angle_increment,
+                                    msg.range_min, msg.range_max, self._cfg)
                 cmd = self._machine.step(search_obs, now,
                                          search_wall_yaw=(wall.yaw if wall else None))
             else:

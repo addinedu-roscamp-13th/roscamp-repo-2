@@ -62,7 +62,9 @@ def create(params: dict, driver, *, undock_gate, clock=time.monotonic,
     # 순회 주행과 같은 도착 판정 파라미터를 쓴다 — 같은 뜻을 두 값으로 두면 반드시 어긋난다.
     work = params["working"]
     nav = PatrolNavigation(driver, work["arrive_tolerance_m"],
-                           work["arrive_resend_sec"], work["arrive_timeout_sec"])
+                           work["arrive_resend_sec"], work["arrive_timeout_sec"],
+                           recovery_retry_max=work.get("recovery_retry_max", 3),
+                           recovery_stall_sec=work.get("recovery_stall_sec", 0))
     return py_trees.composites.Sequence(
         name="SecurityPatrolBranch",
         memory=False,

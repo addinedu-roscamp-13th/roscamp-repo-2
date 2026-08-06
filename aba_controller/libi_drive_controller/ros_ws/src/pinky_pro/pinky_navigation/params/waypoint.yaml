@@ -75,17 +75,17 @@ vertices:
     yaw: 3.1415
   남자화장실:
     x: 0.7518
-    y: -0.0333
+    y: -0.3615
     yaw: 0.0
   여자화장실:
     x: 0.7518
-    y: -0.3615
+    y: -0.0333
     yaw: 0.0
 lanes:
-- from: 남자화장실
+- from: 여자화장실
   to: 충전소입구
   bidirectional: true
-- from: 여자화장실
+- from: 남자화장실
   to: 순회경로-1
   bidirectional: true
 - from: 예술서가
@@ -103,10 +103,10 @@ lanes:
 - from: 미술작품
   to: 순회경로-2
   bidirectional: true
-- from: 여자화장실
-  to: 남자화장실
+- from: 남자화장실
+  to: 여자화장실
   bidirectional: true
-- from: 여자화장실
+- from: 남자화장실
   to: 미술작품
   bidirectional: true
 - from: 순회경로-1

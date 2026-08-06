@@ -97,8 +97,9 @@ inline QVariantMap bookFromJson(const QJsonObject &o) {
 //   벽 실좌표  arte2.pgm(63x108, res 0.020, origin[-0.184,-1.949]) 의 점유셀 경계상자
 //              x -0.144..0.876 (1.020m)   y -1.909..0.111 (2.020m)   비율 1.980
 //              (arte3.pgm 도 완전히 같다)
-//   그림 방    artemap.png(1340x751) 남색 벽 **안쪽**  x 53..1285px   y 58..698px
-//              (1232x640, 비율 1.925 — 실제와 2.8% 차이. 축별로 따로 맞춰 흡수한다)
+//   그림 방    artemap.png(1672x941, [2026-08-06] 화장실 남/녀 분리판으로 교체) 남색 벽
+//              **안쪽**  x 62..1609px   y 68..880px (1547x812, 비율 1.905 — 실제와 3.8% 차이.
+//              축별로 따로 맞춰 흡수한다)
 //
 // waypoint.yaml 정점 11개를 이 변환으로 찍어 전부 제 구역 옆에 떨어지는 걸 확인했다.
 // **그림이나 지도를 갈아끼우면 tools/measure_map_boxes.py 로 다시 재서 여기를 고쳐야 한다.**
@@ -108,10 +109,10 @@ constexpr double MAP_X_MAX =  0.876;
 constexpr double MAP_Y_MIN = -1.909;
 constexpr double MAP_Y_MAX =  0.111;
 
-constexpr double IMG_LEFT   = 53.0  / 1340.0;
-constexpr double IMG_RIGHT  = 1285.0 / 1340.0;
-constexpr double IMG_TOP    = 58.0  / 751.0;
-constexpr double IMG_BOTTOM = 698.0 / 751.0;
+constexpr double IMG_LEFT   = 62.0  / 1672.0;
+constexpr double IMG_RIGHT  = 1609.0 / 1672.0;
+constexpr double IMG_TOP    = 68.0  / 941.0;
+constexpr double IMG_BOTTOM = 880.0 / 941.0;
 
 /** map 프레임 (x,y)[m] → 그림 가로 비율 0..1. */
 inline double mapToImageU(double y) {

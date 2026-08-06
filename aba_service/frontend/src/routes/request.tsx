@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import { AppShell } from "@/components/AppShell";
 import { BookRow } from "@/components/BookRow";
+import { LibraryMap } from "@/components/LibraryMap";
 import { fetchBook, fetchCatalog, type CatalogBook } from "@/lib/books-api";
 import { useI18n } from "@/lib/i18n";
 import { useDebounced } from "@/lib/use-debounced";
@@ -328,23 +329,15 @@ function RequestPage() {
               {mode === "read" ? (
                 <div className="rounded-2xl border border-border bg-card p-3 shadow-card">
                   <p className="mb-2 text-[11px] font-semibold text-foreground">
-                    어느 자리로 가져다 드릴까요?
+                    지도에서 자리를 눌러 골라주세요 — 테이블만 선택할 수 있어요
                   </p>
-                  <div className="grid grid-cols-3 gap-1.5">
-                    {TABLES.map((t) => (
-                      <button
-                        key={t.value}
-                        onClick={() => setTable(t.value)}
-                        className={`rounded-lg border py-2 text-[10px] font-medium ${
-                          table === t.value
-                            ? "border-primary bg-primary-soft text-primary"
-                            : "border-border bg-card text-foreground"
-                        }`}
-                      >
-                        {t.label}
-                      </button>
-                    ))}
-                  </div>
+                  <LibraryMap
+                    activeZone={table}
+                    onSelect={(zone) => {
+                      const value = zone.members[0];
+                      if (TABLES.some((t) => t.value === value)) setTable(value);
+                    }}
+                  />
                 </div>
               ) : (
                 <p className="rounded-2xl bg-amber-500/10 px-3 py-2 text-[11px] font-medium text-amber-700">

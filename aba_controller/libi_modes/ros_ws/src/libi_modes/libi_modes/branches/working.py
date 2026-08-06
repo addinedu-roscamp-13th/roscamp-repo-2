@@ -40,6 +40,8 @@ def create(params: dict, nav_driver, arm_driver, follow_driver=None,
     arrive_tolerance = params["working"]["arrive_tolerance_m"]
     arrive_resend = params["working"]["arrive_resend_sec"]
     arrive_timeout = params["working"]["arrive_timeout_sec"]
+    recovery_retry_max = params["working"].get("recovery_retry_max", 3)
+    recovery_stall_sec = params["working"].get("recovery_stall_sec", 0)
     guide_coast = params["working"]["guide_coast_sec"]
     guide_wait = params["working"]["guide_wait_sec"]
     # 0 이면 꺼진다. 실측 전에는 꺼 두는 것이 기본이다 — 근거 없는 임계로 멈추면
@@ -52,7 +54,9 @@ def create(params: dict, nav_driver, arm_driver, follow_driver=None,
     person_sustain = params["working"].get("person_sustain_sec", 10.0)
     person_grace = params["working"].get("person_resume_grace_sec", 1.0)
     nav_exec = NavigationExec(nav_driver, arrive_tolerance, arrive_resend,
-                              arrive_timeout, now_fn=clock)
+                              arrive_timeout, now_fn=clock,
+                              recovery_retry_max=recovery_retry_max,
+                              recovery_stall_sec=recovery_stall_sec)
     return py_trees.composites.Sequence(
         name="WorkingBranch",
         memory=False,

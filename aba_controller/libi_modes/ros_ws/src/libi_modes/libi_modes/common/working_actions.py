@@ -124,11 +124,19 @@ class NavigationExec(CommandDrivenAction):
     """
 
     def __init__(self, driver, arrive_tolerance: float, arrive_resend_sec: float,
-                 arrive_timeout_sec: float, name: str | None = None, now_fn=time.monotonic):
+                 arrive_timeout_sec: float, name: str | None = None, now_fn=time.monotonic,
+                 recovery_retry_max: int = 3, recovery_stall_sec: float = 0.0):
         super().__init__(driver, handles={"navigate"}, name=name or "NavigationExec")
         self.arrive_tolerance = arrive_tolerance
         self.arrive_resend_sec = arrive_resend_sec
         self.arrive_timeout_sec = arrive_timeout_sec
+        # A fleet command result only confirms that fleet_link accepted the request; it
+        # does not confirm that Nav2 is still executing it.  A lost/aborted goal must be
+        # retried here, while we still own the command, instead of silently releasing the
+        # slot and leaving the robot stopped until a new dispatch arrives.
+        self.recovery_retry_max = max(0, int(recovery_retry_max))
+        self.recovery_stall_sec = max(0.0, float(recovery_stall_sec))
+        self._recovery_retries = 0
         self._now = now_fn
         self._target = None
         self._target_at = 0.0
@@ -178,6 +186,9 @@ class NavigationExec(CommandDrivenAction):
         super().initialise()
         self._target = None
         self._sent_at = None
+        self._recovery_retries = 0
+        self._best_distance = None
+        self._progress_at = None
 
     # ── 도착·대기 때 무엇을 돌려줄지 (PatrolNavigation 이 갈아끼운다) ────────
     #
@@ -214,6 +225,9 @@ class NavigationExec(CommandDrivenAction):
             self._target = target
             self._target_at = now
             self._sent_at = None        # 아직 안 보냈다
+            self._recovery_retries = 0
+            self._best_distance = self._distance_to(target)
+            self._progress_at = now
 
         # 도착 판정을 **보내기 전에** 한다. 이미 그 자리에 서 있는 노드를 허가받는 일이
         # 있는데(관제가 로봇이 있는 칸을 다음 노드로 줄 때), 그때 goal 을 한 번 내고
@@ -235,12 +249,59 @@ class NavigationExec(CommandDrivenAction):
             self._started = True
             self._goal_outstanding = True
             self._sent_at = now
+            self._best_distance = self._distance_to(target)
+            self._progress_at = now
         elif self.driver.poll() == "failure":
-            return self._give_up()      # 실행 층이 거부했다 (링크 끊김 등)
+            if not self._retry_or_give_up(now, "goal acknowledgement failed"):
+                return self._give_up()      # 실행 층이 반복해서 거부했다
 
-        if now - self._target_at >= self.arrive_timeout_sec:
-            return self._give_up()
+        distance = self._distance_to(target)
+        if distance is not None and self._best_distance is not None:
+            if distance < self._best_distance - 0.01:
+                self._best_distance = distance
+                self._progress_at = now
+
+        stalled = (self.recovery_stall_sec > 0 and self._progress_at is not None
+                   and now - self._progress_at >= self.recovery_stall_sec)
+        timed_out = now - self._target_at >= self.arrive_timeout_sec
+        if stalled or timed_out:
+            reason = "motion progress watchdog expired" if stalled else "arrival watchdog expired"
+            if not self._retry_or_give_up(now, reason):
+                return self._give_up()
         return Status.RUNNING
+
+    def _retry_or_give_up(self, now: float, reason: str) -> bool:
+        """Re-issue a stuck goal a bounded number of times.
+
+        ``FleetCmdDriver`` is deliberately non-blocking, so this is safe inside a BT
+        tick.  Do not send ``stop`` before the retry: Nav2 preempts an old
+        ``navigate_to_pose`` goal when the replacement arrives, while a stop followed
+        immediately by a new goal can race across DDS and cancel the new goal instead.
+        """
+        if self._recovery_retries >= self.recovery_retry_max:
+            return False
+        self._recovery_retries += 1
+        self.driver.start()
+        self._started = True
+        self._goal_outstanding = True
+        self._sent_at = now
+        self._best_distance = self._distance_to(self._target)
+        self._progress_at = now
+        log = getattr(self.driver, "_log", None)
+        if log is not None:
+            log.warning(
+                f"주행 watchdog 재시도 {self._recovery_retries}/"
+                f"{self.recovery_retry_max}: {reason}")
+        # The retry gets a fresh arrival window.  A node may legitimately be far away;
+        # carrying the expired window over would immediately fail the recovery attempt.
+        self._target_at = now
+        return True
+
+    def _distance_to(self, target):
+        pose = bb.get(self.blackboard, Keys.ROBOT_POSE)
+        if not pose:
+            return None
+        return math.hypot(pose["x"] - target["x"], pose["y"] - target["y"])
 
     def _arrived(self, target) -> bool:
         """도착했나. 위치를 모르면 **아직 아니다** — 모르는 걸 도착으로 치지 않는다."""

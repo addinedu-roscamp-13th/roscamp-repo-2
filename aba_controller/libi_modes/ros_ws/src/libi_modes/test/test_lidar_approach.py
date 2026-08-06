@@ -94,8 +94,8 @@ def test_acquire_needs_consecutive_confirmations():
     assert cmd.phase == "ALIGN"
 
 
-def test_acquire_realigns_to_yaw_zero_before_confirming_notch():
-    """노치가 보여도 벽 yaw가 0 기준 밖이면 확정하지 않고 재정렬한다."""
+def test_acquire_accepts_current_pose_detection():
+    """현재 맵 자세에서 노치가 보이면 추가 좌우 회전 없이 확정한다."""
     cfg = raw_cfg(confirm_frames=3, search_align_tol_rad=0.15,
                   search_rot_rad_s=0.20)
     m = settled(cfg)
@@ -103,16 +103,15 @@ def test_acquire_realigns_to_yaw_zero_before_confirming_notch():
     m._phase_t0 = 2.0
 
     cmd = m.step(obs(yaw=0.40), 2.0)
-    assert cmd.phase == "SEARCH"
-    assert cmd.reason == "realigning_yaw_zero"
-    assert cmd.linear == 0.0 and cmd.angular != 0.0
-    assert m._confirm == 0
+    assert cmd.phase == "ACQUIRE"
+    assert cmd.linear == 0.0 and cmd.angular == 0.0
+    assert m._confirm == 1
 
-    # 정렬된 뒤에야 확인 프레임을 누적한다.
-    for _ in range(cfg.confirm_frames - 1):
-        cmd = m.step(obs(yaw=0.05), 2.1, search_wall_yaw=0.05)
+    # 확인 프레임을 누적한 뒤 접근 국면으로 넘어간다.
+    for _ in range(cfg.confirm_frames - 2):
+        cmd = m.step(obs(yaw=0.40), 2.1)
         assert cmd.phase == "ACQUIRE"
-    cmd = m.step(obs(yaw=0.05), 2.2, search_wall_yaw=0.05)
+    cmd = m.step(obs(yaw=0.40), 2.2)
     assert cmd.phase == "ALIGN"
 
 
@@ -185,7 +184,7 @@ def test_search_aborts_on_timeout_when_nothing_found():
     assert cmd.linear == 0.0 and cmd.angular == 0.0
 
 
-def test_search_ignores_obs_and_only_reacts_to_search_wall_yaw():
+def test_search_accepts_visible_notch_in_current_pose():
     """[2026-08-04 실기 정정] 처음엔 `obs.yaw`(노치까지 확정된 값)로 돌았는데,
     각도가 심하게 틀어지면 벽은 잡혀도 노치 자체가 인식이 안 돼(라이다가 노치
     바닥 대신 옆벽을 스치는 등) `obs` 가 계속 `None` 이었다 — SEARCH 가 방향
@@ -195,10 +194,9 @@ def test_search_ignores_obs_and_only_reacts_to_search_wall_yaw():
     가 절대 못 빠져나온다는 것을 잠근다 — obs 가 다시 슬쩍 쓰이면 여기서 걸린다.
     """
     m = settled(LidarDockConfig())
-    cmd = m.step(obs(yaw=0.0), 5.0)     # obs 는 "정렬 끝" 처럼 보이지만 무시돼야 한다
-    assert cmd.phase == "SEARCH"
-    cmd = m.step(near_obs(), 5.1)       # NEAR 도 마찬가지로 무시돼야 한다
-    assert cmd.phase == "SEARCH"
+    cmd = m.step(obs(yaw=0.0), 5.0)
+    assert cmd.phase == "ACQUIRE"
+    assert cmd.linear == 0.0 and cmd.angular == 0.0
 
 
 def test_search_turns_toward_the_wall_and_hands_off_to_acquire_once_aligned():

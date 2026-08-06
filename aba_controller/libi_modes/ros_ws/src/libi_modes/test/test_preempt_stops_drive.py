@@ -242,7 +242,8 @@ def test_a_failed_drive_is_cancelled_right_away(seed):
     drv = FakeDriver(["failure"])
     clock = [100.0]
     leaf = NavigationExec(drv, arrive_tolerance=0.1, arrive_resend_sec=10,
-                          arrive_timeout_sec=60, now_fn=lambda: clock[0])
+                          arrive_timeout_sec=60, now_fn=lambda: clock[0],
+                          recovery_retry_max=0)
     seed(**DRIVING)
     leaf.setup()
     leaf.initialise()

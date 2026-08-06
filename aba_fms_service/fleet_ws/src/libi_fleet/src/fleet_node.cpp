@@ -179,6 +179,11 @@ public:
     // 드라이버는 같은 목적지면 무시하므로(주행 중 끊김 없음) 재발행은 안전하다.
     resend_ticks_ = declare_parameter<int>("resend_ticks", 7);   // ≈1초
 
+    // RETURNING 은 로봇 FSM 이 충전소 입구까지 직접 주행한다. FMS가 명령을
+    // 중복 발행하면 두 실행기가 같은 Nav2 goal 을 덮으므로, 여기서는 UI 표시용
+    // waypoint만 만든다. arte2 navgraph의 충전소통로는 v17이다.
+    return_goal_node_ = declare_parameter<int>("return_goal_node", 17);
+
     // ── 시간 계획(CBS) 재계획 정책 ─────────────────────────────────────────
     // 재계획 최소 간격(틱). **0 = 지체를 안 순간 그 틱에 바로 다시 짠다.**
     //
@@ -1802,7 +1807,33 @@ private:
       }
       m.routes.push_back(std::move(r));
     }
+    // 복귀는 ActiveTask가 없어서 기존에는 UI에 경로가 비어 있었다. 실제 복귀
+    // 실행 주체는 libi_modes이므로 FMS는 현재 위치와 복귀 waypoint만 시각화한다.
+    for (const auto & [name, robot] : robots_) {
+      if (mode_of(name) != "RETURNING" || state_stale(name) || has_task_for(name)) { continue; }
+      if (return_goal_node_ < 0 || static_cast<size_t>(return_goal_node_) >= graph_.size()) { continue; }
+      libi_fleet_msgs::msg::RobotRoute r;
+      r.robot = name;
+      r.xs.push_back(robot.x);
+      r.ys.push_back(robot.y);
+      const int start = graph_.nearest(robot.x, robot.y);
+      const auto path = graph_.dijkstra(start, return_goal_node_);
+      for (int v : path) {
+        const Vertex & waypoint = graph_.vertex(v);
+        r.xs.push_back(waypoint.x);
+        r.ys.push_back(waypoint.y);
+      }
+      m.routes.push_back(std::move(r));
+    }
     route_pub_->publish(m);
+  }
+
+  bool has_task_for(const std::string & robot) const
+  {
+    for (const auto & t : tasks_) {
+      if (t.robot == robot) { return true; }
+    }
+    return false;
   }
 
   // 각 로봇의 최종 목적지 발행(배차 task 만; 순회는 목적지가 없어 빠진다).
@@ -1818,6 +1849,13 @@ private:
       //    안 나오고 fleet_node 로그에만 남았다. 배차 task 는 예전대로 최종 목적지다.
       m.goals.push_back(t.patrol ? t.path[std::min(t.idx, t.path.size() - 1)]
                                  : t.path.back());
+    }
+    for (const auto & [name, robot] : robots_) {
+      (void)robot;
+      if (mode_of(name) != "RETURNING" || state_stale(name) || has_task_for(name)) { continue; }
+      if (return_goal_node_ < 0 || static_cast<size_t>(return_goal_node_) >= graph_.size()) { continue; }
+      m.robots.push_back(name);
+      m.goals.push_back(return_goal_node_);
     }
     goal_pub_->publish(m);
   }
@@ -2332,6 +2370,7 @@ private:
   double prefetch_radius_{kPrefetchDefault};  // 경유 노드 선행 통과 반경(m). 0 이면 꺼짐
   bool full_path_{false};                  // true 면 남은 정점 전부 전송(단일 로봇 디버깅용)
   int resend_ticks_{7};                    // 이동 중 경로 재발행 주기(틱). 0=끔
+  int return_goal_node_{17};                // RETURNING UI 표시용 복귀 waypoint
   bool patrol_{false};
   std::vector<int> patrol_route_;
   std::vector<int> security_patrol_route_;   // 야간 보안순회 루프(CCW 정규화)

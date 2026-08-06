@@ -36,10 +36,13 @@ class PatrolNavigation(NavigationExec):
     """
 
     def __init__(self, driver, arrive_tolerance: float, arrive_resend_sec: float,
-                 arrive_timeout_sec: float, name: str | None = None, now_fn=None):
+                 arrive_timeout_sec: float, name: str | None = None, now_fn=None,
+                 recovery_retry_max: int = 3, recovery_stall_sec: float = 0.0):
         kwargs = {} if now_fn is None else {"now_fn": now_fn}
         super().__init__(driver, arrive_tolerance, arrive_resend_sec, arrive_timeout_sec,
-                         name=name or "PatrolNavigation", **kwargs)
+                         name=name or "PatrolNavigation",
+                         recovery_retry_max=recovery_retry_max,
+                         recovery_stall_sec=recovery_stall_sec, **kwargs)
 
     def _idle_status(self) -> Status:
         # 다음 노드 허가를 기다리는 중이다. FAILURE 를 내면 Parallel 이 무너져

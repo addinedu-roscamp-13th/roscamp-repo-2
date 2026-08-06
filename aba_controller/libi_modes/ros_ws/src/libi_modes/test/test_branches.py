@@ -480,7 +480,8 @@ def test_returning_retries_before_faulting(seed, read, tick):
     seed(**{Keys.CURRENT_MODE: "RETURNING"})
     root = _returning(return_entrance=FakeDriver(["failure"] * 5))
     tick(root)          # 1회차: goal 을 낸다(아직 poll 안 함)
-    tick(root)          # 2회차: poll → failure → 흡수되어 재시도
+    for _ in range(PARAMS["working"].get("recovery_retry_max", 3) + 1):
+        tick(root)      # 내부 watchdog 재시도 소진 뒤 AbsorbFailure가 흡수
     assert read(Keys.DOCK_RETRY_COUNT) == 1
     assert read(Keys.FAULT) is False
 
@@ -491,7 +492,7 @@ def test_returning_reaches_error_when_retries_exhausted(seed, read, tick):
     seed(**{Keys.CURRENT_MODE: "RETURNING"})
     root = _returning(return_entrance=FakeDriver(["failure"] * 20))
     status = None
-    for _ in range(PARAMS["returning"]["dock_retry_max"] * 2 + 2):
+    for _ in range(PARAMS["returning"]["dock_retry_max"] * 4 + 12):
         status = tick(root)
         if read(Keys.CURRENT_MODE) == "ERROR":
             break            # 전이가 일어난 그 tick 을 본다 (더 돌면 IsMode 가 떨어진다)

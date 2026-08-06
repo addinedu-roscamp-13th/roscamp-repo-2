@@ -118,7 +118,8 @@ class _GoalStep(py_trees.behaviour.Behaviour):
     몰아주지 않는다.
     """
 
-    def __init__(self, name, driver, target, tolerance, resend_sec, timeout_sec, now_fn):
+    def __init__(self, name, driver, target, tolerance, resend_sec, timeout_sec, now_fn,
+                 recovery_retry_max=3, recovery_stall_sec=0.0):
         super().__init__(name=name)
         self.driver = driver
         self.target = target                 # (x, y) — 콜러블도 허용
@@ -128,6 +129,11 @@ class _GoalStep(py_trees.behaviour.Behaviour):
         self._now = now_fn
         self._sent_at = None
         self._started_at = None
+        self._recovery_retry_max = max(0, int(recovery_retry_max))
+        self._recovery_stall_sec = max(0.0, float(recovery_stall_sec))
+        self._retries = 0
+        self._best_distance = None
+        self._progress_at = None
 
     def setup(self, **kwargs):
         self.blackboard = self.attach_blackboard_client(name=self.name)
@@ -136,6 +142,9 @@ class _GoalStep(py_trees.behaviour.Behaviour):
     def initialise(self):
         self._sent_at = None
         self._started_at = None
+        self._retries = 0
+        self._best_distance = None
+        self._progress_at = None
 
     def _xy(self):
         t = self.target() if callable(self.target) else self.target
@@ -152,20 +161,47 @@ class _GoalStep(py_trees.behaviour.Behaviour):
             self._started_at = now
 
         pose = bb.get(self.blackboard, Keys.ROBOT_POSE)
-        if pose and math.hypot(pose["x"] - xy[0], pose["y"] - xy[1]) <= self.tolerance:
+        distance = (math.hypot(pose["x"] - xy[0], pose["y"] - xy[1])
+                    if pose else None)
+        if distance is not None and distance <= self.tolerance:
             return Status.SUCCESS
+
+        if self._best_distance is None and distance is not None:
+            self._best_distance = distance
+            self._progress_at = now
+        elif (distance is not None and self._best_distance is not None
+              and distance < self._best_distance - 0.01):
+            self._best_distance = distance
+            self._progress_at = now
 
         if self._sent_at is None or now - self._sent_at >= self.resend_sec:
             # nav2 주행은 도착 없이 끝날 수 있다(ABORTED, 선점). 다시 몰아 줄 주체가
             # 필요하고, 도착 여부를 아는 건 여기뿐이다.
             self.driver.start()
             self._sent_at = now
+            self._best_distance = distance
+            self._progress_at = now
         elif self.driver.poll() == "failure":
-            return Status.FAILURE            # 실행 층이 거부했다(링크 끊김 등)
+            if not self._retry(now):
+                return Status.FAILURE            # 실행 층이 반복해서 거부했다
 
-        if now - self._started_at >= self.timeout_sec:
-            return Status.FAILURE
+        stalled = (self._recovery_stall_sec > 0 and self._progress_at is not None
+                   and now - self._progress_at >= self._recovery_stall_sec)
+        if stalled or now - self._started_at >= self.timeout_sec:
+            if not self._retry(now):
+                return Status.FAILURE
         return Status.RUNNING
+
+    def _retry(self, now):
+        if self._retries >= self._recovery_retry_max:
+            return False
+        self._retries += 1
+        self.driver.start()
+        self._sent_at = now
+        self._started_at = now
+        self._best_distance = None
+        self._progress_at = now
+        return True
 
     def terminate(self, new_status):
         """상위가 이 단계를 끊었으면(예: fault → ERROR) 진행 중인 주행도 끊는다.
@@ -356,7 +392,8 @@ def create_return_steps(*, entrance_driver, rotate_driver, nav_release_driver,
                         entrance_xy, approach_yaw=None, dock_xy=None,
                         tolerance, resend_sec, timeout_sec,
                         yaw_tolerance_rad, retry_max, settle_sec=1.0,
-                        now_fn=time.monotonic):
+                        now_fn=time.monotonic, recovery_retry_max=3,
+                        recovery_stall_sec=0.0):
     """6단계 시퀀스를 만든다. 각 단계는 실패 흡수 데코레이터로 감싼다."""
     def _approach_yaw(pose):
         """**지금 보고 있는 방향에서 180° 돌린 각도.** 사용자 지정(2026-07-30).
@@ -392,7 +429,9 @@ def create_return_steps(*, entrance_driver, rotate_driver, nav_release_driver,
 
     steps = [
         _GoalStep("GoToParkingEntrance", entrance_driver, entrance_xy,
-                  tolerance, resend_sec, timeout_sec, now_fn),
+                  tolerance, resend_sec, timeout_sec, now_fn,
+                  recovery_retry_max=recovery_retry_max,
+                  recovery_stall_sec=recovery_stall_sec),
         _YawStep("FaceApproachYaw", rotate_driver, _approach_yaw,
                  yaw_tolerance_rad, timeout_sec, now_fn),
         # ③ 바퀴를 외부에 넘기기 전에 nav2 목표를 명시적으로 끊는다 (위 주석 참고).

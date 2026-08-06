@@ -738,7 +738,16 @@ class FsmNode(Node):
             self.get_logger().info(f"수동 전이 적용 → {self._read(Keys.CURRENT_MODE)}")
 
         before = self._read(Keys.CURRENT_MODE)
-        self._tree.tick()
+        try:
+            self._tree.tick()
+        except Exception as exc:  # noqa: BLE001 — one bad callback must not kill the timer
+            # A BT exception otherwise aborts this timer callback and can leave the last
+            # Nav2 goal alive with no owner.  Request ERROR and let state_io's hold input
+            # publish the safe zero command on the next timer tick.
+            self.get_logger().error(f"BT tick 예외 — 안전 정지 후 ERROR 전환: {exc}")
+            self._bb.set(Keys.NEXT_MODE, "ERROR")
+            self._bb.set(Keys.ACTIVE_COMMAND, None)
+            return
         after = self._read(Keys.CURRENT_MODE)
         if after != before:
             self.get_logger().info(f"{before} -> {after}")

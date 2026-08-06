@@ -15,7 +15,7 @@ Item {
     signal facilityClicked(string name)
 
     /** 도면 자체의 가로세로 비 — 담는 쪽이 높이를 이 비율로 잡으면 여백 없이 꽉 찬다. */
-    readonly property real mapAspect: 1340 / 751
+    readonly property real mapAspect: 1672 / 941
 
     Image {
         id: img

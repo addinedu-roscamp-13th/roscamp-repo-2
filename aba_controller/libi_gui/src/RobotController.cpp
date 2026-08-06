@@ -865,39 +865,42 @@ QVariantList RobotController::facilities() const {
     // 그려야 무엇이 될지 정해진다). 여기에 카드를 만들지 않는 이유가 그거다 — 이 목록의
     // bx/by/bw/bh 는 패널 지도 **그림에서 실측한** 값이라, 그림이 없으면 지어낼 수 없다
     // (넣게 되면 tools/measure_map_boxes.py 로 그 칸을 재서 추가할 것).
-    f << makeFacility(QStringLiteral("화장실"), QStringLiteral("화장실"), QStringLiteral("🚻"),
-                      QStringLiteral("화장실입니다. 남녀 공용으로 각 1칸씩 있어요."),
-                      0.139, 0.031, 0.207, 0.100);
+    f << makeFacility(QStringLiteral("남자 화장실"), QStringLiteral("남자화장실"), QStringLiteral("🚹"),
+                      QStringLiteral("남자 화장실입니다."),
+                      0.0407, 0.0531, 0.1417, 0.1158);
+    f << makeFacility(QStringLiteral("여자 화장실"), QStringLiteral("여자화장실"), QStringLiteral("🚺"),
+                      QStringLiteral("여자 화장실입니다."),
+                      0.1944, 0.0531, 0.1376, 0.1158);
     f << makeFacility(QStringLiteral("미술작품"), QStringLiteral("미술작품"), QStringLiteral("🖼"),
                       QStringLiteral("도서관에 전시된 미술작품 구역입니다. 로봇이 순찰하며 지나가요."),
-                      0.344, 0.030, 0.227, 0.106);
+                      0.3439, 0.0159, 0.2333, 0.1254);
     f << makeFacility(QStringLiteral("수거함"), QStringLiteral("수거함"), QStringLiteral("📥"),
                       QStringLiteral("다 본 책이나 반납할 책을 넣어두면 로봇이 거둬 갑니다."),
-                      0.599, 0.098, 0.053, 0.249);
+                      0.5999, 0.0978, 0.0538, 0.2572);
     f << makeFacility(QStringLiteral("1번 테이블"), QStringLiteral("1번테이블"), QStringLiteral("🪑"),
                       QStringLiteral("열람 테이블입니다. 회원 앱 「도서 요청」에서 자리로 받기를 고르면 로봇이 여기로 책을 가져다 줘요."),
-                      0.691, 0.148, 0.111, 0.188);
+                      0.6932, 0.1477, 0.1112, 0.1881);
     f << makeFacility(QStringLiteral("2번 테이블"), QStringLiteral("2번테이블"), QStringLiteral("🪑"),
                       QStringLiteral("열람 테이블입니다. 회원 앱 「도서 요청」에서 자리로 받기를 고르면 로봇이 여기로 책을 가져다 줘요."),
-                      0.815, 0.148, 0.109, 0.188);
+                      0.8182, 0.1477, 0.1089, 0.1881);
     f << makeFacility(QStringLiteral("예술서가"), QStringLiteral("예술서가"), QStringLiteral("🖌"),
                       QStringLiteral("미술·디자인·음악·사진 서가입니다."),
-                      0.122, 0.353, 0.054, 0.268, QStringLiteral("예술"));
+                      0.1208, 0.3528, 0.0526, 0.1360, QStringLiteral("예술"));
     f << makeFacility(QStringLiteral("과학 서가"), QStringLiteral("과학-인문학서가"), QStringLiteral("🔬"),
                       QStringLiteral("과학·수학·자연 서가입니다."),
-                      0.284, 0.371, 0.230, 0.086, QStringLiteral("과학"));
+                      0.2829, 0.3698, 0.2327, 0.0978, QStringLiteral("과학"));
     f << makeFacility(QStringLiteral("인문학서가"), QStringLiteral("과학-인문학서가"), QStringLiteral("🎓"),
                       QStringLiteral("철학·역사·사회 서가입니다."),
-                      0.453, 0.483, 0.051, 0.311, QStringLiteral("인문학"));
+                      0.4516, 0.4846, 0.0538, 0.3209, QStringLiteral("인문학"));
     f << makeFacility(QStringLiteral("출입구"), QStringLiteral("도서관출입구"), QStringLiteral("🚪"),
                       QStringLiteral("도서관 출입구입니다."),
-                      0.940, 0.416, 0.048, 0.259);
+                      0.9450, 0.4145, 0.0431, 0.2572);
     f << makeFacility(QStringLiteral("문학서가"), QStringLiteral("문학서가"), QStringLiteral("📖"),
                       QStringLiteral("소설·시·고전이 있는 서가입니다."),
-                      0.124, 0.622, 0.050, 0.267, QStringLiteral("문학"));
+                      0.1184, 0.6164, 0.0556, 0.2859, QStringLiteral("문학"));
     f << makeFacility(QStringLiteral("안내데스크"), QStringLiteral("안네데스크"), QStringLiteral("ℹ"),
                       QStringLiteral("대여 신청한 도서를 여기서 사서에게 받아요. 궁금한 점도 안내데스크에서 물어볼 수 있어요."),
-                      0.709, 0.873, 0.226, 0.091);
+                      0.7835, 0.8714, 0.1932, 0.0956);
     return f;
 }
 

@@ -74,6 +74,8 @@ def create(params: dict, *, entrance_driver, rotate_driver, nav_release_driver,
         retry_max=r["dock_retry_max"],
         settle_sec=r.get("settle_sec", 1.0),
         now_fn=clock,
+        recovery_retry_max=w.get("recovery_retry_max", 3),
+        recovery_stall_sec=w.get("recovery_stall_sec", 0),
     )
     return py_trees.composites.Sequence(
         name="ReturningBranch",

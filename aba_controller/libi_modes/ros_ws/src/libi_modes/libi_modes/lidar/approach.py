@@ -121,6 +121,15 @@ class LidarApproach:
         놓칠 수 있기 때문이다.
         """
         c = self.cfg
+        # sweep=0은 현재 맵 자세를 유지한 채 재검출하는 모드다. 접근 단계가
+        # 이미 목표 yaw(현재 충전소는 π)로 맞춘 뒤에는 좌우로 도리도리하면
+        # 오히려 현재 프레임에서 보이는 노치를 놓칠 수 있다.
+        if c.acquire_recovery_sweep_rad <= 0.0:
+            self._recover_until = now_s
+            self._recover_settle_until = now_s + c.acquire_recovery_settle_s
+            self._enter("REACQUIRE_SETTLE", now_s)
+            return Cmd(0.0, 0.0, "REACQUIRE_SETTLE", False,
+                       "reacquire_current_pose")
         attempt = self._acquire_recovery_count
         self._acquire_recovery_count += 1
         direction = 1.0 if attempt % 2 == 0 else -1.0
@@ -425,15 +434,17 @@ class LidarApproach:
         if self.phase == "SEARCH":
             if now_s - self._phase_t0 >= c.search_timeout_s:
                 return self._stop("ABORT", "search_timeout")
-            if search_wall_yaw is None:
+            # 현재 자세에서 노치가 이미 검출되면 벽 fit이 한 프레임
+            # 실패해도 검출을 버리지 않는다.
+            if obs is not None:
+                self._enter("ACQUIRE", now_s)
+            elif search_wall_yaw is None:
                 return Cmd(0.0, c.search_rot_rad_s, "SEARCH", False, "searching")
-            if abs(search_wall_yaw) > c.search_align_tol_rad:
+            elif abs(search_wall_yaw) > c.search_align_tol_rad:
                 ang = math.copysign(c.search_rot_rad_s, c.steer_sign * search_wall_yaw)
                 return Cmd(0.0, ang, "SEARCH", False, "aligning")
-            # 정렬된 바로 이 스캔에서 노치가 이미 보였다면, 아래 ACQUIRE가
-            # 같은 프레임을 첫 확정 표본으로 쓴다. 단발 검출로 움직이지는 않는다
-            # (`confirm_frames` 연속 확인은 그대로다).
-            self._enter("ACQUIRE", now_s)
+            else:
+                self._enter("ACQUIRE", now_s)
 
         # ACQUIRE는 로봇이 정지한 상태에서 확정 표본을 모으는 국면이다. UI 디버거가
         # 보여주는 `detect()` 결과는 유효한데도, 여기서 주행용 EMA/점프 게이트를 먼저
@@ -451,13 +462,6 @@ class LidarApproach:
             # 확인을 시작해야 한다. UI에는 노치가 보여도 벽 fit이 -18°처럼
             # 기울어진 상태에서 확정하면 잘못된 위치를 따라가거나 회복 시
             # 엉뚱한 방향을 보게 된다.
-            if (stabilized is not None
-                    and abs(stabilized.yaw) > c.search_align_tol_rad):
-                self._confirm = 0
-                self._enter("SEARCH", now_s)
-                ang = math.copysign(c.search_rot_rad_s,
-                                    c.steer_sign * stabilized.yaw)
-                return Cmd(0.0, ang, "SEARCH", False, "realigning_yaw_zero")
             if filtered is None:
                 self._confirm = 0
                 if now_s - self._phase_t0 >= c.acquire_timeout_s:
