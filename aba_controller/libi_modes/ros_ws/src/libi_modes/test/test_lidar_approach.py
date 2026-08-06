@@ -937,3 +937,36 @@ def test_min_range_safety_stop_is_skipped_during_search():
     m = settled(cfg)
     cmd = m.step(None, 5.0, search_wall_yaw=0.5, min_range_m=0.001)
     assert cmd.phase == "SEARCH" and cmd.reason != "min_range_safety_stop"
+
+
+def test_in_place_reacquire_also_counts_toward_notch_not_found():
+    """⚠️ **실제 배포 설정(`acquire_recovery_sweep_rad: 0.0`)의 경로다.**
+
+    스윕 모드(위 시험)는 횟수를 셌지만 제자리 재검출 모드는 **안 셌다.** 그래서
+    `acquire_recovery_max` 검사가 항상 통과해 `ABORT("notch_not_found")` 가 도달
+    불가능한 코드였고, 노치를 못 찾으면 포기 대신 `timeout_s`(300초)까지 맴돌았다.
+
+    제자리라 바퀴도 화면도 안 움직여서 "재시도가 안 보인다"로만 드러났다
+    (사용자 보고 2026-08-07). 되돌리면 이 시험이 **무한 루프 대신 실패**로 잡는다.
+    """
+    cfg = LidarDockConfig(
+        acquire_timeout_s=1.0,
+        acquire_recovery_max=2,
+        acquire_recovery_sweep_rad=0.0,      # ← 배포 값
+        acquire_recovery_settle_s=0.0,
+    )
+    m = settled(cfg)
+    t = cfg.settle_sec + 2.0
+    m.phase = "ACQUIRE"
+    m._phase_t0 = t
+
+    for i in range(cfg.acquire_recovery_max):
+        c = m.step(None, m._phase_t0 + 1.1)
+        assert c.phase == "REACQUIRE_SETTLE", f"{i + 1}번째 회복이 안 걸렸다"
+        assert c.linear == 0.0 and c.angular == 0.0, "제자리 모드인데 바퀴가 돌았다"
+        assert f"{i + 1}/{cfg.acquire_recovery_max}" in c.reason, "진행이 안 보인다"
+        assert m.step(None, m._recover_settle_until + 0.01).phase == "ACQUIRE"
+
+    final = m.step(None, m._phase_t0 + 1.1)
+    assert final.phase == "ABORT" and final.reason == "notch_not_found", \
+        "횟수를 다 썼는데 포기하지 않는다 — 300초 타임아웃까지 매달린다"

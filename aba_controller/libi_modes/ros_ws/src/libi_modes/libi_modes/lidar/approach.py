@@ -121,6 +121,13 @@ class LidarApproach:
         놓칠 수 있기 때문이다.
         """
         c = self.cfg
+        # ⚠️ **횟수는 두 모드가 똑같이 센다.** 안 세면 `acquire_recovery_max` 검사가
+        #    항상 통과해 `ABORT("notch_not_found")` 가 **영영 도달 못 하는 코드**가 된다 —
+        #    노치를 못 찾으면 포기 대신 `timeout_s`(300초)까지 ACQUIRE↔REACQUIRE_SETTLE
+        #    을 맴돈다. sweep=0 은 제자리라 화면·바퀴 어느 쪽으로도 티가 안 나서
+        #    "재시도가 안 보인다"로만 드러났다(사용자 보고 2026-08-07).
+        attempt = self._acquire_recovery_count
+        self._acquire_recovery_count += 1
         # sweep=0은 현재 맵 자세를 유지한 채 재검출하는 모드다. 접근 단계가
         # 이미 목표 yaw(현재 맵 기준 충전소는 0.0)로 맞춘 뒤에는 좌우로 도리도리하면
         # 오히려 현재 프레임에서 보이는 노치를 놓칠 수 있다.
@@ -129,9 +136,7 @@ class LidarApproach:
             self._recover_settle_until = now_s + c.acquire_recovery_settle_s
             self._enter("REACQUIRE_SETTLE", now_s)
             return Cmd(0.0, 0.0, "REACQUIRE_SETTLE", False,
-                       "reacquire_current_pose")
-        attempt = self._acquire_recovery_count
-        self._acquire_recovery_count += 1
+                       f"reacquire_current_pose {attempt + 1}/{c.acquire_recovery_max}")
         direction = 1.0 if attempt % 2 == 0 else -1.0
         magnitude = 1.0 if attempt == 0 else 2.0
         sweep_s = magnitude * c.acquire_recovery_sweep_rad / c.search_rot_rad_s
