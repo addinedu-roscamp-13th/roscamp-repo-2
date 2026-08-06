@@ -27,6 +27,7 @@ import py_trees
 from py_trees.common import Status
 
 from .search_planner import peek_sec
+from .session import GUIDE, ROLE_CAMERA
 
 
 class SearchContext:
@@ -84,12 +85,24 @@ class SearchContext:
 
     @property
     def home_camera(self):
-        """정위치 캠. 추종은 사람이 앞에, 길잡이는 사람이 뒤에 있는 것이 정상이다."""
-        return "front" if self.role == "follow" else "back"
+        """정위치 캠. 추종·야간순찰은 사람이 앞에, 길잡이는 뒤에 있는 것이 정상이다.
+
+        ⚠️ [2026-08-07] 예전엔 `"front" if role == "follow" else "back"` 이라
+           **`security` 를 길잡이로 쳤다.** 야간순찰 세션은 앞캠인데
+           (`session.ROLE_CAMERA[SECURITY] == "front"`) 대상을 놓치는 순간 탐색이
+           `select_camera("back")` 을 20Hz 로 내서, 침입자가 앞에 있는데 뒷캠을 봤다.
+           `IntruderChase.CameraSelectRenew` 가 1Hz 로 내는 `"front"` 와 싸워서 지는
+           것이라 로그에도 안 남는다(그 잎 독스트링의 "둘 다 front 를 내므로 결과가
+           같다"는 가정이 정확히 여기서 깨진다).
+
+           역할→캠은 `session.ROLE_CAMERA` 가 정본이다. 여기서 다시 안 적는다.
+        """
+        return ROLE_CAMERA.get(self.role, "front")
 
     @property
     def peek_camera(self):
-        return "back" if self.role == "follow" else "front"
+        """반대 캠. 정위치의 반대라는 뜻이라 `home_camera` 에서 유도한다."""
+        return "back" if self.home_camera == "front" else "front"
 
 
 class CheckReacquired(py_trees.behaviour.Behaviour):
@@ -178,7 +191,9 @@ class PeekPhase(CameraPhase):
     def update(self):
         self.ctx.select_camera(self.camera)
         if self.ctx.peek_people() == 1:
-            if self.ctx.role == "follow":
+            # 길잡이만 예외다 — 주행을 nav2 가 하므로 돌면 안 된다(`AlignHeading` 머리말).
+            # 야간순찰은 추종과 제어가 같아서(캠이 제어 입력) 같이 돈다.
+            if self.ctx.role != GUIDE:
                 if self.ctx.align_used:
                     # 이미 한 번 돌아 봤는데 정위치 캠에서 못 찾았다. 반대 캠에는
                     # 여전히 누군가 보이지만 그 사람은 대상이 아니었다 — 다시 돌면

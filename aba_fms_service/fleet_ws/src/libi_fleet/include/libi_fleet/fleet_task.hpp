@@ -275,4 +275,51 @@ inline bool plan_start_for(const std::vector<int> & path, std::size_t idx, bool 
   return true;
 }
 
+/// 순회에서 이번 라운드 CBS 목표의 **인덱스**. 계획 출발점 바로 **다음 한 정점**이다.
+///
+/// ⚠️ [2026-08-07] 예전엔 `moving` 과 무관하게 늘 `idx + 1` 이었다 — **서 있을 때
+///    계획 구간이 두 홉이 된다.** 출발점은 `plan_start_for` 가 `path[idx-1]` 로 주기
+///    때문이다(!ride 갈래). 두 홉이면 CBS 가 **중간 정점을 자유롭게 고를 수 있어**,
+///    같은 비용의 다른 길이 있으면 랩 정점을 통째로 건너뛴다.
+///
+///    arte2 지도는 랩이 사각형 통로라 그런 동률이 **곳곳에** 있다:
+///      · v13(순회경로-7) → v14(순회경로-5): 랩은 13→12→14(0.657m),
+///        b4c6eda 로 생긴 현(弦)을 타면 13→10→14 도 **정확히 0.657m** — 완전 동률
+///      · v4(예술서가) → v11(순회경로-6): 랩은 4→5(문학서가)→11,
+///        건너편은 4→6(과학-인문학서가)→11 — 역시 동률
+///    실기 2026-08-07(pinky-3): 두 곳 다 랩 밖으로 샜다(`v6`·`v10` 이 로그에 찍혔다).
+///    사용자 표현: "간선은 이었지만 순회경로 자체가 그렇게 편성된 건 아니다."
+///
+///    계획 구간을 **한 홉**으로 되돌리면 그 홉은 랩 간선 자체라 고를 여지가 없다.
+///    "다음 한 정점만 목표로 준다"는 원래 의도(위 kNeverEnds 주석)와도 이제 일치한다.
+///
+/// ⚠️ 커밋 노드가 **막혔을 때는 두 홉이 맞다.** `plan_start_for` 가 그 경우에도
+///    `moving` 을 참으로 받아 출발점만 뒤로 물리므로, 여기 `idx + 1` 이 그대로 나와
+///    막힌 정점 **너머**를 목표로 준다 — 우회는 그때 하라고 있는 것이다.
+inline std::size_t patrol_goal_index(std::size_t idx, bool moving, std::size_t path_size)
+{
+  if (path_size == 0) { return 0; }
+  return std::min(moving ? idx + 1 : idx, path_size - 1);
+}
+
+/// 새 계획 앞에 **진행 중인 한 칸**(`path[idx-1]`)을 살려 붙일까.
+///
+/// ⚠️ [2026-08-07] `moving` 하나만 보면 안 된다 — 스냅샷을 뜰 때와 결과를 적용할 때의
+///    값이 다를 수 있다. 통과 직후 스냅샷은 `moving=false` 라 `plan_start_for` 가
+///    **서 있는 정점**을 출발점으로 주는데, 워커가 도는 사이 GRANT 가 오면
+///    `moving=true` 로 뒤집혀 그 정점을 한 번 더 붙인다. `np = [v8, v8, v7 …]` 에
+///    `idx = 1` 이라 **방금 지난 v8 이 다시 목표**가 된다.
+///
+///    실기 2026-08-07(pinky-3 순회): 정점마다 `선행통과 v8` → 1.5s 뒤 `통과 v8` 로 두
+///    번 찍히고, 관제 하이라이트가 다음 노드 → 자기 노드 → 다음 노드로 튀었다.
+///    로봇 쪽에는 `motion progress watchdog expired` 로 나타난다.
+///
+///    계획이 이미 그 정점에서 시작하면(= 붙일 필요가 없으면) false 다.
+inline bool should_prepend_commit_head(const std::vector<int> & planned, bool moving,
+                                       int standing_vertex)
+{
+  if (!moving) { return false; }
+  return planned.empty() || planned.front() != standing_vertex;
+}
+
 }  // namespace libi_fleet

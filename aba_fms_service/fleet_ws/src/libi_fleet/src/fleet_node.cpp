@@ -801,7 +801,10 @@ private:
       // 앉아 있다고 보므로(kNeverEnds), 주 통로 위의 랩 끝 정점이 통째로 잠긴다.
       // 그래서 **다음 한 정점만** 목표로 준다. 영구 점유가 한 칸 앞에만 생기고 다음
       // 재계획에서 갱신된다. (codex 와 A/B/C 를 견줘 이 방식을 골랐다.)
-      pr.goal = t.patrol ? t.path[std::min(t.idx + 1, t.path.size() - 1)] : t.path.back();
+      // ⚠️ 목표는 **계획 출발점 바로 다음 한 정점**이다 — `t.idx + 1` 로 박으면 서 있을
+      //    때 구간이 두 홉이 되어 CBS 가 랩 정점을 건너뛴다(`patrol_goal_index` 머리말).
+      const std::size_t goal_i = patrol_goal_index(t.idx, t.moving, t.path.size());
+      pr.goal = t.patrol ? t.path[goal_i] : t.path.back();
       pr.priority = compute_priority(t.robot, t);
       if (pr.start == pr.goal) {
         // ⚠️ [2026-08-03] **조용히 넘기지 않는다.** 이 로봇은 이번 라운드 계획에서
@@ -841,7 +844,9 @@ private:
       if (taken_goals.count(pr.goal)) {
         if (!t.patrol) { continue; }
         bool moved = false;
-        for (size_t k = t.idx + 2; k < t.path.size(); ++k) {
+        // 목표 **다음** 칸부터 민다 — 기준은 `goal_i` 다(`t.idx + 2` 로 박으면 서 있을 때
+        // 목표가 `t.idx` 라 그 바로 다음인 `t.idx + 1` 을 건너뛴다).
+        for (size_t k = goal_i + 1; k < t.path.size(); ++k) {
           if (!taken_goals.count(t.path[k]) && t.path[k] != pr.start) {
             pr.goal = t.path[k];
             moved = true;
@@ -974,7 +979,30 @@ private:
       std::vector<int> np, na;
       np.insert(np.end(), routes[i].path.begin(), routes[i].path.end());
       na.insert(na.end(), routes[i].arrive_tick.begin(), routes[i].arrive_tick.end());
-      if (t.moving) {
+      // ⚠️ [2026-08-07] **계획이 이미 그 정점에서 시작하면 또 붙이지 않는다.**
+      //
+      //   `t.moving` 은 스냅샷을 뜰 때와 결과를 적용할 때가 **다른 값일 수 있다.**
+      //   통과 직후에는 `moving=false` 라(1599행) `plan_start_for` 의 !ride 갈래가
+      //   **서 있는 정점**(`path[idx-1]`)을 출발점으로 준다. 그런데 워커가 도는 사이
+      //   GRANT 가 오면 `moving=true` 로 뒤집히고, 여기서 그 정점을 한 번 더 앞에
+      //   붙여 `np = [v8, v8, v7 …]` 이 된다. `t.idx = 1` 이므로 **방금 지난 v8 이
+      //   다시 목표**가 된다.
+      //
+      //   실기 2026-08-07(pinky-3 순회): 모든 정점이 `선행통과 v8` → 1.5s 뒤
+      //   `통과 v8` 로 **두 번** 찍혔다. 관제 화면에서는 하이라이트가 다음 노드로
+      //   갔다가 자기 노드로 되돌아온 뒤 다시 다음으로 갔고, 정점마다 1.5~2.5초를
+      //   되감기로 흘렸다. 로봇 쪽에서는 `주행 watchdog 재시도 1/3: motion progress
+      //   watchdog expired` 로 드러난다.
+      //
+      //   ⚠️ 두 번째 통과가 `선행통과` 가 아니라 **`통과`** 로 찍히는 것이 지문이다 —
+      //      라벨이 `통과` 이려면 `reach == arrive_radius_` 여야 하고, 그건
+      //      `0.5 × lane <= arrive_radius_`, 즉 **앞뒤 정점이 같을 때**뿐이다(1567행).
+      //
+      //   `ride` 갈래(스냅샷도 이동 중)에서는 계획이 커밋 정점에서 시작하므로 여기
+      //   조건이 안 걸리고 예전과 똑같이 한 칸을 살린다.
+      //   판정은 순수 함수로 뺐다(`fleet_task.hpp`) — `test_plan_commit_head.cpp` 가
+      //   되돌림까지 붙들고 있다.
+      if (should_prepend_commit_head(np, t.moving, t.path[t.idx - 1])) {
         np.insert(np.begin(), t.path[t.idx - 1]);   // 진행 중인 한 칸을 살린다
         na.insert(na.begin(), -1);                  // 이미 떠난 정점 — 마감 없음
         // ── 커밋 노드(지금 향해 가는 정점)의 마감 ──────────────────────────

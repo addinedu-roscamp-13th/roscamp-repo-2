@@ -27,6 +27,7 @@
 이 함수는 트리의 **참조 구현**이다. 한쪽만 고치면 `test_recovery_bt` 의 동등성 검증이
 거짓말을 하게 되므로 항상 같이 고친다.
 """
+from .session import GUIDE
 
 
 def peek_sec(cfg, role="follow", enabled=True) -> float:
@@ -40,8 +41,14 @@ def peek_sec(cfg, role="follow", enabled=True) -> float:
        없고, 그때 마지막 회전 방향(LKD)으로 90° 를 도는 것은 **근거 없는 추측**이다.
        오히려 사람이 다시 나타났을 때 로봇이 엉뚱한 데를 보고 있게 된다.
        사용자 지시(2026-08-02): "가운데에서 사라지면 peek 가 없어도 될 것 같다."
+
+    ⚠️ [2026-08-07] 예전엔 `role != "follow"` 였다 — **`security` 까지 0 이 됐다.**
+       야간순찰은 추종과 주행 로직이 같은데(role 을 가른 이유는 자세 게이트 하나뿐,
+       `session.py` 머리말) 회복만 길잡이 취급을 받아 peek 이 통째로 빠졌다.
+       못 도는 건 **길잡이뿐**이다 — 주행을 nav2 가 하므로 돌면 목적지 방향과
+       사람 방향이 겹쳐 진동한다(`recovery_bt.AlignHeading` 머리말).
     """
-    if not enabled or role != "follow":
+    if not enabled or role == GUIDE:
         return 0.0
     angle = getattr(cfg, "SEARCH_PEEK_ANGLE", 0.0)
     return (angle / cfg.ANGULAR_Z_SEARCH) if angle > 0 else 0.0

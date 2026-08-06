@@ -239,6 +239,45 @@ def test_guide_home_camera_is_back():
     assert env.cams[-1] == "front"          # peek 은 반대쪽
 
 
+# ── 야간 순찰(security)은 회복도 추종과 같아야 한다 (2026-08-07) ─────────────
+#
+# 예전엔 `role == "follow"` 인지로 갈랐다 — `security` 가 통째로 길잡이 취급을 받았다.
+# 야간 순찰 세션은 **앞캠**인데(`session.ROLE_CAMERA[SECURITY] == "front"`) 대상을
+# 놓치는 순간 탐색이 `select_camera("back")` 을 20Hz 로 내서, 침입자가 앞에 있는데
+# 뒷캠을 봤다. peek(90° 꺾기)과 AlignHeading(180° 회전)도 같이 빠져 있었다.
+#
+# 갈라야 하는 건 **길잡이 하나뿐**이다 — 주행을 nav2 가 하므로 돌면 진동한다.
+
+def test_security_home_camera_is_front_like_follow():
+    """정위치 캠이 뒤로 뒤집혀 있던 결함. 되돌리면 첫 줄이 빨개진다."""
+    env = _peek_ctx(role="security")
+    _run_to(env, 2.0)
+    assert env.cams[-1] == "front"          # LkdPeek — 앞을 본다
+    _run_to(env, 12.0)
+    assert env.cams[-1] == "back"           # HoldBack — peek 은 반대쪽
+
+
+def test_security_keeps_the_lkd_peek_phase():
+    """`peek_sec` 이 `role != "follow"` 로 걸러 security 의 peek 이 통째로 빠졌었다."""
+    env = _peek_ctx(role="security")
+    phases = [c for c in env.root.children if c.name == 'SearchPhases'][0]
+    assert 'LkdPeek' in [c.name for c in phases.children]
+
+
+def test_security_latches_align_like_follow():
+    """반대 캠에서 찾으면 180° 돈다 — 추종과 같다. 캠이 제어 입력이라 필수다."""
+    env = _peek_ctx(role="security", people=1)
+    _run_to(env, 11.0)
+    assert env.ctx.align_latched is True
+
+
+def test_guide_still_does_not_latch_align():
+    """길잡이만 예외라는 것을 못 박는다 — 위 셋을 role 무관하게 풀면 여기가 빨개진다."""
+    env = _peek_ctx(role="guide", people=1)
+    _run_to(env, 11.0)
+    assert env.ctx.align_latched is False
+
+
 def test_peek_ignores_multiple_people():
     """여럿이면 대상을 특정할 수 없다 — 헛돌면 진짜 대상은 더 멀어진다."""
     env = _peek_ctx(role="follow", people=2)

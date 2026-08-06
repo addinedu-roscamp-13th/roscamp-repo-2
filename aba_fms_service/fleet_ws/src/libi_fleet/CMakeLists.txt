@@ -115,6 +115,18 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(test_plan_start libi_fleet_core)
 
+  # 순회 CBS 목표가 계획 출발점보다 두 홉 앞이라 랩 정점을 건너뛰던 결함의 회귀 방지
+  # (2026-08-07 실기: v13→v10 현, v4→v6 코너컷).
+  ament_add_gtest(test_patrol_goal_index test/test_patrol_goal_index.cpp)
+  target_include_directories(test_patrol_goal_index PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+  # 진행 중인 한 칸을 **두 번** 붙여 목표가 되감기던 결함의 회귀 방지(2026-08-07 실기).
+  # 정점마다 `선행통과 v8` → `통과 v8` 이 반복되고 하이라이트가 앞뒤로 튀었다.
+  ament_add_gtest(test_plan_commit_head test/test_plan_commit_head.cpp)
+  target_include_directories(test_plan_commit_head PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
   # 사람이 막은 정점을 **실제 지도로** 피해 가는가 — 사용자 질문(2026-08-03)에 대한
   # 실증. 코드를 읽고 답하는 대신 arte2 navgraph 로 계획을 돌려 확인한다.
   ament_add_gtest(test_blocked_reroute test/test_blocked_reroute.cpp)
