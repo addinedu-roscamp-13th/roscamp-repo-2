@@ -122,7 +122,7 @@ class LidarApproach:
         """
         c = self.cfg
         # sweep=0은 현재 맵 자세를 유지한 채 재검출하는 모드다. 접근 단계가
-        # 이미 목표 yaw(현재 충전소는 π)로 맞춘 뒤에는 좌우로 도리도리하면
+        # 이미 목표 yaw(현재 맵 기준 충전소는 0.0)로 맞춘 뒤에는 좌우로 도리도리하면
         # 오히려 현재 프레임에서 보이는 노치를 놓칠 수 있다.
         if c.acquire_recovery_sweep_rad <= 0.0:
             self._recover_until = now_s
