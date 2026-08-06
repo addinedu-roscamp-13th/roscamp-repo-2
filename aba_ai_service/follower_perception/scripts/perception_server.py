@@ -200,7 +200,10 @@ def draw_overlay(frame, det, *, cands=None, pick=None, cmd=None, status_extra=""
         # 이미 여기서 굽는다(FollowScreen.qml 머리말).
         posture = getattr(det, "posture", None)
         pcol = _POSTURE_COLORS.get(posture, _POSTURE_UNKNOWN_COLOR)
-        kp = None  # 골격 표시 끔 — 그리기만 막음, posture 판정 로직엔 영향 없음
+        # 포즈 판정에 실제로 사용한 최신 키포인트를 화면에도 표시한다.
+        # 판정이 꺼져 있거나 아직 owner 포즈가 없으면 None 이므로 기존처럼 안전하게
+        # 아무것도 그리지 않는다.
+        kp = getattr(pose, "last_keypoints", None) if pose is not None else None
         if kp is not None:
             # 판정이 실제로 쓴 축을 그대로 그린다 — 안 읽으면 화면은 항상 torso 축인데
             # 판정은 shoulder_knee 로 나오는 어긋남이 생긴다(이 파일이 고치는 이유).
