@@ -257,6 +257,12 @@ class LidarDockConfig:
     # ── 시간 ──────────────────────────────────────────────────────────────
     settle_sec: float = 3.0
     acquire_timeout_s: float = 3.0
+    # 노치를 확정하지 못했을 때 같은 자세에서 재시작하면 같은 스캔을 반복할
+    # 뿐이다. 안전한 제자리 스윕으로 빔 입사각만 바꿔 다시 확정한다. 전진·후진은
+    # 하지 않으므로 도크와의 거리는 변하지 않는다.
+    acquire_recovery_max: int = 3
+    acquire_recovery_sweep_rad: float = 0.25
+    acquire_recovery_settle_s: float = 0.30
     #   ⚠️ [2026-08-04, 사용자 요청] 90초 → 300초. RETREAT 재시도(최대 2회,
     #     매번 최대 waypoint_retreat_s 만큼 왕복)까지 감안하면 90초는 실기에서
     #     거의 다 맞춰놓고도(d=100mm, y≈0, yaw=0.7°) 이 전체 타임아웃에
@@ -293,6 +299,9 @@ class LidarDockConfig:
             pulse_max_s=max(float(self.pulse_max_s), max(float(self.pulse_min_s), MIN_STEP_S)),
             smooth_rays=max(1, int(self.smooth_rays)),
             confirm_frames=max(1, int(self.confirm_frames)),
+            acquire_recovery_max=max(0, int(self.acquire_recovery_max)),
+            acquire_recovery_sweep_rad=max(0.0, abs(float(self.acquire_recovery_sweep_rad))),
+            acquire_recovery_settle_s=max(0.0, float(self.acquire_recovery_settle_s)),
             min_points=max(4, int(self.min_points)),
             ransac_iters=max(1, int(self.ransac_iters)),
             ang_max_rad_s=abs(float(self.ang_max_rad_s)),

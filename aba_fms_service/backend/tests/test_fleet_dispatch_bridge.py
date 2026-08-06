@@ -581,3 +581,32 @@ def test_fms_backup_leg_is_sent_directly_to_robot_agent(monkeypatch):
 
     assert cmd_id == "backup-1"
     assert sent == {"robot": "Pinky-3", "action": "backup", "args": {}}
+
+
+def test_arm_leg_waits_for_the_operator_while_driving_stays_automatic(monkeypatch):
+    """`LIBI_ARM_VIA_BT=0`(루트 .env) 일 때의 데모 동작 — **팔만 수동**이다.
+
+    실측(2026-08-05 19:51 관제 화면): 기본값 1 이면 팔 다리가 로봇으로 나가고,
+    로봇의 `robot_agent` 는 팔이 없어서 **즉시 성공**으로 답한다 — 집기/놓기가
+    저절로 넘어가 버렸다. 0 이면 FMS 가 다리를 들고 있다가 배차 화면의
+    「현재 다리 완료 처리」로만 넘어간다.
+
+    ⚠️ 복귀(`backup`)는 팔이 아니라 `robot_agent` 주행 명령이라(`:325` 갈래)
+    이 플래그와 무관하게 자동이어야 한다. 같이 멈추면 도킹한 채로 굳는다.
+    """
+    sent: list[str] = []
+    monkeypatch.setattr(bridge.fleet_telemetry, "send_command_async",
+                        lambda robot, action, args=None: sent.append(action) or "cmd-1")
+    auto_completed: list[str] = []
+    monkeypatch.setattr(bridge, "_complete_arm_later", auto_completed.append)
+    monkeypatch.setattr(bridge, "ARM_VIA_BT", False)
+    monkeypatch.setattr(bridge, "ARM_AUTO", False)
+
+    cmd_id = bridge.real_dispatch("t1", "Pinky-3", _arm_leg())
+    assert cmd_id.startswith("arm-"), "팔 다리는 FMS 가 들고 있어야 한다"
+    assert sent == [], "팔 다리를 로봇으로 보내면 로봇이 즉시 성공으로 답해 저절로 넘어간다"
+    assert auto_completed == [], "자동 완료가 걸리면 사람이 넘길 새가 없다"
+
+    backup = Leg(LegType.PERFORM_ACTION, {"action": "backup", "at": "예술서가"})
+    bridge.real_dispatch("t2", "Pinky-3", backup)
+    assert sent == ["backup"], "복귀는 팔이 아니다 — 자동으로 나가야 한다"

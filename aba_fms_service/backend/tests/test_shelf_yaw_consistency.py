@@ -63,8 +63,9 @@ def test_navgraph_yaw_matches_shelf_dock_constant():
         assert math.isclose(float(verts[name]["yaw"]), float(want), abs_tol=1e-4), name
 
 
-def test_other_vertices_are_untouched():
-    """예술서가는 이번 범위가 아니다 — 두 소비자 모두 다루지 않아야 한다."""
-    verts = _vertices()
-    assert "yaw" not in verts.get("예술서가", {})
-    assert "예술서가" not in _robot_shelf_yaw()
+def test_art_shelf_is_now_in_scope():
+    """실측(2026-08-05): 예술서가가 `fleet_dispatch_bridge.SHELF_NODES` 밖이라 실주문
+    으로 shelf_dock 이 전혀 안 나갔다(도착만 하고 정밀 도킹 없이 다리가 끝남) —
+    SHELF_NODES 에 추가했다. 여기(robot_agent 의 SHELF_YAW)도 같이 있어야 한다
+    (예전엔 "범위 밖" 이라 없는 걸 이 시험이 지켰는데, 이제 반대를 지킨다)."""
+    assert "예술서가" in _robot_shelf_yaw()

@@ -12,13 +12,13 @@ vertices:
     y: -1.001
     yaw: 0.0
   1번테이블:
-    x: 0.572
+    x: 0.472
     y: -1.385
-    yaw: 0.0
+    yaw: -1.5708
   2번테이블:
-    x: 0.572
+    x: 0.472
     y: -1.704
-    yaw: 0.0
+    yaw: -1.5708
   예술서가:
     x: 0.3
     y: -0.3615
@@ -54,10 +54,6 @@ vertices:
   순회경로-5:
     x: 0.3
     y: -1.385
-  미정:
-    x: 0.7518
-    y: -0.0333
-    yaw: 0.0
   도서관출입구:
     x: 0.3
     y: -1.704
@@ -65,10 +61,6 @@ vertices:
   안네데스크:
     x: 0.0263
     y: -1.704
-  화장실:
-    x: 0.7518
-    y: -0.3615
-    yaw: 0.0
   충전소통로:
     x: 0.384
     y: -0.03
@@ -81,11 +73,19 @@ vertices:
     x: -0.0007
     y: -0.0333
     yaw: 3.1415
+  남자화장실:
+    x: 0.7518
+    y: -0.0333
+    yaw: 0.0
+  여자화장실:
+    x: 0.7518
+    y: -0.3615
+    yaw: 0.0
 lanes:
-- from: 미정
+- from: 남자화장실
   to: 충전소입구
   bidirectional: true
-- from: 화장실
+- from: 여자화장실
   to: 순회경로-1
   bidirectional: true
 - from: 예술서가
@@ -103,10 +103,10 @@ lanes:
 - from: 미술작품
   to: 순회경로-2
   bidirectional: true
-- from: 화장실
-  to: 미정
+- from: 여자화장실
+  to: 남자화장실
   bidirectional: true
-- from: 화장실
+- from: 여자화장실
   to: 미술작품
   bidirectional: true
 - from: 순회경로-1

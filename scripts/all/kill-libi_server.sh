@@ -1,16 +1,23 @@
 #!/usr/bin/env bash
 # server.sh 가 띄운 **서버 스택만** 정리 — 로봇별 세션(추종 AI·패널)은 그대로 둔다.
 #
-#   ./kill-libi_server.sh              # 관제 UI · 도서관 웹 · 브릿지 · fleet_node  (:9001 은 남긴다)
-#   ./kill-libi_server.sh --with-api   # :9001 FMS 백엔드까지 함께
+#   ./kill-libi_server.sh              # 관제 UI · 도서관 웹 · 브릿지 · fleet_node · **:9001 FMS**
+#   ./kill-libi_server.sh --keep-api   # :9001 만 남긴다 (로봇 돌려둔 채 UI 만 껐다 켤 때)
 #
 # 로봇 한 대만 내리려면 ./kill-libi_laptop.sh <이름>, 전부면 ./kill-libi_laptop.sh
 #
-# ## :9001 을 기본으로 안 죽이는 이유
+# ## [2026-08-05] :9001 을 **기본으로 죽이도록 뒤집었다**
 #
-# 그 프로세스는 UI 전용이 아니다 — fleet_telemetry(도메인 86 ROS 스레드)를 물고 있어서,
-# 내리면 **로봇 텔레메트리·명령 링크가 함께 끊긴다.** 로봇은 돌려두고 UI 만 껐다 켜는
-# 경로를 살려 두려는 것이고, 실제 종료는 scripts/laptop/fms-kill.sh 가 담당한다.
+# 예전 기본은 "남긴다" 였고 `--with-api` 를 줘야 죽었다. 남긴 이유는 아래 트레이드오프
+# 때문이었는데, 실제로 물린 건 반대쪽이었다 — 이 데몬은 `--reload` 없이 nohup 으로 뜨고
+# **어떤 kill.sh 도 안 건드려서**, 백엔드 코드를 고쳐도 옛 프로세스가 계속 응답한다.
+# 2026-07-27(panel_bridge 5시간짜리 유령), 2026-08-05(배달 다리 변경·LIBI_ARM_VIA_BT 가
+# 안 먹음) 두 번 다 같은 모양으로 시간을 날렸다. 사용자 결정으로 기본을 뒤집는다.
+#
+# ⚠️ **뒤집으면서 잃는 것(알고 쓰는 것)** — :9001 은 UI 전용이 아니다. 그 프로세스가
+# fleet_telemetry(도메인 86 ROS 스레드)를 물고 있어서, 내리면 **로봇 텔레메트리·명령
+# 링크가 함께 끊긴다.** 로봇은 돌려둔 채 UI 만 껐다 켜려면 `--keep-api` 를 준다.
+# :9001 만 따로 내리는 건 여전히 scripts/laptop/fms-kill.sh 가 담당한다.
 #
 # ## 무엇이 무엇을 지우나
 #
@@ -29,11 +36,13 @@
 set -eo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../_common.sh"
 
-WITH_API=false
+WITH_API=true
 for a in "$@"; do
   case "$a" in
+    --keep-api) WITH_API=false ;;
+    # 옛 이름 — 이제 기본이라 아무 일도 안 한다. 손가락·메모에 남아 있어도 안 죽게 받아준다.
     --with-api) WITH_API=true ;;
-    *) die "모르는 인자: $a  (--with-api 만 받습니다)" ;;
+    *) die "모르는 인자: $a  (--keep-api 만 받습니다)" ;;
   esac
 done
 
@@ -43,6 +52,14 @@ echo "[kill-libi_server] ⚠ 이 머신의 sim·로봇 세션(pinky_pi·pinky_si
 
 if [ "$WITH_API" = true ]; then
   "$REPO_ROOT/scripts/laptop/fms-kill.sh" || true
+else
+  # 남길 때는 **무엇이 남는지 말한다.** 조용히 남으면 코드를 고쳐도 옛 프로세스가
+  # 계속 응답해서 "왜 안 바뀌지" 로 시간을 날린다(머리말의 두 사고가 그 모양이었다).
+  if port_open 9001; then
+    _p="$(ss -ltnp 2>/dev/null | awk '/:9001 /{print $NF}' | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2 || true)"
+    echo "[kill-libi_server] --keep-api: :9001 남깁니다${_p:+  pid=$_p  기동=$(ps -o lstart= -p "$_p" 2>/dev/null | sed 's/^ *//')}"
+    echo "                   백엔드 코드를 고쳤다면 이 프로세스는 옛 코드입니다 — $REPO_ROOT/scripts/laptop/fms-kill.sh"
+  fi
 fi
 
 # ⚠️ exec 다 — 반드시 마지막.

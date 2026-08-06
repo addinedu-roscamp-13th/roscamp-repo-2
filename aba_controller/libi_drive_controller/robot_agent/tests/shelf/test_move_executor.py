@@ -7,6 +7,8 @@
 """
 import math
 
+import pytest
+
 from app.core.backup_runner import MoveExecutor, record_return_targets
 from app.core.shelf_dock import unlock_payload
 from app.shelf.geometry import Move, wrap_pi
@@ -329,3 +331,148 @@ def test_fms_backup_follows_saved_checkpoints_in_reverse_order():
     assert ok is True and status == 200
     assert [round(m.value, 6) for m in driven if m.kind == "drive"] == [1.0, 1.0]
 
+
+
+# ─── 도킹 뒤 복귀(backup)가 매번 "pose 를 못 얻었다" 로 죽던 건 ─────────────────
+# 실측(2026-08-05 관제 UI): 배달 5다리 중 3번(backup)에서 정지.
+#   ● 1. 주행 → 예술서가 / ● 2. 책 집기 / ○ 3. 작업 ← 여기서 죽음
+#   사유 — 현재 pose(/amcl_pose) 를 못 얻었다
+# 그 뒤 목적지 주행·놓기·순회(task_done → PATROL)까지 통째로 막혔다.
+
+def test_backup_pose_comes_from_the_long_lived_subscription(monkeypatch):
+    """도킹 직후 로봇은 **정지**해 있고, 그때 AMCL 은 원리상 아무것도 안 낸다.
+
+    그러니 그 순간 `/amcl_pose` 를 새로 구독해 기다리는 건 답이 없다 —
+    상시 구독이 들고 있는 마지막 자세를 써야 한다(`park_dock.py:129` 와 같은 방식).
+    """
+    from app.core import backup_runner, ros_bridge
+
+    monkeypatch.setattr(ros_bridge, "get_current_pose", lambda: (1.5, 2.5, 0.3))
+
+    def _must_not_probe():
+        raise AssertionError("상시 구독에 자세가 있는데 새 구독으로 기다렸다")
+
+    monkeypatch.setattr(backup_runner, "_probe_amcl_pose", _must_not_probe)
+    assert backup_runner._read_current_pose() == (1.5, 2.5, 0.3)
+
+
+def test_backup_falls_back_to_probe_only_when_nothing_is_cached(monkeypatch):
+    """상시 구독이 아직 아무것도 못 받았을 때만(부팅 직후 등) 예비 경로로 간다."""
+    from app.core import backup_runner, ros_bridge
+
+    monkeypatch.setattr(ros_bridge, "get_current_pose", lambda: None)
+    monkeypatch.setattr(backup_runner, "_probe_amcl_pose", lambda: (9.0, 9.0, 0.0))
+    assert backup_runner._read_current_pose() == (9.0, 9.0, 0.0)
+
+
+def test_backup_probe_subscribes_latched_or_a_stopped_robot_never_hears_amcl():
+    """예비 경로도 **TRANSIENT_LOCAL** 이어야 한다.
+
+    기본 VOLATILE 이면 구독 뒤 새로 발행되는 것만 받는데, 정지한 로봇에서는
+    그게 영영 안 온다 — 예비 경로가 예비 구실을 못 한다. AST 로 못 박는다
+    (ROS 없이는 QoS 를 실행으로 확인할 수 없다).
+    """
+    import ast
+    import inspect
+
+    from app.core import backup_runner
+
+    tree = ast.parse(inspect.getsource(backup_runner._probe_amcl_pose))
+    names = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+    assert "TRANSIENT_LOCAL" in names, \
+        "정지한 로봇은 VOLATILE 구독으로 /amcl_pose 를 영영 못 받는다"
+    # 그리고 그 프로파일이 실제로 구독에 쓰여야 한다 — 만들어만 두면 의미가 없다.
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "create_subscription"):
+            assert not (isinstance(node.args[-1], ast.Constant)
+                        and isinstance(node.args[-1].value, int)), \
+                "create_subscription 이 아직 depth 정수(기본 VOLATILE)를 쓴다"
+            break
+    else:
+        raise AssertionError("create_subscription 호출을 못 찾았다")
+
+
+# ─── 복귀 회전을 map 절대 yaw 로 닫는다 ───────────────────────────────────────
+# 목표는 언제나 map 절대 자세인데 실행이 odom 적분 상대 회전이면 오차가 누적된다.
+# 도킹은 2026-08-05 에 `turn_to_map_yaw` 로 갈아탔는데 복귀만 옛 방식이 남아 있었다 —
+# 복귀는 체크포인트 2개 × (TURN·DRIVE·TURN) = **회전 6번**이라 누적이 더 크다.
+
+def _turn_only(abs_yaw, rel):
+    from app.shelf.geometry import Move, TURN
+    return Move(TURN, rel, abs_yaw=abs_yaw)
+
+
+def _drive_map_turn(start_map_yaw, abs_yaw, rel, *, odom_gain=1.0, hz=20.0):
+    """회전 한 번을 굴린다. `(끝난 map yaw, tick 수, why)`.
+
+    `odom_gain` 은 odom 이 실제 회전량을 잘못 재는 정도다 — 1.0 이 아니면 상대 회전
+    방식은 그만큼 어긋나고, map 절대 방식은 영향을 안 받아야 한다.
+    """
+    from app.core.backup_runner import MoveExecutor
+
+    state = {"map_yaw": start_map_yaw, "odom_yaw": 0.0}
+
+    def publish(lin, ang):
+        state["map_yaw"] = viewer_wrap(state["map_yaw"] + ang / hz)
+        state["odom_yaw"] += ang / hz * odom_gain
+
+    ex = MoveExecutor(publish_twist=publish,
+                      pose_fn=lambda: (0.0, 0.0, state["odom_yaw"]),
+                      turn_speed=0.4, turn_tol=0.02,
+                      map_yaw_fn=lambda: state["map_yaw"])
+    ok, why = ex.run([_turn_only(abs_yaw, rel)])
+    return state["map_yaw"], ok, why
+
+
+def viewer_wrap(a):
+    import math
+    return (a + math.pi) % (2 * math.pi) - math.pi
+
+
+def test_backup_turn_lands_on_the_absolute_map_yaw():
+    """상대각(`value`)이 틀려도 **map 절대 목표**에 선다."""
+    import math
+    # 상대각을 일부러 엉뚱하게(0.1rad) 줘도 절대 목표 -1.5708 로 가야 한다.
+    end, ok, why = _drive_map_turn(start_map_yaw=1.0, abs_yaw=-1.5708, rel=0.1)
+    assert ok, why
+    assert abs(viewer_wrap(end - (-1.5708))) <= 0.02, end
+
+
+def test_backup_turn_is_immune_to_odom_scale_error():
+    """odom 이 회전량을 20% 적게 재도 map 기준 결과는 그대로다.
+
+    옛 상대 회전 방식이면 그만큼 덜/더 돌고 그 오차가 다음 회전으로 누적됐다.
+    """
+    import math
+    end, ok, _ = _drive_map_turn(start_map_yaw=0.0, abs_yaw=math.pi / 2,
+                                 rel=math.pi / 2, odom_gain=0.8)
+    assert ok
+    assert abs(viewer_wrap(end - math.pi / 2)) <= 0.02, end
+
+
+def test_backup_turn_falls_back_to_relative_when_map_pose_is_missing():
+    """map pose 를 못 얻으면 **조용히 죽지 않고** 예전 상대 회전으로 돈다."""
+    import math
+    from app.core.backup_runner import MoveExecutor
+
+    state = {"odom_yaw": 0.0}
+    ex = MoveExecutor(publish_twist=lambda lin, ang: state.__setitem__("odom_yaw", state["odom_yaw"] + ang / 20.0),
+                      pose_fn=lambda: (0.0, 0.0, state["odom_yaw"]),
+                      turn_speed=0.4, turn_tol=0.02,
+                      map_yaw_fn=lambda: None)          # 상시 구독이 비었다
+    ok, why = ex.run([_turn_only(math.pi / 2, math.pi / 2)])
+    assert ok, why
+    assert abs(state["odom_yaw"] - math.pi / 2) <= 0.05
+
+
+def test_approach_moves_carry_the_absolute_yaw_for_both_turns():
+    """계획 단계에서 map 절대 목표를 실어 보내야 실행부가 쓸 수 있다."""
+    import math
+    from app.shelf.geometry import approach_moves, TURN
+
+    moves = approach_moves(0.0, 0.0, 0.0, 1.0, 1.0, clearance=0.0, final_yaw=-1.5708)
+    turns = [m for m in moves if m.kind == TURN]
+    assert len(turns) == 2
+    assert turns[0].abs_yaw == pytest.approx(math.atan2(1.0, 1.0))   # 진행 방향
+    assert turns[1].abs_yaw == pytest.approx(-1.5708)                # 도착 자세

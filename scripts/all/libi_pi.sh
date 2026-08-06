@@ -8,6 +8,7 @@
 #   ./libi_pi.sh --robot pinky-3 --domain-id 119 --ai 172.30.1.97 # AI 서버 IP 직접 지정
 #   ./libi_pi.sh --robot pinky-3 --domain-id 119 --no-battery    # [디버그] 배터리 자동 전이 OFF
 #   ./libi_pi.sh --robot pinky-3 --domain-id 119 --no-fsm        # 모르는 플래그는 pi.sh 로 그대로
+#   ./libi_pi.sh --robot pinky-3 --domain-id 119 --dock-debug    # shelf_dock_lidar_viewer.py 카메라 패널용 추가 송출
 #
 # **`--robot` 과 `--domain-id` 는 필수다.** 도메인에 기본값을 두지 않는다 — 셸 값(보통
 # ~/.bashrc 의 119)을 물려쓰면 로봇이 늘었을 때 **에러 없이 안 붙는다.**
@@ -100,6 +101,11 @@ BACK_CAM=""     # 빈 값 = 자동 탐지
 # 동적 장애물 회피는 **기본 꺼짐**이다. 켜고 끄기가 쉬워야, 좁은 통로가 통째로 막히는
 # 상황이 났을 때 즉시 되돌릴 수 있다(맵이 1.26×2.16m 라 실제로 그럴 수 있다).
 WITH_DYN_OBSTACLE=false
+# 서가도킹 디버그 뷰어(shelf_dock_lidar_viewer.py)용 — 켜면 앞캠을 별도 포트로도
+# 추가 송출한다(camera_sender.py --debug-port, 2026-08-05). perception_server 가 이미
+# 쓰는 UDP/뷰어 슬롯과 안 부딪히게 VIDEO_PORT+1000 을 쓴다 — shelf_dock_lidar_viewer.py
+# 의 cam_port_for()+DEBUG_PORT_OFFSET 과 반드시 같은 규칙이어야 한다.
+DOCK_DEBUG=false
 DYN_OBSTACLE_FAN_DEG="${DYN_OBSTACLE_FAN_DEG:-60}"
 DYN_OBSTACLE_TTL="${DYN_OBSTACLE_TTL:-20.0}"
 DYN_OBSTACLE_NEAR_AREA="${DYN_OBSTACLE_NEAR_AREA:-0}"   # 0 = 정책 자체가 꺼짐
@@ -155,6 +161,7 @@ while [ $# -gt 0 ]; do
     --back)     WITH_BACK=true; BACK_CAM="${2:?--back 뒤에 USB 캠 인덱스가 필요합니다 (예: --back 1).  목록: v4l2-ctl --list-devices}"; shift 2 ;;
     --no-back)  WITH_BACK=false; shift ;;
     --dyn-obstacle) WITH_DYN_OBSTACLE=true; shift ;;
+--dock-debug) DOCK_DEBUG=true; shift ;;
     --no-battery)   BATTERY_AUTO=false; shift ;;
     --battery)      BATTERY_AUTO=true;  shift ;;
     # 값 없이 쓰면 기본 이미지(config/panel/libi_panel.png) — 기본 동작과 같다.
@@ -482,6 +489,12 @@ CAM_ARGS="--picamera"
 #    480x360 과 360x270 은 **거부**하고 각각 640x360·352x288 로 연다 — 화각이 바뀐다.
 #    그래서 두 캠을 같은 값으로 맞출 수 있는 저해상도는 320x240 뿐이다.
 CAM_ARGS="$CAM_ARGS --width 320 --back-width 320"
+DOCK_DEBUG_PORT=""
+if [ "$DOCK_DEBUG" = true ]; then
+  DOCK_DEBUG_PORT=$((VIDEO_PORT + 1000))
+  CAM_ARGS="$CAM_ARGS --debug-port $DOCK_DEBUG_PORT"
+  echo "[libi_pi] 도킹 디버그 캠 → $AI_IP:$DOCK_DEBUG_PORT (shelf_dock_lidar_viewer.py 기본 포트와 같은 규칙)"
+fi
 tmux new-window -t "$SESSION" -n cam \
   bash -c "cd '$REPO_ROOT' && echo '[cam] 앞/뒤 → $AI_IP:$VIDEO_PORT (BT 가 camera_select 로 고름, nice+10, 17fps, 320x240)' && VIDEO_PORT='$VIDEO_PORT' CAM_ARGS='$CAM_ARGS' FPS='17' nice -n 10 ./scripts/drive-pi/image-sender.sh '$AI_IP'; exec bash"
 

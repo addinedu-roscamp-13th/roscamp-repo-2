@@ -99,3 +99,17 @@ TEST(PatrolPath, StaysConnectedWhenEntryIsPushedForward) {
     }
   }
 }
+
+TEST(PatrolPath, LeavesChargingStationDirectlyThroughChargingCorridor) {
+  Navgraph g;
+  ASSERT_TRUE(g.load(kArte2(), "L1"));
+  const auto route = right_hand_boundary_cycle(g);
+  ASSERT_GE(route.size(), 3u);
+
+  // arte2 map: v19=충전소, v17=충전소통로. 충전 완료 후 순찰 재개는
+  // 충전소에서 바로 통로로 나가야 한다(입구/본관을 먼저 찍으면 안 됨).
+  const auto path = patrol_path_from(g, 19, route);
+  ASSERT_GE(path.size(), 2u);
+  EXPECT_EQ(path[0], 19);
+  EXPECT_EQ(path[1], 17);
+}

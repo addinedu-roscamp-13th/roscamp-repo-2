@@ -915,6 +915,13 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
         if (pr.arrive[i] < 0) continue;                     // 이미 떠난 칸 — 마감 없음
         const node = nameAt(pr.xy[i][0], pr.xy[i][1]);
         if (!node) continue;
+        // 충전 완료 직후의 현재 정점은 예약할 다음 칸이 아니다. 복귀 경로가
+        // `충전소(v19) → 충전소통로(v17)`로 시작할 때 화면에는 통로부터
+        // 보여야 한다. 교통 장부 자체는 그대로 두고 표시만 생략한다.
+        const nextNode = i + 1 < pr.xy.length
+          ? nameAt(pr.xy[i + 1][0], pr.xy[i + 1][1])
+          : null;
+        if (i === 0 && node === "충전소" && nextNode === "충전소통로") continue;
         const at = plan.epoch_wall + pr.arrive[i] * plan.tick_sec + clockSkew.current;
         const left = at - nowSec;
         if (left < -tol - 20) continue;                     // 한참 지난 것은 소음이다
@@ -954,9 +961,12 @@ export function WaypointEditor({ robotId, navPort = 9001 }: WaypointEditorProps)
       if (!Array.isArray(pts) || pts.length === 0) continue;
       const hex = robotColor(robot).hex;
       const stops: Hold[] = [];
-      for (const [wx, wy] of pts) {
+      for (let i = 0; i < pts.length; i += 1) {
+        const [wx, wy] = pts[i];
         const node = nameAt(wx, wy);
         if (!node) continue;
+        const nextNode = i + 1 < pts.length ? nameAt(pts[i + 1][0], pts[i + 1][1]) : null;
+        if (i === 0 && node === "충전소" && nextNode === "충전소통로") continue;
         const at = reservedAtXY(robot, wx, wy);
         stops.push({
           node, robot, hex,

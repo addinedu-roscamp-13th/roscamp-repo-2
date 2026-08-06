@@ -228,9 +228,13 @@ def _release_hold(robot: str) -> None:
             _held_by_cmd.pop(k, None)
 
 
-#: 정밀 도킹 대상 서가. navgraph 에 yaw 가 박힌 정점만 여기 넣는다 —
-#: 예술서가는 yaw 가 없어 이번 범위 밖이다(arte2.navgraph.yaml).
-SHELF_NODES = ("문학서가", "과학-인문학서가")
+#: 정밀 도킹 대상 서가. 셋 다 navgraph 에 yaw 가 없다(arte2.navgraph.yaml) — 도착
+#: 자세는 shelf_dock.py 자체의 보정 회전(SHELF_YAW 기준)이 맡는다. 예술서가는
+#: 2026-08-05까지 이 목록에서 빠져 있어 실주문으로 도킹이 전혀 안 나갔다(실측:
+#: shelf_dock_status 가 시도 전 구간 내내 "waiting" — 로봇은 도착만 하고 끝남).
+#: SHELF_YAW["예술서가"] 는 아직 실측 전 임시값이다(shelf_dock.py 참고) — 실기로
+#: 확인 전까지는 첫 회전이 부정확할 수 있다.
+SHELF_NODES = ("문학서가", "과학-인문학서가", "예술서가")
 
 #: 서가 도킹(+팔 작업)이 끝나기까지 정점 잠금과 로봇 hold 에 함께 쓰는 TTL. **반드시
 #  같은 값**이어야 한다 — 어긋나면 한쪽이 먼저 풀려 그 사이 재배차/재진입이 들어온다.

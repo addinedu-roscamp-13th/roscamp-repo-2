@@ -20,7 +20,7 @@ ENTRANCE = (0.6, 0.0)
 #: 회전 단계 시험에서 로봇을 놓아 둘 아무 좌표. 회전은 위치와 무관하다.
 SOMEWHERE = (0.0, 0.0)
 #: 접근 자세(절대각). config/params.yaml `returning.approach_yaw_rad` 와 같은 뜻.
-APPROACH_YAW = 0.0
+APPROACH_YAW = None
 
 
 class _Clock:
@@ -244,6 +244,23 @@ def test_face_approach_yaw_needs_a_heading(seed):
     assert rot.started is False
 
 
+def test_face_approach_yaw_uses_explicit_map_yaw(seed):
+    """현장 보정 절대각은 현재 AMCL heading과 무관하게 그대로 써야 한다."""
+    seed(**{Keys.ROBOT_POSE: {"x": 9.9, "y": -3.3, "yaw": -0.7}})
+    rot = FakeYawDriver()
+    steps = create_return_steps(
+        entrance_driver=FakeDriver(), rotate_driver=rot,
+        nav_release_driver=FakeDoneDriver(), dock_driver=FakeDoneDriver(),
+        nudge_driver=FakeDoneDriver(), entrance_xy=ENTRANCE,
+        approach_yaw=math.pi, tolerance=0.05, resend_sec=10.0, timeout_sec=60.0,
+        yaw_tolerance_rad=0.15, retry_max=3, settle_sec=1.0, now_fn=_Clock())
+    step = steps[1]
+    step.setup_with_descendants()
+    step.initialise()
+    step.tick_once()
+    assert abs(wrap_angle(rot.last_yaw - math.pi)) < 1e-6
+
+
 def test_yaw_target_is_fixed_once(seed):
     """매 tick 다시 계산하면 돌면서 목표도 따라 움직여 영원히 안 닿는다.
 
@@ -269,9 +286,9 @@ def test_yaw_step_succeeds_within_tolerance(seed, tick):
     step = _steps()[1]
     step.setup_with_descendants()
     step.initialise()
-    step.tick_once()                       # 목표는 APPROACH_YAW(0)
+    step.tick_once()                       # 시작 yaw=π 이므로 상대 목표는 0
     py_trees.blackboard.Blackboard.set(
-        Keys.ROBOT_POSE, {"x": SOMEWHERE[0], "y": SOMEWHERE[1], "yaw": APPROACH_YAW})
+        Keys.ROBOT_POSE, {"x": SOMEWHERE[0], "y": SOMEWHERE[1], "yaw": 0.0})
     step.tick_once()
     assert step.status == Status.SUCCESS
 

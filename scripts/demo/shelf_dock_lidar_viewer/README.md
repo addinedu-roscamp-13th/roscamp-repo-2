@@ -8,8 +8,24 @@
 
 현재 서가 도킹의 거리 제어는 `/scan`이 아니라 **카메라 표식 + `/map` PGM 광선**이다. 라이다 패널은 실시간 실제 주변 관측을 함께 확인하는 진단용이며, 둘을 같은 데이터처럼 보이게 하지 않는다.
 
+## PGM 대 실제 라이다 — 차이를 로그에 남긴다
+
+도킹은 PGM 만 보고 멈추는데 PGM 은 SLAM 당시 스냅샷 + 2cm 격자라 실제와 어긋난다. 그런데 `CLEARANCE_M`(7cm) − 로봇반지름(6cm) = **실여유 1cm** 뿐이라, 그 차이가 곧 안전 여유다.
+
+여태 두 값이 화면에만 뜨고 `c` 로 저장하는 텍스트 로그엔 PGM 만 남아서 **차이가 몇 cm 인지 기록이 없었다**. 이제 벽 거리를 적는 단계(`LAT PLAN` · `FINAL PLAN` · `FINAL MOVE`)마다 같이 남는다:
+
+```
+[ 4] LAT PLAN   OK   wall detected at 22.0cm (lidar 19.4cm, diff-2.6cm)  move sideways 10.8cm
+```
+
+- `diff` = `라이다 − PGM`. **음수면 실제 벽이 PGM 보다 가깝다** — 위험한 쪽이다
+- `/scan` 이 없거나 전방에 반사가 없으면 `(lidar -)` 로 적는다. 조용히 빠지면 "차이 0" 으로 오해된다
+- 값은 로봇이 보내는 게 아니라 **뷰어가 그 순간 잰 것**이라 원본 덤프에서 `viewer_scan_front_m` 으로 구분된다
+
+⚠️ 둘은 **같은 광선이 아니다** — PGM 쪽은 카메라 표식 방향으로 쏜 한 줄, 라이다 쪽은 로봇 정면 ±`--front-half-angle-deg` 원뿔의 최소값이다. 그래서 이 `diff` 는 오차의 크기를 가늠하는 값이지 정밀 보정값이 아니다.
+
 ```bash
 ./scripts/demo/shelf_dock_lidar_viewer/run.sh --robot pinky-3
 ```
 
-`--robot`은 대상 로봇의 ROS 도메인을 고른다. `pinky-3`이면 119가 자동 선택되며, 다르면 `--domain-id <번호>`로 명시한다. 기본 토픽은 `/scan`, `/map`, `/amcl_pose`, `/shelf_dock_status`다. 라이다 설치 방향이 전방과 다르면 예를 들어 `--scan-forward-deg 90`으로 화면 전방만 보정한다. `q` 또는 `Esc`로 종료한다.
+`--robot`은 대상 로봇의 ROS 도메인을 고른다. `pinky-3`이면 119가 자동 선택되며, 다르면 `--domain-id <번호>`로 명시한다. 기본 토픽은 `/scan`, `/map`, `/amcl_pose`, `/shelf_dock_status`다. `--scan-forward-deg` 기본값은 180 — 실측(2026-08-05, pinky-3)으로 라이다가 후방 장착이라 그렇다. 다른 로봇이면 값을 다시 맞춘다(정방향 장착이면 `--scan-forward-deg 0`). `q` 또는 `Esc`로 종료, `c`로 현재까지 단계별 로그를 `/tmp`에 텍스트로 저장(터미널에도 출력, 한글 안 깨짐).

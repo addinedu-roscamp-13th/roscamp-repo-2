@@ -102,6 +102,12 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(test_plan_deadline_scan libi_fleet_core)
 
+  # 작업 경로가 노드를 지날 때 시간표도 현재 idx로 갱신하는가 — routes만 바뀌고
+  # 예약 노드·지연 표가 최초 계획에 머물던 회귀를 막는다.
+  ament_add_gtest(test_plan_refresh test/test_plan_refresh.cpp)
+  target_include_directories(test_plan_refresh PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
   # 재계획을 **어느 정점에서** 시작하는가 — 사람이 막은 커밋 노드를 출발점으로 줘서
   # 새 계획의 첫 홉이 사람 너머에서 시작하던 결함의 회귀 방지(2026-08-03 실기).
   ament_add_gtest(test_plan_start test/test_plan_start.cpp)

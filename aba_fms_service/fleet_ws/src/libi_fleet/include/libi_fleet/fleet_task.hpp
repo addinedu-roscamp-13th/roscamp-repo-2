@@ -176,6 +176,37 @@ inline bool traversed_edge_to_credit(const std::vector<int> & path,
   return true;
 }
 
+/// 노드 도착 뒤 시간표를 새로 만들 필요가 있는가.
+///
+/// CBS 시간표는 재계획한 시점의 `idx`와 도착 시각을 기준으로 만든다. 작업 로봇이
+/// 다음 노드에 도착해 `idx`가 전진하면 기존 시간표에는 이미 지난 정점과 시각이 남는다.
+/// 그 상태로 두면 실행 경로는 `publish_routes()`로 바뀌어도, 관제의 예약 노드와 지연
+/// 표시는 최초 시간표를 계속 본다. 다음 구간이 남아 있을 때 즉시 새 스냅샷을 넘겨야
+/// 두 화면이 같은 현재 노드를 가리킨다.
+///
+/// 순회와 작업 모두 다음 노드로 전진한 직후의 시간표가 필요하다. 순회는 다음 한 정점만
+/// 시간계획에 넣으므로 `plan_end_idx`만 기준으로 갱신하면, 실제 경로는 다음 노드로
+/// 넘어갔는데 화면의 지연·예약은 방금 지난 노드에 남는다. 마지막 정점은 task가 바로
+/// 완료·랩 재생성되므로 새 시간표를 만들 이유가 없다.
+inline bool refresh_plan_after_arrival(bool /* patrol */, std::size_t next_idx,
+                                       std::size_t path_size)
+{
+  return next_idx < path_size;
+}
+
+/// 비동기 CBS 결과가 실행 상태보다 뒤처졌는지 확인할 때의 기준 정점 인덱스.
+///
+/// 이동 중에 찍은 스냅샷의 첫 정점은 현재 향하는 커밋 정점이다. 계획 워커가 끝나는
+/// 사이 로봇이 그 정점에 닿으면, 그 결과를 적용해 `idx=1`로 되감는 순간 같은 정점을
+/// 다시 목표로 내게 된다. 이동 전 스냅샷은 첫 정점이 이미 서 있는 자리이므로 두 번째
+/// 정점이 실제 목표다. `planned_size`는 npos 역할도 겸한다.
+inline std::size_t planner_apply_anchor_index(bool moving, std::size_t planned_size)
+{
+  if (planned_size == 0) { return planned_size; }
+  if (moving) { return 0; }
+  return planned_size > 1 ? 1 : planned_size;
+}
+
 /// `from_idx` 부터 **처음으로 마감을 넘긴 칸**의 인덱스. 없으면 `npos` 상당(= 범위 끝).
 ///
 /// ⚠️ [2026-08-03] **왜 커밋 칸 하나가 아니라 그 뒤 전부를 보나**

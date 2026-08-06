@@ -128,6 +128,27 @@ def decompose_delivery(*, book: str, pickup, dropoff, tier: int = 0, row: int = 
                                      "tier": int(tier), "row": int(row), **arm}),
         # FMS가 pick 완료 결과를 받은 뒤에만 이 다리를 배정한다. robot_agent는
         # 도킹 때 저장한 체크포인트를 최종축 → 옆축 역순으로 복귀한다.
+        #
+        # ⚠️ [2026-08-05] **이 다리를 지웠다가 되돌렸다. 지우면 로봇이 서가에 붙은 채
+        #    영영 안 움직인다.**
+        #
+        # 지웠을 때의 근거는 "`WORKING` 브랜치의 `undock_gate` 가 같은 일을 한다"
+        # (`libi_modes/branches/working.py:65`)였다. **틀렸다.** 그 게이트는 첫 줄에서
+        # 이렇게 빠져나간다:
+        #
+        #     # libi_modes/common/undock.py:79
+        #     if not bb.get(self.blackboard, Keys.IS_DOCKED):
+        #         return Status.SUCCESS      # 아무것도 안 하고 통과
+        #
+        # `is_docked` 는 **주차장(충전 도크) 정점 반경 0.12m** 판정이다
+        # (`aba_controller/libi_drive_controller/scripts/dock_confirm.py:25,60`) —
+        # 서가와는 무관하다. 그러니 서가 도킹 뒤에는 `IS_DOCKED=False` 라
+        # undock 게이트가 **통째로 건너뛴다.**
+        #
+        # 실측(2026-08-05 21:03~21:05): 지운 상태로 배달을 돌렸더니 팔 다리까지 정상
+        # 진행한 뒤 `navigate→1번테이블` 이 21초 간격으로 네 번 재전송됐고 로봇은
+        # 서가 앞에 그대로 서 있었다. 도킹 자세 탈출도, 노드까지의 역주행도 **아무도
+        # 안 한다** — 둘 다 이 다리가 하던 일이다.
         Leg(LegType.PERFORM_ACTION, {"action": "backup", "at": pickup}),
         Leg(LegType.NAVIGATE, {"waypoint": dropoff}),
         # `place` 는 서가에 손을 안 뻗는다(바구니 → 테이블). 층·줄을 실어 보내면 팔이

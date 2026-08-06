@@ -52,9 +52,9 @@ def test_delivery_decomposes_into_fms_backup_leg():
         "from_place": "서가", "to_place": "리비바구니",
         "tier": 0, "row": 0, "slot": 1,
     }
-    assert legs[2].params == {"action": "backup", "at": 7}
     # ⚠️ `place` 의 `to_place` 는 **없다.** 목적지가 테이블인지 안내데스크인지는 정점의
     #    정체를 알아야 정해지고 그 지식은 이 코어에 없다 — 로봇 중계가 `at` 에서 유도한다.
+    assert legs[2].params == {"action": "backup", "at": 7}
     assert legs[4].params == {
         "action": "place", "at": 3, "book": "B1", "object": "book",
         "from_place": "리비바구니",
@@ -483,3 +483,35 @@ def test_lifecycle_hook_failure_does_not_block():
     tid = orc.submit_delivery(book="B1", pickup=7, dropoff=3)
     orc.assign(tid, "Pinky-3")
     assert orc.get(tid).status == TaskStatus.EXECUTING
+
+
+def test_delivery_keeps_the_backup_leg_undock_gate_cannot_replace_it():
+    """복귀(`backup`) 다리를 **지우면 안 된다.** 2026-08-05 에 지웠다가 되돌렸다.
+
+    지웠을 때의 근거는 "로봇 BT 의 `undock_gate` 가 같은 일을 한다"였는데 틀렸다.
+    그 게이트는 첫 줄에서 이렇게 빠져나간다:
+
+        # libi_modes/common/undock.py:79
+        if not bb.get(self.blackboard, Keys.IS_DOCKED):
+            return Status.SUCCESS      # 아무것도 안 하고 통과
+
+    `is_docked` 는 **주차장(충전 도크) 정점 반경 0.12m** 판정이라
+    (`aba_controller/libi_drive_controller/scripts/dock_confirm.py:25,60`)
+    **서가 도킹과는 무관하다.** 서가 앞에서는 `IS_DOCKED=False` 라 게이트가 통째로
+    건너뛰고, 도킹 자세 탈출도 노드까지의 역주행도 아무도 안 한다.
+
+    실측(2026-08-05 21:03~21:05): 지운 상태로 배달을 돌렸더니 팔 다리까지 정상
+    진행한 뒤 `navigate→1번테이블` 이 21초 간격으로 네 번 재전송됐고 로봇은 서가
+    앞에 그대로 서 있었다.
+
+    ⚠️ 다시 지우고 싶으면 **먼저** `undock_gate` 가 서가 도킹도 보게 고쳐라
+    (`is_docked` 가 아니라 "정밀 도킹 중" 상태를 보도록). 그 전에는 이 다리가
+    유일한 탈출 경로다.
+    """
+    legs = decompose_delivery(book="B1", pickup=7, dropoff=3)
+    backups = [l for l in legs if l.params.get("action") == "backup"]
+    assert len(backups) == 1, "서가 도킹에서 빠져나올 유일한 경로가 사라졌다"
+    # 집기 **뒤**, 목적지 주행 **앞** 이어야 한다 — 순서가 뒤집히면 뜻이 없다.
+    kinds = [l.params.get("action") or l.params.get("waypoint") for l in legs]
+    assert kinds.index("backup") == kinds.index("pick") + 1
+    assert kinds.index("backup") < kinds.index(3)

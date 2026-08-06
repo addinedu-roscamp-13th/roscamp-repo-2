@@ -89,6 +89,7 @@ class LidarDockDriver:
         self._result = "running"
         self._machine: LidarApproach | None = None
         self._zeroed = 0
+        self._last_phase = None
 
     # ── ROS 콜백 ──────────────────────────────────────────────────────────
     def _on_scan(self, msg) -> None:
@@ -127,6 +128,7 @@ class LidarDockDriver:
         self._active = True
         self._result = "running"
         self._zeroed = 0
+        self._last_phase = None
         self._log.info(
             f"라이다 도킹 시작: stop={self._cfg.stop_m:.3f}m "
             f"steer_sign={self._cfg.steer_sign:+.0f} "
@@ -179,7 +181,14 @@ class LidarDockDriver:
                                     msg.range_min, self._search_cfg.range_max_m,
                                     self._search_cfg)
                 wall = fit_wall_near_bearing(pts, self._search_cfg) if len(pts) else None
-                cmd = self._machine.step(None, now,
+                # SEARCH에서 크게 틀어진 동안에는 벽 정렬만 한다. 그러나 벽이
+                # 이미 정렬 허용치 안이면 이 프레임의 노치를 즉시 첫 확정 표본으로
+                # 넘긴다. 연속 확인 전에는 여전히 0 속도다.
+                search_obs = None
+                if wall is not None and abs(wall.yaw) <= self._cfg.search_align_tol_rad:
+                    search_obs = detect(msg.ranges, msg.angle_min, msg.angle_increment,
+                                        msg.range_min, msg.range_max, self._cfg)
+                cmd = self._machine.step(search_obs, now,
                                          search_wall_yaw=(wall.yaw if wall else None))
             else:
                 obs = detect(msg.ranges, msg.angle_min, msg.angle_increment,
@@ -205,5 +214,8 @@ class LidarDockDriver:
             self._finish("failure", "exception")
             return
         self._publish(cmd.linear, cmd.angular)
+        if cmd.phase != self._last_phase:
+            self._last_phase = cmd.phase
+            self._log.info(f"라이다 도킹 국면: {cmd.phase} ({cmd.reason})")
         if cmd.done:
             self._finish("success" if cmd.phase == "DONE" else "failure", cmd.reason)

@@ -131,6 +131,38 @@ def test_back_selection_sends_back_frames():
     assert all(f[0, 0, 0] == 2 for f in sender.sent)
 
 
+def test_debug_sender_gets_every_front_frame_during_docking():
+    """2026-08-05: --debug-port. shelf_dock.py는 도킹 내내 camera_select="front"를
+    강제한다 — 그 동안은 앞캠이 매 프레임 캡처되니(선택된 캠은 항상 매 프레임) 디버그
+    송출도 매 프레임이다. shelf_dock_lidar_viewer.py 가 실제로 보게 될 시나리오."""
+    select = CameraSelect(expiry_sec=0)
+    select.set("front", 0.0)
+    sender = FakeSender()
+    debug_sender = FakeSender()
+    run(_frames(1, 3), _frames(2, 3), sender, select,
+        orient_front=lambda f: f, orient_back=lambda f: f,
+        fps=0, now=Clock(), max_frames=3, debug_sender=debug_sender)
+    assert len(debug_sender.sent) == 3
+    assert all(f[0, 0, 0] == 1 for f in debug_sender.sent)
+
+
+def test_debug_sender_is_independent_of_choice():
+    """디버그 송출은 추종 선택(choice)을 따라가지 않는다 — 추종이 뒷캠을 보고 있어도
+    (프로덕션 송출은 뒷캠뿐) 디버그 쪽은 뒷캠을 안 받는다. 다만 앞캠 자체가 이때는
+    "대기 캠" 이라 STANDBY_EVERY(8) 프레임에 한 번만 캡처된다(Pi CPU 절약, run() 머리말
+    참고) — 그래서 매 프레임은 아니고, tick 0 한 번만 캡처되는 이 설정에선 1개다."""
+    select = CameraSelect(expiry_sec=0)
+    select.set("back", 0.0)
+    sender = FakeSender()
+    debug_sender = FakeSender()
+    run(_frames(1, 3), _frames(2, 3), sender, select,
+        orient_front=lambda f: f, orient_back=lambda f: f,
+        fps=0, now=Clock(), max_frames=3, debug_sender=debug_sender)
+    assert all(f[0, 0, 0] == 2 for f in sender.sent)          # 프로덕션: 뒷캠만
+    assert len(debug_sender.sent) == 1                        # 디버그: 앞캠(대기 캠 주기)
+    assert debug_sender.sent[0][0, 0, 0] == 1                 # 뒷캠은 절대 안 섞인다
+
+
 def test_back_selected_without_back_camera_sends_nothing():
     """뒷캠 없이 back 을 고르면 아무것도 안 보낸다 — 앞캠을 대신 보내면 안 된다.
     받는 쪽이 뒤를 본다고 믿고 판단하기 때문이다."""

@@ -31,6 +31,15 @@ TURN, DRIVE = "turn", "drive"
 class Move:
     kind: str
     value: float
+    #: TURN 일 때의 **map 프레임 절대 목표 yaw**(rad). `None` 이면 예전대로 `value`(상대각)를
+    #: odom 으로 적분해 돈다.
+    #:
+    #: 왜 필요한가 — 목표는 언제나 map 절대 자세인데 실행이 odom 상대 회전이면 그 사이
+    #: 오차가 남고, 회전이 이어지면서 **누적된다.** 도킹은 2026-08-05 에 이 이유로
+    #: `turn_to_map_yaw`(매 tick AMCL yaw 재측정)로 갈아탔는데(`shelf_dock.py` 의
+    #: MAP_YAW_ANG 주석: "다른 거 보고 갔어"), 복귀(`backup`)만 옛 방식이 남아 있었다.
+    #: 복귀는 체크포인트 2개 × (TURN·DRIVE·TURN) = **회전 6번**이라 누적이 더 크다.
+    abs_yaw: float | None = None
 
 
 def wrap_pi(a: float) -> float:
@@ -51,10 +60,12 @@ def approach_moves(rx: float, ry: float, ryaw: float,
     dist = math.hypot(dx, dy) - float(clearance)
     if dist < 0.0:
         dist = 0.0
+    # 두 회전 다 **map 절대 목표**를 같이 싣는다(`Move.abs_yaw`). 상대각(`value`)은
+    # map pose 를 못 얻는 경로를 위한 예비값으로 그대로 둔다 — 실행 쪽이 고른다.
     return [
-        Move(TURN, wrap_pi(heading - float(ryaw))),
+        Move(TURN, wrap_pi(heading - float(ryaw)), abs_yaw=heading),
         Move(DRIVE, dist),
-        Move(TURN, wrap_pi(float(final_yaw) - heading)),
+        Move(TURN, wrap_pi(float(final_yaw) - heading), abs_yaw=wrap_pi(float(final_yaw))),
     ]
 
 

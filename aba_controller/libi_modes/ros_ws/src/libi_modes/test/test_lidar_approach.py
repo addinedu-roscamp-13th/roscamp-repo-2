@@ -94,20 +94,31 @@ def test_acquire_needs_consecutive_confirmations():
     assert cmd.phase == "ALIGN"
 
 
-def test_acquire_aborts_without_rotating_when_nothing_is_found():
-    """SEARCH 가 이미 대략적 정렬을 끝내고 넘겨준 자리가 ACQUIRE 다 — 여기서부터는
-    다시 돌거나 훑지 않는다. 확정에 실패하면 회전 없이 그냥 실패로 뺀다.
+def test_acquire_realigns_to_yaw_zero_before_confirming_notch():
+    """노치가 보여도 벽 yaw가 0 기준 밖이면 확정하지 않고 재정렬한다."""
+    cfg = raw_cfg(confirm_frames=3, search_align_tol_rad=0.15,
+                  search_rot_rad_s=0.20)
+    m = settled(cfg)
+    m.phase = "ACQUIRE"
+    m._phase_t0 = 2.0
 
-    (SEARCH 자체가 못 찾으면 도는 것과는 다른 자리다 — 그건
-    `test_search_rotates_in_place_when_nothing_found_yet` 가 잠근다. 여기서는
-    `phase` 를 직접 "ACQUIRE" 로 놓아 SEARCH 를 건너뛰고 ACQUIRE 만 시험한다.)
+    cmd = m.step(obs(yaw=0.40), 2.0)
+    assert cmd.phase == "SEARCH"
+    assert cmd.reason == "realigning_yaw_zero"
+    assert cmd.linear == 0.0 and cmd.angular != 0.0
+    assert m._confirm == 0
 
-    `t0` 은 `cfg.settle_sec` 에 여유를 더해 잡는다 — 고정값(예: 2.0)을 쓰면
-    `settle_sec` 기본값이 바뀔 때 `_phase_t0` 보다 이 `t0` 가 더 과거가 되어,
-    20 프레임을 다 먹여도 `acquire_timeout_s` 문턱을 못 넘겨 이 시험이 거짓으로
-    통과(또는 실패)한다.
-    """
-    cfg = LidarDockConfig(acquire_timeout_s=1.0)
+    # 정렬된 뒤에야 확인 프레임을 누적한다.
+    for _ in range(cfg.confirm_frames - 1):
+        cmd = m.step(obs(yaw=0.05), 2.1, search_wall_yaw=0.05)
+        assert cmd.phase == "ACQUIRE"
+    cmd = m.step(obs(yaw=0.05), 2.2, search_wall_yaw=0.05)
+    assert cmd.phase == "ALIGN"
+
+
+def test_acquire_aborts_when_recovery_is_disabled():
+    """회복을 0회로 끄면 종전처럼 노치 미검출을 즉시 안전 실패로 끝낸다."""
+    cfg = LidarDockConfig(acquire_timeout_s=1.0, acquire_recovery_max=0)
     m = settled(cfg)
     m.phase = "ACQUIRE"
     m._phase_t0 = cfg.settle_sec + 2.0
@@ -115,6 +126,42 @@ def test_acquire_aborts_without_rotating_when_nothing_is_found():
     assert cmd.phase == "ABORT"
     assert cmd.done is True
     assert cmd.linear == 0.0 and cmd.angular == 0.0
+
+
+def test_acquire_sweeps_both_sides_before_final_notch_not_found():
+    """노치 확정 실패 시 같은 자세를 반복하지 않고 좌·우를 스윕한다.
+
+    이 회복은 제자리 회전뿐이라 직선 속도는 항상 0이어야 하며, 정해진 횟수를
+    모두 쓴 뒤에만 `notch_not_found`로 끝나야 한다.
+    """
+    cfg = LidarDockConfig(
+        acquire_timeout_s=1.0,
+        acquire_recovery_max=2,
+        acquire_recovery_sweep_rad=0.20,
+        acquire_recovery_settle_s=0.0,
+        search_rot_rad_s=0.20,
+    )
+    m = settled(cfg)
+    t = cfg.settle_sec + 2.0
+    m.phase = "ACQUIRE"
+    m._phase_t0 = t
+
+    first = m.step(None, t + 1.1)
+    assert first.phase == "REACQUIRE_SWEEP"
+    assert first.linear == 0.0 and first.angular > 0.0
+    done_first = m.step(None, m._recover_until + 0.01)
+    assert done_first.phase == "REACQUIRE_SETTLE"
+    reacquire = m.step(None, m._recover_settle_until + 0.01)
+    assert reacquire.phase == "ACQUIRE"
+
+    second = m.step(None, m._phase_t0 + 1.1)
+    assert second.phase == "REACQUIRE_SWEEP"
+    assert second.linear == 0.0 and second.angular < 0.0
+    m.step(None, m._recover_until + 0.01)
+    m.step(None, m._recover_settle_until + 0.01)
+
+    final = m.step(None, m._phase_t0 + 1.1)
+    assert final.phase == "ABORT" and final.reason == "notch_not_found"
 
 
 def test_search_rotates_in_place_when_nothing_found_yet():
@@ -170,12 +217,27 @@ def test_search_turns_toward_the_wall_and_hands_off_to_acquire_once_aligned():
     assert cmd.linear == 0.0 and cmd.angular == 0.0
 
 
+def test_search_uses_an_already_visible_notch_as_first_confirmation():
+    """벽이 정렬된 첫 SEARCH 스캔에서 노치가 보이면 즉시 확정을 시작한다.
+
+    단발 검출은 충분하지 않다. SEARCH는 ACQUIRE로 넘기되 confirm_frames가 남아
+    있어 이 tick에도 직선·각속도는 모두 0이어야 한다.
+    """
+    cfg = raw_cfg(confirm_frames=3)
+    m = settled(cfg)
+    cmd = m.step(obs(), 5.0, search_wall_yaw=0.0)
+    assert cmd.phase == "ACQUIRE"
+    assert m._confirm == 1
+    assert cmd.linear == 0.0 and cmd.angular == 0.0
+
+
 def test_near_observations_never_confirm_or_advance_out_of_acquire():
     """NEAR 에는 오검출 방어(직선 피팅)가 없다 — 실측 노치 없는 벽에서도 100% '검출'한다.
     ACQUIRE 가 NEAR 로 확정되면 오검출로 도킹이 **시작**된다. `confirm_frames` 를
     훌쩍 넘겨 NEAR 를 먹여도 ACQUIRE 를 벗어나면 안 되고, 결국 확정 실패로 ABORT 해야
     한다 — ALIGN·APPROACH·FINAL 어느 쪽으로도 넘어가지 않는다."""
-    cfg = LidarDockConfig(acquire_timeout_s=1.0, confirm_frames=3)
+    cfg = LidarDockConfig(
+        acquire_timeout_s=1.0, confirm_frames=3, acquire_recovery_max=0)
     m = settled(cfg)
     t = 2.0
     m.phase = "ACQUIRE"          # SEARCH 를 건너뛴다 — 여기선 ACQUIRE 만 시험한다

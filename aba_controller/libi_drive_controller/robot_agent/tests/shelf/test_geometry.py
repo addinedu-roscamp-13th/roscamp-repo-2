@@ -15,9 +15,11 @@ def test_wrap_keeps_angles_inside_pi():
 
 def test_straight_ahead_target_needs_no_first_turn():
     mv = approach_moves(0.0, 0.0, 0.0, 1.0, 0.0, clearance=0.0, final_yaw=0.0)
-    assert mv[0] == Move("turn", 0.0)
-    assert mv[1] == Move("drive", 1.0)
-    assert mv[2] == Move("turn", 0.0)
+    # [2026-08-05] 회전에 map 절대 목표(`abs_yaw`)가 같이 실린다 — 상대각만 비교한다.
+    assert (mv[0].kind, mv[0].value) == ("turn", 0.0)
+    assert (mv[1].kind, mv[1].value) == ("drive", 1.0)
+    assert (mv[2].kind, mv[2].value) == ("turn", 0.0)
+    assert mv[0].abs_yaw == 0.0 and mv[2].abs_yaw == 0.0
 
 
 def test_clearance_shortens_the_drive():

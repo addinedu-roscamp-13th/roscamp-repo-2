@@ -678,7 +678,15 @@ def live_view(robot: str, domain_id: int, cyclonedds_uri: str, cfg: LidarDockCon
                 pts = sector_points(msg.ranges, msg.angle_min, msg.angle_increment,
                                     msg.range_min, search_cfg.range_max_m, search_cfg)
                 wall = fit_wall_near_bearing(pts, search_cfg) if len(pts) else None
-                cmd = machine.step(None, time.monotonic(),
+                # 실제 LidarDockDriver와 동일하게, 벽이 yaw=0 허용범위에
+                # 들어온 프레임에서는 좁은 FAR detect() 결과를 ACQUIRE에
+                # 전달한다. UI가 SEARCH 동안 무조건 None을 넘기면 화면에는
+                # 검출이 보여도 상태기계는 첫 확정 표본을 절대 받지 못한다.
+                search_obs = None
+                if wall is not None and abs(wall.yaw) <= cfg.search_align_tol_rad:
+                    search_obs = detect(msg.ranges, msg.angle_min, msg.angle_increment,
+                                        msg.range_min, msg.range_max, cfg)
+                cmd = machine.step(search_obs, time.monotonic(),
                                   search_wall_yaw=(wall.yaw if wall else None))
             else:
                 mobs = detect(msg.ranges, msg.angle_min, msg.angle_increment,

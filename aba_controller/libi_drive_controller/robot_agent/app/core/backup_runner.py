@@ -101,9 +101,13 @@ class MoveExecutor:
 
     def __init__(self, publish_twist, pose_fn, turn_speed: float = 0.4,
                  drive_speed: float = 0.08, turn_tol: float = 0.02,
-                 drive_tol: float = 0.005):
+                 drive_tol: float = 0.005, map_yaw_fn=None):
         self.publish_twist = publish_twist
         self.pose_fn = pose_fn
+        #: `map_yaw_fn() -> float|None` — map 프레임 현재 yaw. 주면 `Move.abs_yaw` 가
+        #: 실린 회전을 **매 tick 절대 오차로 다시 재서** 돈다(odom 적분 누적을 안 쓴다).
+        #: 안 주거나 그 tick 에 `None` 을 돌려주면 예전 상대 회전으로 자동 폴백한다.
+        self.map_yaw_fn = map_yaw_fn
         self.turn_speed = abs(float(turn_speed))
         self.drive_speed = abs(float(drive_speed))
         self.turn_tol = abs(float(turn_tol))
@@ -127,6 +131,30 @@ class MoveExecutor:
         speed = self.turn_speed if move.kind == TURN else self.drive_speed
         if speed <= 0.0:
             return "ok"  # 속도 0 이면 갈 방법이 없다 — 설정 문제이지 여기서 고칠 일이 아니다
+
+        # ── map 절대 yaw 로 닫는 회전 ──────────────────────────────────────────
+        # 목표는 언제나 map 절대 자세다. odom 적분 상대 회전으로 실행하면 그 사이
+        # 오차가 남고 회전이 이어질수록 누적된다(복귀는 회전 6번). 매 tick map yaw 를
+        # 다시 읽어 **남은 오차만큼만** 돌면 중간에 밀려도 그 tick 에 회수된다 —
+        # 도킹의 `turn_to_map_yaw` 와 같은 판단이다(`Move.abs_yaw` 주석).
+        if move.kind == TURN and move.abs_yaw is not None and self.map_yaw_fn is not None:
+            ticks = 0
+            while True:
+                now_yaw = self.map_yaw_fn()
+                if now_yaw is None:
+                    break               # map pose 를 못 얻는다 — 아래 상대 회전으로 폴백
+                err = wrap_pi(float(move.abs_yaw) - float(now_yaw))
+                if abs(err) <= tol:
+                    return "ok"
+                if cancel is not None and cancel():
+                    return "canceled"
+                # P 제어로 줄이지 않는다 — 느려지면 정지마찰을 못 이겨 아예 안 돈다
+                # (`shelf_dock.py` MAP_YAW_ANG 주석의 실측).
+                self.publish_twist(0.0, math.copysign(self.turn_speed, err))
+                yield
+                ticks += 1
+                if ticks > MAX_TICKS_PER_MOVE:
+                    return "timeout"
 
         sign = 1.0 if target >= 0.0 else -1.0
         lin = self.drive_speed * sign if move.kind == DRIVE else 0.0
@@ -300,10 +328,42 @@ def is_running() -> bool:
 
 
 def _read_current_pose() -> tuple[float, float, float] | None:
-    """`/amcl_pose` 를 잠깐 구독해 최신 `(x, y, yaw)` 하나만 받아온다."""
+    """현재 map 자세 `(x, y, yaw)`. 못 얻으면 `None`.
+
+    ⚠️ **상시 구독을 먼저 본다.** 예전엔 곧바로 `_probe_amcl_pose()` 로 갔는데,
+    그러면 **반드시 실패한다** — 이 함수를 부르는 시점(서가 도킹 뒤 복귀)은 로봇이
+    **정지해 있는** 순간이고, AMCL 은 `update_min_d`(2cm) 이상 움직여야만 발행한다
+    (`ros_bridge.py:328` 머리말). 새 구독이 기다려도 올 게 없다.
+
+    실측(2026-08-05 관제 UI): 배달 5다리 중 3번(`backup`)이 **매번** "현재
+    pose(/amcl_pose) 를 못 얻었다" 로 죽어서 목적지 주행·놓기·순회까지 전부 막혔다.
+    flaky 가 아니라 도킹 뒤엔 정의상 정지해 있으니 결정적이었다.
+
+    `ros_bridge.get_current_pose()` 는 상시 떠 있는 구독이 채우는 **마지막 자세**라
+    정지 중에도 그대로 남아 있다. 같은 성격의 preflight 인 `park_dock.py:129` 도
+    이걸 쓴다 — 여기만 예외였다.
+
+    대가: AMCL 갱신 사이 최대 2cm 낡을 수 있다(`ros_bridge.py:338`). 복귀 체크포인트
+    (`record_return_targets`)도 같은 출처로 기록된 값이라 기준이 같고, 무엇보다
+    **못 얻어서 안 움직이는 것보다 낫다.**
+    """
+    from app.core import ros_bridge
+
+    pose = ros_bridge.get_current_pose()
+    if pose is not None:
+        return pose
+    return _probe_amcl_pose()
+
+
+def _probe_amcl_pose() -> tuple[float, float, float] | None:
+    """`/amcl_pose` 를 잠깐 구독해 최신 `(x, y, yaw)` 하나만 받아온다.
+
+    상시 구독이 아직 아무것도 못 받았을 때(부팅 직후 등)의 예비 경로다.
+    """
     import rclpy
     from geometry_msgs.msg import PoseWithCovarianceStamped
     from rclpy.executors import SingleThreadedExecutor
+    from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
     from app.core import fleet_link
     from app.core.ros_bridge import quat_to_yaw
@@ -320,7 +380,15 @@ def _read_current_pose() -> tuple[float, float, float] | None:
         p = msg.pose.pose
         got["pose"] = (p.position.x, p.position.y, quat_to_yaw(p.orientation))
 
-    node.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", _on_pose, 10)
+    # ⚠️ **TRANSIENT_LOCAL 이어야 한다.** 기본 VOLATILE 로 두면 구독한 뒤에 새로
+    # 발행되는 것만 받는데, 여기 오는 시점의 로봇은 정지해 있어 AMCL 이 아무것도
+    # 안 낸다 — 5초를 기다려도 영영 못 받는다(위 `_read_current_pose` 머리말의
+    # 2026-08-05 실측). AMCL 은 마지막 자세를 래치해 두므로 TRANSIENT_LOCAL 로
+    # 붙으면 **구독 즉시** 그 값이 온다. `shelf_dock.py:588` 이 같은 이유로 같은
+    # 선택을 해뒀는데 여기만 안 따라왔다.
+    latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                         durability=DurabilityPolicy.TRANSIENT_LOCAL)
+    node.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", _on_pose, latched)
     try:
         deadline = time.monotonic() + 5.0
         while "pose" not in got and time.monotonic() < deadline:
@@ -393,7 +461,18 @@ def _run(moves: list, my_gen: int) -> tuple[bool, int, dict, str]:
         if "pose" not in odom_state:
             return False, 503, {"backed": False}, "/odom 이 안 들어온다"
 
-        executor_ = MoveExecutor(publish_twist=publish, pose_fn=pose_fn)
+        def map_yaw_fn():
+            """복귀 회전을 **map 절대 yaw** 로 닫기 위한 현재 방위. 못 얻으면 `None`.
+
+            `_read_current_pose()` 는 상시 구독(`ros_bridge`)이 들고 있는 마지막
+            자세라 정지 중에도 값이 있다(그 함수 머리말 참고). 여기서 `None` 이
+            나오면 실행부가 예전 odom 상대 회전으로 조용히 폴백한다.
+            """
+            p = _read_current_pose()
+            return None if p is None else p[2]
+
+        executor_ = MoveExecutor(publish_twist=publish, pose_fn=pose_fn,
+                                 map_yaw_fn=map_yaw_fn)
         report("backup_started", planned_drive_m=round(sum(abs(m.value) for m in moves if m.kind == DRIVE), 3))
         ok, why = executor_.run(moves, cancel=cancel_fn)
         log.info(f"[후퇴] moves={[(m.kind, m.value) for m in moves]} ok={ok} why={why}")

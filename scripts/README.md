@@ -110,7 +110,7 @@ sudo apt install -y ros-jazzy-domain-bridge        # ros-domain-bridge.sh / sim.
 
 | 기동 | 정리 | 어디서 | 하는 일 |
 |---|---|---|
-| `libi_server.sh` | `kill-libi_server.sh` | 노트북 | **로봇과 무관한 것만** — DB + 도메인 브릿지 + fleet_node + 관제 UI(:9001/:9002) + 도서관 웹(:8000/:3000). 로봇이 몇 대든 **한 번만**. |
+| `libi_server.sh` | `kill-libi_server.sh` | 노트북 | **로봇과 무관한 것만** — DB + 도메인 브릿지 + fleet_node + 관제 UI(:9001/:9002) + 도서관 웹(:8000/:3000). 로봇이 몇 대든 **한 번만**. <br>⚠️ [2026-08-05] kill 이 **:9001 FMS 백엔드까지 내린다**(기본). 로봇 텔레메트리·명령 링크도 같이 끊기니, 로봇을 돌려둔 채 UI 만 껐다 켜려면 `--keep-api`. |
 | `libi_laptop.sh --robot <이름>` | `kill-libi_laptop.sh [이름]` | 노트북 | **로봇 한 대분** — AI 추종 서버 + 터치패널. 세션 `libi_laptop_<key>`. 로봇 대수만큼 부른다. 정리는 이름을 주면 그 로봇만, 안 주면 전부. |
 | `libi_pi.sh --robot <이름>` | `kill-libi_pi.sh` | 로봇 | 주행 스택(`pi.sh`) + 카메라 송출 + `libi_perception`(추종/길잡이) 을 tmux 세션 `pinky_pi` 하나에. `--back <n>` 뒷캠, `--dyn-obstacle` 동적 장애물(기본 꺼짐). 모르는 플래그는 `pi.sh` 로 위임. |
 

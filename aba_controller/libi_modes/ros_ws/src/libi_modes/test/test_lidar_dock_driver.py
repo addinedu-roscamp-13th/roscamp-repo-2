@@ -189,14 +189,12 @@ def test_detect_near_is_never_called_while_acquiring(monkeypatch):
     assert near_calls == [], "ACQUIRE 에서 detect_near 를 부르면 안 된다"
 
 
-def test_search_phase_fits_wall_only_with_the_widened_cfg_not_full_detect(monkeypatch):
-    """[2026-08-04 실기 정정] SEARCH 국면은 더 이상 `detect()`(노치까지 확정)를
-    안 부른다 — 각도가 심하게 틀어지면 벽은 잡혀도 노치 자체가 인식이 안 돼
-    `detect()` 가 계속 `None` 을 내고 SEARCH 가 방향 신호를 영영 못 받았다
-    (실측 2026-08-03, 벽 yaw -40.7도). 그래서 벽만 넓힌 cfg 로 피팅한다 —
-    `detect` 는 아예 안 불려야 하고, `fit_wall_near_bearing` 이 넓힌 cfg 로
-    불려야 한다(2026-08-04: 순수 `fit_wall` 에서 bearing·거리 사전지식이 있는
-    쪽으로 바뀜 — codex P1, 엉뚱한 벽을 도크보다 우선하던 문제)."""
+def test_search_does_not_detect_until_the_wall_is_aligned(monkeypatch):
+    """큰 각도 SEARCH는 벽 정렬만 한다.
+
+    정렬 전 노치 형태는 각도에 따라 쉽게 찌그러지므로 무시한다. 벽이 없을 때도
+    full detect를 부르면 SEARCH가 필요 이상으로 Pi CPU를 쓴다.
+    """
     node, drv, _ = _driver(sector_half_deg=60.0, search_half_deg=175.0)
     drv.start()
     drv._machine.phase = "SEARCH"
@@ -213,7 +211,7 @@ def test_search_phase_fits_wall_only_with_the_widened_cfg_not_full_detect(monkey
 
     node.timer_cb()
 
-    assert detect_calls == [], "SEARCH 는 detect() 를 부르면 안 된다(노치 확정 불필요)"
+    assert detect_calls == [], "벽이 정렬되지 않은 SEARCH에서 detect를 부르면 안 된다"
     assert seen_cfgs, "fit_wall_near_bearing 이 호출돼야 한다"
     assert seen_cfgs[0].sector_half_deg == 175.0, "SEARCH 는 넓힌 cfg 로 벽을 찾아야 한다"
 

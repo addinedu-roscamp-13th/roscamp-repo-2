@@ -106,6 +106,36 @@ class LidarApproach:
         #: 대신 몇 번은 물러났다 재시도한다 — 아래 `_retry_or_abort()`/RETREAT.
         self._retry_count = 0
         self._retreat_until: float | None = None
+        # ACQUIRE 에서 노치를 못 찾았을 때, 같은 정지 자세를 반복하지 않는다.
+        # 좌·우를 번갈아 스윕해 빔 입사각만 바꾸고 다시 확정한다. 충돌 방향
+        # 이동은 전혀 하지 않는다.
+        self._acquire_recovery_count = 0
+        self._recover_until: float | None = None
+        self._recover_settle_until: float | None = None
+
+    def _begin_acquire_recovery(self, now_s: float) -> Cmd:
+        """노치 확정 실패 후 제자리 스윕을 시작한다.
+
+        첫 번째는 +각, 두 번째는 반대편까지 지나가도록 -2각, 세 번째는 다시
+        +2각으로 돈다. 한쪽만 훑으면 노치의 경사면·빔 입사각 조합을 계속
+        놓칠 수 있기 때문이다.
+        """
+        c = self.cfg
+        attempt = self._acquire_recovery_count
+        self._acquire_recovery_count += 1
+        direction = 1.0 if attempt % 2 == 0 else -1.0
+        magnitude = 1.0 if attempt == 0 else 2.0
+        sweep_s = magnitude * c.acquire_recovery_sweep_rad / c.search_rot_rad_s
+        self._recover_until = now_s + sweep_s
+        self._recover_settle_until = None
+        # 다른 관점에서 얻은 관측을 이전 자세의 EMA와 섞지 않는다.
+        self._confirm = 0
+        self._ema = None
+        self._ema_at = None
+        self._wall_yaw_ref = None
+        self._enter("REACQUIRE_SWEEP", now_s)
+        return Cmd(0.0, direction * c.search_rot_rad_s,
+                   "REACQUIRE_SWEEP", False, "notch_recovery_sweep")
 
     # ── 도우미 ────────────────────────────────────────────────────────────
     def _stop(self, phase: str, reason: str) -> Cmd:
@@ -319,7 +349,9 @@ class LidarApproach:
         #    는 회전만 하므로 제외(그 국면엔 애초에 전진 성분이 없다).
         #    `RETREAT` 도 제외 — 그 국면은 **멀어지는** 중이라 가까움이
         #    도착 신호가 아니고, 여기 걸리면 도착(DONE)으로 잘못 끝난다.
-        if (self.phase not in ("SEARCH", "RETREAT") and min_range_m is not None
+        no_linear_motion = {
+            "SEARCH", "REACQUIRE_SWEEP", "REACQUIRE_SETTLE", "RETREAT"}
+        if (self.phase not in no_linear_motion and min_range_m is not None
                 and min_range_m <= c.safety_clearance_m):
             return self._stop("DONE", "min_range_safety_stop")
 
@@ -352,6 +384,24 @@ class LidarApproach:
                 return Cmd(0.0, 0.0, "ALIGN", False, "retry")
             return Cmd(c.v_near_mps, 0.0, "RETREAT", False, "retreating")
 
+        # ── REACQUIRE_SWEEP/SETTLE — 노치 확정 실패의 안전한 시야 회복 ────
+        if self.phase == "REACQUIRE_SWEEP":
+            if now_s < self._recover_until:
+                # _begin_acquire_recovery() 와 같은 방향·속도로만 돈다.
+                attempt = self._acquire_recovery_count - 1
+                direction = 1.0 if attempt % 2 == 0 else -1.0
+                return Cmd(0.0, direction * c.search_rot_rad_s,
+                           "REACQUIRE_SWEEP", False, "notch_recovery_sweep")
+            self._recover_settle_until = now_s + c.acquire_recovery_settle_s
+            self._enter("REACQUIRE_SETTLE", now_s)
+            return Cmd(0.0, 0.0, "REACQUIRE_SETTLE", False, "settling")
+
+        if self.phase == "REACQUIRE_SETTLE":
+            if now_s < self._recover_settle_until:
+                return Cmd(0.0, 0.0, "REACQUIRE_SETTLE", False, "settling")
+            self._enter("ACQUIRE", now_s)
+            return Cmd(0.0, 0.0, "ACQUIRE", False, "reacquiring")
+
         # ── SETTLE — nav2 잔여 속도가 죽기를 기다린다 ──────────────────────
         if self.phase == "SETTLE":
             if now_s - self._t0 < c.settle_sec:
@@ -380,16 +430,39 @@ class LidarApproach:
             if abs(search_wall_yaw) > c.search_align_tol_rad:
                 ang = math.copysign(c.search_rot_rad_s, c.steer_sign * search_wall_yaw)
                 return Cmd(0.0, ang, "SEARCH", False, "aligning")
+            # 정렬된 바로 이 스캔에서 노치가 이미 보였다면, 아래 ACQUIRE가
+            # 같은 프레임을 첫 확정 표본으로 쓴다. 단발 검출로 움직이지는 않는다
+            # (`confirm_frames` 연속 확인은 그대로다).
             self._enter("ACQUIRE", now_s)
-            return Cmd(0.0, 0.0, "ACQUIRE", False, "confirming")
 
-        filtered = self._filter(self._stabilize(obs), now_s) if obs is not None else None
+        # ACQUIRE는 로봇이 정지한 상태에서 확정 표본을 모으는 국면이다. UI 디버거가
+        # 보여주는 `detect()` 결과는 유효한데도, 여기서 주행용 EMA/점프 게이트를 먼저
+        # 통과시키면 RANSAC 벽 yaw의 작은 흔들림을 점프로 오판해 매 프레임 confirm을
+        # 0으로 되돌릴 수 있다. 정지 중 확정은 안정화 좌표만 사용하고, 실제 주행
+        # 국면부터 EMA/점프 게이트를 적용한다.
+        stabilized = self._stabilize(obs) if obs is not None else None
+        filtered = (stabilized if self.phase == "ACQUIRE" else
+                    (self._filter(stabilized, now_s) if stabilized is not None else None))
 
         # ── ACQUIRE — 정지 상태에서 확정. 회전하지 않는다 ──────────────────
         if self.phase == "ACQUIRE":
+            # 노치가 보였다는 이유만으로 확정하지 않는다. 검출기의 yaw는
+            # 노치가 놓인 벽의 맵 기준 방향이므로, yaw=0 근처에서만 3프레임
+            # 확인을 시작해야 한다. UI에는 노치가 보여도 벽 fit이 -18°처럼
+            # 기울어진 상태에서 확정하면 잘못된 위치를 따라가거나 회복 시
+            # 엉뚱한 방향을 보게 된다.
+            if (stabilized is not None
+                    and abs(stabilized.yaw) > c.search_align_tol_rad):
+                self._confirm = 0
+                self._enter("SEARCH", now_s)
+                ang = math.copysign(c.search_rot_rad_s,
+                                    c.steer_sign * stabilized.yaw)
+                return Cmd(0.0, ang, "SEARCH", False, "realigning_yaw_zero")
             if filtered is None:
                 self._confirm = 0
                 if now_s - self._phase_t0 >= c.acquire_timeout_s:
+                    if self._acquire_recovery_count < c.acquire_recovery_max:
+                        return self._begin_acquire_recovery(now_s)
                     return self._stop("ABORT", "notch_not_found")
                 return Cmd(0.0, 0.0, "ACQUIRE", False, "searching")
             self._confirm += 1

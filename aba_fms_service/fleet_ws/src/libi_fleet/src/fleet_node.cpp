@@ -943,6 +943,29 @@ private:
       if (tp == nullptr) { continue; }
       ActiveTask & t = *tp;
       if (t.path.size() < 2 || t.idx < 1 || t.idx >= t.path.size()) { continue; }
+
+      // 워커는 콜백 밖에서 도므로, 결과가 돌아오는 짧은 사이 로봇이 커밋 정점에
+      // 이미 닿을 수 있다. 아직 `on_timer`가 도착을 처리하기 전이라 세대는 같지만,
+      // 이 결과를 적용하면 `t.idx = 1`로 되감겨 방금 지난 정점을 다시 목표로 낸다.
+      //
+      // 실기에서는 `v14 통과 → v10 GRANT → (옛 계획 적용) v14 통과`가 150ms마다
+      // 반복되어, 지도에는 로봇이 노드 위인데 지연만 커지고 실제 명령은 앞뒤로
+      // 흔들렸다. 현재 AMCL이 해당 계획의 앵커 반경 안이면 결과를 버린다. 이번 틱의
+      // 정상 도착 처리가 state_gen을 올리고, 그 뒤의 새 스냅샷이 다음 정점부터 짠다.
+      const std::size_t anchor_i = planner_apply_anchor_index(
+        t.moving, routes[i].path.size());
+      auto rit = robots_.find(t.robot);
+      if (anchor_i < routes[i].path.size() && rit != robots_.end()) {
+        const Vertex & anchor = graph_.vertex(routes[i].path[anchor_i]);
+        const double anchor_d = std::hypot(rit->second.x - anchor.x, rit->second.y - anchor.y);
+        if (anchor_d < arrive_radius_) {
+          RCLCPP_DEBUG(get_logger(),
+                       "[%s] %s 도착 직전 낡은 시간표 폐기(v%d, %.3fm)",
+                       t.id.c_str(), t.robot.c_str(), routes[i].path[anchor_i], anchor_d);
+          request_replan("도착 직전 시간표 재계산");
+          continue;
+        }
+      }
       std::vector<int> np, na;
       np.insert(np.end(), routes[i].path.begin(), routes[i].path.end());
       na.insert(na.end(), routes[i].arrive_tick.begin(), routes[i].arrive_tick.end());
@@ -1584,12 +1607,18 @@ private:
         replan_streak_ = 0;   // 진전 → 재계획 backoff 도 원복
         t.wait_ticks = 0;   // 노드 도달 = 진전 → 타임드 우회 카운터 리셋
         t.plan_excluded = false;   // 진전이 있었다 — 마감 감시를 다시 켠다
-        // ⚠️ **순회가 계획 구간 끝에 닿으면 그 자리에서 재계획을 건다.**
-        //    순회는 다음 한 정점까지만 계획된다. 그 칸을 넘어가 버린 뒤에 움직이면
-        //    실행 게이트가 "계획에 없는 칸" 으로 보고 강등한다 — 순회를 계획에 넣어
-        //    없애려던 churn 이 그대로 돌아온다. 넘기 **전에** 새 구간을 받아 둔다.
-        if (t.patrol && t.plan_end_idx >= 0 && static_cast<int>(t.idx) >= t.plan_end_idx) {
-          request_replan("순회 계획 구간 끝");
+        // 다음 경로도 방금 도착한 정점을 기준으로 시간표를 새로 잡는다.
+        //
+        // `publish_routes()`는 매 틱 현재 `t.idx`부터 내보내지만, FleetPlan은 재계획할
+        // 때만 바뀐다. 예전에는 순회만 위 plan_end_idx에서 재계획했고 WORKING은 최초
+        // 계획의 도착 시각을 끝까지 들고 갔다. 그래서 지도 선은 다음 노드로 넘어갔는데
+        // 예약 표·지연 카운트다운은 지나온 노드에 남아, 작업 중일 때만 관제가 늦게
+        // 반응했다. 성공적인 노드 도달은 상태 세대를 이미 올린 뒤이므로, 여기서 워커에
+        // 새 스냅샷을 넘기면 실행 루프를 막지 않고 현재 위치 기준 시간표가 나온다.
+        //
+        // 마지막 정점은 아래에서 task를 완료·랩 재생성하므로 계획을 만들지 않는다.
+        if (refresh_plan_after_arrival(t.patrol, t.idx, t.path.size())) {
+          replan_all_routes();
         }
         if (t.idx >= t.path.size()) {
           if (t.patrol) {

@@ -273,16 +273,15 @@ def test_non_shelf_leg_does_not_lock(monkeypatch):
     assert bridge._node_blocks.owners_of(node) == []
 
 
-def test_art_shelf_is_out_of_scope(monkeypatch):
-    """예술서가는 navgraph 에 yaw 가 없다 — `SHELF_NODES` 밖이라 잠기지 않는다."""
+def test_art_shelf_now_locks_like_the_other_two_shelves(monkeypatch):
+    """실측(2026-08-05): 예술서가가 `SHELF_NODES` 밖이라 실주문으로 shelf_dock 이 전혀
+    안 나갔다(status 가 시도 내내 "waiting") — 로봇은 도착만 하고 정밀 도킹 없이
+    다리가 끝났다. 세 서가 다 navgraph 에 yaw 가 없는 건 동일하다(shelf_dock.py 자체
+    보정 회전이 처리) — 예술서가만 뺄 근거가 없었다. 이제 다른 두 서가와 같이 잠근다."""
     node = bridge.resolve_vertex("예술서가")
-    calls = []
-    monkeypatch.setattr(bridge.fleet_telemetry, "send_command_async",
-                         lambda *a, **k: calls.append((a, k)) or "cmd-x")
     _mock_submit_task(monkeypatch, task_id="fleet-t4")
     real_dispatch("t4", "pinky1", _nav_leg("예술서가"))
-    assert calls == []
-    assert bridge._node_blocks.owners_of(node) == []
+    assert bridge._node_blocks.owners_of(node) == ["dock:pinky1"]
 
 
 def test_robot_release_unlocks_what_dispatch_locked(monkeypatch):
@@ -452,16 +451,25 @@ def test_person_block_still_reports_to_fleet_node(monkeypatch):
     bridge._on_node_block_report("pinky5", {"node": n2, "ttl_sec": 60.0, "reason": "person"})
     assert calls, "fleet_node 로 차단이 안 나갔다"
 
-def test_arm_completion_triggers_a_backup(monkeypatch):
+def test_arm_completion_does_not_trigger_a_backup(monkeypatch):
+    """[2026-08-05] 팔 완료가 복귀를 부르지 않는다 — 도킹 자세 탈출은 로봇 BT 몫이다.
+
+    이 시험은 예전에 정반대(`triggers_a_backup`)를 주장했고 **이미 빨간불이었다** —
+    바로 위 머리말이 "되돌리는 일은 이제 `fleet_node` 가 한다, FMS 가 직접 쏘면
+    예약 밖 이동이라 충돌 창이 열린다" 고 못 박아둔 것과 모순이었다. 사실에 맞게 뒤집는다.
+
+    ⚠️ 복귀 자체가 없어진 게 아니다 — `decompose_delivery` 의 **backup 다리**가 한다
+    (orchestrator 가 pick 완료를 받은 뒤 순서대로 배정). 여기서 막는 건 브릿지가
+    팔 결과를 보고 **다리 순서 밖으로** 직접 쏘는 경로다.
+    """
     monkeypatch.setattr(bridge, "ARM_VIA_BT", True)
     calls = _mock_send_command(monkeypatch)
 
     cmd_id = real_dispatch("t11", "pinky1", _arm_leg_at("문학서가"))
     bridge.on_cmd_result({"id": cmd_id, "ok": True, "msg": "picked"})
 
-    backups = [c for c in calls if c[1] == "backup"]
-    assert len(backups) == 1
-    assert backups[0][2] == {}          # 좌표 없이 — pop_outbound() 가 알아서 되돌린다
+    assert [c for c in calls if c[1] == "backup"] == [], (
+        "FMS 가 팔 완료 뒤 복귀를 직접 쏘고 있다 — 예약 밖 이동이라 충돌 창이 열린다")
 
 
 # ── fix round 5 — 최종 리뷰 Important 4: 잠금·해제 owner 정규화 ──────────────

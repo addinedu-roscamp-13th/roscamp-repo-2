@@ -130,7 +130,8 @@ STANDBY_EVERY = 8
 
 
 def run(front_frames, back_frames, sender, select, *, orient_front, orient_back,
-        fps=15.0, now=time.monotonic, max_frames=None, standby_every=STANDBY_EVERY):
+        fps=15.0, now=time.monotonic, max_frames=None, standby_every=STANDBY_EVERY,
+        debug_sender=None):
     """캡처 → 탭 기록 → (선택된 캠만) 송출. 테스트가 그대로 부를 수 있게 분리했다.
 
     ## [2026-07-30] 대기 캠은 저주기로 잡는다 — Pi 부하의 절반이 여기였다
@@ -156,6 +157,11 @@ def run(front_frames, back_frames, sender, select, *, orient_front, orient_back,
 
     ⚠️ **선택된 캠은 항상 매 프레임이다.** fps 를 낮추는 변경이 아니다 — 추종 검출
        주기는 그대로다.
+
+    `debug_sender`: 있으면 **`choice`(추종용 선택)와 무관하게** 앞캠 프레임을
+    별도 포트로 추가 송출한다(2026-08-05, `--debug-port`). shelf_dock_lidar_viewer
+    같은 디버그 뷰어 전용 — perception_server 가 이미 쓰는 UDP 포트/뷰어 소켓
+    (listen(1), 뷰어 1개만 붙는 구조)과 자리다툼 안 하려고 별도 포트를 쓴다.
     """
     delay = 1.0 / fps if fps > 0 else 0.0
     seq = 0
@@ -187,6 +193,8 @@ def run(front_frames, back_frames, sender, select, *, orient_front, orient_back,
         if front is not None:
             front = orient_front(front)
             frame_tap.write("front", front, seq, t)
+            if debug_sender is not None:
+                debug_sender.send(front)
         if back is not None:
             back = orient_back(back)
             frame_tap.write("back", back, seq, t)
@@ -250,6 +258,10 @@ def main():
                     help="이 시간 갱신이 없으면 스스로 none 으로 떨어진다. 0 이면 만료 없음.")
     ap.add_argument("--no-ros", dest="no_ros", action="store_true",
                     help="camera_select 구독을 시도하지 않는다(단독 시험용)")
+    ap.add_argument("--debug-port", dest="debug_port", type=int, default=None,
+                    help="주면 앞캠을 이 포트로도 추가 송출한다(--host는 그대로). "
+                         "camera_select 와 무관 — perception_server 의 뷰어 슬롯과 "
+                         "안 부딪히게 shelf_dock_lidar_viewer 등 디버그 뷰어 전용 포트를 쓴다.")
     args = ap.parse_args()
 
     # This Pi's CSI camera is physically mounted upside-down, so picamera frames
@@ -299,16 +311,21 @@ def main():
     select.set(initial, time.monotonic())
 
     sender = UdpVideoSender(args.host, args.port, width=args.width, quality=args.quality)
+    debug_sender = (UdpVideoSender(args.host, args.debug_port, width=args.width, quality=args.quality)
+                    if args.debug_port else None)
     print(f"[ok] sending video -> {args.host}:{args.port} ({args.width}w, q{args.quality}) "
           f"| 뒷캠={'/dev/video%d' % args.back_camera if back else '없음'} "
-          f"| 초기 선택={initial} | 탭={frame_tap.tap_dir()}")
+          f"| 초기 선택={initial} | 탭={frame_tap.tap_dir()}"
+          + (f" | debug -> {args.host}:{args.debug_port}" if debug_sender else ""))
     try:
         run(front, back, sender, select,
             orient_front=lambda f: _orient(f, args.rotate, args.hflip, args.vflip),
             orient_back=lambda f: _orient(f, args.back_rotate, False, False),
-            fps=args.fps, standby_every=args.standby_every)
+            fps=args.fps, standby_every=args.standby_every, debug_sender=debug_sender)
     finally:
         sender.close()
+        if debug_sender:
+            debug_sender.close()
         # 프로세스가 끝나면 슬롯을 지운다. 남겨두면 소비자가 죽은 프로세스의 마지막
         # 프레임을 신선한 것으로 읽는다 — 정지한 화면을 보고 계속 주행하게 된다.
         # (정리는 루프가 아니라 **프로세스 수명**의 책임이라 run() 밖에 둔다.)

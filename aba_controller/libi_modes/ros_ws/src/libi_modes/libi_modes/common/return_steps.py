@@ -353,7 +353,8 @@ class DockSettle(py_trees.behaviour.Behaviour):
 
 def create_return_steps(*, entrance_driver, rotate_driver, nav_release_driver,
                         dock_driver, nudge_driver,
-                        entrance_xy, approach_yaw=None, dock_xy=None, tolerance, resend_sec, timeout_sec,
+                        entrance_xy, approach_yaw=None, dock_xy=None,
+                        tolerance, resend_sec, timeout_sec,
                         yaw_tolerance_rad, retry_max, settle_sec=1.0,
                         now_fn=time.monotonic):
     """6단계 시퀀스를 만든다. 각 단계는 실패 흡수 데코레이터로 감싼다."""
@@ -379,6 +380,11 @@ def create_return_steps(*, entrance_driver, rotate_driver, nav_release_driver,
         ⚠️ 목표는 `_YawStep` 이 **한 번만** 정한다(그 leaf 주석). 매 tick 다시 계산하면
            돌면서 목표도 따라 움직여 영원히 안 닿는다.
         """
+        # 현장 보정 절대각이 있으면 현재 heading 으로 다시 계산하지 않는다.
+        # `approach_yaw` 를 받으면서도 아래 상대 180°만 쓰면 설정 파일을 바꿔도
+        # 실제 로봇은 전혀 바뀌지 않는 조용한 실패가 된다.
+        if approach_yaw is not None:
+            return wrap_angle(float(approach_yaw))
         # 위치·자세를 모르면 회전을 시작하지 않는다 — 실행 층이 좌표 없이 goal 을 못 만든다.
         if pose is None or pose.get("yaw") is None:
             return None
