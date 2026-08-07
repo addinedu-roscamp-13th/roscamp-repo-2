@@ -171,6 +171,20 @@ class MoveExecutor:
                 ticks += 1
                 if ticks > MAX_TICKS_PER_MOVE:
                     return "timeout"
+                # ⚠️ **값이 아니라 부작용 때문에 부른다 — 빼면 이 회전은 반드시 실패한다.**
+                #
+                # `pose_fn` 이 tick 페이싱(`time.sleep(0.02)`)과 ROS `spin_once` 를 겸한다
+                # (`_run` 의 `pose_fn` 주석). 이 줄이 없으면 이 while 문에는 **자는 구간이
+                # 아예 없어서** 4000 tick 을 1초도 안 걸려 태우는데, 90° 회전은 0.4rad/s
+                # 로 실제 4초가 걸린다 — 로봇이 몇 도 돌기도 전에 `MAX_TICKS_PER_MOVE`
+                # 를 넘겨 timeout 이 난다. 게다가 spin 이 안 도니 map yaw 도 안 갱신된다.
+                #
+                # 실측(2026-08-07, 주문 t3): 서가 도킹 뒤 backup 다리가 12.7초 만에
+                # `실패: timeout` 으로 죽고 로봇은 안 움직인 채 순회로 돌아갔다. 아래
+                # 폴백(상대 회전) 분기는 원래부터 `pose_fn` 을 부르고 있어서 멀쩡했고,
+                # **이 분기만** 빠져 있었다.
+                self.pose_fn()
+
 
         sign = 1.0 if target >= 0.0 else -1.0
         lin = self.drive_speed * sign if move.kind == DRIVE else 0.0

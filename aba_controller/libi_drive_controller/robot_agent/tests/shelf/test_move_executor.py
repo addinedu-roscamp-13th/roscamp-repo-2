@@ -367,6 +367,38 @@ def test_leaving_the_shelf_swings_the_tail_away_from_it(shelf_yaw):
     assert next(m for m in moves if m.kind == "drive").value < 0, "후진이어야 한다"
 
 
+# ── map 절대 yaw 회전도 tick 마다 페이싱돼야 한다 (2026-08-07 실기: backup timeout) ──
+#
+# `pose_fn` 이 유일한 `time.sleep`·`spin_once` 지점이다(`_run` 의 pose_fn 주석).
+# map 절대 분기가 그걸 안 부르면 자는 구간이 없어 4000 tick 을 1초 안에 태우고,
+# 90° 회전(0.4rad/s = 실제 4초)은 시작하자마자 timeout 이 난다.
+
+def test_map_absolute_turn_is_paced_by_pose_fn():
+    """map 절대 회전 분기가 **tick 마다** `pose_fn` 을 불러야 한다.
+
+    ⚠️ 되돌림 감지용이다 — 그 한 줄을 빼면 호출수가 0 이 되어 빨개진다.
+    """
+    calls = {"pose": 0, "publish": 0}
+    yaw = {"v": 3.1416}
+
+    def publish(_lin, ang):
+        calls["publish"] += 1
+        yaw["v"] = wrap_pi(yaw["v"] + ang * 0.02)
+
+    def pose_fn():
+        calls["pose"] += 1
+        return (0.0, 0.0, yaw["v"])
+
+    ex = MoveExecutor(publish_twist=publish, pose_fn=pose_fn,
+                      map_yaw_fn=lambda: yaw["v"])
+    ok, why = ex.run([Move("turn", -1.5708, abs_yaw=1.5708)])
+
+    assert ok is True and why == ""
+    assert calls["publish"] > 0
+    assert calls["pose"] >= calls["publish"] - 1, (
+        f"발행 {calls['publish']}회에 pose_fn {calls['pose']}회 — 페이싱이 빠졌다")
+
+
 # ── 첫 회전 목표는 **map 상수**다 — 몇 cm 떨어진 두 AMCL 점의 atan2 가 아니다 ──────
 
 def test_retreat_faces_the_given_map_yaw_instead_of_guessing_from_two_points():
