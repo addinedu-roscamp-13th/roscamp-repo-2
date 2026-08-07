@@ -40,11 +40,10 @@ class FakeDispatcher:
 
 # ── 분해 ─────────────────────────────────────────────────────────────────────
 
-def test_delivery_decomposes_into_four_legs():
-    """[2026-08-07] 서가 복귀(`backup`) 다리를 사용자 지시로 뺐다 — 4다리다."""
+def test_delivery_decomposes_into_fms_backup_leg():
     legs = decompose_delivery(book="B1", pickup=7, dropoff=3)
     assert [l.type for l in legs] == [
-        LegType.NAVIGATE, LegType.PERFORM_ACTION, LegType.NAVIGATE, LegType.PERFORM_ACTION,
+        LegType.NAVIGATE, LegType.PERFORM_ACTION, LegType.PERFORM_ACTION, LegType.NAVIGATE, LegType.PERFORM_ACTION,
     ]
     assert legs[0].params == {"waypoint": 7}
     # 팔 계약(2026-07-30): 정점 이름이 아니라 **장소 종류**로 움직인다.
@@ -53,10 +52,10 @@ def test_delivery_decomposes_into_four_legs():
         "from_place": "서가", "to_place": "리비바구니",
         "tier": 0, "row": 0, "slot": 1,
     }
-    assert legs[2].params == {"waypoint": 3}
     # ⚠️ `place` 의 `to_place` 는 **없다.** 목적지가 테이블인지 안내데스크인지는 정점의
     #    정체를 알아야 정해지고 그 지식은 이 코어에 없다 — 로봇 중계가 `at` 에서 유도한다.
-    assert legs[3].params == {
+    assert legs[2].params == {"action": "backup", "at": 7}
+    assert legs[4].params == {
         "action": "place", "at": 3, "book": "B1", "object": "book",
         "from_place": "리비바구니",
         "tier": 0, "row": 0, "slot": 1,
@@ -71,9 +70,9 @@ def test_delivery_carries_shelf_coordinates_only_on_pick():
     """
     legs = decompose_delivery(book="B1", pickup=7, dropoff=3, tier=3, row=2)
     assert (legs[1].params["tier"], legs[1].params["row"]) == (3, 2)
-    assert (legs[3].params["tier"], legs[3].params["row"]) == (0, 0)
+    assert (legs[4].params["tier"], legs[4].params["row"]) == (0, 0)
     # pick 에 넣은 칸과 place 에서 꺼낼 칸이 같아야 한다 — 팔은 상태를 갖지 않는다.
-    assert legs[1].params["slot"] == legs[3].params["slot"]
+    assert legs[1].params["slot"] == legs[4].params["slot"]
 
 
 def test_collection_decomposes_into_nav_plus_three_arm_legs():
@@ -129,7 +128,7 @@ def test_submit_delivery_queues_pending():
     tid = orc.submit_delivery(book="B1", pickup=7, dropoff=3, requester="사서")
     task = orc.get(tid)
     assert task.status == TaskStatus.PENDING
-    assert len(task.legs) == 4          # [2026-08-07] backup 다리 삭제로 5 → 4
+    assert len(task.legs) == 5
     assert [t["id"] for t in orc.pending()] == [tid]
 
 
@@ -190,8 +189,7 @@ def test_assign_allows_robot_after_previous_task_completed():
     assert orc.get(t2).robot == "pinky3"
 
 
-def test_happy_path_sequences_delivery_legs_in_order():
-    """[2026-08-07] backup 다리 삭제로 5 → 4 다리."""
+def test_happy_path_sequences_fms_backup_leg_in_order():
     d = FakeDispatcher()
     orc = Orchestrator(d)
     tid = orc.submit_delivery(book="B1", pickup=7, dropoff=3)
@@ -199,14 +197,15 @@ def test_happy_path_sequences_delivery_legs_in_order():
 
     # 한 번에 하나씩 — 완료 보고해야 다음이 나간다.
     orc.on_result("c1", ok=True)      # navigate(pickup) 완료 → pick 나감
-    orc.on_result("c2", ok=True)      # pick 완료 → navigate(dropoff)
-    orc.on_result("c3", ok=True)      # navigate 완료 → place
+    orc.on_result("c2", ok=True)      # pick 완료 → FMS backup 배정
+    orc.on_result("c3", ok=True)      # backup 완료 → navigate(dropoff)
+    orc.on_result("c4", ok=True)      # navigate 완료 → place
     assert orc.get(tid).status == TaskStatus.EXECUTING
-    orc.on_result("c4", ok=True)      # place 완료 → COMPLETED
+    orc.on_result("c5", ok=True)      # place 완료 → COMPLETED
 
     assert orc.get(tid).status == TaskStatus.COMPLETED
     assert d.leg_types == [
-        LegType.NAVIGATE, LegType.PERFORM_ACTION, LegType.NAVIGATE, LegType.PERFORM_ACTION,
+        LegType.NAVIGATE, LegType.PERFORM_ACTION, LegType.PERFORM_ACTION, LegType.NAVIGATE, LegType.PERFORM_ACTION,
     ]
 
 
@@ -486,13 +485,10 @@ def test_lifecycle_hook_failure_does_not_block():
     assert orc.get(tid).status == TaskStatus.EXECUTING
 
 
-def test_delivery_has_no_backup_leg_and_nothing_else_leaves_the_shelf():
-    """[2026-08-07] 복귀(`backup`) 다리를 **사용자 지시로 뺐다.**
+def test_delivery_keeps_the_backup_leg_undock_gate_cannot_replace_it():
+    """복귀(`backup`) 다리를 **지우면 안 된다.** 2026-08-05 에 지웠다가 되돌렸다.
 
-    ⚠️ 이 시험은 "빠졌다"를 고정할 뿐 **안전하다고 말하지 않는다.** 같은 삭제를
-       2026-08-05 에 한 번 했다가 되돌렸고, 이번에도 대체 주체를 만들지 않았다.
-
-    그때 삭제 근거는 "로봇 BT 의 `undock_gate` 가 같은 일을 한다"였고 틀렸다.
+    지웠을 때의 근거는 "로봇 BT 의 `undock_gate` 가 같은 일을 한다"였는데 틀렸다.
     그 게이트는 첫 줄에서 이렇게 빠져나간다:
 
         # libi_modes/common/undock.py:79
@@ -502,18 +498,20 @@ def test_delivery_has_no_backup_leg_and_nothing_else_leaves_the_shelf():
     `is_docked` 는 **주차장(충전 도크) 정점 반경 0.12m** 판정이라
     (`aba_controller/libi_drive_controller/scripts/dock_confirm.py:25,60`)
     **서가 도킹과는 무관하다.** 서가 앞에서는 `IS_DOCKED=False` 라 게이트가 통째로
-    건너뛴다 — 아래 두 번째 단언이 그 사실을 못박는다.
+    건너뛰고, 도킹 자세 탈출도 노드까지의 역주행도 아무도 안 한다.
 
     실측(2026-08-05 21:03~21:05): 지운 상태로 배달을 돌렸더니 팔 다리까지 정상
     진행한 뒤 `navigate→1번테이블` 이 21초 간격으로 네 번 재전송됐고 로봇은 서가
-    앞에 그대로 서 있었다. **같은 증상이 다시 나면 원인은 이 삭제다.**
+    앞에 그대로 서 있었다.
 
-    되돌리려면 `fleet_orchestrator.decompose_delivery` 의 주석에 남긴 한 줄을 살린다.
+    ⚠️ 다시 지우고 싶으면 **먼저** `undock_gate` 가 서가 도킹도 보게 고쳐라
+    (`is_docked` 가 아니라 "정밀 도킹 중" 상태를 보도록). 그 전에는 이 다리가
+    유일한 탈출 경로다.
     """
     legs = decompose_delivery(book="B1", pickup=7, dropoff=3)
-    assert [l for l in legs if l.params.get("action") == "backup"] == []
-
-    # 서가 정점에서 집기 바로 다음이 목적지 주행이다 — 그 사이에 탈출이 없다.
+    backups = [l for l in legs if l.params.get("action") == "backup"]
+    assert len(backups) == 1, "서가 도킹에서 빠져나올 유일한 경로가 사라졌다"
+    # 집기 **뒤**, 목적지 주행 **앞** 이어야 한다 — 순서가 뒤집히면 뜻이 없다.
     kinds = [l.params.get("action") or l.params.get("waypoint") for l in legs]
-    assert kinds.index(3) == kinds.index("pick") + 1, (
-        "집기와 목적지 주행 사이에 무언가 생겼다 — 그게 탈출을 맡는다면 위 docstring 을 갱신하라")
+    assert kinds.index("backup") == kinds.index("pick") + 1
+    assert kinds.index("backup") < kinds.index(3)

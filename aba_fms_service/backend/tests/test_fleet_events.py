@@ -128,9 +128,15 @@ def test_arrival_at_the_pickup_is_announced():
 
 
 def test_delivery_completion_is_announced():
-    """회원이 기다리는 건 이거다 — 책이 자리에 도착했다."""
+    """회원이 기다리는 건 이거다 — 책이 자리에 도착했다.
+
+    ⚠️ 다리 수만큼 결과를 올려야 COMPLETED 가 된다. 2026-08-05 에 서가 복귀(`backup`)
+    다리가 들어와 4 → 5 다리가 됐는데 여기 범위가 안 따라와서, 그 뒤로 이 시험은
+    **완료를 한 번도 못 보고** 계속 실패하고 있었다(2026-08-07 발견).
+    배달 다리 수를 바꾸면 이 범위도 같이 고친다.
+    """
     orc, task_id, sent = _delivery_orchestrator()
-    for i in range(1, 5):
+    for i in range(1, 6):
         orc.on_result(f"cmd-{i}", True)
 
     done = [e for e in fleet_events.since(0) if e["kind"] == "task_done"]
