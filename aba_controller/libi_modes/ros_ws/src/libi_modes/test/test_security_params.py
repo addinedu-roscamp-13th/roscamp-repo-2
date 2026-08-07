@@ -41,10 +41,21 @@ def test_추종_지속시간이_AI_서버_트리거보다_길다():
     assert _sp()["intruder_sustain"] > SecurityParams().trigger_sec
 
 
-def test_상실_시계가_탐색_훑기_시작보다_짧다():
-    """넘으면 인지 쪽 탐색이 ±90° 훑기·180° 회전까지 진입해 로봇이 빙빙 돈다."""
-    peek = SEARCH_PEEK_ANGLE / ANGULAR_Z_SEARCH
-    assert _sp()["intruder_lose_sec"] < peek + SEARCH_HOLD_SEC
+def test_상실_시계는_더_이상_쓰이지_않는다():
+    """⚠️ [2026-08-07] `intruder_lose_sec` 을 걷어냈다.
+
+    예전 규칙은 "탐색 훑기 시작보다 짧아야 한다"(안 그러면 밤에 빙빙 돈다)였는데,
+    그 유도가 **탐색 시작 기준**이라 소실→탐색 진입 지연(약 3.4초)이 빠져 있었다.
+    실제로는 회복 트리에 1.6초밖에 안 남아 탐색이 아예 안 돌았다.
+
+    이제 소실 판정과 회복 종료는 인지 쪽이 하고, 밤에 도는 시간은 `max_chase_sec`
+    하나가 막는다. params.yaml 에 값이 남아 있어도 **읽지 않는다** —
+    `branches/security_patrol.py` 가 `ChasePolicy` 에 안 넘긴다.
+    """
+    from libi_modes.common.intruder_chase import ChasePolicy
+    assert not hasattr(ChasePolicy(), "lose_sec"), \
+        "되살렸으면 회복 탐색이 다시 안 돈다 — ChasePolicy 머리말 참고"
+    assert _sp()["max_chase_sec"] > 0, "이제 이것이 유일한 시계다"
 
 
 def test_실패_백오프가_0_보다_크다():

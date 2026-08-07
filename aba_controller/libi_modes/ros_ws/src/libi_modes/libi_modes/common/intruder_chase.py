@@ -32,13 +32,43 @@ class ChasePolicy:
        서로 신호를 안 주고받고 같은 숫자를 각자 본다 — 이 차이가 **등록이 추종보다 먼저**
        일어남을 보장하는 유일한 장치다. 같으면 owner 없이 세션이 열려 곧바로 실패한다.
 
-    ⚠️ `lose_sec` 은 `SEARCH_PEEK_ANGLE / ANGULAR_Z_SEARCH + 0.5` 유도값이다
-       (libi_perception/config.py). **9.49 이상으로 올리면** 인지 쪽 탐색이 훑기·180°
-       회전 단계까지 진입해 **로봇이 밤에 제자리에서 빙빙 돈다.**
+    ## ⚠️ [2026-08-07] `lose_sec` 을 걷어냈다 — **회복 탐색이 아예 안 돌았다**
+
+    예전 값은 5.0 이고 근거는 `SEARCH_PEEK_ANGLE / ANGULAR_Z_SEARCH + 0.5 = 4.99`
+    ("peek 하나만 하고 접는다")였다. **그 유도가 틀렸다** — 그 4.49초는 *탐색 시작*
+    기준인데 `lose_sec` 은 *소실* 기준이라, 그 사이의 지연이 통째로 빠져 있다:
+
+        0.0s        대상 소실 (여기서 lose_sec 시계가 돌기 시작한다)
+        0.0–1.4s    AI 서버 α-β 코스팅 — `COAST_LIMIT`(24) @17fps. 주황 박스가 계속
+                    나오므로 제어 루프는 "검출 있음" 으로 읽어 `miss` 가 0 이다
+        1.4–3.4s    `N_MISS_FRAMES`(40) @ `TICK_HZ`(20)
+        3.4s        비로소 SEARCHING — 회복 트리 생성, `LkdPeek`(4.49초) 시작
+        5.0s        ⛔ 여기서 끊겼다
+
+    **트리에 1.6초.** peek 의 1/3 이라 0.35rad/s × 1.6s ≈ 32° — 사람 눈에는 "회복을
+    아예 안 한다" 로 보인다. 사용자 보고 2026-08-07: "대상이 사라지면 회복 트리를
+    안 하네", "추종에 있었던 서치가 아예 안 일어나".
+
+    ## 그리고 이 타이머는 **중복**이었다
+
+    야간 추격도 `follow_admin` **주행 세션**이라 `follow_node._active_id` 가 잡혀 있고,
+    회복이 소진되면 결과가 정식 경로로 돌아온다 —
+    `GiveUp → session.poll()=='failure' → /fleet_cmd_result → _chasing` 의
+    `result in ("success","failure")` 분기. `follow_node.py:548` 이 그 사실을 명시한다.
+    `FollowExec`(관리자 추종)이 소실 타이머를 **하나도 안 두는** 이유가 그것이고,
+    길잡이도 같은 자리에서 시계를 걷어내고 실제 신호로 바꿨다
+    (`working_actions.py:724` — "예전에는 `guide_lost_timeout_sec`(시계)가 이 자리에").
+    야간만 시계로 남아 있었다.
+
+    ## 밤에 빙빙 도는 것은 무엇이 막나
+
+    `max_chase_sec`(60초)가 그대로 상한이다. 회복 전 구간이 소실 기준 약 37초라
+    그 안에 끝나고, 안 끝나도 60초에서 끊긴다. 즉 **경계가 사라진 게 아니라 옮겨졌다** —
+    "peek 만" 이 아니라 "회복이 끝날 때까지, 최대 60초" 다. 더 짧게 붙들고 싶으면
+    `max_chase_sec` 을 줄인다(그게 이제 유일한 시계다).
     """
     trigger_size: float = 100.0
     sustain_sec: float = 1.5
-    lose_sec: float = 5.0
     max_chase_sec: float = 60.0
     release_grace_sec: float = 1.0
     failure_backoff_sec: float = 10.0
@@ -60,7 +90,6 @@ class IntruderChase(py_trees.behaviour.Behaviour):
         self._state = _IDLE
         self._seen_since = None
         self._chase_start = None
-        self._last_seen = None
         self._release_at = None
         self._backoff_until = 0.0
 
@@ -98,7 +127,7 @@ class IntruderChase(py_trees.behaviour.Behaviour):
         seen = float(size) >= self.policy.trigger_size
 
         if self._state == _CHASING:
-            return self._chasing(now, seen)
+            return self._chasing(now)
         if self._state == _RELEASE:
             if now - self._release_at >= self.policy.release_grace_sec:
                 self._set_state(_BACKOFF if now < self._backoff_until else _IDLE)
@@ -159,20 +188,19 @@ class IntruderChase(py_trees.behaviour.Behaviour):
             self.follow_driver.start(args={"session_kind": "security"})
         self._set_state(_CHASING)
         self._chase_start = now
-        self._last_seen = now
         self._seen_since = None
         return Status.RUNNING
 
-    def _chasing(self, now, seen):
-        if seen:
-            self._last_seen = now
+    def _chasing(self, now):
+        """추격 중. **가시성을 안 본다** — 소실 판정과 회복 종료는 인지 쪽이 하고,
+        그 결과가 `follow_driver.poll()` 로 돌아온다(`ChasePolicy` 머리말)."""
         result = self.follow_driver.poll() if self.follow_driver else "running"
         if result in ("success", "failure"):
-            # 세션이 스스로 끝났다. `failure` 면 백오프를 건다 — owner 가 없는 상태에서는
-            # 트리거→실패→재트리거가 무한 반복해 **순찰이 5초마다 끊겨 마비된다.**
+            # 세션이 스스로 끝났다 — **회복 탐색이 다 훑고 끝났다는 뜻이다.**
+            # 여기가 이제 소실의 정상 종료 경로다(예전엔 `lose_sec` 시계가 먼저 끊었다).
+            # `failure` 면 백오프를 건다 — owner 가 없는 상태에서는 트리거→실패→재트리거가
+            # 무한 반복해 **순찰이 5초마다 끊겨 마비된다.**
             return self._release(now, backoff=(result == "failure"))
-        if now - self._last_seen >= self.policy.lose_sec:
-            return self._release(now, backoff=False)
         if now - self._chase_start >= self.policy.max_chase_sec:
             return self._release(now, backoff=False)
         return Status.RUNNING

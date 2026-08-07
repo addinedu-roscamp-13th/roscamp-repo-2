@@ -32,7 +32,9 @@ def _chase_policy(params: dict) -> ChasePolicy:
     return ChasePolicy(
         trigger_size=float(sp.get("intruder_size", 100.0)),
         sustain_sec=float(sp.get("intruder_sustain", 1.5)),
-        lose_sec=float(sp.get("intruder_lose_sec", 5.0)),
+        # ⚠️ [2026-08-07] `intruder_lose_sec` 은 안 읽는다 — 걷어냈다
+        #    (`ChasePolicy` 머리말). params.yaml 에 남아 있어도 무시된다.
+        #    이제 추격을 끊는 시계는 이것 하나다.
         max_chase_sec=float(sp.get("max_chase_sec", 60.0)),
         release_grace_sec=float(sp.get("release_grace_sec", 1.0)),
         failure_backoff_sec=float(sp.get("failure_backoff_sec", 10.0)),

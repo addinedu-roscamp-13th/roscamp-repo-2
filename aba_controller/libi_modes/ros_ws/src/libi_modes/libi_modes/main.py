@@ -22,6 +22,7 @@ py_trees 의 blackboard 는 프로세스 전역이라 한 프로세스가 두 �
 """
 import json
 import os
+import time
 
 import py_trees
 import rclpy
@@ -36,6 +37,7 @@ from std_msgs.msg import String
 from libi_modes import blackboard as bb
 from libi_modes import tree as tree_mod
 from libi_modes.blackboard import Keys
+from libi_modes.common.camera_owner import session_owns_camera
 from libi_modes.common.junctions import JunctionSet, load_junctions
 from libi_modes.registry import BRANCH_ORDER
 from libi_modes.ros.fleet_cmd_driver import FleetCmdDriver, NudgeDriver, YawGoalDriver
@@ -268,6 +270,13 @@ class FsmNode(Node):
         # 구독자와 안 맞는다(위 `_CAMERA_SELECT_QOS` 주석).
         self._camera_select_pub = self.create_publisher(
             String, "/libi/camera_select", _CAMERA_SELECT_QOS)
+        # ⚠️ [2026-08-07] **세션이 캠을 쥐고 있으면 여기서 발행하지 않는다.**
+        #    발행자가 둘이라 서로 다른 값을 밀면 토픽이 앞뒤로 뒤집힌다 —
+        #    근거·실기 증상은 `common/camera_owner.py` 머리말.
+        self._perception_role = None
+        self._perception_role_at = None
+        self.create_subscription(String, "/libi/perception_role",
+                                 self._on_perception_role, _CAMERA_SELECT_QOS)
         # 앞을 막은 사람을 알릴 때의 TTL(초). `PersonBlockGuard.block_fn(node)` 가 이 값을
         # 쓴다 — params.yaml `working.person_block_ttl_sec`.
         self._person_block_ttl_sec = float(
@@ -692,11 +701,30 @@ class FsmNode(Node):
         `CAMERA_SELECT_HZ`(2Hz)로 계속 재발행한다(`follow_node.py` `_publish_camera`).
         즉 navigate 중에는 이 발행과 그쪽의 idle 값이 **같은 토픽에서 경합한다** — 두
         발행자 다 latched(TRANSIENT_LOCAL)라 늦게 붙는 구독자는 매치된 각 발행자의
-        마지막 값을 받고, 그 뒤로는 나중에 도착하는 메시지가 이긴다. `follow_node` 를
-        고쳐 idle 땐 이 토픽에 안 쓰게 하는 것이 근본 해결이지만 그건 다른 서비스
-        (libi_perception) 영역이라 여기서 손대지 않는다 — 보고서에 남겨 둔다.
+        마지막 값을 받고, 그 뒤로는 나중에 도착하는 메시지가 이긴다.
+
+        ⚠️ [2026-08-07 해결] 위 경합을 **이쪽에서** 끊는다 — `follow_node` 를 안 고쳐도
+        된다. 세션이 살아 있으면(= `/libi/perception_role` 이 신선한 소유 역할이면)
+        여기서 발행하지 않는다. 길잡이(세션 캠 `back`)와 회복 탐색(반대 캠)에서 이
+        발행이 `"front"` 로 계속 덮어써 **앞뒤 카메라가 흔들리던** 실기 결함이다.
+        판정과 근거는 `common/camera_owner.py`.
+
+        세션이 없을 때는 예전 그대로 발행한다 — 그때는 아무도 안 쥐고 있고, 배달·순회
+        앞캠은 이 통로 말고 켜 둘 방법이 없다.
         """
+        if self._session_owns_camera():
+            return
         self._camera_select_pub.publish(String(data=str(value)))
+
+    def _on_perception_role(self, msg) -> None:
+        """`follow_node` 가 알려주는 지금의 세션 역할. 값과 **받은 시각**을 같이 둔다."""
+        self._perception_role = (msg.data or "").strip() or None
+        self._perception_role_at = time.monotonic()
+
+    def _session_owns_camera(self) -> bool:
+        age = (None if self._perception_role_at is None
+               else time.monotonic() - self._perception_role_at)
+        return session_owns_camera(self._perception_role, age)
 
     def _publish_arm_result(self, ok: bool, msg: str) -> None:
         """팔 동작이 끝났다고 `/fleet_cmd_result` 로 올린다 — **완료를 아는 쪽이 답한다.**

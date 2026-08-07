@@ -10,8 +10,8 @@ from libi_modes.blackboard import Keys
 from libi_modes.common.intruder_chase import ChasePolicy, IntruderChase
 from test.fakes import FakeDriver
 
-POLICY = ChasePolicy(trigger_size=100.0, sustain_sec=1.5, lose_sec=5.0,
-                     max_chase_sec=60.0, release_grace_sec=1.0,
+POLICY = ChasePolicy(trigger_size=100.0, sustain_sec=1.5, max_chase_sec=60.0,
+                     release_grace_sec=1.0,
                      failure_backoff_sec=10.0)
 
 
@@ -29,6 +29,15 @@ def _leaf(follow=None, nav_stop=None, clock=None):
                          nav_stop_driver=nav_stop or FakeDriver(), now_fn=clock)
     leaf.setup()
     return leaf, clock
+
+
+def _lost_driver(n_running=0):
+    """`n_running` 틱 동안 "running", 그 뒤 "failure" — **회복 탐색이 끝났다**는 신호.
+
+    ⚠️ [2026-08-07] 예전 시험들은 `lose_sec`(5초) 시계를 흘려 세션을 닫았다. 그 시계를
+       걷어냈으므로(`ChasePolicy` 머리말) 이제는 인지 쪽 결과로 닫는다.
+    """
+    return FakeDriver(poll_sequence=["running"] * n_running + ["failure"])
 
 
 def _size(v):
@@ -79,22 +88,45 @@ def test_트리거하면_주행취소_다음_추종_순서로_불린다():
     assert order == ["nav_stop", "follow"]
 
 
-def test_상실_후_lose_sec_이_지나면_세션을_닫는다():
+def test_상실만으로는_세션을_안_닫는다():
+    """⚠️ [2026-08-07] 예전엔 `lose_sec`(5초) 시계가 여기서 끊었다. 그러면 인지 쪽
+    회복 트리에 **1.6초**밖에 안 남아 탐색이 사실상 안 돌았다(`ChasePolicy` 머리말).
+
+    이제 소실은 인지 쪽이 판정하고, 회복이 다 끝나면 그 결과가 `poll()` 로 온다.
+    되돌리면(= 시계를 되살리면) 이 시험이 빨개진다."""
     follow = FakeDriver()
     leaf, clock = _leaf(follow=follow)
     _size(140.0); leaf.tick_once(); clock.t += 1.6; leaf.tick_once()
     _size(0.0)
-    clock.t += 4.0; leaf.tick_once()
-    assert follow.stop_count == 0
-    clock.t += 1.5; leaf.tick_once()
+    clock.t += 30.0; leaf.tick_once()          # 옛 lose_sec 의 6배를 흘려도
+    assert follow.stop_count == 0, "아직 회복 탐색이 도는 중이다 — 끊으면 안 된다"
+
+
+def test_회복이_끝났다는_결과가_오면_세션을_닫는다():
+    """정상 종료 경로. `GiveUp → session 'failure' → /fleet_cmd_result` 가 여기로 온다."""
+    follow = _lost_driver()
+    leaf, clock = _leaf(follow=follow)
+    _size(140.0); leaf.tick_once(); clock.t += 1.6; leaf.tick_once()
+    _size(0.0)
+    clock.t += 0.2; leaf.tick_once()
+    assert follow.stop_count == 1
+
+
+def test_상한을_넘으면_결과가_안_와도_끊는다():
+    """`max_chase_sec` 이 이제 **유일한 시계**다 — 밤에 무한정 도는 것을 막는 마지막 방벽."""
+    follow = FakeDriver()
+    leaf, clock = _leaf(follow=follow)
+    _size(140.0); leaf.tick_once(); clock.t += 1.6; leaf.tick_once()
+    _size(0.0)
+    clock.t += POLICY.max_chase_sec + 1.0; leaf.tick_once()
     assert follow.stop_count == 1
 
 
 def test_stop_을_낸_그_틱에는_아직_RUNNING_이다():
     """follow_stop 은 결과를 안 기다린다. 즉시 순찰로 넘기면 /cmd_vel 발행자가 둘이 된다."""
-    leaf, clock = _leaf()
+    leaf, clock = _leaf(follow=_lost_driver())
     _size(140.0); leaf.tick_once(); clock.t += 1.6; leaf.tick_once()
-    _size(0.0); clock.t += 5.5
+    _size(0.0); clock.t += 0.2
     assert (leaf.tick_once() or leaf.status) is Status.RUNNING          # RELEASE — 아직 안 넘긴다
     clock.t += 1.1
     assert (leaf.tick_once() or leaf.status) is Status.FAILURE          # 유예 뒤에야 순찰
@@ -112,10 +144,11 @@ def test_max_chase_sec_상한이_걸린다():
 
 def test_정상_소실_뒤에는_곧바로_다시_쫓는다():
     """로봇 쿨다운은 일부러 없다 — 다시 보이면 다시 쫓는 게 맞다."""
-    follow = FakeDriver()
+    # 회복이 **성공** 으로 끝난 경우다 — 백오프가 안 걸려야 곧바로 다시 쫓는다.
+    follow = FakeDriver(poll_sequence=["success"])
     leaf, clock = _leaf(follow=follow)
     _size(140.0); leaf.tick_once(); clock.t += 1.6; leaf.tick_once()
-    _size(0.0); clock.t += 5.5; leaf.tick_once()
+    _size(0.0); clock.t += 0.2; leaf.tick_once()
     clock.t += 1.1; leaf.tick_once()
     _size(140.0); leaf.tick_once(); clock.t += 1.6
     assert (leaf.tick_once() or leaf.status) is Status.RUNNING
@@ -210,7 +243,7 @@ def test_추종이_release로_끝나면_active_command를_비운다():
     assert _active_command() == "follow_admin"    # 추종 중에는 그대로 있어야 한다
 
     _size(0.0)
-    clock.t += 5.5; leaf.tick_once()               # lose_sec 경과 → _release()
+    clock.t += POLICY.max_chase_sec + 1.0; leaf.tick_once()   # 상한 → _release()
     assert _active_command() is None
 
 
