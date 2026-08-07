@@ -1377,8 +1377,14 @@ def _run(shelf: str, my_gen: int, args: dict) -> tuple[bool, int, dict, str]:
         if ok:
             # FMS가 backup 을 명시적으로 보낼 때만, 최종축 → 옆축의 역순 체크포인트를
             # AMCL로 재계산해 돌아간다. 단순 거리 합산 복귀를 쓰지 않는다.
+            #
+            # `retreat_yaw` 는 서가를 벗어나는 첫 회전의 **map 절대 목표**다. 체크포인트
+            # 두 점의 atan2 로 구하면 그 둘이 `hit_dist − CLEARANCE_M`(수 cm) 밖에 안
+            # 떨어져 있어 AMCL 잡음에 방위가 휘둘린다 — 서가 법선은 이미 아는 값이니
+            # 추정하지 않는다(`shelf/geometry.py` `retreat_moves` 의 `face_yaw`).
             record_return_targets([(lateral_pose[0], lateral_pose[1]),
-                                   (side_start_pose[0], side_start_pose[1])])
+                                   (side_start_pose[0], side_start_pose[1])],
+                                  retreat_yaw=SHELF_YAW[shelf])
         payload = {
             "docked": ok, "shelf": shelf, "clearance_m": CLEARANCE_M,
             "first_observation": first_info, "lateral_target_m": lateral_target,

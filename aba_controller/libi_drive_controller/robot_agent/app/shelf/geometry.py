@@ -95,7 +95,7 @@ def axis_aligned_moves(rx: float, ry: float, ryaw: float,
 
 
 def retreat_moves(rx: float, ry: float, ryaw: float,
-                  tx: float, ty: float) -> list:
+                  tx: float, ty: float, face_yaw: float | None = None) -> list:
     """목표 쪽으로 **등을 돌려** 후진으로 간다 — 코를 돌려 전진하는 `approach_moves`
     의 짝이다.
 
@@ -124,13 +124,32 @@ def retreat_moves(rx: float, ry: float, ryaw: float,
 
     ⚠️ 끝나도 로봇은 여전히 서가를 보고 있다. 다음 다리인 nav2 주행이 알아서 돌린다 —
     그 자리(`side_start_pose`)는 nav2 가 데려다 준 진입점이라 돌 자리가 있다.
+
+    ## `face_yaw` — 방위를 **map 상수로 못박는다** (권장)
+
+    안 주면 코가 볼 방위를 두 점의 `atan2` 로 구한다. 그런데 그 두 점은 **AMCL 자세
+    두 개**고, 서가에서 물러나는 거리는 `hit_dist − CLEARANCE_M` 이라 **수 cm 밖에
+    안 되는 경우가 있다.** 몇 cm 떨어진 두 점의 각도는 AMCL 잡음(±2~3cm)에 그대로
+    휘둘린다 — 짧을수록 심해서, 최악에는 방위가 사실상 무작위가 된다. 그러면 위에서
+    보장한 "꽁무늬가 서가 반대편으로 빠진다" 가 **깨진다.**
+
+    서가에서 물러나는 방향은 추정할 게 아니라 **이미 아는 값**이다: 서가 법선
+    `SHELF_YAW[shelf]`. 그걸 그대로 주면 회전 목표가 잡음과 무관해진다.
+    (거리는 그대로 두 점 사이 거리를 쓴다 — 거리 오차는 방위 오차와 달리 몇 cm 어긋나는
+    데서 끝나고, 그건 다음 다리 nav2 가 흡수한다.)
+
+    ⚠️ **부호가 서가마다 다르다** — 문학·예술 `+1.5708`, 과학-인문학 `−1.5708`.
+       한 값으로 못박으면 반대쪽 서가에서 꽁무늬가 정확히 서가로 돌아간다(고치기 전
+       동작 그대로). 그래서 상수가 아니라 `SHELF_YAW[shelf]` 를 실어 보낸다.
     """
     dx, dy = float(tx) - float(rx), float(ty) - float(ry)
     dist = math.hypot(dx, dy)
     if dist <= 0.0:
         return []
-    back_yaw = wrap_pi(math.atan2(dy, dx) + math.pi)   # 등이 목표를 향하는 자세
-    return [Move(TURN, wrap_pi(back_yaw - float(ryaw)), abs_yaw=back_yaw),
+    # 코가 볼 방위. map 상수를 받았으면 그걸 쓰고, 없으면 두 점에서 추정한다.
+    nose_yaw = wrap_pi(float(face_yaw)) if face_yaw is not None \
+        else wrap_pi(math.atan2(dy, dx) + math.pi)
+    return [Move(TURN, wrap_pi(nose_yaw - float(ryaw)), abs_yaw=nose_yaw),
             Move(DRIVE, -dist)]
 
 

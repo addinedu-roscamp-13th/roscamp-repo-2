@@ -54,12 +54,20 @@ def record_outbound(moves, heading: float, final_yaw: float) -> None:
         _outbound_state["final_yaw"] = float(final_yaw)
 
 
-def record_return_targets(targets) -> None:
-    """FMS `backup` 명령 때 밟을 AMCL 체크포인트를 역순으로 보관한다."""
+def record_return_targets(targets, retreat_yaw: float | None = None) -> None:
+    """FMS `backup` 명령 때 밟을 AMCL 체크포인트를 역순으로 보관한다.
+
+    `retreat_yaw` 는 **서가에서 물러날 때 코가 볼 map 절대 방위**(= `SHELF_YAW[shelf]`).
+    첫 다리의 회전 목표를 여기서 못박는다 — 체크포인트끼리의 `atan2` 로 구하면 두 점이
+    수 cm 밖에 안 떨어져 있어 AMCL 잡음에 방위가 휘둘린다(`geometry.retreat_moves`
+    의 `face_yaw` 설명). 안 주면 예전대로 두 점에서 추정한다.
+    """
     clean = [(float(x), float(y)) for x, y in targets]
     with _outbound_lock:
         _outbound_state.clear()
         _outbound_state["return_targets"] = clean
+        if retreat_yaw is not None:
+            _outbound_state["retreat_yaw"] = float(retreat_yaw)
 
 
 def pending_return_targets() -> list[tuple[float, float]]:
@@ -68,10 +76,17 @@ def pending_return_targets() -> list[tuple[float, float]]:
         return list(_outbound_state.get("return_targets") or [])
 
 
+def pending_retreat_yaw() -> float | None:
+    """`record_return_targets` 가 실어 둔 서가 법선 방위. 없으면 `None`."""
+    with _outbound_lock:
+        return _outbound_state.get("retreat_yaw")
+
+
 def clear_return_targets() -> None:
     """성공적으로 FMS backup을 끝낸 뒤에만 체크포인트를 소모한다."""
     with _outbound_lock:
         _outbound_state.pop("return_targets", None)
+        _outbound_state.pop("retreat_yaw", None)
 
 
 def pop_outbound() -> list:
@@ -271,12 +286,20 @@ def _plan_and_drive(args: dict, my_gen: int, read_pose, drive) -> tuple[bool, in
             return False, 499, {"backed": False}, "취소됨(preflight)"
         moves = []
         rx, ry, ryaw = pose
+        # 서가를 벗어나는 **첫 다리만** 방위를 map 상수(서가 법선)로 못박는다. 그
+        # 뒤의 다리는 서가에서 이미 물러난 자리라 잡음에 덜 민감하고, 무엇보다
+        # 방향이 서가 법선이 아니다(옆축 이동) — 거기까지 못박으면 엉뚱한 데로 간다.
+        face_yaw = pending_retreat_yaw()
         for tx, ty in targets:
             # 돌지 않고 **후진**으로 뺀다 — 서가 앞 3cm 에서 제자리로 돌면 꽁무늬가
             # 서가를 쓴다(`geometry.retreat_moves` 머리말, 2026-08-07 실기).
-            moves.extend(retreat_moves(rx, ry, ryaw, tx, ty))
-            back_yaw = wrap_pi(math.atan2(ty - ry, tx - rx) + math.pi)
-            rx, ry, ryaw = tx, ty, back_yaw
+            leg = retreat_moves(rx, ry, ryaw, tx, ty, face_yaw=face_yaw)
+            moves.extend(leg)
+            if leg:
+                # 이 다리를 마쳤을 때의 자세 = 방금 낸 회전의 map 절대 목표.
+                ryaw = leg[0].abs_yaw
+            rx, ry = tx, ty
+            face_yaw = None                 # 첫 다리에만 쓴다
     elif x is not None and y is not None:
         pose = read_pose()
         if pose is None:

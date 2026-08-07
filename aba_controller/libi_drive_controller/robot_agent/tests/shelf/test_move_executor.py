@@ -367,6 +367,70 @@ def test_leaving_the_shelf_swings_the_tail_away_from_it(shelf_yaw):
     assert next(m for m in moves if m.kind == "drive").value < 0, "후진이어야 한다"
 
 
+# ── 첫 회전 목표는 **map 상수**다 — 몇 cm 떨어진 두 AMCL 점의 atan2 가 아니다 ──────
+
+def test_retreat_faces_the_given_map_yaw_instead_of_guessing_from_two_points():
+    """`face_yaw` 를 주면 체크포인트가 어디 있든 회전 목표가 **그 값**이다.
+
+    ⚠️ 여기 목표점은 일부러 엉뚱한 방향(+x)에 둔다 — 추정으로 되돌리면 코가 180°
+       를 보게 되어 이 시험이 빨개진다.
+    """
+    from app.shelf.geometry import retreat_moves
+
+    moves = retreat_moves(0.0, 0.0, 3.1416, 1.0, 0.0, face_yaw=1.5708)
+    turn = next(m for m in moves if m.kind == "turn")
+    assert math.isclose(turn.abs_yaw, 1.5708, abs_tol=1e-9)
+    assert math.isclose(wrap_pi(3.1416 + turn.value), 1.5708, abs_tol=1e-9)
+    # 거리는 그대로 두 점 사이 거리다 — 못박는 건 방위뿐이다.
+    assert math.isclose(next(m for m in moves if m.kind == "drive").value, -1.0)
+
+
+def test_short_checkpoint_hop_still_retreats_the_right_way(monkeypatch):
+    """체크포인트가 2cm 밖에 안 떨어졌고 AMCL 이 **엉뚱한 쪽으로 튀어도**, 못박은
+    방위 덕에 첫 회전은 서가(+90°)를 향한다 — 꽁무늬는 반대편으로 빠진다.
+
+    이게 `face_yaw` 를 넣은 이유다: `hit_dist − CLEARANCE_M` 이 수 cm 라 두 점의
+    atan2 는 AMCL 잡음(±2~3cm)에 통째로 휘둘린다.
+    """
+    from app.core import backup_runner
+
+    # 서가 법선 +90°. 물러날 곳은 −90° 쪽 2cm 인데, 잡음이 x 로 2cm 밀어 놨다.
+    backup_runner.record_return_targets([(0.02, -0.02), (0.02, -0.30)],
+                                        retreat_yaw=1.5708)
+    driven = []
+
+    def fake_drive(moves, _gen):
+        driven.extend(moves)
+        return True, 200, {"backed": True}, ""
+
+    ok, _status, _data, _msg = backup_runner.run_backup(
+        {}, _read_pose_fn=lambda: (0.0, 0.0, 3.1416), _drive_fn=fake_drive)
+
+    assert ok is True
+    first_turn = next(m for m in driven if m.kind == "turn")
+    assert math.isclose(first_turn.abs_yaw, 1.5708, abs_tol=1e-9), (
+        "첫 회전이 잡음 섞인 atan2 로 돌아갔다")
+    assert driven[1].kind == "drive" and driven[1].value < 0
+
+
+def test_second_leg_is_not_pinned_to_the_shelf_normal():
+    """못박기는 **첫 다리만**이다. 옆축 다리까지 서가 법선으로 돌리면 엉뚱한 데로 간다."""
+    from app.core import backup_runner
+
+    backup_runner.record_return_targets([(0.0, -0.1), (0.3, -0.1)], retreat_yaw=1.5708)
+    driven = []
+
+    ok, _status, _data, _msg = backup_runner.run_backup(
+        {}, _read_pose_fn=lambda: (0.0, 0.0, 3.1416),
+        _drive_fn=lambda moves, _gen: (driven.extend(moves), (True, 200, {}, ""))[1])
+
+    assert ok is True
+    turns = [m for m in driven if m.kind == "turn"]
+    assert math.isclose(turns[0].abs_yaw, 1.5708, abs_tol=1e-9)
+    # 둘째 다리 목표는 +x 쪽이므로 등을 그리로 돌린다 = 코는 −x(π).
+    assert math.isclose(abs(turns[1].abs_yaw), math.pi, abs_tol=1e-6)
+
+
 
 # ─── 도킹 뒤 복귀(backup)가 매번 "pose 를 못 얻었다" 로 죽던 건 ─────────────────
 # 실측(2026-08-05 관제 UI): 배달 5다리 중 3번(backup)에서 정지.
