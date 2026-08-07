@@ -126,30 +126,24 @@ def decompose_delivery(*, book: str, pickup, dropoff, tier: int = 0, row: int = 
         Leg(LegType.PERFORM_ACTION, {"action": "pick", "at": pickup,
                                      "from_place": "서가", "to_place": "리비바구니",
                                      "tier": int(tier), "row": int(row), **arm}),
-        # FMS가 pick 완료 결과를 받은 뒤에만 이 다리를 배정한다. robot_agent는
-        # 도킹 때 저장한 체크포인트를 최종축 → 옆축 역순으로 복귀한다.
+        # ⚠️ [2026-08-07] **서가 복귀(`backup`) 다리를 사용자 지시로 여기서 뺐다.**
         #
-        # ⚠️ [2026-08-05] **이 다리를 지웠다가 되돌렸다. 지우면 로봇이 서가에 붙은 채
-        #    영영 안 움직인다.**
+        # 2026-08-05 에도 한 번 뺐다가 되돌린 자리다. 그때 근거는 "`undock_gate` 가
+        # 같은 일을 한다"였고 그건 틀렸다 — 그 게이트는 `is_docked`(주차장 정점 반경
+        # 0.12m, `dock_confirm.py:25,60`)만 보므로 서가 앞에서는 첫 줄에서 그냥
+        # 통과한다(`libi_modes/common/undock.py:79`). 그래서 서가 탈출을 아무도 안
+        # 했고, 실측(2026-08-05 21:03~21:05)으로 `navigate→1번테이블` 이 21초 간격
+        # 네 번 재전송되는 동안 로봇은 서가 앞에 그대로 서 있었다.
         #
-        # 지웠을 때의 근거는 "`WORKING` 브랜치의 `undock_gate` 가 같은 일을 한다"
-        # (`libi_modes/branches/working.py:65`)였다. **틀렸다.** 그 게이트는 첫 줄에서
-        # 이렇게 빠져나간다:
+        # **이번에 뺀 근거는 그때와 다르지 않다 — 대체 주체를 만들지 않고 뺐다.**
+        # 그러니 같은 증상이 다시 나면 원인은 여기다. 되돌리려면 이 줄을 살리면 된다:
         #
-        #     # libi_modes/common/undock.py:79
-        #     if not bb.get(self.blackboard, Keys.IS_DOCKED):
-        #         return Status.SUCCESS      # 아무것도 안 하고 통과
+        #     Leg(LegType.PERFORM_ACTION, {"action": "backup", "at": pickup}),
         #
-        # `is_docked` 는 **주차장(충전 도크) 정점 반경 0.12m** 판정이다
-        # (`aba_controller/libi_drive_controller/scripts/dock_confirm.py:25,60`) —
-        # 서가와는 무관하다. 그러니 서가 도킹 뒤에는 `IS_DOCKED=False` 라
-        # undock 게이트가 **통째로 건너뛴다.**
-        #
-        # 실측(2026-08-05 21:03~21:05): 지운 상태로 배달을 돌렸더니 팔 다리까지 정상
-        # 진행한 뒤 `navigate→1번테이블` 이 21초 간격으로 네 번 재전송됐고 로봇은
-        # 서가 앞에 그대로 서 있었다. 도킹 자세 탈출도, 노드까지의 역주행도 **아무도
-        # 안 한다** — 둘 다 이 다리가 하던 일이다.
-        Leg(LegType.PERFORM_ACTION, {"action": "backup", "at": pickup}),
+        # 안 되돌리고 고치려면 둘 중 하나가 먼저 있어야 한다:
+        #   ① `undock_gate` 가 "정밀 도킹 중"까지 보게 고친다(`is_docked` 말고), 또는
+        #   ② 로봇 쪽 `shelf_dock` 이 끝나는 자리에서 곧바로 후퇴까지 하고 끝낸다
+        #      (`robot_agent/app/core/shelf_dock.py` 의 `record_return_targets` 자리).
         Leg(LegType.NAVIGATE, {"waypoint": dropoff}),
         # `place` 는 서가에 손을 안 뻗는다(바구니 → 테이블). 층·줄을 실어 보내면 팔이
         # 무시할지 따를지 헷갈린다 — 계약대로 0 으로 비운다.
