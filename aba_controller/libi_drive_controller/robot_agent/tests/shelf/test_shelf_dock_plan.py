@@ -62,7 +62,7 @@ def test_shelf_yaw_table_has_exactly_the_three_demo_shelves():
 def test_constants_match_the_spec():
     assert math.isclose(EXTRA_TURN_RAD, 0.3491)
     assert math.isclose(FINAL_YAW_RAD, 3.1416)
-    assert math.isclose(CLEARANCE_M, 0.088)
+    assert math.isclose(CLEARANCE_M, 0.084)
 
 
 def test_clearance_leaves_the_robot_body_outside_the_shelf():
@@ -71,7 +71,7 @@ def test_clearance_leaves_the_robot_body_outside_the_shelf():
     2026-08-05까지 0.02(반지름 0.06보다 작았다)라 4cm 파고드는 값이었다.
     같은 날 0.07 → 0.09 로 또 올렸다 — 실여유 1cm 로는 PGM↔실제 라이다 오차
     (실측 -5.1cm / +2.9cm)를 못 버틴다(CLEARANCE_M 주석).
-    2026-08-07 에 사용자 지시로 0.088(실여유 2.8cm)로 2mm 좁혔다.
+    2026-08-07 에 사용자 지시로 두 번 좁혔다: 0.088(2.8cm) → 0.084(**실여유 2.4cm**).
 
     ⚠️ 예전 이 자리에는 "로봇이 원형으로 모델링돼 있어 회전해도 쓸고 가는 반경은
        반지름 그대로 — 이 부등식만 지키면 회전 중에도 안 닿는다" 고 적혀 있었다.
@@ -82,8 +82,8 @@ def test_clearance_leaves_the_robot_body_outside_the_shelf():
     """
     assert CLEARANCE_M > NAV2_ROBOT_RADIUS_M, "몸통이 벽 안으로 들어가는 목표다"
     # 실측 PGM 오차가 cm 단위라(위 docstring) 1cm 짜리 여유는 뜻이 없다.
-    # round: 0.088 - 0.06 은 2진 부동소수에서 0.027999999999999997 이다.
-    assert round(CLEARANCE_M - NAV2_ROBOT_RADIUS_M, 6) >= 0.028, "실제 틈이 2.8cm 미만이다"
+    # round: 0.084 - 0.06 은 2진 부동소수에서 딱 떨어지지 않는다.
+    assert round(CLEARANCE_M - NAV2_ROBOT_RADIUS_M, 6) >= 0.024, "실제 틈이 2.4cm 미만이다"
 
 
 def test_unknown_shelf_is_rejected():
