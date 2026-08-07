@@ -279,3 +279,145 @@ def test_sink_이_예외를_던져도_feed_는_예외를_안_올린다(tmp_path)
     for _ in range(300):
         r.feed(b"J", 140.0)                   # 예외가 새어 나오면 여기서 죽는다
         clock.t += 0.1
+
+
+# ── 추격 종료 신호로 즉시 닫기 (2026-08-07) ─────────────────────────────────
+#
+# 예전엔 `postroll_sec`(20초) 시계만 클립을 닫았다. 로봇은 `lose_sec`(5초)에 이미
+# 추격을 접고 순찰로 돌아가는데 클립은 15초를 더 돌았고, 그 사이 같은 사람이 다시
+# 잡히면 **두 침입이 한 파일로 이어져** 화면에 1건으로 보였다.
+#
+# 로봇이 "끝났다"고 말해 준다 — `/libi/perception_role` 이 `security` 에서 빠진다
+# (`IntruderChase._release` → `follow_stop` → `follow_node._publish_camera`).
+# 시계를 두 프로세스에 복제하지 않고 그 말을 듣는다.
+
+def test_추격이_끝나면_postroll_을_안_기다리고_닫힌다(rec):
+    r, clock, sink = rec
+    _see(r, clock, 1.5)
+    assert len(sink.opened) == 1 and not sink.closed      # 녹화 중
+
+    _empty(r, clock, 2.0)                                 # postroll(20초) 한참 전
+    assert not sink.closed, "아직 시계로는 안 닫힌다 — 전제 확인"
+
+    r.end_chase()
+    assert len(sink.closed) == 1
+    assert sink.attached and sink.attached[0][0] == sink.opened[0]
+
+
+def test_유휴에서_end_chase_는_쿨다운을_밀지_않는다(rec):
+    """⚠️ 되돌림 주의: `end_chase` 의 녹화중 가드를 빼면 여기가 빨개진다.
+
+    유휴 상태에서 `_stop()` 이 불리면 쿨다운(30초)이 매번 새로 걸려 **새 클립이
+    영영 안 열린다.** 호출자가 매 프레임 부르는 구조라 실제로 그렇게 된다.
+    """
+    r, clock, sink = rec
+    for _ in range(50):
+        r.end_chase()
+        clock.t += 0.1
+    _see(r, clock, 1.5)
+    assert len(sink.opened) == 1, "쿨다운이 밀려 트리거가 막혔다"
+
+
+def test_추격_종료는_등록도_해제한다(tmp_path):
+    clock, sink = Clock(), FakeSink()
+    released = []
+    r = SecurityRecorder(robot_name="pinky-3", media_dir=tmp_path, sink=sink,
+                         now_fn=clock, params=SecurityParams(fps=10),
+                         reset_fn=lambda: released.append(True))
+    r.arm(True)
+    _see(r, clock, 1.5)
+    r.end_chase()
+    assert released == [True]
+
+
+def test_상한_종료_뒤_추격이_끝나면_등록만_해제한다(tmp_path):
+    """파일은 이미 닫혔다 — `_stop` 을 또 부르면 닫힌 sink 를 다시 닫는다."""
+    clock, sink = Clock(), FakeSink()
+    released = []
+    r = SecurityRecorder(robot_name="pinky-3", media_dir=tmp_path, sink=sink,
+                         now_fn=clock, reset_fn=lambda: released.append(True),
+                         params=SecurityParams(fps=10, max_clip_sec=3.0))
+    r.arm(True)
+    _see(r, clock, 5.0)                       # 상한 초과 — 사람은 아직 보인다
+    assert len(sink.closed) == 1 and released == []
+
+    r.end_chase()
+    assert len(sink.closed) == 1, "닫힌 sink 를 또 닫으면 안 된다"
+    assert released == [True]
+
+
+# ── 야간 순찰일 때만 녹화 (2026-08-07) ──────────────────────────────────────
+#
+# 무장은 관제 운영 모드(day/night) 하나로만 정해졌다. 그건 "지금이 밤이다"이지
+# **"이 로봇이 순찰 중이다"가 아니다.** 밤에 충전 중이든 배달을 돌든 사서가 패널로
+# 추종을 걸든 무장이 그대로라, 사람만 보이면 클립이 열렸다("자꾸 녹화하네").
+#
+# `/libi/fsm_state` 의 `current_state == "SECURITY_PATROL"` 을 AND 로 묶는다.
+
+def test_순찰이_아니면_야간이어도_녹화하지_않는다(rec):
+    r, clock, sink = rec
+    r.set_patrol(False)
+    _see(r, clock, 3.0)
+    assert not sink.opened
+
+
+def test_순찰로_들어오면_그때부터_녹화한다(rec):
+    r, clock, sink = rec
+    r.set_patrol(False)
+    _see(r, clock, 3.0)
+    assert not sink.opened
+
+    r.set_patrol(True)
+    _see(r, clock, 1.5)
+    assert len(sink.opened) == 1
+
+
+def test_순찰에서_빠지면_진행_중_클립을_닫는다(rec):
+    """기존 「주간」 해제 경로를 그대로 탄다 — 새 상태기계를 안 만든 이유다."""
+    r, clock, sink = rec
+    _see(r, clock, 1.5)
+    assert len(sink.opened) == 1 and not sink.closed
+
+    r.set_patrol(False)
+    r.feed(b"J", 0.0)                      # 전이는 tick 안에서만 난다
+    assert len(sink.closed) == 1
+    assert sink.attached and sink.attached[0][0] == sink.opened[0]
+
+
+def test_순찰_이탈은_등록도_해제한다(tmp_path):
+    clock, sink = Clock(), FakeSink()
+    released = []
+    r = SecurityRecorder(robot_name="pinky-3", media_dir=tmp_path, sink=sink,
+                         now_fn=clock, params=SecurityParams(fps=10),
+                         reset_fn=lambda: released.append(True))
+    r.arm(True)
+    _see(r, clock, 1.5)
+    r.set_patrol(False)
+    r.feed(b"J", 0.0)
+    assert released == [True]
+
+
+def test_상태를_모르면_예전대로_야간_모드만_본다(rec):
+    """⚠️ 기본값이 True 인 이유. ROS 옵트인이 없는 배포에서 야간 녹화가 조용히
+    사라지면 안 된다 — `set_patrol` 을 아무도 안 불러도 돌아야 한다."""
+    r, clock, sink = rec
+    _see(r, clock, 1.5)
+    assert len(sink.opened) == 1
+
+
+def test_주간이면_순찰_중이어도_녹화하지_않는다(rec):
+    """운영 모드는 사람이 쥔 차단기다 — AND 라 한쪽만 꺼도 안 돈다."""
+    r, clock, sink = rec
+    r.arm(False)
+    r.set_patrol(True)
+    _see(r, clock, 3.0)
+    assert not sink.opened
+
+
+def test_wants_armed_는_둘_다_참일_때만_참이다(rec):
+    r, _clock, _sink = rec
+    assert r.wants_armed is True
+    r.set_patrol(False)
+    assert r.wants_armed is False
+    r.arm(False); r.set_patrol(True)
+    assert r.wants_armed is False

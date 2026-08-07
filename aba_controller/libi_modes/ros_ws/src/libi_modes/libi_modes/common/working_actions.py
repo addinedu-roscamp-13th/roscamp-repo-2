@@ -187,7 +187,7 @@ class NavigationExec(CommandDrivenAction):
         self._paused_at = None
 
     def pause_arrive_timer(self, paused: bool) -> None:
-        """도착 시계를 멈추거나 다시 돌린다. `PersonBlockGuard` 가 부른다."""
+        """도착 시계를 멈추거나 다시 돌린다. `PersonBlockGuard`·`GuideExec` 이 부른다."""
         if paused:
             if self._paused_at is None:
                 self._paused_at = self._now()
@@ -200,6 +200,18 @@ class NavigationExec(CommandDrivenAction):
             #    표시한다(위 `_paused_at` 주석의 그 경로).
             if self._hard_at is not None:
                 self._hard_at += waited
+            if self._progress_at is not None:
+                self._progress_at += waited
+            # ⚠️ [2026-08-07] **진행 시계도 같이 민다 — 빠져 있었다.**
+            #
+            #   `_progress_at` 은 `recovery_stall_sec` 짜리 "제자리걸음" 워치독의 기준이다
+            #   (`stalled` 판정). 멈춰 서 있는 동안 로봇은 당연히 진행이 없으므로, 이걸
+            #   안 밀면 재개 **첫 tick** 에 `motion progress watchdog expired` 가 뜬다.
+            #   그건 `arrive_timeout_sec`(60)보다 훨씬 짧아 **먼저 터진다** — 도착 시계만
+            #   밀어 봐야 소용이 없다는 뜻이다.
+            #
+            #   `PersonBlockGuard` 경로에도 같은 구멍이 있었다. 여기 한 곳을 고치면
+            #   둘 다 낫는다.
             self._paused_at = None
 
     def setup(self, **kwargs):
@@ -808,6 +820,25 @@ class GuideExec(NavigationExec):
             self._halt()
             return Status.RUNNING
 
+        # ⚠️ [2026-08-07] **여기서 시계를 되돌린다 — 안 되돌리면 도착 전에 순찰로 샌다.**
+        #
+        #   `_halt()` 로 서 있는 동안 `super().update()` 를 안 타므로 워치독 검사는
+        #   안 돈다. 그런데 `_target_at`·`_hard_at`·`_progress_at` 은 **벽시계 시각**이라
+        #   멈춰 있던 시간이 그대로 쌓인다. 요청자가 다시 보여 주행을 재개하는 순간
+        #   `now - _target_at` 이 이미 `arrive_timeout_sec` 을 넘어 있어 **첫 tick 에
+        #   곧바로** `arrival watchdog expired` → 재시도 소진 → `_give_up()` 이 난다.
+        #   `_give_up` 은 `_release(FAILURE)` 인데 그게 `NEXT_MODE=PATROL` 을 세우고
+        #   SUCCESS 를 돌려주므로(그 머리말), 밖에서 보면 **도착하지도 않았는데 안내가
+        #   끝나고 순찰로 넘어간다.** 화면은 그걸 "안내 완료" 로 적는다.
+        #
+        #   멈추는 갈래는 셋 다 같다 — 요청자 소실 대기, 거리 게이트(`_too_far`/
+        #   `_too_near`), 갈림길 확인. 전부 `_halt()` 를 지나므로 거기서 멈추고
+        #   여기서 푼다. `PersonBlockGuard` 가 `NavigationExec` 에 하던 것과 같은 짝이다.
+        #
+        #   ⚠️ `_halted` 안쪽에 두면 안 된다. 거리 게이트가 `stop_driver` 없이 걸리는
+        #      경로 등에서 짝이 어긋나면 시계가 영영 멈춘 채로 남는다. 무조건 푼다
+        #      (`_paused_at is None` 이면 아무 일도 안 한다).
+        self.pause_arrive_timer(False)
         if self._halted:
             self._halted = False
             self._sent_at = None     # 취소된 주행을 다시 낸다
@@ -965,6 +996,10 @@ class GuideExec(NavigationExec):
         self.result_fn(cmd_id, False, "requester_lost")
 
     def _halt(self):
+        # ⚠️ [2026-08-07] **시계를 먼저 멈춘다.** `_halted` 가드보다 앞이라야 한다 —
+        #    뒤에 두면 이미 멈춘 tick 에서 일찍 리턴해 시계가 안 멈춘다.
+        #    서서 기다린 시간은 "가다가 못 갔다" 가 아니다(`_paused_at` 머리말).
+        self.pause_arrive_timer(True)
         if self._halted:
             return                   # 취소는 한 번만 — 매 tick 보내면 실행 층이 막힌다
         self._halted = True

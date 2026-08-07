@@ -343,7 +343,7 @@ def _drop_viewer(conn):
 def serve_loop(conn, frames, perception, *, poll_cmd=None, jpeg_quality=80,
                cmd_sink=None, policy=None, lidar_source=None, detection_sink=None,
                camera_source=None, role_source=None, recorder=None,
-               live_snapshot_path=None, accept_srv=None):
+               live_snapshot_path=None, accept_srv=None, state_source=None):
     """`conn` 은 **옵셔널**이다 — `None` 이면 뷰어 없이 돈다(녹화·live.jpg 는 그대로).
 
     `accept_srv` 를 주면 뷰어가 붙고 끊기는 것을 이 루프 **안에서** 처리한다: 매 프레임
@@ -365,7 +365,15 @@ def serve_loop(conn, frames, perception, *, poll_cmd=None, jpeg_quality=80,
     # 1초에 한 번만 쓴다 — 15~17fps 마다 디스크에 쓰면 아무도 안 보는 야간 내내
     # 불필요한 I/O 다. 사람 눈으로 보는 용도라 1초 지연은 문제되지 않는다.
     last_snapshot_t = 0.0
+    #: 직전에 본 세션 역할. `security` 에서 빠지는 전이가 "추격 끝" 신호다.
+    prev_role = None
     for frame in frames:
+        # ⚠️ **루프 맨 위**에서 본다 — 아래 두 갈래(심장박동·뷰어없음+비무장)가 곧바로
+        #    `continue` 하기 때문이다. 거기 두면 프레임이 끊긴 동안 추격이 끝났을 때
+        #    신호를 못 받아 클립이 `postroll` 까지 계속 열려 있다.
+        prev_role = _chase_over(role_source, recorder, prev_role)
+        # 무장 조건 자체가 여기서 갱신된다 — `wants_armed` 를 읽는 아래 갈래보다 먼저.
+        _sync_patrol(state_source, recorder)
         if accept_srv is not None and conn is None:
             # 논블로킹 — 아무도 안 붙어 있어도 프레임 루프는 계속 돌아야 한다.
             if select.select([accept_srv], [], [], 0)[0]:
@@ -662,6 +670,48 @@ def _sync_role(perception, role_source):
         perception.set_role(role)
 
 
+#: 야간 추격이 도는 동안의 세션 역할. 여기서 빠지면 로봇이 손을 뗀 것이다.
+_CHASE_ROLE = "security"
+
+
+def _chase_over(role_source, recorder, prev):
+    """추격이 방금 끝났으면 클립을 즉시 닫는다. **새 `prev` 를 돌려준다.**
+
+    `/libi/perception_role` 이 `security` → 그 외로 바뀌는 순간이 신호다. 그 전이는
+    `IntruderChase._release` 가 `follow_stop` 을 내서 세션이 닫힌 결과이므로,
+    **회복 BT 가 끝난 바로 그 시점**이다(`follow_node._publish_camera:437`).
+
+    ⚠️ **전이에서만** 부른다. 계속 `none` 인 유휴 상태에서 매 프레임 부르면
+       `end_chase()` 안의 가드가 막아 주긴 하지만, 여기서 걸러야 의도가 드러난다.
+
+    ⚠️ 역할을 못 받으면(ROS 옵트인 꺼짐·도메인 불일치) `prev` 를 그대로 두고 아무것도
+       안 한다 — 그때는 예전대로 `postroll_sec` 시계가 클립을 닫는다.
+    """
+    if role_source is None or recorder is None:
+        return prev
+    role = role_source.latest()
+    if role is None:
+        return prev
+    if prev == _CHASE_ROLE and role != _CHASE_ROLE:
+        recorder.end_chase()
+    return role
+
+
+def _sync_patrol(state_source, recorder):
+    """녹화 무장을 **야간 순찰 중일 때만** 열어 준다.
+
+    관제의 야간 모드는 "지금이 밤이다"이지 "이 로봇이 순찰 중이다"가 아니다. 밤에
+    충전 중이든 배달을 돌든 무장이 그대로라 사람만 보이면 클립이 열렸다
+    (`security_recorder.set_patrol` 머리말).
+
+    상태를 못 받으면(ROS 옵트인 없음) 아무것도 안 한다 — 녹화기 기본값이 "순찰 중"
+    이라 예전처럼 운영 모드만으로 돈다.
+    """
+    if state_source is None or recorder is None:
+        return
+    recorder.set_patrol(state_source.in_security_patrol())
+
+
 def _pose_or_none(perception):
     """골격을 그리고 자세 값을 실을 것인가 — 아니면 `None`(=자세 없음)으로 넘긴다.
 
@@ -838,6 +888,12 @@ def main():
                     help="로봇의 세션 역할 토픽. **--camera-topic 을 준 경우에만** 구독한다"
                          "(같은 ROS 소싱 전제). 역할을 알면 길잡이에서 자세·골격을 끈다 — "
                          "자세 게이트는 추종 전용 안전 규칙이기 때문이다.")
+    ap.add_argument("--fsm-state-topic", dest="fsm_state_topic",
+                    default="/libi/fsm_state",
+                    help="로봇의 미션 상태 토픽. **--security 와 --camera-topic 을 둘 다 "
+                         "준 경우에만** 구독한다. 야간 녹화를 SECURITY_PATROL 일 때로 "
+                         "한정한다 — 관제의 야간 모드는 '지금이 밤이다'이지 '이 로봇이 "
+                         "순찰 중이다'가 아니기 때문이다.")
     ap.add_argument("--pose", dest="pose", action="store_true",
                     help="자세 판정을 켠다. **기본은 꺼짐** — 켜면 누워 있는 사람에게는 "
                          "로봇이 다가가지 않는다(대신 프레임 예산을 더 쓴다).")
@@ -949,6 +1005,20 @@ def main():
         except Exception as e:      # noqa: BLE001 — 구독 못 해도 추론은 돌아야 한다
             print(f"[warn] perception_role 구독 실패({e}) — 길잡이에서도 자세를 잽니다")
 
+    # 녹화 무장은 **야간 모드 AND 야간 순찰**이다. 모드만 보면 밤에 충전 중이거나
+    # 배달을 도는 동안에도 사람만 보이면 클립이 열린다(fsm_state_source.py 머리말).
+    # `--security` 로 녹화기를 만들 때만 구독한다 — 그 외에는 쓸 데가 없다.
+    state_source = None
+    if recorder is not None and args.camera_topic:
+        try:
+            from scripts.fsm_state_source import FsmStateSource
+            state_source = FsmStateSource(topic=args.fsm_state_topic,
+                                          robot_id=args.security_robot)
+            print(f"[ok] fsm_state 구독 → {args.fsm_state_topic} "
+                  f"(야간 순찰일 때만 녹화)")
+        except Exception as e:      # noqa: BLE001 — 구독 못 해도 추론은 돌아야 한다
+            print(f"[warn] fsm_state 구독 실패({e}) — 야간 모드만으로 녹화합니다")
+
     if args.show:
         _run_local_show(frames, perception, cmd_sink=cmd_sink, policy=policy,
                         detection_sink=detection_sink, camera_source=camera_source,
@@ -979,7 +1049,8 @@ def main():
                        detection_sink=detection_sink, camera_source=camera_source,
                        role_source=role_source, recorder=recorder,
                        live_snapshot_path=live_snapshot_path,
-                       accept_srv=srv if recorder is not None else None)
+                       accept_srv=srv if recorder is not None else None,
+                       state_source=state_source)
         finally:
             if conn is not None:
                 conn.close()

@@ -61,6 +61,9 @@ class SecurityRecorder:
         self._now = now_fn or _time.monotonic
         self._armed = False
         self._want_armed = False     # 폴링 워커가 쓰고 메인 스레드가 읽는 유일한 값
+        #: 로봇이 야간 순찰 중인가. **모름은 True** — 상태를 못 받는 배포에서 야간
+        #: 녹화가 통째로 사라지면 안 된다(`set_patrol` 머리말).
+        self._in_patrol = True
         self._ring = deque(maxlen=max(1, int(self.p.preroll_sec * self.p.fps)))
         self._seen_since = None      # 연속 검출이 시작된 시각
         self._recording = False
@@ -86,16 +89,67 @@ class SecurityRecorder:
         """
         self._want_armed = bool(on)
 
+    def set_patrol(self, on: bool) -> None:
+        """로봇이 지금 **야간 순찰(SECURITY_PATROL)** 인가.
+
+        `/libi/fsm_state` 의 `current_state` 에서 온다(`fsm_state_source.py`).
+
+        ## 왜 운영 모드만으로는 부족한가
+
+        `arm()` 이 보는 관제 모드는 **"지금이 밤이다"**이지 "이 로봇이 순찰 중이다"가
+        아니다. 밤에 로봇이 충전 중이든, 배달을 돌든, 사서가 패널로 추종을 걸든 무장이
+        그대로라 **사람만 보이면 클립이 열렸다.** 둘을 AND 로 묶는다.
+
+        ⚠️ **메인 프레임 루프에서만 부른다** — `arm()` 과 달리 `wants_armed` 를 통해
+           상태기계 전이에 곧바로 반영된다. 실제 전이는 여전히 `_tick` 안에서만 난다.
+
+        ⚠️ 기본값이 `True` 인 이유: 상태를 못 받는 배포(ROS 옵트인 없음·도메인 불일치)
+           에서 야간 녹화가 **조용히 사라지면 안 된다.** 모름은 예전 동작으로 떨어진다.
+        """
+        self._in_patrol = bool(on)
+
     @property
     def wants_armed(self) -> bool:
-        """관제가 지금 「야간」을 원하는가 — 폴링 워커가 세운 플래그 그대로.
+        """관제가 「야간」을 원하고 **로봇도 순찰 중인가.**
 
         `_armed`(실제 전이 완료)가 아니라 이쪽을 노출한다. 전이는 `feed()` 안에서만
         일어나는데, 호출자(`perception_server.serve_loop`)는 **feed 를 부를지 말지**를
         정하려고 이 값을 읽기 때문이다. `_armed` 를 보면 "무장하려면 feed 가 필요한데
         feed 를 하려면 무장돼 있어야 하는" 교착이 된다.
+
+        ⚠️ 순찰에서 빠지면 여기가 False 로 떨어지고, `_tick` 첫머리의 **기존 해제
+           경로**가 그대로 돈다 — 진행 중 클립을 닫고 등록을 푼다. 새 상태기계를
+           만들지 않는 이유가 그것이다(그 경로는 이미 시험이 붙어 있다).
         """
-        return self._want_armed
+        return self._want_armed and self._in_patrol
+
+    def end_chase(self) -> None:
+        """로봇이 추격을 접었다 — `postroll` 을 기다리지 않고 **지금** 닫는다.
+
+        호출자는 `/libi/perception_role` 이 `security` 에서 빠지는 순간을 본다
+        (`perception_server._chase_over`). 그 전이는 `IntruderChase._release` 가
+        `follow_stop` 을 낸 결과라, **회복 BT 가 끝난 바로 그 시점**이다.
+
+        ## 왜 시계(`postroll_sec`)로 안 하나
+
+        두 프로세스가 같은 숫자를 각자 들고 있으면 한쪽만 고쳤을 때 조용히 어긋난다
+        (`sustain_sec` 머리말의 그 문제). 로봇이 이미 "끝났다"고 말해 주므로 그 말을
+        듣는 편이 정확하다. `postroll_sec` 은 **역할을 못 받을 때의 폴백**으로 남는다
+        (ROS 옵트인이 꺼졌거나 도메인이 안 맞으면 `role_source` 가 아예 없다).
+
+        ⚠️ **메인 프레임 루프에서만 부른다.** `arm()` 과 달리 여기서는 상태기계를
+           직접 만진다 — 워커 스레드에서 부르면 `feed()` 와 경합한다.
+
+        ⚠️ **녹화 중이 아니면 아무것도 안 한다.** `_stop()` 이 쿨다운을 새로 거므로,
+           유휴 상태에서 불리면 쿨다운이 계속 밀려 **새 클립이 영영 안 열린다.**
+        """
+        if self._recording:
+            self._stop(self._now(), release=True)
+        elif self._pending_release:
+            # 상한으로 파일은 이미 닫혔고 등록만 남아 있었다. 여기서 푼다 —
+            # `_stop` 을 또 부르면 닫힌 sink 를 다시 닫는다.
+            self._release_registration()
+            self._pending_release = False
 
     def feed(self, jpeg, front_person_size, frame=None, cands=None) -> None:
         """프레임 하나. `jpeg=None` 은 **심장박동**(영상이 안 오는 동안 시계만 돌린다).
@@ -124,10 +178,13 @@ class SecurityRecorder:
         now = self._now()
 
         # 모드 전이는 **여기서만** 한다 — 워커 스레드가 아니라 이 단일 스레드에서.
-        if self._want_armed != self._armed:
-            if not self._want_armed:
-                # 「주간」 전환 — 진행 중 클립을 즉시 닫는다. 안 그러면 미완성 mp4 가
-                # 남아 영영 재생이 안 된다(파일 핸들도 안 닫힌다).
+        # ⚠️ `_want_armed`(관제 모드)가 아니라 **`wants_armed`(모드 AND 순찰)** 를 본다.
+        #    순찰에서 빠지는 것도 여기서 해제로 읽혀야 클립이 닫힌다.
+        want = self.wants_armed
+        if want != self._armed:
+            if not want:
+                # 「주간」 전환 또는 순찰 이탈 — 진행 중 클립을 즉시 닫는다. 안 그러면
+                # 미완성 mp4 가 남아 영영 재생이 안 된다(파일 핸들도 안 닫힌다).
                 if self._recording:
                     self._stop(now, release=True)
                 elif self._pending_release:
@@ -138,7 +195,7 @@ class SecurityRecorder:
                 self._ring.clear()
                 self._seen_since = None
                 self._pending_release = False
-            self._armed = self._want_armed
+            self._armed = want
 
         if not self._armed:
             return

@@ -968,3 +968,106 @@ def test_ros_loggers_are_called_with_a_single_argument():
     assert not bad, (
         "ROS 로거를 여러 인자로 불렀다 — 그 줄이 실행되는 순간 노드가 죽는다. "
         "f-string 을 쓸 것:\n  " + "\n  ".join(bad))
+
+
+# ── 서서 기다린 시간을 "가다가 못 갔다" 로 세지 않는다 (2026-08-07 실기) ────
+#
+# 사용자 보고: "길잡이에서 도착하지도 않았는데 순찰 상태로 넘어가는 문제".
+#
+# `_halt()` 로 서 있는 동안은 `super().update()` 를 안 타서 워치독 **검사**는 안 돈다.
+# 그런데 `_target_at`·`_hard_at`·`_progress_at` 은 **벽시계 시각**이라 멈춰 있던 시간이
+# 그대로 쌓인다. 요청자가 다시 보여 주행을 재개하는 순간 첫 tick 에서 곧바로
+# `arrival watchdog expired`(또는 그보다 먼저 `motion progress watchdog expired`)가 나고,
+# 재시도를 소진하면 `_give_up()` → `_release(FAILURE)` 다. 그런데 그 `_release` 는
+# `NEXT_MODE=PATROL` 을 세우고 **SUCCESS** 를 돌려주므로, 밖에서 보면 도착하지도 않았는데
+# 안내가 끝나고 순찰로 넘어간다. 화면은 그걸 "안내 완료" 로 적는다.
+#
+# 되돌리면(= `_halt`/재개의 `pause_arrive_timer` 를 빼면) 아래가 빨개진다.
+
+def _resume_after_waiting(node, seed, wait_sec, *, seen=True):
+    """소실 → `wait_sec` 만큼 서서 기다림 → 다시 보임. 재개 tick 의 상태를 돌려준다.
+
+    ⚠️ 가시성은 `seed` 로 쓴다 — leaf 의 블랙보드 클라이언트는 그 키가 **읽기 전용**이다
+       (실제로도 발행자는 `libi_perception` 이고 leaf 는 읽기만 한다).
+    """
+    clock = node.test_clock
+    seed(**{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+            Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: False,
+            Keys.REQUESTER_SEEN_AT: clock()})
+    node.update()                                   # 아직 coast 안 지남
+    clock.t += COAST + 0.1
+    node.update()                                   # 여기서 _halt()
+    clock.t += wait_sec
+    node.update()                                   # 계속 서 있다
+    if seen:
+        seed(**{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+                Keys.ROBOT_POSE: _at(0, 0), Keys.REQUESTER_VISIBLE: True,
+                Keys.REQUESTER_SEEN_AT: clock()})
+    return node.update()                            # 재개
+
+
+def test_기다린_시간은_도착_시계에_안_들어간다(leaf, seed):
+    node = leaf(**{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+                   Keys.ROBOT_POSE: _at(0, 0),
+                   Keys.REQUESTER_VISIBLE: True,
+                   Keys.REQUESTER_SEEN_AT: 100.0})
+    node.update()                                   # 출발
+    assert _resume_after_waiting(node, seed, TIMEOUT * 3) == Status.RUNNING
+    assert node._recovery_retries == 0, \
+        "서서 기다린 시간이 '가다가 못 갔다' 로 세어져 재시도가 돌았다"
+
+
+def test_기다린_뒤에도_절대_상한이_안_먹힌다(leaf, seed):
+    """`_hard_at` 은 재시도로 못 늘리는 마지막 방벽이라 pause 로만 밀린다."""
+    node = leaf(**{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+                   Keys.ROBOT_POSE: _at(0, 0),
+                   Keys.REQUESTER_VISIBLE: True,
+                   Keys.REQUESTER_SEEN_AT: 100.0})
+    node.update()
+    hard_before = node._hard_at
+    _resume_after_waiting(node, seed, TIMEOUT * 5)
+    assert node._hard_at > hard_before, "절대 상한이 기다린 만큼 안 밀렸다"
+
+
+def test_기다린_뒤_진행_워치독이_즉시_안_터진다(seed):
+    """⚠️ 도착 시계만 밀면 안 된다 — `recovery_stall_sec` 가 훨씬 짧아 **먼저** 터진다.
+
+    길잡이는 `recovery_stall_sec` 을 안 받아(`branches/working.py:81`) 이 워치독이
+    꺼져 있다. 켜져 있는 건 배달(`NavigationExec`)·순회·복귀 쪽이고, 거기서 시계를
+    멈추는 건 `PersonBlockGuard` 다 — **같은 `pause_arrive_timer` 를 공유한다.**
+    그래서 그쪽 구성으로 이 한 줄을 붙든다.
+    """
+    stall = 5.0
+    clock = _Clock()
+    seed(**{Keys.ACTIVE_COMMAND: "navigate", Keys.NAV_TARGET: _to(5, 5),
+            Keys.ROBOT_POSE: _at(0, 0)})
+    node = NavigationExec(FakeDriver(), TOLERANCE, RESEND, TIMEOUT,
+                          now_fn=clock, recovery_stall_sec=stall)
+    node.setup()
+    node.initialise()
+    node.update()                                   # 출발 — _progress_at 이 찍힌다
+    progress_before = node._progress_at
+
+    node.pause_arrive_timer(True)                   # 사람이 앞을 막았다
+    clock.t += stall * 4                            # 한참 서 있었다
+    node.pause_arrive_timer(False)                  # 비켰다
+
+    assert node._progress_at > progress_before, "진행 시계가 기다린 만큼 안 밀렸다"
+    assert node.update() == Status.RUNNING
+    assert node._recovery_retries == 0, \
+        "서 있던 시간이 제자리걸음으로 세어져 재시도가 돌았다"
+
+
+def test_도착_전에는_순찰로_안_넘어간다(leaf, seed):
+    """증상 그 자체 — `NEXT_MODE` 가 서 있던 것만으로 PATROL 이 되면 안 된다."""
+    node = leaf(**{Keys.ACTIVE_COMMAND: "guide", Keys.NAV_TARGET: _to(5, 5),
+                   Keys.ROBOT_POSE: _at(0, 0),
+                   Keys.REQUESTER_VISIBLE: True,
+                   Keys.REQUESTER_SEEN_AT: 100.0})
+    node.update()
+    # ⚠️ 대기 길이가 **절대 상한**(`arrive_timeout_sec × (retry_max+1)` = 240s)을
+    #    넘어야 한다. 그보다 짧으면 재시도가 `_target_at` 을 되감아 `_give_up` 까지
+    #    안 가고, 이 시험이 되돌림에서도 초록이 된다(실제로 그랬다 — 무효한 시험).
+    _resume_after_waiting(node, seed, TIMEOUT * 5)
+    assert node.blackboard.get(Keys.NEXT_MODE) is None, \
+        "도착하지도 않았는데 안내가 끝나고 순찰로 넘어갔다"

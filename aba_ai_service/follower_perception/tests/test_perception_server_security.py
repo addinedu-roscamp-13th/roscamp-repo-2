@@ -110,3 +110,103 @@ def test_플래그를_주면_녹화기와_종료훅을_만든다(tmp_path):
     assert media == str(tmp_path)    # live.jpg 가 여기 쓰인다(main 의 live_snapshot_path)
     assert callable(shutdown)
     shutdown()                       # 종료 경로가 예외 없이 돈다
+
+
+# ── 추격 종료 신호 배선 (2026-08-07) ────────────────────────────────────────
+
+class _RoleSource:
+    """`/libi/perception_role` 대역 — 부를 때마다 다음 값을 내놓는다."""
+
+    def __init__(self, seq):
+        self._seq = list(seq)
+
+    def latest(self):
+        return self._seq.pop(0) if self._seq else None
+
+
+class _EndSpy(RecorderSpy):
+    def __init__(self):
+        super().__init__()
+        self.ended = 0
+        self.wants_armed = True
+
+    def end_chase(self):
+        self.ended += 1
+
+
+def test_역할이_security_에서_빠지면_클립을_즉시_닫는다():
+    """`postroll` 을 안 기다린다 — 로봇이 이미 순찰로 돌아갔다."""
+    spy = _EndSpy()
+    perception_server.serve_loop(
+        conn=None, frames=_frames([None, None, None]), perception=_Perception(),
+        poll_cmd=None, recorder=spy,
+        role_source=_RoleSource(["security", "security", "none"]))
+    assert spy.ended == 1
+
+
+def test_추격_중에는_안_닫는다():
+    spy = _EndSpy()
+    perception_server.serve_loop(
+        conn=None, frames=_frames([None, None, None]), perception=_Perception(),
+        poll_cmd=None, recorder=spy,
+        role_source=_RoleSource(["security", "security", "security"]))
+    assert spy.ended == 0
+
+
+def test_계속_none_이면_매_프레임_닫자고_하지_않는다():
+    """⚠️ 전이에서만 부른다. 유휴에서 매번 부르면 쿨다운이 계속 밀린다."""
+    spy = _EndSpy()
+    perception_server.serve_loop(
+        conn=None, frames=_frames([None, None, None]), perception=_Perception(),
+        poll_cmd=None, recorder=spy, role_source=_RoleSource(["none"] * 3))
+    assert spy.ended == 0
+
+
+def test_역할을_못_받으면_예전대로_시계에_맡긴다():
+    """ROS 옵트인이 꺼졌거나 도메인이 안 맞으면 `role_source` 가 아예 없다."""
+    spy = _EndSpy()
+    perception_server.serve_loop(
+        conn=None, frames=_frames([None, None]), perception=_Perception(),
+        poll_cmd=None, recorder=spy, role_source=None)
+    assert spy.ended == 0
+    assert spy.calls == [(True, 0.0), (True, 0.0)], "심장박동은 계속 가야 한다"
+
+
+class _StateSource:
+    def __init__(self, seq):
+        self._seq = list(seq)
+
+    def in_security_patrol(self):
+        return self._seq.pop(0) if self._seq else True
+
+
+class _PatrolSpy(RecorderSpy):
+    def __init__(self):
+        super().__init__()
+        self.patrol = []
+        self.wants_armed = True
+
+    def set_patrol(self, on):
+        self.patrol.append(bool(on))
+
+    def end_chase(self):
+        pass
+
+
+def test_상태원이_있으면_매_프레임_순찰여부를_넘긴다():
+    spy = _PatrolSpy()
+    perception_server.serve_loop(
+        conn=None, frames=_frames([None, None, None]), perception=_Perception(),
+        poll_cmd=None, recorder=spy,
+        state_source=_StateSource([True, False, True]))
+    assert spy.patrol == [True, False, True]
+
+
+def test_상태원이_없으면_순찰여부를_안_건드린다():
+    """ROS 옵트인이 없는 배포 — 녹화기 기본값(순찰 중)으로 예전처럼 돈다."""
+    spy = _PatrolSpy()
+    perception_server.serve_loop(
+        conn=None, frames=_frames([None, None]), perception=_Perception(),
+        poll_cmd=None, recorder=spy, state_source=None)
+    assert spy.patrol == []
+    assert spy.calls == [(True, 0.0), (True, 0.0)]
