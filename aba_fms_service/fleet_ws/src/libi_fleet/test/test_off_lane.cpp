@@ -57,3 +57,31 @@ TEST(OffLane, 기본_임계는_레인_절반보다_크다)
   const double kDefaultResnap = 0.25;      // fleet_node.cpp `patrol_resnap_m` 기본값
   EXPECT_GT(kDefaultResnap, shortest_lane_half);
 }
+
+// ── 순회에는 "서는 정점" 이 없다 (2026-08-07) ────────────────────────────────
+//
+// 예전엔 `idx + 1 >= path.size()` 하나로 판정해서 랩의 마지막 정점이 배달의 최종
+// 목적지와 같은 취급을 받았다. 거기서만 선행통과가 꺼져(`reach = arrive_radius`)
+// 로봇이 완전히 감속·정지한 뒤 새 목표를 받고 다시 가속했다 — 랩마다 한 번씩 주춤.
+// 사용자 보고 2026-08-07: "순회가 끝나면 좀 빨리 경로를 받았으면".
+//
+// 되돌리면(= patrol 갈래를 지우면) `순회는_마지막_정점에서도_안_선다` 가 빨개진다.
+
+TEST(StopNode, 배달은_최종_정점에서_선다)
+{
+  // 정밀 정지·완료 판정이 필요하다 — 여기서는 정확히 닿아야 한다.
+  EXPECT_TRUE(libi_fleet::is_stop_node(/*patrol=*/false, 2, 3));
+}
+
+TEST(StopNode, 배달도_경유_정점에서는_안_선다)
+{
+  EXPECT_FALSE(libi_fleet::is_stop_node(/*patrol=*/false, 1, 3));
+}
+
+TEST(StopNode, 순회는_마지막_정점에서도_안_선다)
+{
+  // ⚠️ 실기 결함 그 자체. 랩은 끝나지 않으므로 마지막 정점도 **경유점**이다.
+  EXPECT_FALSE(libi_fleet::is_stop_node(/*patrol=*/true, 2, 3))
+    << "랩 경계에서만 완전히 정지해 한 바퀴마다 주춤한다";
+  EXPECT_FALSE(libi_fleet::is_stop_node(/*patrol=*/true, 1, 3));
+}

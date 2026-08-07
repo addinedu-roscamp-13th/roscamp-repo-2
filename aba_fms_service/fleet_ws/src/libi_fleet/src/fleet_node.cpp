@@ -1634,7 +1634,10 @@ private:
       // 판정 반경: 마지막 노드는 정확히(arrive_radius_), 경유 노드는 미리(prefetch_radius_).
       // 경유 노드를 일찍 지난 것으로 보면 다음 노드 예약·발행이 앞당겨져, 로봇이 감속해
       // 서기 전에 새 목표를 받는다. 자세한 배경은 위 prefetch_radius 파라미터 주석 참고.
-      const bool final_node = (t.idx + 1 >= t.path.size());
+      // 순회에는 **서는 정점이 없다** — 랩이 이어지므로 마지막 정점도 경유점이다.
+      // 예전엔 거기서만 선행통과가 꺼져 랩마다 한 번씩 완전히 정지했다
+      // (`is_stop_node` 머리말 — 사용자 보고 "순회가 끝나면 좀 빨리 경로를 받았으면").
+      const bool final_node = is_stop_node(t.patrol, t.idx, t.path.size());
       double reach = arrive_radius_;
       if (!final_node && prefetch_radius_ > arrive_radius_ && t.idx >= 1) {
         // 레인 길이의 절반을 넘지 않게 깎는다 — 안 그러면 짧은 레인에서 노드를 건너뛴다.
@@ -1703,8 +1706,18 @@ private:
         }
         if (t.idx >= t.path.size()) {
           if (t.patrol) {
-            t.path = make_patrol_path(r, -1, route_for(t));   // 현재 위치서 canonical 랩 재생성(방향 유지)
+            // ⚠️ 기준점은 **방금 지난 정점**이다 — 좌표가 아니다. 선행통과가 켜지면서
+            //    도착 판정이 정점 반경 밖에서 나므로, `nearest(좌표)` 를 쓰면 아직
+            //    직전 정점이 더 가까워 랩이 되감긴다(`make_patrol_path_from` 머리말).
+            const int lap_end = t.path[arrived_idx];
+            t.path = make_patrol_path_from(lap_end, -1, route_for(t));   // canonical 랩 재생성(방향 유지)
             t.idx = 1; t.moving = false;
+            // ⚠️ **옛 시간표는 이 경로의 것이 아니다.** 안 비우면 `check_plan_deadline`
+            //    이 새 `t.path` 를 옛 `plan_arrive` 로 재서 엉뚱한 칸을 초과로 읽는다.
+            //    비우고 곧바로 재계획을 걸어야 새 랩이 시간표를 갖고 출발한다.
+            t.plan_arrive.clear();
+            t.plan_excluded = false;
+            request_replan("순회 1바퀴 완주 — 새 랩 시간표");
             RCLCPP_INFO(get_logger(), "[%s] %s 순회 1바퀴 → 계속", t.id.c_str(), t.robot.c_str());
           } else {
             traffic_->release_node(t.robot, t.path.back());     // 최종 노드 해제
@@ -2248,6 +2261,18 @@ private:
                                     const std::vector<int> & route) const
   {
     return patrol_path_from(graph_, graph_.nearest(r.x, r.y), route, avoid_first);
+  }
+
+  // 기준 정점을 **명시로** 받는 갈래. 좌표에서 추정하지 않는다.
+  //
+  // ⚠️ [2026-08-07] 랩을 이어 붙일 때 이쪽을 쓴다. 순회에 선행통과가 켜지면서
+  //    (`is_stop_node`) 도착 판정이 정점 반경 **밖**에서 나기 때문이다. 그 순간
+  //    `nearest(r.x, r.y)` 를 쓰면 아직 **직전 정점**이 더 가까워 랩이 되감긴다.
+  //    "방금 어느 정점을 지났나" 는 호출부가 정확히 알고 있으므로 그대로 넘긴다.
+  std::vector<int> make_patrol_path_from(int snap, int avoid_first,
+                                         const std::vector<int> & route) const
+  {
+    return patrol_path_from(graph_, snap, route, avoid_first);
   }
 
   // 로봇을 주간 순회 루프에 태워 무한 순회 시작.
