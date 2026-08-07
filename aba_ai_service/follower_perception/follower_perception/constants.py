@@ -40,6 +40,8 @@ SMOOTHER_ALPHA = 0.45
 SMOOTHER_BETA = 0.15
 FRAME_DT = 0.05                # nominal seconds per frame (20 FPS)
 PREDICT_DT = 0.05             # latency-compensation lookahead
+# [2026-08-07] 24 → **21. 송출 fps 를 17 → 15 로 내려서다** (21/15 = 1.40s).
+#   초 단위 값(1.4초)은 그대로다 — 프레임 단위라 fps 를 따라 같이 움직여야 한다.
 # [2026-08-02] 30 → **24. 사용자 지정 1.4초 @17fps** (24/17 = 1.41s).
 #   유실 구간 동안 예측 위치로 계속 몰아 목표 크기에 맞춰 가고, 다 쓰면 회복 BT 의
 #   `LkdPeek` 가 **마지막으로 돌던 방향(LKD)** 부터 훑는다. 그 방향은 코스팅 중에
@@ -54,12 +56,12 @@ PREDICT_DT = 0.05             # latency-compensation lookahead
 #   (사용자 확인 2026-08-02: "1.4초 유지해줘 추종과 같이").
 #
 # ⚠️ **단위가 초가 아니라 프레임이다.** 실제 송출 fps 가 바뀌면 유예 시간도 같이 바뀐다.
-#    실측 기준은 **17fps** — `scripts/all/libi_pi.sh:486` 이 `FPS='17'` 로 띄운다
-#    (`image-sender.sh:14` 의 기본값 15 를 덮어쓴다). 24/17 = 1.41초.
+#    실측 기준은 **15fps** — `scripts/all/libi_pi.sh` 가 `FPS='15'` 로 띄운다.
+#    21/15 = 1.40초.
 #    ⚠️ fps 를 바꾸면 `GUIDE_COAST_SEC`(초 단위)과 어긋난다 — 그날 같이 고칠 것.
 #    ⚠️ 이 파일의 다른 프레임 상수 주석은 아직 15fps 로 적혀 있다
 #       (CALIBRATION_INTERVAL, UNKNOWN_STOP_FRAMES) — 실제로는 각각 12% 짧다.
-COAST_LIMIT = 24              # max consecutive missed frames still output (predicted)
+COAST_LIMIT = 21              # max consecutive missed frames still output (predicted)
 
 # ── 코스팅 외삽 (2026-08-06 재도입) ─────────────────────────────────────────
 #
@@ -96,7 +98,7 @@ COAST_MAX_DRIFT_W = 1.0
 #    `Unknown` 은 `PostureGate` 가 25연속이면 정지시키고(안전은 유지), 코스팅
 #    차단목록에는 없어서 주황 박스는 돌아온다.
 #
-# 5초인 이유: 17fps 에서 60장은 3.5초다. 조건이 정상이면 그 안에 끝난다 — 5초를
+# 5초인 이유: 15fps 에서 60장은 4.0초다. 조건이 정상이면 그 안에 끝난다 — 5초를
 # 넘겼다는 것은 "느린 것"이 아니라 "안 잡히는 것"이다.
 POSE_CALIBRATION_TIMEOUT_SEC = 5.0
 

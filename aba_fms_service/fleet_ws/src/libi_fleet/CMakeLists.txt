@@ -115,6 +115,11 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(test_plan_start libi_fleet_core)
 
+  # 순회 로봇이 레인을 벗어났나 — 야간 추격 뒤 가장 가까운 정점부터 재합류(2026-08-07).
+  ament_add_gtest(test_off_lane test/test_off_lane.cpp)
+  target_include_directories(test_off_lane PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
   # 순회 CBS 목표가 계획 출발점보다 두 홉 앞이라 랩 정점을 건너뛰던 결함의 회귀 방지
   # (2026-08-07 실기: v13→v10 현, v4→v6 코너컷).
   ament_add_gtest(test_patrol_goal_index test/test_patrol_goal_index.cpp)

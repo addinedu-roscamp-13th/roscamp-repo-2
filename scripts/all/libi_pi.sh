@@ -451,7 +451,18 @@ CAM_ARGS="--picamera"
 # 뒷캠도 YOLO 를 탄다(follow_node `_peek_people` — 회복 트리가 반대 캠으로 사람을 찾는다).
 # 마커 도킹도 해상도가 인식 거리다. 도킹이나 검출 거리가 나빠지면 **여기부터 되돌려라.**
 #
-# 되돌리기: `--width 480` 을 지우면 640, `FPS='17'` 을 지우면 image-sender.sh:14 기본값 15.
+# 되돌리기: `--width 480` 을 지우면 640.
+#
+# ## [2026-08-07] 17 → **15** (사용자 지정)
+#
+# ⚠️ **프레임 단위 상수 셋이 같이 움직인다.** 안 고치면 조용히 어긋난다:
+#     · `follower_perception/constants.py COAST_LIMIT` 24 → **21**
+#       (프레임 단위다. 1.4초 유지 = 1.4×15. 안 고치면 1.6초가 되어
+#        `libi_perception/config.py GUIDE_COAST_SEC`(1.4초)와 어긋난다)
+#     · `scripts/security_recorder.py SecurityParams.fps` 17 → **15**
+#       (프리롤 링버퍼 길이 = preroll_sec × fps)
+#     · `scripts/security_recorder.py FfmpegClipWriter(fps=)` 17 → **15**
+#       (안 맞으면 저장된 mp4 가 빨리감기/느리게 재생된다)
 #
 # ## [2026-07-31] 15 → 17
 #
@@ -496,7 +507,7 @@ if [ "$DOCK_DEBUG" = true ]; then
   echo "[libi_pi] 도킹 디버그 캠 → $AI_IP:$DOCK_DEBUG_PORT (shelf_dock_lidar_viewer.py 기본 포트와 같은 규칙)"
 fi
 tmux new-window -t "$SESSION" -n cam \
-  bash -c "cd '$REPO_ROOT' && echo '[cam] 앞/뒤 → $AI_IP:$VIDEO_PORT (BT 가 camera_select 로 고름, nice+10, 17fps, 320x240)' && VIDEO_PORT='$VIDEO_PORT' CAM_ARGS='$CAM_ARGS' FPS='17' nice -n 10 ./scripts/drive-pi/image-sender.sh '$AI_IP'; exec bash"
+  bash -c "cd '$REPO_ROOT' && echo '[cam] 앞/뒤 → $AI_IP:$VIDEO_PORT (BT 가 camera_select 로 고름, nice+10, 15fps, 320x240)' && VIDEO_PORT='$VIDEO_PORT' CAM_ARGS='$CAM_ARGS' FPS='15' nice -n 10 ./scripts/drive-pi/image-sender.sh '$AI_IP'; exec bash"
 
 # ── 4) 동적 장애물 (기본 꺼짐) ──────────────────────────────────────────────
 # 켜면 nav2 가 필터 포함 파라미터로 뜨고 마스크 발행 노드가 함께 돈다.

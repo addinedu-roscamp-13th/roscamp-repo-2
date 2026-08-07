@@ -362,7 +362,7 @@ def serve_loop(conn, frames, perception, *, poll_cmd=None, jpeg_quality=80,
     심장박동은 계속 넣는다(모드 전이·클립 마감 시계가 거기서 돈다).
     """
     last_t = time.monotonic()
-    # 1초에 한 번만 쓴다 — 15~17fps 마다 디스크에 쓰면 아무도 안 보는 야간 내내
+    # 1초에 한 번만 쓴다 — 15fps 마다 디스크에 쓰면 아무도 안 보는 야간 내내
     # 불필요한 I/O 다. 사람 눈으로 보는 용도라 1초 지연은 문제되지 않는다.
     last_snapshot_t = 0.0
     #: 직전에 본 세션 역할. `security` 에서 빠지는 전이가 "추격 끝" 신호다.

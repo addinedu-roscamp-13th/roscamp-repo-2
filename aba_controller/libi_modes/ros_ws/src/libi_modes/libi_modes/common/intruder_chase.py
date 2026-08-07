@@ -39,7 +39,7 @@ class ChasePolicy:
     기준인데 `lose_sec` 은 *소실* 기준이라, 그 사이의 지연이 통째로 빠져 있다:
 
         0.0s        대상 소실 (여기서 lose_sec 시계가 돌기 시작한다)
-        0.0–1.4s    AI 서버 α-β 코스팅 — `COAST_LIMIT`(24) @17fps. 주황 박스가 계속
+        0.0–1.4s    AI 서버 α-β 코스팅 — `COAST_LIMIT`(21) @15fps. 주황 박스가 계속
                     나오므로 제어 루프는 "검출 있음" 으로 읽어 `miss` 가 0 이다
         1.4–3.4s    `N_MISS_FRAMES`(40) @ `TICK_HZ`(20)
         3.4s        비로소 SEARCHING — 회복 트리 생성, `LkdPeek`(4.49초) 시작

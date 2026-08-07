@@ -23,7 +23,8 @@ import numpy as np  # noqa: E402
 import pytest  # noqa: E402
 
 from follower_perception.bbox_smoother import BBoxSmoother  # noqa: E402
-from follower_perception.constants import COAST_MAX_DRIFT_W, FRAME_DT  # noqa: E402
+from follower_perception.constants import (  # noqa: E402
+    COAST_LIMIT, COAST_MAX_DRIFT_W, FRAME_DT)
 
 
 class _Owner:
@@ -70,7 +71,10 @@ def test_화면_박스도_같이_밀린다():
 
 def test_면적은_절대_외삽하지_않는다():
     """실측 2026-08-02: 면적을 밀면 3프레임 만에 0 이 되고 거리 PID 가 전속 전진한다."""
-    for miss in (1, 6, 12, 24):
+    # ⚠️ 마지막 값은 **`COAST_LIMIT` 그 자체**여야 한다 — 숫자를 박으면
+    #    fps 를 바꿔 상수가 움직일 때 조용히 코스팅 밖을 찌른다
+    #    (2026-08-07 실측: 17→15fps 로 24→21 이 되자 `det` 가 None 이었다).
+    for miss in (1, 6, 12, COAST_LIMIT):
         det = _pipeline_in_coast(vx=60.0, miss=miss).get_latest()
         assert det.area == pytest.approx(1600.0), \
             f"miss={miss} 에서 면적이 변했다 — √area 가 거리로 읽히는 값이다"
@@ -79,7 +83,7 @@ def test_면적은_절대_외삽하지_않는다():
 def test_밀어낼_거리에_상한이_있다():
     """가려지기 직전 튐이 속도로 학습돼 박스가 날아가는 것을 막는다."""
     owner = _Owner(300.0, 200.0, 1600.0, w=40)
-    det = _pipeline_in_coast(vx=99999.0, miss=24, owner=owner).get_latest()
+    det = _pipeline_in_coast(vx=99999.0, miss=COAST_LIMIT, owner=owner).get_latest()
     drift = abs(det.cx - owner.cx)
     assert drift <= COAST_MAX_DRIFT_W * 40 + 1e-6, "상한을 넘어 밀었다"
     assert drift > 0, "상한이 있다고 아예 안 밀면 안 된다"
@@ -88,7 +92,7 @@ def test_밀어낼_거리에_상한이_있다():
 def test_대각선도_방향을_유지하며_잘린다():
     """길이만 자르고 방향은 살려야 한다 — x 만 자르면 엉뚱한 쪽을 가리킨다."""
     owner = _Owner(300.0, 200.0, 1600.0, w=40)
-    det = _pipeline_in_coast(vx=9000.0, vy=9000.0, miss=24, owner=owner).get_latest()
+    det = _pipeline_in_coast(vx=9000.0, vy=9000.0, miss=COAST_LIMIT, owner=owner).get_latest()
     dx, dy = det.cx - owner.cx, det.cy - owner.cy
     assert dx == pytest.approx(dy, rel=1e-6), "45도로 나갔는데 방향이 틀어졌다"
 

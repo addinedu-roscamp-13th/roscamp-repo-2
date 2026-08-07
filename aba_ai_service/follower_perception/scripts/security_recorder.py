@@ -45,7 +45,10 @@ class SecurityParams:
     postroll_sec: float = 20.0    # 마지막 목격 이후. 목격할 때마다 갱신(슬라이딩)
     max_clip_sec: float = 120.0   # 파일 길이 상한
     cooldown_sec: float = 30.0    # 클립 종료 후 새 이벤트 억제
-    fps: int = 17                 # 링버퍼 길이 계산용
+    #: 송출 fps. 프리롤 링버퍼 길이(`preroll_sec × fps`)와 mp4 재생속도의 근거다.
+    #: ⚠️ `scripts/all/libi_pi.sh` 의 `FPS` 와 **같아야 한다** — 어긋나면 프리롤이
+    #:    짧아지거나(들어오는 순간이 안 담김) 클립이 빨리감기로 재생된다.
+    fps: int = 15                 # 링버퍼 길이 계산용
 
 
 class SecurityRecorder:
@@ -322,7 +325,7 @@ class FfmpegClipWriter:
     바이트를 그대로 먹인다.
     """
 
-    def __init__(self, media_dir, *, fps=17, ffmpeg_path=None, queue_max=60):
+    def __init__(self, media_dir, *, fps=15, ffmpeg_path=None, queue_max=60):
         self._dir = media_dir
         self._fps = int(fps)
         self._bin = ffmpeg_path if ffmpeg_path is not None else resolve_ffmpeg()

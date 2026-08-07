@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -273,6 +274,27 @@ inline bool plan_start_for(const std::vector<int> & path, std::size_t idx, bool 
   start = ride ? path[idx] : path[idx - 1];
   committed_from = ride ? path[idx - 1] : -1;
   return true;
+}
+
+/// 로봇이 **지금 타고 있는 레인에서 얼마나 벗어났나**(m). 점-선분 거리다.
+///
+/// ⚠️ 정점까지의 거리로 재면 안 된다 — 긴 레인의 출발점에서는 목표 정점이 원래 멀다.
+///    "레인을 벗어났나" 는 **선분과의 거리**여야 한다.
+///
+/// 야간 순찰이 침입자를 쫓으면 로봇이 레인 밖으로 나간다. 그런데 FMS 의 `t.path`·`t.idx`
+/// 는 그대로라, 추격이 끝나면 **추격 전에 향하던 그 정점**으로 되돌아간다. 그 정점이 랩
+/// 반대편일 수도 있다(사용자 요구 2026-08-07: "가장 가까운 순회경로 노드를 찾아서 가야").
+///
+/// 두 끝점이 같으면(경로에 중복 정점) 점-점 거리로 떨어진다.
+inline double off_lane_distance(double rx, double ry,
+                                double ax, double ay, double bx, double by)
+{
+  const double dx = bx - ax, dy = by - ay;
+  const double len2 = dx * dx + dy * dy;
+  if (len2 <= 1e-12) { return std::hypot(rx - ax, ry - ay); }
+  double t = ((rx - ax) * dx + (ry - ay) * dy) / len2;
+  t = std::max(0.0, std::min(1.0, t));          // 선분 밖은 끝점으로 잘린다
+  return std::hypot(rx - (ax + t * dx), ry - (ay + t * dy));
 }
 
 /// 순회에서 이번 라운드 CBS 목표의 **인덱스**. 계획 출발점 바로 **다음 한 정점**이다.

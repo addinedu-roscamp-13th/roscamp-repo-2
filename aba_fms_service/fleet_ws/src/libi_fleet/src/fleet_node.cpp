@@ -161,6 +161,14 @@ public:
     //    건너뛰어 코너를 가로지른다. 짧은 레인에서는 자동으로 기존 동작으로 돌아간다.
     prefetch_radius_ = declare_parameter<double>("prefetch_radius", kPrefetchDefault);
 
+    // 순회 로봇이 레인에서 이만큼(m) 벗어나면 **가장 가까운 정점부터 랩을 다시 짠다.**
+    // 야간 추격이 끝난 뒤 추격 전 정점(랩 반대편일 수도)으로 되돌아가던 것을 막는다.
+    //
+    // ⚠️ **레인 절반보다 크게 둔다.** 작으면 평상시 제어 오차로 랩이 계속 새로 짜여
+    //    로봇이 갈팡질팡한다. arte2 실측 레인은 0.27~0.38m 라 절반이 0.135~0.19 —
+    //    기본 0.25 는 그 위다. 0 이면 꺼진다(예전 동작).
+    patrol_resnap_m_ = declare_parameter<double>("patrol_resnap_m", 0.25);
+
     // 남은 정점을 전부 보낼지. **기본 false — 다음 한 노드만 보낸다.**
     //
     // ⚠️ 한 번에 다 보내면 로봇이 예약하지 않은 노드로 들어가 **교통 협상이 무력화된다**
@@ -1573,6 +1581,46 @@ private:
       else { t.no_move = 0; }
       t.last_x = r.x; t.last_y = r.y;
       check_plan_deadline(t);   // 계획 도착 시각 초과 → 재계획 요청(시간 계획일 때만)
+
+      // ── [2026-08-07] 순회 로봇이 레인 밖으로 새면 **가장 가까운 정점부터 다시 돈다** ──
+      //
+      //   야간 순찰이 침입자를 쫓으면 로봇이 레인을 벗어난다(`IntruderChase` 가 nav2 를
+      //   끊고 추종으로 몬다). 그런데 여기 `t.path`·`t.idx` 는 아무도 안 건드리므로,
+      //   추격이 끝나 `PatrolNavigation` 이 돌아오면 **추격 전에 향하던 그 정점**으로
+      //   되돌아간다 — 랩 반대편일 수도 있다. 사용자 요구 2026-08-07:
+      //   "이전 순회경로가 아니라 가장 가까운 순회경로 노드를 찾아서 가야 할 것 같다".
+      //
+      //   `make_patrol_path` 가 이미 그 일을 한다 — 진입점을 **그래프거리(Dijkstra, 벽
+      //   고려)로 가장 가까운** 순회 정점으로 잡고 그 사이 정점을 하나하나 깐다
+      //   (`patrol_cycle.hpp`). 랩 끝에서 쓰던 것과 같은 함수다.
+      //
+      //   ⚠️ **쥐고 있던 노드를 먼저 놓는다.** 새 경로에 그 정점이 없으면 예약이 영영
+      //      안 풀려 다른 로봇을 막는다(유령 예약). stuck 처리와 같은 순서다.
+      //   ⚠️ 판정은 정점까지의 거리가 아니라 **레인(선분)까지의 거리**다. 정점으로 재면
+      //      긴 레인의 출발점이 늘 "벗어남" 이 된다(`off_lane_distance` 머리말).
+      //   ⚠️ `patrol_resnap_m <= 0` 이면 꺼진다. 임계가 너무 작으면 평상시 제어 오차로
+      //      랩이 계속 새로 짜여 로봇이 갈팡질팡한다 — 레인 절반보다 크게 둘 것.
+      if (t.patrol && patrol_resnap_m_ > 0.0 && t.idx >= 1) {
+        const Vertex & pv = graph_.vertex(t.path[t.idx - 1]);
+        const double off = off_lane_distance(r.x, r.y, pv.x, pv.y, tv.x, tv.y);
+        if (off > patrol_resnap_m_) {
+          if (t.idx < t.path.size()) { traffic_->release_node(t.robot, t.path[t.idx]); }
+          traffic_->release_node(t.robot, t.path[t.idx - 1]);
+          t.path = make_patrol_path(r, -1, route_for(t));
+          t.idx = 1;
+          t.moving = false;
+          t.plan_arrive.clear();     // 옛 시간표는 이 경로의 것이 아니다
+          t.plan_excluded = false;
+          ++state_gen_;              // 상태가 바뀌었다 — 계산 중인 시간표는 낡았다
+          request_replan("순회 이탈 — 가까운 정점부터 재합류");
+          RCLCPP_INFO(get_logger(),
+                      "[%s] %s 순회 이탈(레인에서 %.2fm) → 가장 가까운 정점 v%d 부터 재합류",
+                      t.id.c_str(), t.robot.c_str(), off,
+                      t.path.size() > 1 ? t.path[1] : -1);
+          ++it;
+          continue;                  // 이번 틱은 여기까지 — 새 경로는 다음 틱부터 본다
+        }
+      }
       if (stuck_ticks_ > 0 && t.no_move > stuck_ticks_) {
         RCLCPP_ERROR(get_logger(), "[%s] %s ⚠ 무진행(슬롯카 stuck 추정) → 예약 해제·task 취소",
                      t.id.c_str(), t.robot.c_str());
@@ -2426,6 +2474,7 @@ private:
   int replan_streak_{0};              // 진전 없이 이어진 재계획 횟수(backoff 지수)
   double arrive_radius_{kArriveDefault};   // 도착 판정 반경(m) — 맵 축척마다 다름
   double prefetch_radius_{kPrefetchDefault};  // 경유 노드 선행 통과 반경(m). 0 이면 꺼짐
+  double patrol_resnap_m_{0.25};  // 순회 레인 이탈 재합류 임계(m). 0 이면 꺼짐
   bool full_path_{false};                  // true 면 남은 정점 전부 전송(단일 로봇 디버깅용)
   int resend_ticks_{7};                    // 이동 중 경로 재발행 주기(틱). 0=끔
   int return_goal_node_{17};                // RETURNING UI 표시용 복귀 waypoint
