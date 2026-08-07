@@ -98,9 +98,18 @@ class Task:
         }
 
 
+#: 서가에서 물러난 뒤 **목적지로 가기 전에 한 번 들르는** 순회 경로 정점.
+#
+# 하드코딩이다(2026-08-07 사용자 지시). 서가 앞은 nav2 `inflation_radius`(0.09) 경계라
+# 거기서 바로 목적지 경로를 찾게 두지 않고, 순회 경로 위의 확실한 자리로 한 홉 옮긴 뒤
+# 목적지를 잡게 한다. 로봇은 이 다리를 받기 전에 이미 map 0 방향으로 서 있다
+# (`robot_agent/app/core/backup_runner.POST_RETREAT_YAW_RAD`) — 둘은 짝이다.
+PATROL_REJOIN_WAYPOINT = "순회경로-1"
+
+
 def decompose_delivery(*, book: str, pickup, dropoff, tier: int = 0, row: int = 0,
                        slot: int = 1) -> list[Leg]:
-    """배달 = 선반으로 주행 → 집기 → 전달지로 주행 → 놓기.
+    """배달 = 선반으로 주행 → 집기 → 후퇴 → 순회 경로 합류 → 전달지로 주행 → 놓기.
 
     pickup/dropoff 는 waypoint 식별자(정점 번호/이름) — 코어는 그 정체를 모른다
     (도서→선반→waypoint 해석은 상위 #27 데이터 계층이 한다).
@@ -150,6 +159,14 @@ def decompose_delivery(*, book: str, pickup, dropoff, tier: int = 0, row: int = 
         # 서가 앞에 그대로 서 있었다. 도킹 자세 탈출도, 노드까지의 역주행도 **아무도
         # 안 한다** — 둘 다 이 다리가 하던 일이다.
         Leg(LegType.PERFORM_ACTION, {"action": "backup", "at": pickup}),
+        # 목적지로 바로 안 간다 — **순회 경로에 먼저 합류한다**(하드코딩, 2026-08-07
+        # 사용자 지시). `backup` 이 끝나면 로봇은 서가에서 물러나 map 0 방향으로 서
+        # 있고(`backup_runner.POST_RETREAT_YAW_RAD`), 거기서 이 정점으로 한 홉 가서
+        # 순회 경로 위에 올라선 뒤에 목적지로 향한다.
+        #
+        # ⚠️ 이 정점 이름이 navgraph 에 없으면 `resolve_vertex` 가 예외를 던져 다리가
+        #    통째로 실패한다 — 이름을 바꾸려면 `arte2.navgraph.yaml` 과 같이 고친다.
+        Leg(LegType.NAVIGATE, {"waypoint": PATROL_REJOIN_WAYPOINT}),
         Leg(LegType.NAVIGATE, {"waypoint": dropoff}),
         # `place` 는 서가에 손을 안 뻗는다(바구니 → 테이블). 층·줄을 실어 보내면 팔이
         # 무시할지 따를지 헷갈린다 — 계약대로 0 으로 비운다.

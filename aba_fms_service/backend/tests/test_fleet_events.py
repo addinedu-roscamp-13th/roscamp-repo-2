@@ -134,9 +134,10 @@ def test_delivery_completion_is_announced():
     다리가 들어와 4 → 5 다리가 됐는데 여기 범위가 안 따라와서, 그 뒤로 이 시험은
     **완료를 한 번도 못 보고** 계속 실패하고 있었다(2026-08-07 발견).
     배달 다리 수를 바꾸면 이 범위도 같이 고친다.
+    (2026-08-07 순회 경로 합류 다리가 들어와 5 → 6.)
     """
     orc, task_id, sent = _delivery_orchestrator()
-    for i in range(1, 6):
+    for i in range(1, 7):
         orc.on_result(f"cmd-{i}", True)
 
     done = [e for e in fleet_events.since(0) if e["kind"] == "task_done"]

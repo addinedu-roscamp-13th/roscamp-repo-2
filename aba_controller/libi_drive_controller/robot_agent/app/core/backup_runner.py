@@ -99,6 +99,16 @@ def pop_outbound() -> list:
     return return_moves(state["moves"], state["heading"], state["final_yaw"])
 
 
+#: 서가에서 다 물러난 뒤 마지막으로 서는 **map 절대 방위**(rad). 0 = +x.
+#
+# 하드코딩이다(2026-08-07 사용자 지시). 서가마다 다르지 않은 이유: 물러나고 나면
+# 어느 서가든 순회 경로로 합류하므로 기준 방위 하나면 된다. 다음 다리가
+# `순회경로-1` 주행(`fleet_orchestrator.PATROL_REJOIN_WAYPOINT`)이라 그쪽을 보고
+# 서는 셈이다.
+#
+# ⚠️ 서가 배치나 순회 경로가 바뀌면 여기와 그 정점을 **같이** 본다.
+POST_RETREAT_YAW_RAD = 0.0
+
 #: 한 번의 `_run_move` 가 tick 을 이만큼 넘게 쓰면 포기한다.
 #
 # ponytail: 실시간(초)이 아니라 고정 tick 수 — pose_fn 이 실제로 얼마나 자주
@@ -314,6 +324,13 @@ def _plan_and_drive(args: dict, my_gen: int, read_pose, drive) -> tuple[bool, in
                 ryaw = leg[0].abs_yaw
             rx, ry = tx, ty
             face_yaw = None                 # 첫 다리에만 쓴다
+        # 다 물러난 뒤 **map 0 방향**으로 선다(하드코딩, 2026-08-07 사용자 지시).
+        # 물러난 직후 로봇은 서가를 마주 본 채다(`retreat_moves` 머리말) — 그 자세로
+        # nav2 에 넘기면 첫 동작이 서가 앞 제자리 회전이라 다시 위험하다. 여기서
+        # 미리 돌려 두면 그 회전이 서가에서 떨어진 자리에서 끝나 있다.
+        if moves:
+            moves.append(Move(TURN, wrap_pi(POST_RETREAT_YAW_RAD - ryaw),
+                              abs_yaw=POST_RETREAT_YAW_RAD))
     elif x is not None and y is not None:
         pose = read_pose()
         if pose is None:

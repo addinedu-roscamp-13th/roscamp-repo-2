@@ -607,3 +607,49 @@ def test_approach_moves_carry_the_absolute_yaw_for_both_turns():
     assert len(turns) == 2
     assert turns[0].abs_yaw == pytest.approx(math.atan2(1.0, 1.0))   # 진행 방향
     assert turns[1].abs_yaw == pytest.approx(-1.5708)                # 도착 자세
+
+
+# ── 다 물러난 뒤 map 0 방향으로 선다 (2026-08-07 하드코딩) ──────────────────────
+#
+# 물러난 직후 로봇은 서가를 마주 본 채다(`retreat_moves`). 그 자세로 nav2 에 넘기면
+# 첫 동작이 **서가 앞 제자리 회전**이라 다시 위험하다. 미리 돌려 두면 그 회전이
+# 서가에서 떨어진 자리에서 끝나 있다.
+
+def test_retreat_ends_facing_map_zero():
+    """마지막 이동이 map 절대 0 을 향한 회전이어야 한다.
+
+    ⚠️ 되돌림 감지용 — 그 회전을 빼면 마지막이 drive 로 끝나 빨개진다.
+    """
+    from app.core import backup_runner
+
+    backup_runner.record_return_targets([(0.0, -0.1), (0.3, -0.1)], retreat_yaw=1.5708)
+    driven = []
+
+    ok, _s, _d, _m = backup_runner.run_backup(
+        {}, _read_pose_fn=lambda: (0.0, 0.0, 3.1416),
+        _drive_fn=lambda moves, _gen: (driven.extend(moves), (True, 200, {}, ""))[1])
+
+    assert ok is True
+    assert driven[-1].kind == "turn", "마지막이 회전이 아니다 — 0 방향 정렬이 빠졌다"
+    assert math.isclose(driven[-1].abs_yaw, backup_runner.POST_RETREAT_YAW_RAD,
+                        abs_tol=1e-9)
+
+
+def test_zero_alignment_is_skipped_when_every_checkpoint_is_already_here():
+    """체크포인트가 **지금 자리와 같으면** 이동이 하나도 안 나오는데, 그때 0 정렬
+    회전만 홀로 나가면 안 된다 — 물러나지도 않고 서가 앞에서 몸만 돌리는 꼴이다.
+
+    `retreat_moves` 는 거리가 0 이면 빈 목록을 준다. 그래서 `if moves:` 가드가 있다.
+    """
+    from app.core import backup_runner
+
+    here = (0.0, 0.0, 3.1416)
+    backup_runner.record_return_targets([(0.0, 0.0), (0.0, 0.0)], retreat_yaw=1.5708)
+    driven = []
+
+    ok, _s, _d, _m = backup_runner.run_backup(
+        {}, _read_pose_fn=lambda: here,
+        _drive_fn=lambda moves, _gen: (driven.extend(moves), (True, 200, {}, ""))[1])
+
+    assert ok is True
+    assert driven == [], f"이동이 없는데 회전이 나갔다: {driven}"

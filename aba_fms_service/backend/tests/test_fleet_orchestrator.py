@@ -7,6 +7,7 @@ import pytest
 
 from app.fleet_orchestrator import (
     COLLECTION_WAYPOINT,
+    PATROL_REJOIN_WAYPOINT,
     Leg,
     LegType,
     Orchestrator,
@@ -43,7 +44,8 @@ class FakeDispatcher:
 def test_delivery_decomposes_into_fms_backup_leg():
     legs = decompose_delivery(book="B1", pickup=7, dropoff=3)
     assert [l.type for l in legs] == [
-        LegType.NAVIGATE, LegType.PERFORM_ACTION, LegType.PERFORM_ACTION, LegType.NAVIGATE, LegType.PERFORM_ACTION,
+        LegType.NAVIGATE, LegType.PERFORM_ACTION, LegType.PERFORM_ACTION,
+        LegType.NAVIGATE, LegType.NAVIGATE, LegType.PERFORM_ACTION,
     ]
     assert legs[0].params == {"waypoint": 7}
     # 팔 계약(2026-07-30): 정점 이름이 아니라 **장소 종류**로 움직인다.
@@ -52,10 +54,13 @@ def test_delivery_decomposes_into_fms_backup_leg():
         "from_place": "서가", "to_place": "리비바구니",
         "tier": 0, "row": 0, "slot": 1,
     }
+    assert legs[2].params == {"action": "backup", "at": 7}
+    # [2026-08-07] 후퇴 뒤 목적지로 바로 안 간다 — 순회 경로에 먼저 합류한다.
+    assert legs[3].params == {"waypoint": PATROL_REJOIN_WAYPOINT}
+    assert legs[4].params == {"waypoint": 3}
     # ⚠️ `place` 의 `to_place` 는 **없다.** 목적지가 테이블인지 안내데스크인지는 정점의
     #    정체를 알아야 정해지고 그 지식은 이 코어에 없다 — 로봇 중계가 `at` 에서 유도한다.
-    assert legs[2].params == {"action": "backup", "at": 7}
-    assert legs[4].params == {
+    assert legs[5].params == {
         "action": "place", "at": 3, "book": "B1", "object": "book",
         "from_place": "리비바구니",
         "tier": 0, "row": 0, "slot": 1,
@@ -70,9 +75,9 @@ def test_delivery_carries_shelf_coordinates_only_on_pick():
     """
     legs = decompose_delivery(book="B1", pickup=7, dropoff=3, tier=3, row=2)
     assert (legs[1].params["tier"], legs[1].params["row"]) == (3, 2)
-    assert (legs[4].params["tier"], legs[4].params["row"]) == (0, 0)
+    assert (legs[5].params["tier"], legs[5].params["row"]) == (0, 0)
     # pick 에 넣은 칸과 place 에서 꺼낼 칸이 같아야 한다 — 팔은 상태를 갖지 않는다.
-    assert legs[1].params["slot"] == legs[4].params["slot"]
+    assert legs[1].params["slot"] == legs[5].params["slot"]
 
 
 def test_collection_decomposes_into_nav_plus_three_arm_legs():
@@ -128,7 +133,7 @@ def test_submit_delivery_queues_pending():
     tid = orc.submit_delivery(book="B1", pickup=7, dropoff=3, requester="사서")
     task = orc.get(tid)
     assert task.status == TaskStatus.PENDING
-    assert len(task.legs) == 5
+    assert len(task.legs) == 6          # 주행·집기·후퇴·순회합류·주행·놓기
     assert [t["id"] for t in orc.pending()] == [tid]
 
 
@@ -180,7 +185,7 @@ def test_assign_allows_robot_after_previous_task_completed():
     orc = Orchestrator(d)
     t1 = orc.submit_delivery(book="B1", pickup=7, dropoff=3)
     orc.assign(t1, "pinky3")
-    for cmd_id in ("c1", "c2", "c3", "c4", "c5"):
+    for cmd_id in ("c1", "c2", "c3", "c4", "c5", "c6"):
         orc.on_result(cmd_id, ok=True)
     assert orc.get(t1).status == TaskStatus.COMPLETED
 
@@ -198,15 +203,19 @@ def test_happy_path_sequences_fms_backup_leg_in_order():
     # 한 번에 하나씩 — 완료 보고해야 다음이 나간다.
     orc.on_result("c1", ok=True)      # navigate(pickup) 완료 → pick 나감
     orc.on_result("c2", ok=True)      # pick 완료 → FMS backup 배정
-    orc.on_result("c3", ok=True)      # backup 완료 → navigate(dropoff)
-    orc.on_result("c4", ok=True)      # navigate 완료 → place
+    orc.on_result("c3", ok=True)      # backup 완료 → navigate(순회경로-1)
+    orc.on_result("c4", ok=True)      # 순회 합류 완료 → navigate(dropoff)
+    orc.on_result("c5", ok=True)      # navigate 완료 → place
     assert orc.get(tid).status == TaskStatus.EXECUTING
-    orc.on_result("c5", ok=True)      # place 완료 → COMPLETED
+    orc.on_result("c6", ok=True)      # place 완료 → COMPLETED
 
     assert orc.get(tid).status == TaskStatus.COMPLETED
     assert d.leg_types == [
-        LegType.NAVIGATE, LegType.PERFORM_ACTION, LegType.PERFORM_ACTION, LegType.NAVIGATE, LegType.PERFORM_ACTION,
+        LegType.NAVIGATE, LegType.PERFORM_ACTION, LegType.PERFORM_ACTION,
+        LegType.NAVIGATE, LegType.NAVIGATE, LegType.PERFORM_ACTION,
     ]
+    # 순회 합류 다리가 후퇴 **뒤**, 목적지 주행 **앞** 이어야 뜻이 있다.
+    assert d.calls[3][3] == {"waypoint": PATROL_REJOIN_WAYPOINT}
 
 
 def test_next_leg_not_dispatched_before_current_completes():
@@ -281,7 +290,7 @@ def test_cancel_terminal_is_noop():
     orc = Orchestrator(d)
     tid = orc.submit_delivery(book="B1", pickup=7, dropoff=3)
     orc.assign(tid, "pinky3")
-    for c in ("c1", "c2", "c3", "c4", "c5"):
+    for c in ("c1", "c2", "c3", "c4", "c5", "c6"):
         orc.on_result(c, ok=True)
     assert orc.get(tid).status == TaskStatus.COMPLETED
     orc.cancel(tid)                            # 완료된 걸 취소 시도 → 무시
@@ -304,7 +313,7 @@ def test_force_advance_through_all_legs_completes():
     orc = Orchestrator(FakeDispatcher())
     tid = orc.submit_delivery(book="B1", pickup=7, dropoff=3)
     orc.assign(tid, "pinky3")
-    for _ in range(5):
+    for _ in range(6):          # 배달 6다리 (2026-08-07 순회 합류 다리 추가)
         if orc.get(tid).status == TaskStatus.EXECUTING:
             orc.force_advance(tid)
     assert orc.get(tid).status == TaskStatus.COMPLETED
@@ -452,7 +461,7 @@ def test_lifecycle_done_on_completion():
     orc = Orchestrator(d, task_lifecycle=lambda r, p: seen.append((r, p)))
     tid = orc.submit_delivery(book="B1", pickup=7, dropoff=3)
     orc.assign(tid, "Pinky-3")
-    for cid in ("c1", "c2", "c3", "c4", "c5"):
+    for cid in ("c1", "c2", "c3", "c4", "c5", "c6"):
         orc.on_result(cid, ok=True)
     assert orc.get(tid).status == TaskStatus.COMPLETED
     assert [p for _, p in seen] == ["start", "done"]
@@ -515,3 +524,21 @@ def test_delivery_keeps_the_backup_leg_undock_gate_cannot_replace_it():
     kinds = [l.params.get("action") or l.params.get("waypoint") for l in legs]
     assert kinds.index("backup") == kinds.index("pick") + 1
     assert kinds.index("backup") < kinds.index(3)
+
+
+# ── 하드코딩한 순회 합류 정점이 navgraph 에 실제로 있는지 (2026-08-07) ────────────
+#
+# 이름 하나로 배달 다리가 통째로 좌우된다. `resolve_vertex` 는 못 찾으면 예외를 던지고,
+# 그 다리는 dispatch 단계에서 실패한다 — 이름이 어긋나면 **주문이 못 끝난다.**
+
+def test_patrol_rejoin_waypoint_exists_in_the_navgraph():
+    """`PATROL_REJOIN_WAYPOINT` 가 navgraph 에 있어야 한다.
+
+    ⚠️ navgraph 에서 이 정점 이름을 바꾸거나 지우면 여기서 먼저 빨개진다 — 실기에서
+       "배달이 후퇴까지 하고 멈춘다"로 발견하는 것보다 훨씬 싸다.
+    """
+    from app.fleet_dispatch_bridge import resolve_vertex, vertex_name
+
+    idx = resolve_vertex(PATROL_REJOIN_WAYPOINT)
+    assert isinstance(idx, int)
+    assert vertex_name(idx) == PATROL_REJOIN_WAYPOINT
