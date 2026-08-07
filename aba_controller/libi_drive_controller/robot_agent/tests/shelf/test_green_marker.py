@@ -161,6 +161,41 @@ def test_detect_candidates_reports_box_and_bordered_flag_per_candidate():
     assert small["x"] == 60 and small["w"] == 30
 
 
+# ── 테두리는 **좌우**로 본다 (실제 서가에서는 위가 책등이라 위쪽 기준이 깨진다) ──
+
+def test_white_border_is_checked_on_the_sides_not_above():
+    """위만 흰색이고 좌우가 어두우면 **떨어져야** 한다.
+
+    ⚠️ 되돌림 감지용 시험이다 — 위쪽 밴드를 보던 옛 구현이면 이게 True 로 나와 빨개진다.
+    """
+    img = _canvas()                       # 검은 배경
+    img[80:100, 140:180] = WHITE_BGR      # 덩어리 바로 '위'만 희게
+    _paint(img, 140, 180, y0=100, y1=140)
+
+    cands = detect_candidates(img)
+    assert len(cands) == 1
+    assert cands[0]["bordered"] is False
+
+
+def test_both_visible_sides_must_be_white():
+    """한쪽만 희고 반대쪽이 보이는데 어두우면 떨어진다 — 반사에는 엄격하게."""
+    img = _canvas()
+    img[100:140, 120:140] = WHITE_BGR     # 왼쪽만 희게
+    _paint(img, 140, 180, y0=100, y1=140)
+
+    assert detect_candidates(img)[0]["bordered"] is False
+
+
+def test_side_cut_off_by_the_frame_is_skipped_not_failed():
+    """화면 가장자리에 걸려 한쪽 밴드가 통째로 없으면, 그쪽은 검사에서 빼고
+    남은 쪽만 본다 — 잘림에는 관대하게(안 그러면 가장자리 마커가 영영 못 붙는다)."""
+    img = _canvas()
+    _paint(img, 0, 40, y0=100, y1=140)    # 왼쪽 끝에 붙어 왼쪽 밴드가 없다
+    img[100:140, 40:60] = WHITE_BGR       # 오른쪽 밴드만 희게
+
+    assert detect_candidates(img)[0]["bordered"] is True
+
+
 def test_hint_u_ignored_when_only_one_candidate():
     """후보가 하나뿐이면 hint 값과 상관없이 그걸 낸다 — 엉뚱한 hint 때문에
     유일한 진짜 후보를 버리면 안 된다."""
