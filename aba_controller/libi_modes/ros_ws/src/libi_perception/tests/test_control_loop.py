@@ -531,10 +531,21 @@ def _lost_after(seen, cfg=None):
     return loop
 
 
-def test_center_loss_skips_the_lkd_peek():
+def test_center_loss_still_peeks():
+    """⚠️ [2026-08-07] 정반대로 뒤집힌 시험이다.
+
+    2026-08-02 지시("가운데에서 사라지면 peek 가 없어도 될 것 같다")로 껐던 것을
+    2026-08-07 지시("그냥 인형이 사라진 곳으로 peek 동작을 시키고 싶어")로 되살린다.
+
+    실기에서 **대상을 정면에서 치우는 경우가 가장 흔하다** — 인형을 그냥 빼면 마지막
+    칸이 가운데라, 그 예외가 peek 을 거의 항상 껐다.
+
+    ⚠️ 방향 근거가 약한 것은 여전히 사실이다. 가운데면 `lkd` 가 로봇이 돌던
+       방향으로 떨어진다 — 추측이지만 "안 도는 것" 보다 낫다는 것이 이번 결정이다.
+    """
     d = _det(); d.cx = 160.0                      # 320 폭의 정중앙 = 가운데 칸
     loop = _lost_after([d, _coast_det(160.0)])
-    assert _peek_of(loop) is False, "가운데에서 사라졌는데 peek 를 켰다"
+    assert _peek_of(loop) is True, "정면에서 사라졌는데 안 돈다"
 
 
 def test_left_third_peeks_left():
@@ -552,15 +563,27 @@ def test_right_third_peeks_right():
     assert loop._search_ctx.lkd == -1.0, "오른쪽에서 사라졌는데 왼쪽을 본다"
 
 
-def test_no_coast_box_skips_the_peek():
-    """코스팅 박스가 **한 번도 안 나온** 소실 — 방향 근거가 없으니 돌지 않는다.
+def test_no_coast_box_still_peeks():
+    """코스팅 박스가 **한 번도 안 나온** 소실에서도 돈다.
 
-    실제로 이렇게 되는 경로: 자세가 `Lying`/`Calibrating` 이거나 이탈 방향이
-    `DOWN`/`UP` 이면 파이프라인의 `may_coast` 가 막아 예측 bbox 가 아예 안 나온다.
+    ⚠️ [2026-08-07] 정반대로 뒤집힌 시험이다. 2026-08-06 에는 `and self._coast_seen`
+       조건이 있어서 여기서 peek 을 껐다("방향 근거가 없다"). 그 전제가 틀렸다 —
+       방향의 근거는 `_last_side` 고 그건 **실검출 프레임에서도 갱신된다.**
+       코스팅은 "얼마나 오래 붙들었나" 이지 "어느 쪽이었나" 가 아니다.
+
+       그리고 그 조건은 실제로 **peek 을 통째로 막는 스위치**였다. 코스팅이 아예 안
+       도는 경로가 흔하다 — 자세가 `Lying`/`Calibrating` 이거나 이탈 방향이
+       `DOWN`/`UP` 이면 `may_coast` 가 막고, 검출이 깨끗하게 끊기면(가림 없이 화면
+       밖으로 나감) 예측 bbox 가 한 장도 안 뜬 채 소실이 된다. **peek 이 가장 필요한
+       경우**가 정확히 그때다.
+
+       사용자 지시 2026-08-07: "주황색 박스 기준으로 하지 말고, 그냥 박스가
+       유실되었을 때 peek 하는 걸로".
     """
-    d = _det(); d.cx = 20.0                       # 왼쪽 칸이지만 코스팅이 없었다
+    d = _det(); d.cx = 20.0                       # 왼쪽 칸. 코스팅은 없었다
     loop = _lost_after([d])
-    assert _peek_of(loop) is False, "주황 박스를 한 번도 못 봤는데 peek 를 켰다"
+    assert _peek_of(loop) is True, "칸이 정해졌는데 코스팅이 없다고 peek 를 껐다"
+    assert loop._search_ctx.lkd == 1.0, "왼쪽에서 사라졌는데 오른쪽을 본다"
 
 
 def test_peek_direction_follows_the_last_coast_box_not_the_first():
@@ -588,15 +611,21 @@ def test_peek_direction_holds_when_the_robot_never_turned():
 
 
 def test_middle_third_is_center_even_outside_the_bearing_deadzone():
-    """기준은 **3등분 가이드선**이지 방위 정지 구간이 아니다.
+    """칸 판정 기준은 **3등분 가이드선**이지 방위 정지 구간이 아니다.
 
     정지 구간은 `ANGLE_DEADZONE_FRAC = 1/24`(320 폭에서 반폭 13.3px)로 좁혀져 있어,
     `cx=140` 은 정지 구간 **밖**이지만 가운데 칸(106.7~213.3) **안**이다.
-    사용자가 화면으로 보고 판단하는 선을 따른다 — 그 칸 안이면 안 돈다.
+    사용자가 화면으로 보고 판단하는 선을 따른다.
+
+    ⚠️ [2026-08-07] 예전엔 이걸 `peek is False` 로 확인했다. 이제 peek 은 무조건
+       켜지므로(`_build_search` 의 `do_peek`) **칸 판정 자체**를 본다 — 이 시험이
+       원래 붙들려던 것이 그것이다. `lkd` 는 가운데면 로봇이 돌던 방향으로 떨어지고,
+       이 시험은 로봇이 안 돌았으므로 기본값 +1 이 나온다.
     """
     d = _det(); d.cx = 140.0
     loop = _lost_after([d, _coast_det(140.0)])
-    assert _peek_of(loop) is False, "가운데 칸인데 peek 를 켰다(정지 구간 기준으로 판정)"
+    assert loop._last_side == 0, "가운데 칸인데 좌/우로 읽혔다(정지 구간 기준으로 판정)"
+    assert loop._search_ctx.lkd == 1.0, "가운데면 옛 근거(안 돌았으면 +1)로 떨어진다"
 
 
 def test_peek_flag_actually_removes_the_phase_from_the_tree():
@@ -660,3 +689,63 @@ def test_follow_role_is_untouched_by_the_guide_grace():
     loop._filtered_detection()
     clock.t = 99.0
     assert loop._filtered_detection() is not None, "추종에서 예측이 걸러졌다"
+
+
+# ── peek 조건 (2026-08-07) ──────────────────────────────────────────────────
+#
+# 회복 탐색 첫 구간 `LkdPeek` 은 "사람이 나간 쪽으로 90° 꺾기" 다. 그러니 **어느 쪽으로
+# 나갔는지 근거가 있을 때만** 돈다. 근거는 마지막 박스가 화면 3등분 중 어느 칸이었나
+# (`_last_side`)다.
+#
+# ⚠️ 2026-08-06 에 `and self._coast_seen`(주황 코스팅 박스를 봤나)을 덧붙였다가
+#    2026-08-07 에 뺐다. 그 조건은 **peek 을 통째로 막는 스위치**로 작동했다 —
+#    코스팅은 놓친 프레임에만 도는데, 검출이 깨끗하게 끊기면(가림 없이 화면 밖으로
+#    나감) 주황 박스가 한 장도 안 뜬 채 소실이 된다. peek 이 가장 필요한 경우가
+#    정확히 그때다. 방향의 근거는 `_last_side` 고 그건 실검출에서도 갱신된다.
+
+def _side_det(cx):
+    return Detection(cx=cx, cy=240.0, area=100.0, bbox=(0, 0, 10, 10),
+                     track_id=1, is_owner=True, confidence=0.9, is_predicted=False)
+
+
+def _peek_after_loss(cx, predicted=False):
+    """`cx` 에서 한 번 보고 그대로 사라진다. 만들어진 탐색 컨텍스트의 `peek` 를 돌려준다."""
+    cfg = _cfg()
+    box = {'v': _side_det(cx)}
+    if predicted:
+        box['v'] = Detection(cx=cx, cy=240.0, area=100.0, bbox=(0, 0, 10, 10),
+                             track_id=1, is_owner=True, confidence=0.9, is_predicted=True)
+    loop = ControlLoop(get_detection=lambda: box['v'], get_scan=_clear_scan,
+                       publish=_Pub(), cfg=cfg, now=_Clock())
+    loop.tick()                       # 한 번 본다 — _last_side 가 찍힌다
+    box['v'] = None
+    for _ in range(cfg.N_MISS_FRAMES + 1):
+        loop.tick()                   # 소실 → SEARCHING → _build_search()
+    assert loop.switch.state == 'SEARCHING'
+    return loop._search_ctx.peek
+
+
+def test_왼쪽에서_사라지면_코스팅_없이도_peek_한다():
+    """⚠️ 되돌림 주의: `and self._coast_seen` 을 되살리면 여기가 빨개진다.
+
+    실검출만 보고 사라진 경우다 — 주황 박스가 한 장도 안 떴다.
+    """
+    assert _peek_after_loss(cx=50.0) is True
+
+
+def test_오른쪽에서_사라져도_peek_한다():
+    assert _peek_after_loss(cx=600.0) is True
+
+
+def test_가운데에서_사라져도_peek_한다():
+    """소실 = peek. 조건이 없다(사용자 지시 2026-08-07).
+
+    되돌리려면 `control_loop._build_search` 의 `do_peek` 한 줄만 바꾼다 —
+    그러면 이 시험과 `test_center_loss_still_peeks` 가 같이 빨개진다.
+    """
+    assert _peek_after_loss(cx=320.0) is True
+
+
+def test_코스팅_박스로_사라져도_똑같이_peek_한다():
+    """주황 박스 여부는 이제 조건이 아니다 — 칸만 본다."""
+    assert _peek_after_loss(cx=50.0, predicted=True) is True

@@ -115,6 +115,15 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(test_plan_start libi_fleet_core)
 
+  # 지도가 선언한 도착 방향(yaw) — 수거함은 뒤를 대고 서야 한다(2026-08-07 요구).
+  # navgraph 는 waypoint.yaml 에서 **생성**되므로 값 자체를 붙든다(재생성 회귀 방지).
+  ament_add_gtest(test_waypoint_yaw test/test_waypoint_yaw.cpp)
+  target_include_directories(test_waypoint_yaw PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(test_waypoint_yaw yaml-cpp)
+  target_compile_definitions(test_waypoint_yaw PRIVATE
+    TEST_ARTE2_NAVGRAPH_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../../maps/library/arte2.navgraph.yaml")
+
   # 순회 로봇이 레인을 벗어났나 — 야간 추격 뒤 가장 가까운 정점부터 재합류(2026-08-07).
   ament_add_gtest(test_off_lane test/test_off_lane.cpp)
   target_include_directories(test_off_lane PRIVATE
