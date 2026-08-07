@@ -94,6 +94,46 @@ def axis_aligned_moves(rx: float, ry: float, ryaw: float,
     return moves
 
 
+def retreat_moves(rx: float, ry: float, ryaw: float,
+                  tx: float, ty: float) -> list:
+    """목표 쪽으로 **등을 돌려** 후진으로 간다 — 코를 돌려 전진하는 `approach_moves`
+    의 짝이다.
+
+    서가 도킹을 마치고 빠져나올 때 쓴다.
+
+    ## ⚠️ 회전량이 아니라 **회전 방향**이 문제다 (2026-08-07 실기: 꽁무늬가 닿았다)
+
+    도킹이 끝난 로봇은 서가와 **나란히** 선다: `FINAL_YAW_RAD`(180°) 인데 서가는
+    `SHELF_YAW`(±90°) 쪽, 즉 **몸 옆구리 3cm** 옆에 있다(팔이 옆으로 뻗으라고 그렇게
+    세운다 — `shelf_dock.py` 두 상수 주석). 빠져나갈 방향은 그 반대편(∓90°)이라
+    **어느 쪽으로 가든 제자리 회전 90° 를 피할 수 없다.** 그러니 "안 돌기"는 답이 아니다.
+
+    답은 **어느 쪽이 서가를 쓸고 지나가느냐**다. 3cm 는 로봇을 반지름 0.06 **원**으로
+    친 값이고 실제 PinkyPro 는 원이 아니다 — 꽁무늬가 그 원 밖으로 나온다.
+
+        approach_moves : 코를 목표(서가 반대편)로 돌린다 → 꽁무늬가 **서가 쪽으로**
+                         돌아 그 자리에 선다. 쓸고 지나간다. ← 닿은 게 이것이다
+        retreat_moves  : 코를 서가 쪽으로 돌린다 → 꽁무늬가 **서가 반대편으로** 빠진다.
+                         회전 내내 꽁무늬가 서가에서 멀어지기만 한다.
+
+    두 서가 다 성립한다(문학 +90°/과학-인문학 −90°): 꽁무늬는 180°에서 0° 로 시작해
+    항상 서가의 **반대쪽** ∓90° 로 빠지고, 도중에 서가 쪽을 스치지 않는다.
+
+    ⚠️ 대신 **코가 서가를 마주 본 채 끝난다.** 앞쪽 돌출이 뒤보다 크면 이 맞바꿈이
+    손해다 — 그때는 이 함수가 아니라 `FINAL_YAW_RAD` 를 다시 본다.
+
+    ⚠️ 끝나도 로봇은 여전히 서가를 보고 있다. 다음 다리인 nav2 주행이 알아서 돌린다 —
+    그 자리(`side_start_pose`)는 nav2 가 데려다 준 진입점이라 돌 자리가 있다.
+    """
+    dx, dy = float(tx) - float(rx), float(ty) - float(ry)
+    dist = math.hypot(dx, dy)
+    if dist <= 0.0:
+        return []
+    back_yaw = wrap_pi(math.atan2(dy, dx) + math.pi)   # 등이 목표를 향하는 자세
+    return [Move(TURN, wrap_pi(back_yaw - float(ryaw)), abs_yaw=back_yaw),
+            Move(DRIVE, -dist)]
+
+
 def return_moves(outbound: list, heading: float, final_yaw: float) -> list:
     """나갈 때의 이동 목록을 되돌리는 이동 목록.
 

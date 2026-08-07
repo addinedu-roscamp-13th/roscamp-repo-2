@@ -315,7 +315,11 @@ def test_cancel_during_preflight_is_not_lost():
     assert ok is False and status == 499
 
 def test_fms_backup_follows_saved_checkpoints_in_reverse_order():
-    """FMS가 명시적으로 `backup`을 보냈을 때 최종축→옆축 순서로 되돌아간다."""
+    """FMS가 명시적으로 `backup`을 보냈을 때 최종축→옆축 순서로 되돌아간다.
+
+    거리는 그대로 1m 씩이되 **부호가 음수**다 — 서가에서는 코가 아니라 등을 돌려
+    후진으로 뺀다(`geometry.retreat_moves`).
+    """
     from app.core import backup_runner
 
     record_return_targets([(1.0, 0.0), (0.0, 0.0)])
@@ -329,7 +333,38 @@ def test_fms_backup_follows_saved_checkpoints_in_reverse_order():
         {}, _read_pose_fn=lambda: (2.0, 0.0, 0.0), _drive_fn=fake_drive)
 
     assert ok is True and status == 200
-    assert [round(m.value, 6) for m in driven if m.kind == "drive"] == [1.0, 1.0]
+    assert [round(m.value, 6) for m in driven if m.kind == "drive"] == [-1.0, -1.0]
+
+
+# ── 서가에서 빠져나갈 때 꽁무늬가 서가를 안 쓸어야 한다 (2026-08-07 실기) ──────────
+#
+# 도킹이 끝나면 로봇은 서가와 **나란히** 선다(FINAL_YAW 180°, 서가는 SHELF_YAW ±90°
+# 쪽 옆구리 3cm). 빠져나가려면 제자리 90° 회전을 피할 수 없으니, 남는 선택은
+# **어느 쪽이 서가를 쓸고 지나가느냐**뿐이다.
+
+@pytest.mark.parametrize("shelf_yaw", [1.5708, -1.5708])
+def test_leaving_the_shelf_swings_the_tail_away_from_it(shelf_yaw):
+    """빠져나가는 회전 내내 **꽁무늬가 서가 쪽을 향하지 않아야** 한다.
+
+    ⚠️ 되돌림 감지용이다 — 코를 목표로 돌리는 `approach_moves` 로 되돌리면 꽁무늬가
+       정확히 서가 방향에 가서 서므로 이 시험이 빨개진다.
+    """
+    from app.shelf.geometry import retreat_moves, wrap_pi
+
+    final_yaw = 3.1416                      # shelf_dock.FINAL_YAW_RAD
+    # 체크포인트는 서가 **반대편**(빠져나갈 방향)으로 0.2m.
+    tx, ty = -0.2 * math.cos(shelf_yaw), -0.2 * math.sin(shelf_yaw)
+    moves = retreat_moves(0.0, 0.0, final_yaw, tx, ty)
+
+    turn = next(m for m in moves if m.kind == "turn")
+    # 꽁무늬가 훑는 구간 = (시작 꽁무늬 방위) → (끝 꽁무늬 방위), 회전 부호를 따라.
+    tail0 = wrap_pi(final_yaw + math.pi)
+    for step in range(101):                 # 회전을 촘촘히 적분해 **경로 전체**를 본다
+        tail = wrap_pi(tail0 + turn.value * step / 100.0)
+        assert abs(wrap_pi(tail - shelf_yaw)) > math.radians(45), (
+            f"꽁무늬가 서가 쪽({shelf_yaw:.3f})을 훑고 지나간다: {tail:.3f}")
+
+    assert next(m for m in moves if m.kind == "drive").value < 0, "후진이어야 한다"
 
 
 

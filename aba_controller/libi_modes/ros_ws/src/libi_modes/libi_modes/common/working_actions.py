@@ -1058,10 +1058,12 @@ class ShelfDockExec(CommandDrivenAction):
 
 
 class BackupExec(CommandDrivenAction):
-    """backup — 몸을 돌려 온 만큼 전진해 원래 자리로 돌아간다.
+    """backup — 온 길을 되짚어 원래 자리로 돌아간다.
 
-    사람 차단 뒤 후퇴와 서가 도킹 뒤 복귀가 같은 명령을 쓴다. 후진이 아니라 회전 후
-    전진인 이유는 `robot_agent/app/shelf/geometry.py` 머리말에 있다.
+    사람 차단 뒤 후퇴와 서가 도킹 뒤 복귀가 같은 명령을 쓴다. 둘의 주행 모양이 다르다:
+    사람 차단 뒤는 회전 후 **전진**(`approach_moves`), 서가 도킹 뒤는 등을 돌려
+    **후진**(`retreat_moves`) — 서가 옆 3cm 에서 코를 돌리면 꽁무늬가 서가를 쓸기
+    때문이다. 근거는 `robot_agent/app/shelf/geometry.py` 의 두 함수 머리말에 있다.
     """
 
     def __init__(self, driver=None, name: str | None = None):

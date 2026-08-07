@@ -36,7 +36,8 @@ import math
 import threading
 import time
 
-from app.shelf.geometry import DRIVE, TURN, Move, approach_moves, return_moves, wrap_pi
+from app.shelf.geometry import (DRIVE, TURN, Move, approach_moves, retreat_moves,
+                                return_moves, wrap_pi)
 
 #: 나갈 때 만든 이동(서가 도킹)과 그때의 heading/final_yaw. 복귀 때 이걸 뒤집어 쓴다.
 #
@@ -271,10 +272,11 @@ def _plan_and_drive(args: dict, my_gen: int, read_pose, drive) -> tuple[bool, in
         moves = []
         rx, ry, ryaw = pose
         for tx, ty in targets:
-            heading = math.atan2(ty - ry, tx - rx)
-            moves.extend(approach_moves(rx, ry, ryaw, tx, ty,
-                                        clearance=0.0, final_yaw=heading))
-            rx, ry, ryaw = tx, ty, heading
+            # 돌지 않고 **후진**으로 뺀다 — 서가 앞 3cm 에서 제자리로 돌면 꽁무늬가
+            # 서가를 쓴다(`geometry.retreat_moves` 머리말, 2026-08-07 실기).
+            moves.extend(retreat_moves(rx, ry, ryaw, tx, ty))
+            back_yaw = wrap_pi(math.atan2(ty - ry, tx - rx) + math.pi)
+            rx, ry, ryaw = tx, ty, back_yaw
     elif x is not None and y is not None:
         pose = read_pose()
         if pose is None:
