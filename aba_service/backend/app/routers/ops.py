@@ -41,6 +41,25 @@ router = APIRouter(prefix="/api/admin/ops", tags=["ops"])
 #: 끊는" 게 아니라 "로봇 목록만 갈아끼우는" 방식이다. 기본값은 꺼짐이라 운영에는 영향 없다.
 DEMO_FLEET = os.getenv("DEMO_FLEET", "") == "1"
 
+#: [시연용] 실물 로봇이 하나도 안 잡힐 때 새 주문에 붙여 주는 배차 — `{task_id: 로봇}`.
+#:
+#: 로봇이 없으면 FMS 의 자동 배차도 안 돌아서 주문이 「대기」에 영원히 남는다. 시연 화면이
+#: 그러면 안 되므로, 실물이 0 대일 때만 `DemoRobotState` 의 로봇 하나를 붙여 「배차됨」으로
+#: 보여 준다. **FMS 쪽 주문은 건드리지 않는다** — 로봇이 없으니 진짜 배차(`assign`)는 다리
+#: dispatch 에서 실패해 「실패」로 끝난다. 여기서 바꾸는 건 화면에 보이는 상태뿐이다.
+#: 실물이 한 대라도 잡히면 이 갈래는 아예 안 탄다(위 `robots` 대체와 같은 조건).
+_DEMO_ASSIGN: dict[str, str] = {}
+
+
+def _demo_robot(db: Session) -> str:
+    """지금 일 안 하는 데모 로봇 한 대. 없으면 빈 문자열."""
+    names = db.scalars(
+        select(DemoRobotState.robot)
+        .where(DemoRobotState.state.notin_(("WORKING", "ERROR")))
+        .order_by(DemoRobotState.robot)
+    ).all()
+    return names[0] if names else ""
+
 #: 작업 지시 종류 — 로봇이 수행할 수 있는 일. **화면의 입력 폼도 이 표에서 나온다.**
 #:
 #: 예전에는 8종이 전부 같은 폼이었고 `kind` 는 라벨일 뿐이라, 「복귀」를 골라도 책을
@@ -269,6 +288,10 @@ def robots(
 def tasks(_: AdminUser = Depends(get_current_admin)):
     """작업 큐 + 이력 + 진행률."""
     ok, orders = fms_client.list_orders()
+    for o in orders:  # 시연용 배차를 덧그린다 — 아직 대기인 주문에만.
+        robot = _DEMO_ASSIGN.get(o.get("id", ""))
+        if robot and o.get("status") == "PENDING":
+            o["status"], o["robot"] = "ASSIGNED", robot
     return {"linked": ok, "orders": orders, "kinds": TASK_KINDS}
 
 
@@ -412,7 +435,15 @@ def create_task(
         raise HTTPException(status_code=503, detail=f"작업 지시 실패 — {value}")
 
     assigned = None
-    if body.robot:
+    if not body.robot:
+        # [시연용] 실물이 0 대면 자동 배차를 해 줄 주체가 없다 — 화면에서만 붙여 준다.
+        # 데모 로봇을 먼저 찾는다(DB 한 번) — 없으면 FMS 를 부를 이유도 없다.
+        candidate = _demo_robot(db)
+        ok_snap, snap = fms_client.fleet_snapshot() if candidate else (False, {})
+        if candidate and (DEMO_FLEET or not (ok_snap and snap.get("robots"))):
+            assigned = candidate
+            _DEMO_ASSIGN[value] = candidate
+    else:
         ok2, res = fms_client.assign_order(value, body.robot)
         assigned = body.robot if ok2 else None
         if not ok2:

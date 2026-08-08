@@ -7,11 +7,6 @@ vertices:
     x: 0.6518
     y: -0.68115
     yaw: 0.0
-  # ⚠️ [2026-08-07] yaw 0.0 → 3.1415. 수거는 로봇이 **뒤를 대고** 바구니를
-  #    교체한다 — 충전소(3.1415)와 같은 후면 접근이다. 0.0 이면 로봇이 벽
-  #    쪽(+x)을 보고 서서 팔이 수거함에 안 닿는다.
-  #    ⚠️ 여기를 고쳤으면 navgraph 를 **재생성**해야 반영된다:
-  #       <venv>/python scripts/gen_arte2_navgraph.py
   수거함:
     x: 0.6518
     y: -1.001
@@ -78,19 +73,19 @@ vertices:
     x: -0.1007
     y: -0.0333
     yaw: 3.1415
-  남자화장실:
+  여자화장실:
     x: 0.6518
     y: -0.3615
     yaw: 0.0
-  여자화장실:
+  남자화장실:
     x: 0.6518
     y: -0.0333
     yaw: 0.0
 lanes:
-- from: 여자화장실
+- from: 남자화장실
   to: 충전소입구
   bidirectional: true
-- from: 남자화장실
+- from: 여자화장실
   to: 순회경로-1
   bidirectional: true
 - from: 예술서가
@@ -105,10 +100,10 @@ lanes:
 - from: 미술작품
   to: 순회경로-2
   bidirectional: true
-- from: 남자화장실
-  to: 여자화장실
+- from: 여자화장실
+  to: 남자화장실
   bidirectional: true
-- from: 남자화장실
+- from: 여자화장실
   to: 미술작품
   bidirectional: true
 - from: 순회경로-1
